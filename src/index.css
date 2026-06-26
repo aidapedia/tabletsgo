@@ -1,0 +1,86 @@
+@import "tailwindcss";
+
+/* ---------- Design tokens (Greens-9 palette) ---------- */
+@theme {
+  --color-bg: #0a0a0a;
+  --color-panel: #0f0f0f;
+  --color-elevated: #161616;
+  --color-card: #131313;
+  --color-card-hover: #1d1d1d;
+  --color-edge: #262626;
+  --color-edge-strong: #383838;
+  --color-ink: #f4f4f5;
+  --color-ink-dim: #a1a1aa;
+  --color-ink-faint: #6b6b72;
+  --color-green: #74c476;
+  --color-green-bright: #a1d99b;
+  --color-green-dim: #238b45;
+  --color-red: #ef4444;
+  --color-amber: #d6a73a;
+
+  --radius-card: 14px;
+  --radius-soft: 10px;
+
+  --default-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    Helvetica, Arial, sans-serif;
+
+  --animate-fade: fade 0.15s ease;
+  --animate-pop: pop 0.18s ease;
+
+  @keyframes fade {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  @keyframes pop {
+    from { transform: scale(0.96); opacity: 0; }
+    to { transform: scale(1); opacity: 1; }
+  }
+}
+
+/* ---------- Base ---------- */
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    background: var(--color-bg);
+    color: var(--color-ink);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  ::selection {
+    background: rgba(116, 196, 118, 0.22);
+  }
+
+  /* Scrollbar */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-edge) transparent;
+  }
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-edge);
+    border-radius: 6px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-edge-strong);
+  }
+}
+
+/* ---------- Login hero grid backdrop (not expressible as utilities) ---------- */
+@utility login-grid {
+  background-image:
+    linear-gradient(rgba(116, 196, 118, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(116, 196, 118, 0.04) 1px, transparent 1px);
+  background-size: 64px 64px;
+  mask-image: radial-gradient(circle at 50% 45%, black, transparent 70%);
+}
