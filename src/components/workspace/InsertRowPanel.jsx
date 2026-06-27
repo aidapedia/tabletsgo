@@ -3,6 +3,7 @@ import { getColumns, insertRow } from '../../db/sqlite.js'
 import Button from '../ui/Button.jsx'
 import Segmented from '../ui/Segmented.jsx'
 import { useToast } from '../ui/Toast.jsx'
+import { useSlideOver } from '../ui/useSlideOver.js'
 import { ChevronRight } from '../icons.jsx'
 import { fieldInput } from '../../ui.js'
 
@@ -25,6 +26,7 @@ const coerce = (col, v) => {
 
 export default function InsertRowPanel({ conn, table, onClose, onSaved }) {
   const toast = useToast()
+  const { show, close } = useSlideOver(onClose)
   const [columns, setColumns] = useState([])
   const [loading, setLoading] = useState(true)
   const [values, setValues] = useState({})
@@ -116,7 +118,7 @@ export default function InsertRowPanel({ conn, table, onClose, onSaved }) {
       return
     }
     toast.success(`Row inserted into “${table}”.`)
-    onSaved()
+    close(() => onSaved())
   }
 
   // ⌘S / Ctrl+S to save
@@ -128,17 +130,24 @@ export default function InsertRowPanel({ conn, table, onClose, onSaved }) {
         e.preventDefault()
         saveRef.current()
       } else if (e.key === 'Escape') {
-        onClose()
+        close()
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+  }, [close])
 
   return (
-    <div className="fixed inset-0 z-50 flex animate-fade justify-end bg-black/50" onMouseDown={onClose}>
+    <div
+      className={`fixed inset-0 z-50 flex justify-end bg-black/50 transition-opacity duration-200 ${
+        show ? 'opacity-100' : 'opacity-0'
+      }`}
+      onMouseDown={() => close()}
+    >
       <div
-        className="flex h-full w-full max-w-[460px] animate-slide-in flex-col border-l border-edge-strong bg-panel shadow-[-20px_0_60px_-20px_rgba(0,0,0,0.8)]"
+        className={`flex h-full w-full max-w-[460px] flex-col border-l border-edge-strong bg-panel shadow-[-20px_0_60px_-20px_rgba(0,0,0,0.8)] transition-transform duration-200 ease-out ${
+          show ? 'translate-x-0' : 'translate-x-full'
+        }`}
         onMouseDown={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -146,7 +155,7 @@ export default function InsertRowPanel({ conn, table, onClose, onSaved }) {
           <h3 className="text-base font-bold">Insert New Row</h3>
           <button
             className="flex h-8 w-8 items-center justify-center rounded-soft text-ink-dim hover:bg-elevated hover:text-ink"
-            onClick={onClose}
+            onClick={() => close()}
             aria-label="Close"
           >
             <ChevronRight />
@@ -227,7 +236,7 @@ export default function InsertRowPanel({ conn, table, onClose, onSaved }) {
           <div className="border-t border-edge bg-red/10 px-5 py-2.5 font-mono text-[11px] text-[#ff9b9b]">{error}</div>
         )}
         <div className="flex items-center justify-end gap-3 border-t border-edge px-5 py-4">
-          <Button variant="subtle" onClick={onClose}>Cancel</Button>
+          <Button variant="subtle" onClick={() => close()}>Cancel</Button>
           <Button variant="primary" onClick={handleSave} disabled={saving || loading}>
             {saving ? 'Saving…' : 'Save'}
             <kbd className="rounded bg-black/20 px-1.5 py-px text-[10px] font-semibold">⌘S</kbd>

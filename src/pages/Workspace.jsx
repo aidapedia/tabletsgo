@@ -65,6 +65,7 @@ export default function Workspace() {
   const [searchOpen, setSearchOpen] = useState(false) // table search toggle
   const [tableSort, setTableSort] = useState('az') // 'az' | 'za'
   const searchRef = useRef(null)
+  const autoOpenedFor = useRef(null) // connection id we've already auto-opened a tab for
 
   // Rail selects a panel; clicking the active one again collapses it.
   const selectPanel = (p) => {
@@ -81,11 +82,12 @@ export default function Workspace() {
     setLoading(true)
     const t = await listTables(conn)
     setTables(t || [])
-    // Open the first table by default if none open
-    if (t?.length && tabs.length === 0) {
-      const first = { key: `table:${t[0]}`, kind: 'table', table: t[0], title: t[0] }
-      setTabs([first])
-      setActiveTab(first.key)
+    // First time opening this connection with no tabs yet: open a query tab.
+    // Otherwise keep whatever tabs/active tab already exist. The ref guards
+    // against the effect firing twice (e.g. React StrictMode in dev).
+    if (autoOpenedFor.current !== id) {
+      autoOpenedFor.current = id
+      if (tabs.length === 0) openQuery()
     }
     setLoading(false)
   }
@@ -259,8 +261,12 @@ export default function Workspace() {
           onSettings={() => toast.info('Settings — coming soon.')}
           onProfile={logout}
         />
-        {tablesVisible && (
-        <aside className="flex min-h-0 w-[280px] flex-col border-r border-edge bg-panel">
+        <div
+          className={`shrink-0 overflow-hidden transition-[width] duration-200 ease-out ${
+            tablesVisible ? 'w-[280px]' : 'w-0'
+          }`}
+        >
+        <aside className="flex h-full min-h-0 w-[280px] flex-col border-r border-edge bg-panel">
         {panel === 'browser' ? (
         <>
         <div className="flex items-center justify-between px-4 pb-2.5 pt-4 text-[11px] font-semibold">
@@ -359,7 +365,7 @@ export default function Workspace() {
           />
         )}
         </aside>
-        )}
+        </div>
       </div>
 
       {/* Main */}
@@ -435,7 +441,7 @@ export default function Workspace() {
                 key={current.key}
                 conn={conn}
                 dialect={DIALECT[conn.type]}
-                initialSql={current.sql ?? 'SELECT * FROM events LIMIT 10;'}
+                initialSql={current.sql ?? ''}
                 onRan={pushRecent}
                 onSave={saveQuery}
               />

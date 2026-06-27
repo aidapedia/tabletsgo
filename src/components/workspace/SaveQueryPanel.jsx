@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import Button from '../ui/Button.jsx'
+import { useSlideOver } from '../ui/useSlideOver.js'
 import { ChevronRight, CodeIcon } from '../icons.jsx'
 import { fieldInput } from '../../ui.js'
 
 export default function SaveQueryPanel({ sql, defaultName = '', onClose, onSave }) {
+  const { show, close } = useSlideOver(onClose)
   const [name, setName] = useState(defaultName)
   const [error, setError] = useState(null)
   const inputRef = useRef(null)
@@ -18,7 +20,7 @@ export default function SaveQueryPanel({ sql, defaultName = '', onClose, onSave 
       setError('Give the query a name.')
       return
     }
-    onSave(trimmed)
+    close(() => onSave(trimmed))
   }
 
   // ⌘S / Ctrl+S to save, Esc to close
@@ -30,17 +32,24 @@ export default function SaveQueryPanel({ sql, defaultName = '', onClose, onSave 
         e.preventDefault()
         saveRef.current()
       } else if (e.key === 'Escape') {
-        onClose()
+        close()
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+  }, [close])
 
   return (
-    <div className="fixed inset-0 z-50 flex animate-fade justify-end bg-black/50" onMouseDown={onClose}>
+    <div
+      className={`fixed inset-0 z-50 flex justify-end bg-black/50 transition-opacity duration-200 ${
+        show ? 'opacity-100' : 'opacity-0'
+      }`}
+      onMouseDown={() => close()}
+    >
       <div
-        className="flex h-full w-full max-w-[460px] animate-slide-in flex-col border-l border-edge-strong bg-panel shadow-[-20px_0_60px_-20px_rgba(0,0,0,0.8)]"
+        className={`flex h-full w-full max-w-[460px] flex-col border-l border-edge-strong bg-panel shadow-[-20px_0_60px_-20px_rgba(0,0,0,0.8)] transition-transform duration-200 ease-out ${
+          show ? 'translate-x-0' : 'translate-x-full'
+        }`}
         onMouseDown={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -48,7 +57,7 @@ export default function SaveQueryPanel({ sql, defaultName = '', onClose, onSave 
           <h3 className="text-base font-bold">Save Query</h3>
           <button
             className="flex h-8 w-8 items-center justify-center rounded-soft text-ink-dim hover:bg-elevated hover:text-ink"
-            onClick={onClose}
+            onClick={() => close()}
             aria-label="Close"
           >
             <ChevronRight />
@@ -96,7 +105,7 @@ export default function SaveQueryPanel({ sql, defaultName = '', onClose, onSave 
           <div className="border-t border-edge bg-red/10 px-5 py-2.5 font-mono text-[11px] text-[#ff9b9b]">{error}</div>
         )}
         <div className="flex items-center justify-end gap-3 border-t border-edge px-5 py-4">
-          <Button variant="subtle" onClick={onClose}>
+          <Button variant="subtle" onClick={() => close()}>
             Cancel
           </Button>
           <Button variant="primary" onClick={handleSave}>

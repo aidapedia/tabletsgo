@@ -10,6 +10,7 @@ import { getSchema, runQuery } from '../../db/sqlite.js'
 import DataGrid from './DataGrid.jsx'
 import Button from '../ui/Button.jsx'
 import Tooltip from '../ui/Tooltip.jsx'
+import { useToast } from '../ui/Toast.jsx'
 import { SaveIcon, WandIcon } from '../icons.jsx'
 
 // Editor chrome themed to match the app (dark).
@@ -92,7 +93,8 @@ const highlightStyle = HighlightStyle.define([
 ])
 
 export default function QueryEditor({ conn, dialect, initialSql, onRan, onSave }) {
-  const [sql, setSql] = useState(initialSql || 'SELECT * FROM events LIMIT 10;')
+  const toast = useToast()
+  const [sql, setSql] = useState(initialSql || '')
   const [schema, setSchema] = useState({})
   const [result, setResult] = useState(null)
   const [error, setError] = useState(null)
@@ -114,14 +116,21 @@ export default function QueryEditor({ conn, dialect, initialSql, onRan, onSave }
       if (queryResult.error) {
         setError(queryResult.error)
         setResult(null)
+        toast.error(`Query failed: ${queryResult.error}`)
       } else {
         setResult(queryResult)
         const rows = queryResult.type === 'rows' ? queryResult.rows.length : null
         onRan?.({ sql: sql.trim(), ts: Date.now(), rows })
+        toast.success(
+          queryResult.type === 'rows'
+            ? `Query OK · ${rows.toLocaleString()} row(s) returned.`
+            : queryResult.message || 'Query executed successfully.'
+        )
       }
     } catch (e) {
       setResult(null)
       setError(e.message)
+      toast.error(`Query failed: ${e.message}`)
     } finally {
       setLoading(false)
     }

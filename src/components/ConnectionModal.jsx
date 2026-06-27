@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useConnections } from '../context/ConnectionsContext.jsx'
 import { CloseIcon, DbLogo, EyeIcon, EyeOffIcon, PlusSmall, ShieldIcon } from './icons.jsx'
 import Select from './ui/Select.jsx'
+import { useSlideOver } from './ui/useSlideOver.js'
 import { btnGhost, btnPrimary, fieldInput, fieldLabel } from '../ui.js'
 
 const DB_TYPES = [
@@ -63,6 +64,7 @@ function parseUri(uri) {
 
 export default function ConnectionModal({ initial, initialType, onClose, onSave }) {
   const { testConnection } = useConnections()
+  const { show, close } = useSlideOver(onClose)
   const isEdit = !!initial
 
   const [form, setForm] = useState(() => {
@@ -117,7 +119,7 @@ export default function ConnectionModal({ initial, initialType, onClose, onSave 
   const handleSave = (e) => {
     e.preventDefault()
     if (!valid) return
-    onSave({
+    const payload = {
       ...form,
       name: form.name.trim(),
       host: form.host?.trim() || '',
@@ -125,18 +127,23 @@ export default function ConnectionModal({ initial, initialType, onClose, onSave 
       filepath: form.filepath?.trim() || '',
       database: form.database?.trim() || '',
       folder: form.folder.trim(),
-    })
+    }
+    close(() => onSave(payload))
   }
 
   const tags = form.tags || []
 
   return (
     <div
-      className="fixed inset-0 z-50 flex animate-fade justify-end bg-black/50"
-      onMouseDown={onClose}
+      className={`fixed inset-0 z-50 flex justify-end bg-black/50 transition-opacity duration-200 ${
+        show ? 'opacity-100' : 'opacity-0'
+      }`}
+      onMouseDown={() => close()}
     >
       <div
-        className="flex h-full w-full max-w-[520px] animate-slide-in flex-col border-l border-edge-strong bg-panel shadow-[-20px_0_60px_-20px_rgba(0,0,0,0.8)]"
+        className={`flex h-full w-full max-w-[520px] flex-col border-l border-edge-strong bg-panel shadow-[-20px_0_60px_-20px_rgba(0,0,0,0.8)] transition-transform duration-200 ease-out ${
+          show ? 'translate-x-0' : 'translate-x-full'
+        }`}
         onMouseDown={(e) => e.stopPropagation()}
       >
         <form onSubmit={handleSave} className="flex h-full flex-col">
@@ -145,7 +152,7 @@ export default function ConnectionModal({ initial, initialType, onClose, onSave 
             <button
               type="button"
               className="flex h-[34px] w-[34px] items-center justify-center rounded-[9px] text-ink-dim hover:bg-elevated hover:text-ink"
-              onClick={onClose}
+              onClick={() => close()}
               aria-label="Close"
             >
               <CloseIcon />
