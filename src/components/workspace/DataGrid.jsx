@@ -4,11 +4,11 @@ import Checkbox from '../ui/Checkbox.jsx'
 // screen; wide tables overflow and scroll horizontally instead.
 const colW = 'min-w-[160px] max-w-[360px]'
 const thBase =
-  `sticky top-0 z-[1] whitespace-nowrap border-b border-edge bg-elevated px-3.5 py-2.5 text-left font-semibold text-ink-dim ${colW}`
+  `sticky top-0 z-[1] whitespace-nowrap border-b border-edge bg-elevated px-3 py-1.5 text-left font-semibold text-ink-dim ${colW}`
 const tdBase =
-  `overflow-hidden text-ellipsis whitespace-nowrap border-b border-edge px-3.5 py-[9px] text-ink ${colW}`
+  `overflow-hidden text-ellipsis whitespace-nowrap border-b border-edge px-3 py-1 text-ink ${colW}`
 const firstTh = `${thBase} left-0 z-[2] text-right !min-w-0`
-const firstTd = 'sticky left-0 border-b border-edge bg-panel px-3.5 py-[9px] text-right tabular-nums text-ink-faint'
+const firstTd = 'sticky left-0 border-b border-edge bg-panel px-3 py-1 text-right tabular-nums text-ink-faint'
 
 const EmptyIcon = (props) => (
   <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor"

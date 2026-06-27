@@ -15,18 +15,24 @@ import IconRail from '../components/workspace/IconRail.jsx'
 import SavedQueriesPanel from '../components/workspace/SavedQueriesPanel.jsx'
 import SaveQueryPanel from '../components/workspace/SaveQueryPanel.jsx'
 import ChangesPanel from '../components/workspace/ChangesPanel.jsx'
+import SchemaView from '../components/workspace/SchemaView.jsx'
 import Segmented from '../components/ui/Segmented.jsx'
 import Tooltip from '../components/ui/Tooltip.jsx'
+import Popover from '../components/ui/Popover.jsx'
 import { btnGhost, btnPrimary, iconMini } from '../ui.js'
 import {
   ChevronLeft,
   CloseIcon,
   CodeIcon,
+  ColumnsIcon,
+  EditIcon,
   MenuIcon,
+  MoreVerticalIcon,
   PlusIcon,
   RefreshIcon,
   SearchIcon,
   TableIcon,
+  TrashIcon,
 } from '../components/icons.jsx'
 
 const kbd =
@@ -163,6 +169,24 @@ export default function Workspace() {
     setSidebarOpen(false)
   }
 
+  const openSchema = (table) => {
+    const key = `schema:${table}`
+    setTabs((prev) =>
+      prev.some((t) => t.key === key) ? prev : [...prev, { key, kind: 'schema', table, title: `${table} · schema` }]
+    )
+    setActiveTab(key)
+    setSidebarOpen(false)
+  }
+
+  const emptyTable = (table) => {
+    addChange({ kind: 'delete', label: `Empty table ${table}`, sql: `DELETE FROM "${table}"`, table })
+    toast.info(`Added empty-table to changes — commit to apply.`)
+  }
+  const deleteTable = (table) => {
+    addChange({ kind: 'delete', label: `Drop table ${table}`, sql: `DROP TABLE "${table}"`, table })
+    toast.info(`Added drop-table to changes — commit to apply.`)
+  }
+
   const addChange = (c) =>
     setChanges((prev) => [{ id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, ts: Date.now(), ...c }, ...prev])
 
@@ -226,8 +250,15 @@ export default function Workspace() {
     persistSaved(id, next)
   }
 
-  const stageCreateTable = (sql, tableName) => {
-    addChange({ kind: 'create', label: `Create table ${tableName}`, sql, table: tableName })
+  const stageTableChanges = (statements, tableName, mode) => {
+    statements.forEach((sql) =>
+      addChange({
+        kind: mode === 'edit' ? 'update' : 'create',
+        label: mode === 'edit' ? `Alter table ${tableName}` : `Create table ${tableName}`,
+        sql,
+        table: tableName,
+      })
+    )
     setCreatingTable(false)
   }
 
@@ -368,22 +399,65 @@ export default function Workspace() {
           </div>
         )}
 
-        <div className="flex flex-1 flex-col gap-1 overflow-y-auto px-2 pb-4 pt-1">
+        <div className="flex flex-1 flex-col gap-0.5 overflow-y-auto px-2 pb-4 pt-1">
           {loading && <div className={`${centerState} text-xs`}>Loading…</div>}
           {!loading &&
             visibleTables.map((t) => {
               const active = current?.kind === 'table' && current.table === t
               return (
-                <button
+                <div
                   key={t}
                   onClick={() => openTable(t)}
-                  className={`flex w-full items-center gap-2.5 rounded-[8px] px-2.5 py-2.5 text-left text-xs ${
+                  className={`group flex w-full cursor-pointer items-center gap-2 rounded-[7px] px-2.5 py-1.5 text-left text-xs ${
                     active ? 'bg-card-hover text-ink' : 'text-ink-dim hover:bg-elevated hover:text-ink'
                   }`}
                 >
                   <TableIcon className={`flex-shrink-0 ${active ? 'text-ink' : 'text-ink-faint'}`} />
                   <span className="flex-1 truncate">{t}</span>
-                </button>
+                  <div className="shrink-0" onClick={(e) => e.stopPropagation()}>
+                    <Popover
+                      align="right"
+                      width={210}
+                      trigger={({ open, toggle }) => (
+                        <button
+                          onClick={toggle}
+                          aria-label="Table actions"
+                          className={`flex h-6 w-6 items-center justify-center rounded transition-colors ${
+                            open
+                              ? 'bg-card-hover text-ink opacity-100'
+                              : 'text-ink-faint opacity-0 hover:text-ink group-hover:opacity-100'
+                          }`}
+                        >
+                          <MoreVerticalIcon width={15} height={15} />
+                        </button>
+                      )}
+                    >
+                      {({ close }) => (
+                        <div className="p-1">
+                          <button className={`${menuItem} gap-2.5`} onClick={() => { openTable(t); close() }}>
+                            <TableIcon width={14} height={14} /> Open in new tab
+                          </button>
+                          <button className={`${menuItem} gap-2.5`} onClick={() => { openQuery(`SELECT * FROM "${t}";`); close() }}>
+                            <CodeIcon width={14} height={14} /> Open in SQL Editor
+                          </button>
+                          <button className={`${menuItem} gap-2.5`} onClick={() => { openSchema(t); close() }}>
+                            <ColumnsIcon width={14} height={14} /> View Table Schema
+                          </button>
+                          <button className={`${menuItem} gap-2.5`} onClick={() => { setCreatingTable({ table: t }); close() }}>
+                            <EditIcon width={14} height={14} /> Edit Table
+                          </button>
+                          <div className="my-1 h-px bg-edge" />
+                          <button className={`${menuItem} gap-2.5 hover:!text-red`} onClick={() => { emptyTable(t); close() }}>
+                            <TrashIcon width={14} height={14} /> Empty Table
+                          </button>
+                          <button className={`${menuItem} gap-2.5 hover:!text-red`} onClick={() => { deleteTable(t); close() }}>
+                            <TrashIcon width={14} height={14} /> Delete Table
+                          </button>
+                        </div>
+                      )}
+                    </Popover>
+                  </div>
+                </div>
               )
             })}
           {!loading && visibleTables.length === 0 && (
@@ -469,6 +543,8 @@ export default function Workspace() {
                 )}
                 {t.kind === 'query' ? (
                   <CodeIcon className={active ? 'text-ink' : 'text-ink-faint'} />
+                ) : t.kind === 'schema' ? (
+                  <ColumnsIcon className={active ? 'text-ink' : 'text-ink-faint'} />
                 ) : (
                   <TableIcon className={active ? 'text-ink' : 'text-ink-faint'} />
                 )}
@@ -489,6 +565,9 @@ export default function Workspace() {
         <div className="flex min-h-0 flex-1 overflow-hidden">
           {conn && current?.kind === 'table' && (
             <TableView key={`${current.key}:${dataVersion}`} conn={conn} table={current.table} onChange={addChange} />
+          )}
+          {conn && current?.kind === 'schema' && (
+            <SchemaView key={`${current.key}:${dataVersion}`} conn={conn} table={current.table} />
           )}
           {conn && current?.kind === 'query' && (
             <Suspense fallback={<div className="flex-1 p-8 text-center text-xs text-ink-faint">Loading editor…</div>}>
@@ -612,8 +691,9 @@ export default function Workspace() {
       {creatingTable && (
         <CreateTablePanel
           conn={conn}
+          initialTable={creatingTable?.table}
           onClose={() => setCreatingTable(false)}
-          onStage={stageCreateTable}
+          onStage={stageTableChanges}
         />
       )}
 
