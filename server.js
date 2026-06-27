@@ -133,16 +133,27 @@ function runSqliteQuery(db, sql) {
 // PostgreSQL Utilities
 // ============================================================================
 
+// Build a node-postgres client/pool config from a stored connection.
+// Handles optional database, "no authentication" mode, and SSL modes.
+function pgConfig(config) {
+  const noAuth = config.auth === 'none'
+  const ssl =
+    !config.sslmode || config.sslmode === 'disable'
+      ? false
+      : { rejectUnauthorized: config.sslmode === 'verify-full' }
+  return {
+    host: config.host,
+    port: parseInt(config.port) || 5432,
+    user: noAuth ? undefined : config.username || undefined,
+    password: noAuth ? undefined : config.password || undefined,
+    database: config.database || undefined,
+    ssl,
+  }
+}
+
 async function getPostgresPool(id, config) {
   if (!postgresConnections.has(id)) {
-    const pool = new Pool({
-      host: config.host,
-      port: parseInt(config.port),
-      user: config.username,
-      password: config.password,
-      database: config.database,
-    })
-    postgresConnections.set(id, pool)
+    postgresConnections.set(id, new Pool(pgConfig(config)))
   }
   return postgresConnections.get(id)
 }
@@ -220,7 +231,7 @@ app.get('/api/connections', (req, res) => {
 
 // Test connection
 app.post('/api/test-connection', async (req, res) => {
-  const { type, host, port, username, password, database, filepath } = req.body
+  const { type, filepath } = req.body
 
   try {
     if (type === 'sqlite') {
@@ -229,17 +240,11 @@ app.post('/api/test-connection', async (req, res) => {
       db.close()
       res.json({ ok: true, message: `Connected! ${tables.length} table(s) found.` })
     } else if (type === 'postgresql') {
-      const client = new Client({
-        host,
-        port: parseInt(port),
-        user: username,
-        password,
-        database,
-      })
+      const client = new Client(pgConfig(req.body))
       await client.connect()
-      const result = await client.query("SELECT version()")
+      const { rows } = await client.query('SELECT current_database() AS db')
       await client.end()
-      res.json({ ok: true, message: 'Connected to PostgreSQL successfully!' })
+      res.json({ ok: true, message: `Connected to PostgreSQL${rows[0]?.db ? ` (${rows[0].db})` : ''}!` })
     }
   } catch (error) {
     res.json({ ok: false, message: error.message })

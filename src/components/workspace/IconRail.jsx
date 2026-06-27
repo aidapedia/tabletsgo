@@ -1,9 +1,6 @@
-import { CodeIcon, DatabaseIcon, HomeIcon, SettingsIcon } from '../icons.jsx'
+import { CodeIcon, DatabaseIcon, DbLogo, HomeIcon, SettingsIcon } from '../icons.jsx'
 import Popover from '../ui/Popover.jsx'
 import Tooltip from '../ui/Tooltip.jsx'
-import { connIcon } from '../../ui.js'
-
-const ABBR = { postgresql: 'PG', sqlite: 'SQ', redis: 'R' }
 
 function RailButton({ icon: Icon, label, active = false, onClick }) {
   return (
@@ -43,11 +40,8 @@ export default function IconRail({
         width={240}
         trigger={({ toggle }) => (
           <Tooltip label={current?.name || 'Connections'} placement="right">
-            <button
-              onClick={toggle}
-              className={connIcon(current?.type, 'h-10 w-10 text-[13px] font-extrabold')}
-            >
-              {ABBR[current?.type] || 'DB'}
+            <button onClick={toggle} className="flex h-10 w-10 items-center justify-center" aria-label="Connections">
+              <DbLogo type={current?.type} className="h-9 w-9" />
             </button>
           </Tooltip>
         )}
@@ -68,7 +62,7 @@ export default function IconRail({
                   c.id === currentId ? 'bg-card-hover text-ink' : 'text-ink-dim hover:bg-elevated hover:text-ink'
                 }`}
               >
-                <span className={connIcon(c.type, 'h-7 w-7 text-[10px] font-extrabold')}>{ABBR[c.type] || 'DB'}</span>
+                <DbLogo type={c.type} className="h-7 w-7 shrink-0" />
                 <span className="flex-1 truncate">{c.name}</span>
               </button>
             ))}
