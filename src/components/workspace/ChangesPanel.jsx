@@ -1,6 +1,6 @@
 import { useSlideOver } from '../ui/useSlideOver.js'
 import Button from '../ui/Button.jsx'
-import { ChevronRight, CodeIcon, CopyIcon, EditIcon, PlusSmall, TrashIcon } from '../icons.jsx'
+import { ChevronRight, CodeIcon, CopyIcon, EditIcon, PlusSmall, TableIcon, TrashIcon } from '../icons.jsx'
 import { relativeTime } from '../../recents.js'
 
 const KIND = {
@@ -8,6 +8,7 @@ const KIND = {
   update: { Icon: EditIcon, tone: 'text-amber' },
   delete: { Icon: TrashIcon, tone: 'text-red' },
   duplicate: { Icon: CopyIcon, tone: 'text-green-bright' },
+  create: { Icon: TableIcon, tone: 'text-green-bright' },
   query: { Icon: CodeIcon, tone: 'text-ink-dim' },
 }
 

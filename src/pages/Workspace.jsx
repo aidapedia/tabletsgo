@@ -7,7 +7,7 @@ import { listTables, runQuery } from '../db/sqlite.js'
 import { addRecent, loadRecents, relativeTime, saveRecents } from '../recents.js'
 import { loadSaved, persistSaved } from '../savedQueries.js'
 import TableView from '../components/workspace/TableView.jsx'
-import CreateTableModal from '../components/workspace/CreateTableModal.jsx'
+import CreateTablePanel from '../components/workspace/CreateTablePanel.jsx'
 
 // Lazy — pulls in the (heavy) CodeMirror editor only when a query tab opens.
 const QueryEditor = lazy(() => import('../components/workspace/QueryEditor.jsx'))
@@ -191,6 +191,7 @@ export default function Workspace() {
     setCommitting(false)
     setChanges(remaining.reverse())
     setDataVersion((v) => v + 1)
+    loadTables() // pick up created/dropped tables in the sidebar
     if (failure) {
       toast.error(`Committed ${okCount}, then failed: ${failure}`)
     } else {
@@ -225,10 +226,9 @@ export default function Workspace() {
     persistSaved(id, next)
   }
 
-  const handleTableCreated = async (tableName) => {
+  const stageCreateTable = (sql, tableName) => {
+    addChange({ kind: 'create', label: `Create table ${tableName}`, sql, table: tableName })
     setCreatingTable(false)
-    await loadTables()
-    openTable(tableName)
   }
 
   const removeTab = (key) => {
@@ -610,10 +610,10 @@ export default function Workspace() {
       )}
 
       {creatingTable && (
-        <CreateTableModal
+        <CreateTablePanel
           conn={conn}
           onClose={() => setCreatingTable(false)}
-          onCreated={handleTableCreated}
+          onStage={stageCreateTable}
         />
       )}
 

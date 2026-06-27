@@ -10,7 +10,7 @@ export const btnDanger = `${btnBase} px-[18px] py-2.5 bg-transparent text-red bo
 
 // Field input / select styling shared across login + modal.
 export const fieldInput =
-  'w-full px-3.5 py-3 bg-elevated border border-edge rounded-soft text-ink text-[11px] outline-none transition-[border-color,box-shadow] duration-150 placeholder:text-ink-faint focus:border-green-dim focus:shadow-[0_0_0_3px_rgba(111,207,106,0.22)]'
+  'w-full px-3 py-2 bg-elevated border border-edge rounded-soft text-ink text-[11px] outline-none transition-[border-color,box-shadow] duration-150 placeholder:text-ink-faint focus:border-green-dim focus:shadow-[0_0_0_3px_rgba(111,207,106,0.22)]'
 
 export const fieldLabel = 'block text-[11px] font-semibold text-ink-dim mb-2'
 
