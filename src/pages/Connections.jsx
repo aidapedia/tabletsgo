@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext.jsx'
 import { useConnections } from '../context/ConnectionsContext.jsx'
 import ConnectionModal from '../components/ConnectionModal.jsx'
 import { EditIcon, FolderIcon, PlusIcon, SearchIcon, TrashIcon } from '../components/icons.jsx'
+import Tooltip from '../components/ui/Tooltip.jsx'
 import { btnPrimary, connIcon, envDotColor } from '../ui.js'
 
 const ABBR = { postgresql: 'PG', sqlite: 'SQ', redis: 'R' }
@@ -58,14 +59,15 @@ export default function Connections() {
   return (
     <div className="mx-auto max-w-[1000px] px-8 py-12 max-[720px]:px-4 max-[720px]:py-8">
       <div className="mb-6 flex justify-end">
-        <div
-          className="relative flex h-10 w-10 cursor-pointer items-center justify-center rounded-[11px] bg-green text-xs font-bold text-white"
-          title={user?.name}
-          onClick={logout}
-        >
-          {user?.name?.[0]?.toUpperCase() || 'A'}
-          <span className="absolute -bottom-0.5 -right-0.5 h-[13px] w-[13px] rounded-full border-2 border-bg bg-green" />
-        </div>
+        <Tooltip label={user?.name ? `${user.name} — sign out` : 'Sign out'} placement="bottom">
+          <div
+            className="relative flex h-10 w-10 cursor-pointer items-center justify-center rounded-[11px] bg-green text-xs font-bold text-white"
+            onClick={logout}
+          >
+            {user?.name?.[0]?.toUpperCase() || 'A'}
+            <span className="absolute -bottom-0.5 -right-0.5 h-[13px] w-[13px] rounded-full border-2 border-bg bg-green" />
+          </div>
+        </Tooltip>
       </div>
 
       <div className="mb-7 flex items-center justify-between">
@@ -148,23 +150,25 @@ export default function Connections() {
                 </div>
               </div>
               <div className="flex gap-1.5 opacity-0 transition-opacity group-hover:opacity-100 max-[720px]:opacity-100">
-                <button
-                  className={iconBtn}
-                  title="Edit"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    setModal({ mode: 'edit', conn })
-                  }}
-                >
-                  <EditIcon />
-                </button>
-                <button
-                  className={`${iconBtn} hover:!text-red hover:!border-red/40`}
-                  title="Delete"
-                  onClick={(e) => handleDelete(e, conn)}
-                >
-                  <TrashIcon />
-                </button>
+                <Tooltip label="Edit" placement="top">
+                  <button
+                    className={iconBtn}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setModal({ mode: 'edit', conn })
+                    }}
+                  >
+                    <EditIcon />
+                  </button>
+                </Tooltip>
+                <Tooltip label="Delete" placement="top">
+                  <button
+                    className={`${iconBtn} hover:!text-red hover:!border-red/40`}
+                    onClick={(e) => handleDelete(e, conn)}
+                  >
+                    <TrashIcon />
+                  </button>
+                </Tooltip>
               </div>
             </div>
           ))}

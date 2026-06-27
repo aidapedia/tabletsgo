@@ -15,6 +15,7 @@ import IconRail from '../components/workspace/IconRail.jsx'
 import SavedQueriesPanel from '../components/workspace/SavedQueriesPanel.jsx'
 import SaveQueryPanel from '../components/workspace/SaveQueryPanel.jsx'
 import Segmented from '../components/ui/Segmented.jsx'
+import Tooltip from '../components/ui/Tooltip.jsx'
 import { btnGhost, btnPrimary, iconMini } from '../ui.js'
 import {
   ChevronLeft,
@@ -265,22 +266,27 @@ export default function Workspace() {
         <div className="flex items-center justify-between px-4 pb-2.5 pt-4 text-[11px] font-semibold">
           <span className="text-xs">Tables</span>
           <div className="flex gap-1">
-            <button className={iconMini} title="Refresh" onClick={loadTables}>
-              <RefreshIcon />
-            </button>
-            <button
-              className={`${iconMini} ${searchOpen ? 'bg-elevated text-ink' : ''}`}
-              title="Search tables"
-              onClick={() => {
-                if (searchOpen) setFilter('')
-                setSearchOpen((o) => !o)
-              }}
-            >
-              <SearchIcon width={15} height={15} />
-            </button>
-            <button className={iconMini} title="Create table" onClick={() => setCreatingTable(true)}>
-              <PlusIcon width={14} height={14} />
-            </button>
+            <Tooltip label="Refresh" placement="bottom">
+              <button className={iconMini} onClick={loadTables}>
+                <RefreshIcon />
+              </button>
+            </Tooltip>
+            <Tooltip label="Search tables" placement="bottom">
+              <button
+                className={`${iconMini} ${searchOpen ? 'bg-elevated text-ink' : ''}`}
+                onClick={() => {
+                  if (searchOpen) setFilter('')
+                  setSearchOpen((o) => !o)
+                }}
+              >
+                <SearchIcon width={15} height={15} />
+              </button>
+            </Tooltip>
+            <Tooltip label="Create table" placement="bottom">
+              <button className={iconMini} onClick={() => setCreatingTable(true)}>
+                <PlusIcon width={14} height={14} />
+              </button>
+            </Tooltip>
           </div>
         </div>
 
@@ -405,13 +411,14 @@ export default function Workspace() {
                   <TableIcon className={active ? 'text-ink' : 'text-ink-faint'} />
                 )}
                 <span>{t.title}</span>
-                <button
-                  className="flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded text-ink-faint opacity-70 transition-colors hover:bg-card-hover hover:text-ink group-hover/tab:opacity-100"
-                  onClick={(e) => closeTab(e, t.key)}
-                  title="Close tab"
-                >
-                  <CloseIcon width={13} height={13} />
-                </button>
+                <Tooltip label="Close tab" placement="bottom">
+                  <button
+                    className="flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded text-ink-faint opacity-70 transition-colors hover:bg-card-hover hover:text-ink group-hover/tab:opacity-100"
+                    onClick={(e) => closeTab(e, t.key)}
+                  >
+                    <CloseIcon width={13} height={13} />
+                  </button>
+                </Tooltip>
               </div>
             )
           })}

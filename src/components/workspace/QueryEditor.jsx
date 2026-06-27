@@ -9,6 +9,7 @@ import { format } from 'sql-formatter'
 import { getSchema, runQuery } from '../../db/sqlite.js'
 import DataGrid from './DataGrid.jsx'
 import Button from '../ui/Button.jsx'
+import Tooltip from '../ui/Tooltip.jsx'
 import { SaveIcon, WandIcon } from '../icons.jsx'
 
 // Editor chrome themed to match the app (dark).
@@ -172,19 +173,22 @@ export default function QueryEditor({ conn, dialect, initialSql, onRan, onSave }
 
         <div className="mx-0.5 h-5 w-px bg-edge" />
 
-        <Button variant="subtle" size="sm" className="!px-2" onClick={beautify} title="Beautify SQL">
-          <WandIcon width={15} height={15} />
-        </Button>
-        <Button
-          variant="subtle"
-          size="sm"
-          className="!px-2"
-          onClick={() => onSave?.(sql)}
-          title="Save query"
-          disabled={!sql.trim()}
-        >
-          <SaveIcon width={15} height={15} />
-        </Button>
+        <Tooltip label="Beautify SQL" placement="bottom">
+          <Button variant="subtle" size="sm" className="!px-2" onClick={beautify}>
+            <WandIcon width={15} height={15} />
+          </Button>
+        </Tooltip>
+        <Tooltip label="Save query" placement="bottom">
+          <Button
+            variant="subtle"
+            size="sm"
+            className="!px-2"
+            onClick={() => onSave?.(sql)}
+            disabled={!sql.trim()}
+          >
+            <SaveIcon width={15} height={15} />
+          </Button>
+        </Tooltip>
 
         <span className="ml-auto rounded-soft border border-edge bg-elevated px-3 py-1.5 text-[11px] font-semibold text-ink-dim">
           {dialect}

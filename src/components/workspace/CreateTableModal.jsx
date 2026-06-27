@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { runQuery } from '../../db/sqlite.js'
 import { CloseIcon, PlusIcon, TrashIcon } from '../icons.jsx'
 import Select from '../ui/Select.jsx'
+import Tooltip from '../ui/Tooltip.jsx'
 import { btnGhost, btnPrimary, fieldInput, fieldLabel } from '../../ui.js'
 
 const TYPES = {
@@ -110,23 +111,28 @@ export default function CreateTableModal({ conn, onClose, onCreated }) {
                     onChange={(v) => setCol(i, { type: v })}
                     options={types.map((t) => ({ value: t, label: t }))}
                   />
-                  <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-ink-dim" title="Primary key">
-                    <input type="checkbox" checked={col.pk} onChange={(e) => setCol(i, { pk: e.target.checked })} className="accent-green" />
-                    PK
-                  </label>
-                  <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-ink-dim" title="Not null">
-                    <input type="checkbox" checked={col.notNull} onChange={(e) => setCol(i, { notNull: e.target.checked })} className="accent-green" />
-                    NN
-                  </label>
-                  <button
-                    type="button"
-                    className="flex h-[34px] w-[34px] flex-shrink-0 items-center justify-center rounded-[9px] text-ink-dim hover:text-red disabled:opacity-30 disabled:hover:text-ink-dim"
-                    onClick={() => removeCol(i)}
-                    disabled={columns.length === 1}
-                    title="Remove column"
-                  >
-                    <TrashIcon />
-                  </button>
+                  <Tooltip label="Primary key" placement="top">
+                    <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-ink-dim">
+                      <input type="checkbox" checked={col.pk} onChange={(e) => setCol(i, { pk: e.target.checked })} className="accent-green" />
+                      PK
+                    </label>
+                  </Tooltip>
+                  <Tooltip label="Not null" placement="top">
+                    <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-ink-dim">
+                      <input type="checkbox" checked={col.notNull} onChange={(e) => setCol(i, { notNull: e.target.checked })} className="accent-green" />
+                      NN
+                    </label>
+                  </Tooltip>
+                  <Tooltip label="Remove column" placement="top">
+                    <button
+                      type="button"
+                      className="flex h-[34px] w-[34px] flex-shrink-0 items-center justify-center rounded-[9px] text-ink-dim hover:text-red disabled:opacity-30 disabled:hover:text-ink-dim"
+                      onClick={() => removeCol(i)}
+                      disabled={columns.length === 1}
+                    >
+                      <TrashIcon />
+                    </button>
+                  </Tooltip>
                 </div>
               ))}
             </div>
