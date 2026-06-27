@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { runQuery } from '../../db/sqlite.js'
 import { CloseIcon, PlusIcon, TrashIcon } from '../icons.jsx'
+import Select from '../ui/Select.jsx'
 import { btnGhost, btnPrimary, fieldInput, fieldLabel } from '../../ui.js'
 
 const TYPES = {
@@ -95,23 +96,20 @@ export default function CreateTableModal({ conn, onClose, onCreated }) {
             <label className={fieldLabel}>Columns</label>
             <div className="flex flex-col gap-2">
               {columns.map((col, i) => (
-                <div key={i} className="flex items-center gap-2">
+                <div key={i} className="flex flex-wrap items-center gap-2">
                   <input
-                    className={`${fieldInput} !w-auto min-w-0 flex-1`}
+                    className={`${fieldInput} !w-auto min-w-[130px] flex-1`}
                     type="text"
                     placeholder="column_name"
                     value={col.name}
                     onChange={(e) => setCol(i, { name: e.target.value })}
                   />
-                  <select
+                  <Select
                     className={`${fieldInput} !w-[140px] shrink-0`}
                     value={col.type}
-                    onChange={(e) => setCol(i, { type: e.target.value })}
-                  >
-                    {types.map((t) => (
-                      <option key={t} value={t}>{t}</option>
-                    ))}
-                  </select>
+                    onChange={(v) => setCol(i, { type: v })}
+                    options={types.map((t) => ({ value: t, label: t }))}
+                  />
                   <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-ink-dim" title="Primary key">
                     <input type="checkbox" checked={col.pk} onChange={(e) => setCol(i, { pk: e.target.checked })} className="accent-green" />
                     PK

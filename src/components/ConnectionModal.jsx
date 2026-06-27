@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useConnections } from '../context/ConnectionsContext.jsx'
 import { CloseIcon } from './icons.jsx'
+import Select from './ui/Select.jsx'
 import { btnGhost, btnPrimary, connIcon, fieldInput, fieldLabel } from '../ui.js'
 
 const DB_TYPES = [
@@ -111,7 +112,7 @@ export default function ConnectionModal({ initial, onClose, onSave }) {
                   onClick={() => pickType(t)}
                   className={`flex items-center gap-3 rounded-soft border p-3.5 transition-all ${
                     form.type === t.id
-                      ? 'border-green bg-card-hover shadow-[0_0_0_3px_rgba(116,196,118,0.22)]'
+                      ? 'border-green bg-card-hover shadow-[0_0_0_3px_rgba(111,207,106,0.22)]'
                       : 'border-edge bg-elevated hover:border-edge-strong'
                   }`}
                 >
@@ -212,13 +213,18 @@ export default function ConnectionModal({ initial, onClose, onSave }) {
             <div className={fieldRow}>
               <div className="mb-[18px]">
                 <label className={fieldLabel}>Environment</label>
-                <select className={fieldInput} value={form.environment} onChange={set('environment')}>
-                  {ENVIRONMENTS.map((env) => (
-                    <option key={env} value={env}>
-                      {env[0].toUpperCase() + env.slice(1)}
-                    </option>
-                  ))}
-                </select>
+                <Select
+                  className={fieldInput}
+                  value={form.environment}
+                  onChange={(v) => {
+                    setForm((f) => ({ ...f, environment: v }))
+                    setTest(null)
+                  }}
+                  options={ENVIRONMENTS.map((env) => ({
+                    value: env,
+                    label: env[0].toUpperCase() + env.slice(1),
+                  }))}
+                />
               </div>
               <div className="mb-[18px]">
                 <label className={fieldLabel}>

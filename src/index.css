@@ -1,20 +1,20 @@
 @import "tailwindcss";
 
-/* ---------- Design tokens (Greens-9 palette) ---------- */
+/* ---------- Design tokens (logo palette: #0D0D0D / #6FCF6A / #143618) ---------- */
 @theme {
-  --color-bg: #0a0a0a;
-  --color-panel: #0f0f0f;
-  --color-elevated: #161616;
-  --color-card: #131313;
-  --color-card-hover: #1d1d1d;
-  --color-edge: #262626;
-  --color-edge-strong: #383838;
+  --color-bg: #080808;
+  --color-panel: #0c0c0c;
+  --color-elevated: #131313;
+  --color-card: #101010;
+  --color-card-hover: #1b1b1b;
+  --color-edge: #222222;
+  --color-edge-strong: #333333;
   --color-ink: #f4f4f5;
   --color-ink-dim: #a1a1aa;
   --color-ink-faint: #6b6b72;
-  --color-green: #74c476;
-  --color-green-bright: #a1d99b;
-  --color-green-dim: #238b45;
+  --color-green: #6fcf6a;
+  --color-green-bright: #8fe08a;
+  --color-green-dim: #143618;
   --color-red: #ef4444;
   --color-amber: #d6a73a;
 
@@ -26,6 +26,7 @@
 
   --animate-fade: fade 0.15s ease;
   --animate-pop: pop 0.18s ease;
+  --animate-slide-in: slide-in 0.2s ease;
 
   @keyframes fade {
     from { opacity: 0; }
@@ -34,6 +35,10 @@
   @keyframes pop {
     from { transform: scale(0.96); opacity: 0; }
     to { transform: scale(1); opacity: 1; }
+  }
+  @keyframes slide-in {
+    from { transform: translateX(100%); }
+    to { transform: translateX(0); }
   }
 }
 
@@ -52,7 +57,7 @@
   }
 
   ::selection {
-    background: rgba(116, 196, 118, 0.22);
+    background: rgba(111, 207, 106, 0.22);
   }
 
   /* Scrollbar */
@@ -79,8 +84,8 @@
 /* ---------- Login hero grid backdrop (not expressible as utilities) ---------- */
 @utility login-grid {
   background-image:
-    linear-gradient(rgba(116, 196, 118, 0.04) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(116, 196, 118, 0.04) 1px, transparent 1px);
+    linear-gradient(rgba(111, 207, 106, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(111, 207, 106, 0.04) 1px, transparent 1px);
   background-size: 64px 64px;
   mask-image: radial-gradient(circle at 50% 45%, black, transparent 70%);
 }

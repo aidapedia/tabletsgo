@@ -44,6 +44,41 @@ export async function getTableData(conn, table, limit = 200) {
   return { columns: [], rows: [], error: error?.message }
 }
 
+export async function getColumns(conn, table) {
+  try {
+    const res = await fetch(`${API_URL}/connections/${conn.id}/columns/${encodeURIComponent(table)}`)
+    if (res.ok) return await res.json()
+  } catch (error) {
+    console.error('Failed to get columns:', error)
+  }
+  return []
+}
+
+export async function getSchema(conn) {
+  try {
+    const res = await fetch(`${API_URL}/connections/${conn.id}/schema`)
+    if (res.ok) return await res.json()
+  } catch (error) {
+    console.error('Failed to get schema:', error)
+  }
+  return {}
+}
+
+export async function insertRow(conn, table, values) {
+  try {
+    const res = await fetch(`${API_URL}/connections/${conn.id}/insert`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ table, values }),
+    })
+    const data = await res.json()
+    if (!res.ok) return { error: data.error || 'Insert failed' }
+    return data
+  } catch (error) {
+    return { error: error.message }
+  }
+}
+
 export async function runQuery(conn, sql) {
   try {
     const res = await fetch(`${API_URL}/connections/${conn.id}/query`, {

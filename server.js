@@ -100,6 +100,17 @@ function getSqliteTableData(db, table, limit = 200) {
   }
 }
 
+function getSqliteColumns(db, table) {
+  const cols = db.prepare(`PRAGMA table_info("${table}")`).all()
+  return cols.map((c) => ({
+    name: c.name,
+    type: c.type || '',
+    notnull: !!c.notnull,
+    pk: !!c.pk,
+    default: c.dflt_value,
+  }))
+}
+
 function runSqliteQuery(db, sql) {
   try {
     const stmt = db.prepare(sql)
@@ -163,6 +174,23 @@ async function getPostgresTableData(pool, table, limit = 200) {
   } catch (error) {
     return { columns: [], rows: [], error: error.message }
   }
+}
+
+async function getPostgresColumns(pool, table) {
+  const r = await pool.query(
+    `SELECT column_name, data_type, is_nullable, column_default
+     FROM information_schema.columns
+     WHERE table_name = $1 AND table_schema = 'public'
+     ORDER BY ordinal_position`,
+    [table]
+  )
+  return r.rows.map((c) => ({
+    name: c.column_name,
+    type: c.data_type,
+    notnull: c.is_nullable === 'NO',
+    pk: false,
+    default: c.column_default,
+  }))
 }
 
 async function runPostgresQuery(pool, sql) {
@@ -288,6 +316,87 @@ app.get('/api/connections/:id/table/:table', async (req, res) => {
     res.json(result)
   } catch (error) {
     res.status(500).json({ error: error.message })
+  }
+})
+
+// Get column schema for a table
+app.get('/api/connections/:id/columns/:table', async (req, res) => {
+  const conn = connectionsList.find((c) => c.id === req.params.id)
+  if (!conn) return res.status(404).json({ error: 'Connection not found' })
+
+  try {
+    let columns = []
+    if (conn.type === 'sqlite') {
+      columns = getSqliteColumns(getSqliteDb(conn.filepath), req.params.table)
+    } else if (conn.type === 'postgresql') {
+      columns = await getPostgresColumns(await getPostgresPool(conn.id, conn), req.params.table)
+    }
+    res.json(columns)
+  } catch (error) {
+    res.status(500).json({ error: error.message })
+  }
+})
+
+// Full schema (table -> column names) for editor autocomplete
+app.get('/api/connections/:id/schema', async (req, res) => {
+  const conn = connectionsList.find((c) => c.id === req.params.id)
+  if (!conn) return res.status(404).json({ error: 'Connection not found' })
+
+  try {
+    const schema = {}
+    if (conn.type === 'sqlite') {
+      const db = getSqliteDb(conn.filepath)
+      for (const t of listSqliteTables(db)) {
+        schema[t] = getSqliteColumns(db, t).map((c) => c.name)
+      }
+    } else if (conn.type === 'postgresql') {
+      const pool = await getPostgresPool(conn.id, conn)
+      const r = await pool.query(
+        `SELECT table_name, column_name FROM information_schema.columns
+         WHERE table_schema = 'public' ORDER BY table_name, ordinal_position`
+      )
+      for (const row of r.rows) {
+        ;(schema[row.table_name] ||= []).push(row.column_name)
+      }
+    }
+    res.json(schema)
+  } catch (error) {
+    res.status(500).json({ error: error.message })
+  }
+})
+
+// Insert a row (parameterized)
+app.post('/api/connections/:id/insert', async (req, res) => {
+  const conn = connectionsList.find((c) => c.id === req.params.id)
+  if (!conn) return res.status(404).json({ error: 'Connection not found' })
+
+  const { table, values } = req.body
+  const cols = Object.keys(values || {})
+  if (!table || cols.length === 0) {
+    return res.status(400).json({ error: 'A table and at least one value are required' })
+  }
+
+  try {
+    const colList = cols.map((c) => `"${c}"`).join(', ')
+    if (conn.type === 'sqlite') {
+      const db = getSqliteDb(conn.filepath)
+      const sql = `INSERT INTO "${table}" (${colList}) VALUES (${cols.map(() => '?').join(', ')})`
+      // better-sqlite3 can only bind numbers/strings/bigints/buffers/null.
+      const params = cols.map((c) => {
+        const v = values[c]
+        if (typeof v === 'boolean') return v ? 1 : 0
+        return v === undefined ? null : v
+      })
+      const info = db.prepare(sql).run(...params)
+      res.json({ ok: true, changes: info.changes, lastInsertRowid: info.lastInsertRowid })
+    } else if (conn.type === 'postgresql') {
+      const pool = await getPostgresPool(conn.id, conn)
+      const sql = `INSERT INTO "${table}" (${colList}) VALUES (${cols.map((_, i) => `$${i + 1}`).join(', ')})`
+      const result = await pool.query(sql, cols.map((c) => values[c]))
+      res.json({ ok: true, changes: result.rowCount })
+    }
+  } catch (error) {
+    res.status(400).json({ error: error.message })
   }
 })
 

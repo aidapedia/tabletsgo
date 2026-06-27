@@ -56,10 +56,10 @@ export default function Connections() {
   }
 
   return (
-    <div className="mx-auto max-w-[1000px] px-8 py-12">
+    <div className="mx-auto max-w-[1000px] px-8 py-12 max-[720px]:px-4 max-[720px]:py-8">
       <div className="mb-6 flex justify-end">
         <div
-          className="relative flex h-10 w-10 cursor-pointer items-center justify-center rounded-[11px] bg-green text-xs font-bold text-[#00441b]"
+          className="relative flex h-10 w-10 cursor-pointer items-center justify-center rounded-[11px] bg-green text-xs font-bold text-white"
           title={user?.name}
           onClick={logout}
         >
@@ -147,7 +147,7 @@ export default function Connections() {
                   {conn.type === 'sqlite' ? conn.filepath : `${conn.host}:${conn.port}`}
                 </div>
               </div>
-              <div className="flex gap-1.5 opacity-0 transition-opacity group-hover:opacity-100">
+              <div className="flex gap-1.5 opacity-0 transition-opacity group-hover:opacity-100 max-[720px]:opacity-100">
                 <button
                   className={iconBtn}
                   title="Edit"

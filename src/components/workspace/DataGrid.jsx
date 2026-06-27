@@ -22,8 +22,8 @@ export default function DataGrid({ columns, rows }) {
   }
 
   return (
-    <div className="min-h-0 flex-1 overflow-auto">
-      <table className="min-w-full border-collapse text-[11px]">
+    <div className="min-h-0 w-full min-w-0 flex-1 overflow-auto">
+      <table className="w-full border-collapse text-[11px]">
         <thead>
           <tr>
             <th className={rowNumTh}>#</th>

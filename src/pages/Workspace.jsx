@@ -1,16 +1,26 @@
-import { useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
+import { useAuth } from '../context/AuthContext.jsx'
 import { useConnections } from '../context/ConnectionsContext.jsx'
+import { useToast } from '../components/ui/Toast.jsx'
 import { listTables } from '../db/sqlite.js'
 import { addRecent, loadRecents, relativeTime, saveRecents } from '../recents.js'
+import { loadSaved, persistSaved } from '../savedQueries.js'
 import TableView from '../components/workspace/TableView.jsx'
-import QueryEditor from '../components/workspace/QueryEditor.jsx'
 import CreateTableModal from '../components/workspace/CreateTableModal.jsx'
-import { btnGhost, btnPrimary, connIcon, envDotColor } from '../ui.js'
+
+// Lazy — pulls in the (heavy) CodeMirror editor only when a query tab opens.
+const QueryEditor = lazy(() => import('../components/workspace/QueryEditor.jsx'))
+import IconRail from '../components/workspace/IconRail.jsx'
+import SavedQueriesPanel from '../components/workspace/SavedQueriesPanel.jsx'
+import SaveQueryPanel from '../components/workspace/SaveQueryPanel.jsx'
+import Segmented from '../components/ui/Segmented.jsx'
+import { btnGhost, btnPrimary, iconMini } from '../ui.js'
 import {
   ChevronLeft,
   CloseIcon,
   CodeIcon,
+  MenuIcon,
   PlusIcon,
   RefreshIcon,
   SearchIcon,
@@ -20,12 +30,9 @@ import {
 const kbd =
   'inline-flex min-w-[20px] items-center justify-center rounded-[5px] border border-edge bg-elevated px-1.5 py-0.5 text-[11px] text-ink-dim'
 
-const ABBR = { postgresql: 'PG', sqlite: 'SQ', redis: 'R' }
 const DIALECT = { postgresql: 'PostgreSQL', sqlite: 'SQLite', redis: 'Redis' }
 let queryCounter = 0
 
-const iconMini =
-  'flex h-[28px] w-[28px] items-center justify-center rounded-[7px] text-ink-dim hover:bg-elevated hover:text-ink'
 const btnSql =
   'inline-flex items-center justify-center gap-2 rounded-soft border border-edge bg-elevated px-3.5 py-2 text-[11px] font-semibold text-ink whitespace-nowrap transition-all duration-150 hover:bg-card-hover hover:border-edge-strong'
 const centerState =
@@ -36,6 +43,8 @@ const menuItem =
 export default function Workspace() {
   const { id } = useParams()
   const navigate = useNavigate()
+  const { user, logout } = useAuth()
+  const toast = useToast()
   const { connections } = useConnections()
   const conn = connections.find((c) => c.id === id)
 
@@ -46,8 +55,25 @@ export default function Workspace() {
   const [activeTab, setActiveTab] = useState(null)
   const [creatingTable, setCreatingTable] = useState(false)
   const [recents, setRecents] = useState(() => loadRecents(id))
+  const [saved, setSaved] = useState(() => loadSaved(id))
   const [tabMenu, setTabMenu] = useState(null) // { x, y, key } | null
+  const [savingQuery, setSavingQuery] = useState(null) // sql string being saved | null
+  const [sidebarOpen, setSidebarOpen] = useState(false) // mobile drawer
+  const [tablesVisible, setTablesVisible] = useState(true) // left panel visible
+  const [panel, setPanel] = useState('browser') // 'browser' | 'queries'
+  const [searchOpen, setSearchOpen] = useState(false) // table search toggle
+  const [tableSort, setTableSort] = useState('az') // 'az' | 'za'
   const searchRef = useRef(null)
+
+  // Rail selects a panel; clicking the active one again collapses it.
+  const selectPanel = (p) => {
+    if (panel === p && tablesVisible) {
+      setTablesVisible(false)
+    } else {
+      setPanel(p)
+      setTablesVisible(true)
+    }
+  }
 
   const loadTables = async () => {
     if (!conn) return
@@ -72,7 +98,10 @@ export default function Workspace() {
       if (!(e.metaKey || e.ctrlKey)) return
       if (e.key === 'k') {
         e.preventDefault()
-        searchRef.current?.focus()
+        setPanel('browser')
+        setTablesVisible(true)
+        setSearchOpen(true)
+        setTimeout(() => searchRef.current?.focus(), 0)
       } else if (e.key === 'n') {
         e.preventDefault()
         openQuery()
@@ -114,6 +143,7 @@ export default function Workspace() {
     const key = `table:${table}`
     setTabs((prev) => (prev.some((t) => t.key === key) ? prev : [...prev, { key, kind: 'table', table, title: table }]))
     setActiveTab(key)
+    setSidebarOpen(false)
   }
 
   const openQuery = (sql) => {
@@ -122,12 +152,33 @@ export default function Workspace() {
     const initialSql = typeof sql === 'string' ? sql : undefined
     setTabs((prev) => [...prev, { key, kind: 'query', title: `Query ${queryCounter}`, sql: initialSql }])
     setActiveTab(key)
+    setSidebarOpen(false)
   }
 
   const pushRecent = (entry) => setRecents((r) => addRecent(id, r, entry))
   const clearRecents = () => {
     saveRecents(id, [])
     setRecents([])
+  }
+
+  const saveQuery = (sql) => {
+    if (!sql.trim()) return
+    setSavingQuery(sql.trim())
+  }
+  const commitSaveQuery = (name) => {
+    const entry = { id: `${Date.now()}`, name, sql: savingQuery, ts: Date.now() }
+    const next = [entry, ...saved]
+    setSaved(next)
+    persistSaved(id, next)
+    setSavingQuery(null)
+    setPanel('queries')
+    setTablesVisible(true)
+    toast.success(`Saved “${entry.name}”.`)
+  }
+  const removeSaved = (sid) => {
+    const next = saved.filter((s) => s.id !== sid)
+    setSaved(next)
+    persistSaved(id, next)
   }
 
   const handleTableCreated = async (tableName) => {
@@ -170,38 +221,62 @@ export default function Workspace() {
     setTabMenu({ x: e.clientX, y: e.clientY, key })
   }
 
-  const visibleTables = tables.filter((t) =>
-    t.toLowerCase().includes(filter.trim().toLowerCase())
-  )
+  const visibleTables = tables
+    .filter((t) => t.toLowerCase().includes(filter.trim().toLowerCase()))
+    .sort((a, b) => (tableSort === 'az' ? a.localeCompare(b) : b.localeCompare(a)))
 
   const current = tabs.find((t) => t.key === activeTab)
 
   return (
-    <div className="grid h-screen grid-cols-[280px_1fr] bg-bg max-[720px]:grid-cols-1">
-      {/* Sidebar */}
-      <aside className="flex min-h-0 flex-col border-r border-edge bg-panel max-[720px]:hidden">
-        <div className="flex items-center gap-2.5 border-b border-edge px-4 py-4">
-          <div className={connIcon(conn.type, 'h-[30px] w-[30px] text-[13px] font-extrabold')}>
-            {ABBR[conn.type]}
-          </div>
-          <span className="flex-1 truncate text-[13px] font-bold">{conn.name}</span>
-          {conn.environment && conn.environment !== 'local' && (
-            <span className={`h-[9px] w-[9px] rounded-full ${envDotColor[conn.environment] || ''}`} />
-          )}
-          <button
-            className="flex h-[30px] w-[30px] items-center justify-center rounded-[8px] text-ink-dim hover:bg-elevated hover:text-ink"
-            onClick={() => navigate('/')}
-            title="Back to connections"
-          >
-            <ChevronLeft />
-          </button>
-        </div>
+    <div className="flex h-screen bg-bg">
+      {/* Mobile backdrop */}
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 z-30 hidden bg-black/50 max-[720px]:block"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
 
+      {/* Left region: icon rail + tables sidebar (slide-over drawer on mobile) */}
+      <div
+        className={`z-40 flex shrink-0 max-[720px]:fixed max-[720px]:inset-y-0 max-[720px]:left-0 max-[720px]:shadow-[8px_0_30px_-10px_rgba(0,0,0,0.7)] max-[720px]:transition-transform max-[720px]:duration-200 ${
+          sidebarOpen ? 'max-[720px]:translate-x-0' : 'max-[720px]:-translate-x-full'
+        }`}
+      >
+        <IconRail
+          user={user}
+          connections={connections}
+          currentId={id}
+          onSelectConnection={(cid) => {
+            navigate(`/connection/${cid}`)
+            setSidebarOpen(false)
+          }}
+          active={tablesVisible ? panel : ''}
+          onBrowser={() => selectPanel('browser')}
+          onQueries={() => selectPanel('queries')}
+          onHome={() => navigate('/')}
+          onSettings={() => toast.info('Settings — coming soon.')}
+          onProfile={logout}
+        />
+        {tablesVisible && (
+        <aside className="flex min-h-0 w-[280px] flex-col border-r border-edge bg-panel">
+        {panel === 'browser' ? (
+        <>
         <div className="flex items-center justify-between px-4 pb-2.5 pt-4 text-[11px] font-semibold">
           <span className="text-xs">Tables</span>
           <div className="flex gap-1">
             <button className={iconMini} title="Refresh" onClick={loadTables}>
               <RefreshIcon />
+            </button>
+            <button
+              className={`${iconMini} ${searchOpen ? 'bg-elevated text-ink' : ''}`}
+              title="Search tables"
+              onClick={() => {
+                if (searchOpen) setFilter('')
+                setSearchOpen((o) => !o)
+              }}
+            >
+              <SearchIcon width={15} height={15} />
             </button>
             <button className={iconMini} title="Create table" onClick={() => setCreatingTable(true)}>
               <PlusIcon width={14} height={14} />
@@ -209,16 +284,36 @@ export default function Workspace() {
           </div>
         </div>
 
-        <div className="relative mx-3.5 my-2.5">
-          <SearchIcon width={15} height={15} className="absolute left-[11px] top-1/2 -translate-y-1/2 text-ink-faint" />
-          <input
-            ref={searchRef}
-            placeholder="Search tables…"
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-            className="w-full rounded-[9px] border border-edge bg-elevated py-2 pl-[34px] pr-3 text-xs text-ink outline-none focus:border-green-dim"
+        <div className="px-3.5 pb-2">
+          <Segmented
+            value={tableSort}
+            onChange={setTableSort}
+            options={[
+              { value: 'az', label: 'A–Z' },
+              { value: 'za', label: 'Z–A' },
+            ]}
           />
         </div>
+
+        {searchOpen && (
+          <div className="relative mx-3.5 mb-2.5">
+            <SearchIcon width={15} height={15} className="absolute left-[11px] top-1/2 -translate-y-1/2 text-ink-faint" />
+            <input
+              ref={searchRef}
+              autoFocus
+              placeholder="Search tables…"
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') {
+                  setFilter('')
+                  setSearchOpen(false)
+                }
+              }}
+              className="w-full rounded-[9px] border border-edge bg-elevated py-2 pl-[34px] pr-3 text-xs text-ink outline-none focus:border-green-dim"
+            />
+          </div>
+        )}
 
         <div className="flex flex-1 flex-col gap-1 overflow-y-auto px-2 pb-4 pt-1">
           {loading && <div className={`${centerState} text-xs`}>Loading…</div>}
@@ -233,7 +328,7 @@ export default function Workspace() {
                     active ? 'bg-card-hover text-ink' : 'text-ink-dim hover:bg-elevated hover:text-ink'
                   }`}
                 >
-                  <TableIcon className={`flex-shrink-0 ${active ? 'text-green' : 'text-ink-faint'}`} />
+                  <TableIcon className={`flex-shrink-0 ${active ? 'text-ink' : 'text-ink-faint'}`} />
                   <span className="flex-1 truncate">{t}</span>
                 </button>
               )
@@ -242,13 +337,37 @@ export default function Workspace() {
             <div className={`${centerState} text-xs`}>No tables</div>
           )}
         </div>
-      </aside>
+        </>
+        ) : (
+          <SavedQueriesPanel
+            saved={saved}
+            recents={recents}
+            onOpen={(sql) => openQuery(sql)}
+            onDeleteSaved={removeSaved}
+            onNew={() => openQuery()}
+            onRefresh={() => {
+              setRecents(loadRecents(id))
+              setSaved(loadSaved(id))
+            }}
+            onClear={clearRecents}
+          />
+        )}
+        </aside>
+        )}
+      </div>
 
       {/* Main */}
-      <main className="flex min-h-0 min-w-0 flex-col">
-        <div className="flex items-center gap-3.5 border-b border-edge px-[18px] py-3">
+      <main className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <div className="flex items-center gap-3 border-b border-edge px-[18px] py-3 max-[720px]:px-3">
+          <button
+            className="hidden h-[34px] w-[34px] items-center justify-center rounded-soft text-ink-dim hover:bg-elevated hover:text-ink max-[720px]:flex"
+            onClick={() => setSidebarOpen(true)}
+            aria-label="Open tables"
+          >
+            <MenuIcon />
+          </button>
           <button className={btnSql} onClick={() => openQuery()}>
-            <CodeIcon /> SQL Query
+            <CodeIcon /> <span className="max-[480px]:hidden">SQL Query</span>
           </button>
           <div className="relative flex max-w-[560px] flex-1 items-center">
             <SearchIcon width={16} height={16} className="absolute left-3.5 text-ink-faint" />
@@ -258,7 +377,7 @@ export default function Workspace() {
             />
             <kbd className="absolute right-3 rounded-[5px] border border-edge bg-card px-1.5 py-px text-[11px] text-ink-faint">⌘K</kbd>
           </div>
-          <div className="ml-auto flex items-center gap-2 rounded-[10px] border border-edge bg-elevated px-3 py-[7px] text-xs font-semibold text-ink-dim">
+          <div className="ml-auto flex items-center gap-2 rounded-[10px] border border-edge bg-elevated px-3 py-[7px] text-xs font-semibold text-ink-dim max-[560px]:hidden">
             Changes <span className="rounded-[20px] bg-green-dim px-[7px] text-xs text-green-bright">0</span>
           </div>
         </div>
@@ -278,12 +397,12 @@ export default function Workspace() {
                 }`}
               >
                 {active && (
-                  <span className="absolute inset-x-0 top-0 h-[2px] rounded-t-[8px] bg-green" />
+                  <span className="absolute inset-x-0 top-0 h-[2px] rounded-t-[8px] bg-ink" />
                 )}
                 {t.kind === 'query' ? (
-                  <CodeIcon className={active ? 'text-green' : 'text-ink-faint'} />
+                  <CodeIcon className={active ? 'text-ink' : 'text-ink-faint'} />
                 ) : (
-                  <TableIcon className={active ? 'text-green' : 'text-ink-faint'} />
+                  <TableIcon className={active ? 'text-ink' : 'text-ink-faint'} />
                 )}
                 <span>{t.title}</span>
                 <button
@@ -304,13 +423,16 @@ export default function Workspace() {
             <TableView key={current.key} conn={conn} table={current.table} />
           )}
           {conn && current?.kind === 'query' && (
-            <QueryEditor
-              key={current.key}
-              conn={conn}
-              dialect={DIALECT[conn.type]}
-              initialSql={current.sql ?? 'SELECT * FROM events LIMIT 10;'}
-              onRan={pushRecent}
-            />
+            <Suspense fallback={<div className="flex-1 p-8 text-center text-xs text-ink-faint">Loading editor…</div>}>
+              <QueryEditor
+                key={current.key}
+                conn={conn}
+                dialect={DIALECT[conn.type]}
+                initialSql={current.sql ?? 'SELECT * FROM events LIMIT 10;'}
+                onRan={pushRecent}
+                onSave={saveQuery}
+              />
+            </Suspense>
           )}
           {!current && (
             <div className="flex h-full w-full items-center justify-center overflow-auto p-8">
@@ -424,6 +546,15 @@ export default function Workspace() {
           conn={conn}
           onClose={() => setCreatingTable(false)}
           onCreated={handleTableCreated}
+        />
+      )}
+
+      {savingQuery != null && (
+        <SaveQueryPanel
+          sql={savingQuery}
+          defaultName={`Query ${saved.length + 1}`}
+          onClose={() => setSavingQuery(null)}
+          onSave={commitSaveQuery}
         />
       )}
     </div>

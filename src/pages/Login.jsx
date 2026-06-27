@@ -28,9 +28,9 @@ export default function Login() {
 
   return (
     <div className="grid h-full grid-cols-2 max-[720px]:grid-cols-1">
-      <div className="relative flex flex-col items-center justify-center overflow-hidden bg-[radial-gradient(circle_at_50%_40%,rgba(116,196,118,0.07),transparent_60%)] bg-bg max-[720px]:hidden">
+      <div className="relative flex flex-col items-center justify-center overflow-hidden bg-[radial-gradient(circle_at_50%_40%,rgba(111,207,106,0.07),transparent_60%)] bg-bg max-[720px]:hidden">
         <div className="login-grid absolute inset-0" />
-        <div className="relative z-[1] flex h-[130px] w-[130px] items-center justify-center rounded-[28px] bg-[linear-gradient(160deg,#1c1c1c,#0a0a0a)] shadow-[0_0_80px_-20px_rgba(116,196,118,0.22),inset_0_1px_0_rgba(255,255,255,0.04)]">
+        <div className="relative z-[1] flex h-[130px] w-[130px] items-center justify-center rounded-[28px] bg-[linear-gradient(160deg,#1a1a1a,#080808)] shadow-[0_0_80px_-20px_rgba(111,207,106,0.22),inset_0_1px_0_rgba(255,255,255,0.04)]">
           <Logo width={70} height={70} />
         </div>
         <h1 className="z-[1] mt-9 text-[28px] font-bold tracking-[-0.5px]">Work With Your Databases</h1>
