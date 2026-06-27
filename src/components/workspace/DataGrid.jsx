@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import Checkbox from '../ui/Checkbox.jsx'
 
 // Default fixed-ish column width so columns don't collapse/stretch to fit the
@@ -26,12 +27,28 @@ export default function DataGrid({
   selectedKeys,
   onToggleRow,
   onToggleAll,
+  editable = false,
+  edits,
+  onEdit,
 }) {
+  const [editing, setEditing] = useState(null) // { rowIndex, col }
+  const [draft, setDraft] = useState('')
+
   if (!columns || columns.length === 0) {
     return <div className="p-[30px] text-center text-ink-faint">No columns to display.</div>
   }
 
   const keyOf = (row, i) => (getRowKey ? getRowKey(row, i) : i)
+
+  const startEdit = (rowIndex, col, val) => {
+    setEditing({ rowIndex, col })
+    setDraft(val == null ? '' : String(val))
+  }
+  const commitEdit = (row, currentVal) => {
+    if (!editing) return
+    if (String(currentVal ?? '') !== draft) onEdit?.(row, editing.col, draft)
+    setEditing(null)
+  }
   const allSelected = selectable && rows.length > 0 && rows.every((r, i) => selectedKeys?.has(keyOf(r, i)))
   const someSelected = selectable && !allSelected && rows.some((r, i) => selectedKeys?.has(keyOf(r, i)))
 
@@ -92,10 +109,37 @@ export default function DataGrid({
                     )}
                   </td>
                   {columns.map((c, j) => {
-                    const val = Array.isArray(row) ? row[j] : row[c]
+                    const raw = Array.isArray(row) ? row[j] : row[c]
+                    const rowEdits = editable && edits ? edits[key] : null
+                    const dirty = rowEdits && Object.prototype.hasOwnProperty.call(rowEdits, c)
+                    const val = dirty ? rowEdits[c] : raw
+                    const isEditing = editable && editing && editing.rowIndex === i && editing.col === c
                     return (
-                      <td key={j} className={tdBase}>
-                        {val === null || val === undefined ? (
+                      <td
+                        key={j}
+                        className={`${tdBase} ${editable && !isEditing ? 'cursor-text' : ''} ${
+                          dirty ? '!bg-amber/10 text-amber' : ''
+                        }`}
+                        onDoubleClick={() => editable && !Array.isArray(row) && !isEditing && startEdit(i, c, val)}
+                        title={editable ? 'Double-click to edit' : undefined}
+                      >
+                        {isEditing ? (
+                          <input
+                            autoFocus
+                            className="-mx-1 w-full rounded bg-bg px-1 text-ink outline-none ring-1 ring-green"
+                            value={draft}
+                            onChange={(e) => setDraft(e.target.value)}
+                            onBlur={() => commitEdit(row, val)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault()
+                                commitEdit(row, val)
+                              } else if (e.key === 'Escape') {
+                                setEditing(null)
+                              }
+                            }}
+                          />
+                        ) : val === null || val === undefined ? (
                           <span className="italic text-ink-faint">NULL</span>
                         ) : (
                           String(val)

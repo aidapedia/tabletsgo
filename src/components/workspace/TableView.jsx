@@ -71,6 +71,7 @@ export default function TableView({ conn, table, onChange }) {
   const [loading, setLoading] = useState(true)
   const [showInsert, setShowInsert] = useState(false)
   const [selected, setSelected] = useState(() => new Set()) // row keys
+  const [edits, setEdits] = useState({}) // unsaved inline edits: { rowKey: { where, values } }
 
   const [filters, setFilters] = useState([])
   const [sort, setSort] = useState(null) // { col, dir }
@@ -85,6 +86,7 @@ export default function TableView({ conn, table, onChange }) {
     setRows(result.rows || [])
     setPkCols((meta || []).filter((c) => c.pk).map((c) => c.name))
     setSelected(new Set())
+    setEdits({})
     setLoading(false)
   }
 
@@ -206,6 +208,48 @@ export default function TableView({ conn, table, onChange }) {
     onChange?.({ kind: 'insert', label: 'Insert row', sql: insertSql(values), table })
     toast.info('Added insert to changes — commit to apply.')
   }
+
+  // Inline cell edit → held locally as an unsaved edit (not staged yet).
+  const editCell = (row, col, value) => {
+    const k = rowKey(row)
+    setEdits((e) => {
+      const cur = e[k] || { where: rowWhere(row), values: {} }
+      const values = { ...cur.values }
+      // Editing back to the original value clears the pending edit for that cell.
+      if (String(row[col] ?? '') === String(value)) delete values[col]
+      else values[col] = value
+      const next = { ...e }
+      if (Object.keys(values).length === 0) delete next[k]
+      else next[k] = { where: cur.where, values }
+      return next
+    })
+  }
+
+  // Cell overlay the grid renders (rowKey -> { col: value }).
+  const editOverlay = useMemo(() => {
+    const o = {}
+    for (const [k, { values }] of Object.entries(edits)) o[k] = values
+    return o
+  }, [edits])
+  const editCount = useMemo(
+    () => Object.values(edits).reduce((n, e) => n + Object.keys(e.values).length, 0),
+    [edits]
+  )
+
+  // Save all pending edits → one UPDATE per row, added to staged changes.
+  const saveEdits = () => {
+    const entries = Object.values(edits)
+    if (!entries.length) return
+    for (const { where, values } of entries) {
+      const setClause = Object.entries(values)
+        .map(([c, v]) => `"${c}" = ${v === '' ? 'NULL' : sqlValue(v)}`)
+        .join(', ')
+      onChange?.({ kind: 'update', label: `Update row in ${table}`, sql: `UPDATE "${table}" SET ${setClause} WHERE ${where}`, table })
+    }
+    setEdits({})
+    toast.info(`Added ${entries.length} update(s) to changes — commit to apply.`)
+  }
+  const discardEdits = () => setEdits({})
 
   const selCount = selected.size
 
@@ -372,7 +416,26 @@ export default function TableView({ conn, table, onChange }) {
           selectedKeys={selected}
           onToggleRow={toggleRow}
           onToggleAll={toggleAll}
+          editable={selectable}
+          edits={editOverlay}
+          onEdit={editCell}
         />
+      )}
+
+      {editCount > 0 && (
+        <div className="flex shrink-0 items-center gap-2 border-t border-edge bg-amber/10 px-3 py-2 shadow-[0_-8px_24px_-12px_rgba(0,0,0,0.6)]">
+          <span className="text-[11px] font-semibold text-amber">
+            {editCount} unsaved edit{editCount > 1 ? 's' : ''}
+          </span>
+          <div className="ml-auto flex gap-2">
+            <Button variant="subtle" size="sm" onClick={discardEdits}>
+              Discard
+            </Button>
+            <Button variant="primary" size="sm" onClick={saveEdits}>
+              Save to changes
+            </Button>
+          </div>
+        </div>
       )}
 
       {showInsert && (
