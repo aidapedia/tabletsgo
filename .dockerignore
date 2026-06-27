@@ -1,0 +1,12 @@
+node_modules
+dist
+.git
+.gitignore
+*.log
+data
+demo.db
+demo.db-*
+*.db-shm
+*.db-wal
+.DS_Store
+scratchpad

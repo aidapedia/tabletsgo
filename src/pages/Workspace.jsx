@@ -5,7 +5,7 @@ import { useConnections } from '../context/ConnectionsContext.jsx'
 import { useToast } from '../components/ui/Toast.jsx'
 import { listTables, runQuery } from '../db/sqlite.js'
 import { addRecent, loadRecents, relativeTime, saveRecents } from '../recents.js'
-import { loadSaved, persistSaved } from '../savedQueries.js'
+import { fetchSaved, createSaved, deleteSaved } from '../savedQueries.js'
 import TableView from '../components/workspace/TableView.jsx'
 import CreateTablePanel from '../components/workspace/CreateTablePanel.jsx'
 
@@ -63,7 +63,7 @@ export default function Workspace() {
   const [activeTab, setActiveTab] = useState(null)
   const [creatingTable, setCreatingTable] = useState(false)
   const [recents, setRecents] = useState(() => loadRecents(id))
-  const [saved, setSaved] = useState(() => loadSaved(id))
+  const [saved, setSaved] = useState([])
   const [tabMenu, setTabMenu] = useState(null) // { x, y, key } | null
   const [savingQuery, setSavingQuery] = useState(null) // sql string being saved | null
   const [changes, setChanges] = useState([]) // staged (uncommitted) SQL mutations
@@ -106,6 +106,15 @@ export default function Workspace() {
   useEffect(() => {
     loadTables()
   }, [conn])
+
+  // Load this connection's saved queries from the backend.
+  useEffect(() => {
+    let alive = true
+    fetchSaved(id).then((list) => alive && setSaved(list))
+    return () => {
+      alive = false
+    }
+  }, [id])
 
   useEffect(() => {
     const onKey = (e) => {
@@ -234,20 +243,22 @@ export default function Workspace() {
     if (!sql.trim()) return
     setSavingQuery(sql.trim())
   }
-  const commitSaveQuery = (name) => {
-    const entry = { id: `${Date.now()}`, name, sql: savingQuery, ts: Date.now() }
-    const next = [entry, ...saved]
-    setSaved(next)
-    persistSaved(id, next)
+  const commitSaveQuery = async (name) => {
+    const sqlToSave = savingQuery
     setSavingQuery(null)
-    setPanel('queries')
-    setTablesVisible(true)
-    toast.success(`Saved “${entry.name}”.`)
+    try {
+      const entry = await createSaved(id, { name, sql: sqlToSave })
+      setSaved((prev) => [entry, ...prev])
+      setPanel('queries')
+      setTablesVisible(true)
+      toast.success(`Saved “${entry.name}”.`)
+    } catch (e) {
+      toast.error(`Save failed: ${e.message}`)
+    }
   }
-  const removeSaved = (sid) => {
-    const next = saved.filter((s) => s.id !== sid)
-    setSaved(next)
-    persistSaved(id, next)
+  const removeSaved = async (sid) => {
+    setSaved((prev) => prev.filter((s) => s.id !== sid))
+    await deleteSaved(id, sid)
   }
 
   const stageTableChanges = (statements, tableName, mode) => {
@@ -474,7 +485,7 @@ export default function Workspace() {
             onNew={() => openQuery()}
             onRefresh={() => {
               setRecents(loadRecents(id))
-              setSaved(loadSaved(id))
+              fetchSaved(id).then(setSaved)
             }}
             onClear={clearRecents}
           />

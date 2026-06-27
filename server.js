@@ -6,9 +6,10 @@
 
 import express from 'express'
 import cors from 'cors'
+import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
-import { randomUUID } from 'crypto'
+import { randomUUID, createHash } from 'crypto'
 import Database from 'better-sqlite3'
 import pkg from 'pg'
 import { POSTGRES_SEED } from './src/db/seed-data.js'
@@ -22,24 +23,81 @@ const PORT = process.env.PORT || 3000
 app.use(cors())
 app.use(express.json({ limit: '10mb' }))
 
-// Connection pools
+// Live connection pools to the databases the user manages.
 const sqliteConnections = new Map()
 const postgresConnections = new Map()
-const connectionConfigs = new Map() // Store connection metadata
 
-// Seed with the same demo connection the frontend falls back to
-// (mirrors INITIAL_CONNECTIONS in src/context/ConnectionsContext.jsx) so its
-// id resolves on the server for table/query/create-table routes.
-let connectionsList = [
-  {
-    id: 'demo-sqlite',
-    name: 'Demo Database',
-    type: 'sqlite',
-    environment: 'local',
-    filepath: './demo.db',
-    folder: 'Demo',
-  },
-]
+// ============================================================================
+// Metadata store — a local SQLite DB that persists app data: users,
+// saved connections and saved queries. (Separate from the databases the
+// user connects to.)
+// ============================================================================
+
+const META_DB_PATH = process.env.META_DB || path.join(__dirname, 'data', 'app.db')
+fs.mkdirSync(path.dirname(META_DB_PATH), { recursive: true })
+const meta = new Database(META_DB_PATH)
+meta.pragma('journal_mode = WAL')
+
+const sha256 = (s) => createHash('sha256').update(String(s)).digest('hex')
+
+function initMetaDb() {
+  meta.exec(`
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      username TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      name TEXT,
+      role TEXT
+    );
+    CREATE TABLE IF NOT EXISTS connections (
+      id TEXT PRIMARY KEY,
+      data TEXT NOT NULL,
+      created_at INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS saved_queries (
+      id TEXT PRIMARY KEY,
+      connection_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      sql TEXT NOT NULL,
+      ts INTEGER
+    );
+  `)
+
+  // Seed the default admin user.
+  if (!meta.prepare('SELECT 1 FROM users LIMIT 1').get()) {
+    meta
+      .prepare('INSERT INTO users (id, username, password_hash, name, role) VALUES (?, ?, ?, ?, ?)')
+      .run(randomUUID(), 'admin', sha256('admin123'), 'Admin', 'admin')
+    console.log('🌱 Seeded default user: admin / admin123')
+  }
+
+  // Seed the demo connection so its id resolves for table/query routes.
+  if (!meta.prepare('SELECT 1 FROM connections WHERE id = ?').get('demo-sqlite')) {
+    const demo = {
+      id: 'demo-sqlite',
+      name: 'Demo Database',
+      type: 'sqlite',
+      environment: 'local',
+      filepath: './demo.db',
+      folder: 'Demo',
+    }
+    meta.prepare('INSERT INTO connections (id, data, created_at) VALUES (?, ?, ?)').run(demo.id, JSON.stringify(demo), Date.now())
+  }
+}
+initMetaDb()
+
+// ---- Connection metadata helpers (DB-backed) ----
+const listConnections = () =>
+  meta.prepare('SELECT data FROM connections ORDER BY created_at').all().map((r) => JSON.parse(r.data))
+const getConnection = (id) => {
+  const row = meta.prepare('SELECT data FROM connections WHERE id = ?').get(id)
+  return row ? JSON.parse(row.data) : null
+}
+const saveConnection = (conn) =>
+  meta
+    .prepare('INSERT OR REPLACE INTO connections (id, data, created_at) VALUES (?, ?, COALESCE((SELECT created_at FROM connections WHERE id = ?), ?))')
+    .run(conn.id, JSON.stringify(conn), conn.id, Date.now())
+const deleteConnectionRow = (id) => meta.prepare('DELETE FROM connections WHERE id = ?').run(id)
 
 // ============================================================================
 // SQLite Utilities
@@ -224,9 +282,19 @@ async function runPostgresQuery(pool, sql) {
 // API Routes
 // ============================================================================
 
+// Authenticate a user
+app.post('/api/auth/login', (req, res) => {
+  const { username, password } = req.body || {}
+  const row = meta.prepare('SELECT id, username, name, role, password_hash FROM users WHERE username = ?').get(username)
+  if (!row || row.password_hash !== sha256(password)) {
+    return res.status(401).json({ error: 'Invalid username or password' })
+  }
+  res.json({ id: row.id, username: row.username, name: row.name, role: row.role })
+})
+
 // Get all connections
 app.get('/api/connections', (req, res) => {
-  res.json(connectionsList)
+  res.json(listConnections())
 })
 
 // Test connection
@@ -254,24 +322,24 @@ app.post('/api/test-connection', async (req, res) => {
 // Add connection
 app.post('/api/connections', (req, res) => {
   const conn = { ...req.body, id: randomUUID() }
-  connectionsList.push(conn)
+  saveConnection(conn)
   res.json(conn)
 })
 
 // Update connection
 app.put('/api/connections/:id', (req, res) => {
-  const idx = connectionsList.findIndex(c => c.id === req.params.id)
-  if (idx === -1) return res.status(404).json({ error: 'Connection not found' })
-  connectionsList[idx] = { ...connectionsList[idx], ...req.body }
-  res.json(connectionsList[idx])
+  const existing = getConnection(req.params.id)
+  if (!existing) return res.status(404).json({ error: 'Connection not found' })
+  const updated = { ...existing, ...req.body, id: req.params.id }
+  saveConnection(updated)
+  res.json(updated)
 })
 
 // Delete connection
 app.delete('/api/connections/:id', (req, res) => {
-  const idx = connectionsList.findIndex(c => c.id === req.params.id)
-  if (idx === -1) return res.status(404).json({ error: 'Connection not found' })
-  
-  const conn = connectionsList[idx]
+  const conn = getConnection(req.params.id)
+  if (!conn) return res.status(404).json({ error: 'Connection not found' })
+
   if (conn.type === 'sqlite') {
     sqliteConnections.delete(conn.filepath)
   } else if (conn.type === 'postgresql') {
@@ -279,14 +347,38 @@ app.delete('/api/connections/:id', (req, res) => {
     if (pool) pool.end()
     postgresConnections.delete(conn.id)
   }
-  
-  connectionsList.splice(idx, 1)
+
+  deleteConnectionRow(req.params.id)
+  meta.prepare('DELETE FROM saved_queries WHERE connection_id = ?').run(req.params.id)
+  res.json({ ok: true })
+})
+
+// ---- Saved queries (per connection) ----
+app.get('/api/connections/:id/saved', (req, res) => {
+  const rows = meta
+    .prepare('SELECT id, name, sql, ts FROM saved_queries WHERE connection_id = ? ORDER BY ts DESC')
+    .all(req.params.id)
+  res.json(rows)
+})
+
+app.post('/api/connections/:id/saved', (req, res) => {
+  const { name, sql } = req.body || {}
+  if (!name?.trim() || !sql?.trim()) return res.status(400).json({ error: 'A name and SQL are required' })
+  const entry = { id: randomUUID(), name: name.trim(), sql: sql.trim(), ts: Date.now() }
+  meta
+    .prepare('INSERT INTO saved_queries (id, connection_id, name, sql, ts) VALUES (?, ?, ?, ?, ?)')
+    .run(entry.id, req.params.id, entry.name, entry.sql, entry.ts)
+  res.json(entry)
+})
+
+app.delete('/api/connections/:id/saved/:sid', (req, res) => {
+  meta.prepare('DELETE FROM saved_queries WHERE id = ? AND connection_id = ?').run(req.params.sid, req.params.id)
   res.json({ ok: true })
 })
 
 // Get tables for a connection
 app.get('/api/connections/:id/tables', async (req, res) => {
-  const conn = connectionsList.find(c => c.id === req.params.id)
+  const conn = getConnection(req.params.id)
   if (!conn) return res.status(404).json({ error: 'Connection not found' })
 
   try {
@@ -306,7 +398,7 @@ app.get('/api/connections/:id/tables', async (req, res) => {
 
 // Get table data
 app.get('/api/connections/:id/table/:table', async (req, res) => {
-  const conn = connectionsList.find(c => c.id === req.params.id)
+  const conn = getConnection(req.params.id)
   if (!conn) return res.status(404).json({ error: 'Connection not found' })
 
   try {
@@ -326,7 +418,7 @@ app.get('/api/connections/:id/table/:table', async (req, res) => {
 
 // Get column schema for a table
 app.get('/api/connections/:id/columns/:table', async (req, res) => {
-  const conn = connectionsList.find((c) => c.id === req.params.id)
+  const conn = getConnection(req.params.id)
   if (!conn) return res.status(404).json({ error: 'Connection not found' })
 
   try {
@@ -344,7 +436,7 @@ app.get('/api/connections/:id/columns/:table', async (req, res) => {
 
 // Full schema (table -> column names) for editor autocomplete
 app.get('/api/connections/:id/schema', async (req, res) => {
-  const conn = connectionsList.find((c) => c.id === req.params.id)
+  const conn = getConnection(req.params.id)
   if (!conn) return res.status(404).json({ error: 'Connection not found' })
 
   try {
@@ -372,7 +464,7 @@ app.get('/api/connections/:id/schema', async (req, res) => {
 
 // Insert a row (parameterized)
 app.post('/api/connections/:id/insert', async (req, res) => {
-  const conn = connectionsList.find((c) => c.id === req.params.id)
+  const conn = getConnection(req.params.id)
   if (!conn) return res.status(404).json({ error: 'Connection not found' })
 
   const { table, values } = req.body
@@ -407,7 +499,7 @@ app.post('/api/connections/:id/insert', async (req, res) => {
 
 // Execute query
 app.post('/api/connections/:id/query', async (req, res) => {
-  const conn = connectionsList.find(c => c.id === req.params.id)
+  const conn = getConnection(req.params.id)
   if (!conn) return res.status(404).json({ error: 'Connection not found' })
 
   const { sql } = req.body
@@ -435,7 +527,14 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok' })
 })
 
-// 404
+// Serve the built frontend (production) with SPA fallback for client routes.
+const DIST = path.join(__dirname, 'dist')
+if (fs.existsSync(DIST)) {
+  app.use(express.static(DIST))
+  app.get(/^\/(?!api\/).*/, (req, res) => res.sendFile(path.join(DIST, 'index.html')))
+}
+
+// 404 (API + anything else when no frontend build is present)
 app.use((req, res) => {
   res.status(404).json({ error: 'Not found' })
 })
@@ -451,7 +550,7 @@ app.listen(PORT, () => {
   console.log(`✅ Server running on http://localhost:${PORT}`)
   console.log(`📊 API available at http://localhost:${PORT}/api`)
   // Open (and seed if empty) any seeded SQLite connections up front.
-  for (const conn of connectionsList) {
+  for (const conn of listConnections()) {
     if (conn.type === 'sqlite' && conn.filepath) {
       try {
         getSqliteDb(conn.filepath)
@@ -465,11 +564,8 @@ app.listen(PORT, () => {
 // Graceful shutdown
 process.on('SIGINT', () => {
   console.log('\n🛑 Shutting down...')
-  for (const [, db] of sqliteConnections) {
-    db.close()
-  }
-  for (const [, pool] of postgresConnections) {
-    pool.end()
-  }
+  for (const [, db] of sqliteConnections) db.close()
+  for (const [, pool] of postgresConnections) pool.end()
+  meta.close()
   process.exit(0)
 })

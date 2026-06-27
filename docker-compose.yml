@@ -1,0 +1,16 @@
+services:
+  tabletsgo:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - META_DB=/app/data/app.db
+    volumes:
+      # Persist app metadata (users / connections / saved queries) across
+      # container restarts. The demo SQLite DB re-seeds itself on a fresh start.
+      - tabletsgo-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  tabletsgo-data:

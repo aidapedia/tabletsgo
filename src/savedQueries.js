@@ -1,21 +1,29 @@
-// Per-connection named saved queries, persisted to localStorage.
+// Per-connection named saved queries, persisted on the backend.
 
-const KEY = (id) => `tabletsgo:saved:${id}`
+const API_URL = '/api'
 
-export function loadSaved(id) {
-  if (!id) return []
+export async function fetchSaved(connectionId) {
+  if (!connectionId) return []
   try {
-    const raw = localStorage.getItem(KEY(id))
-    return raw ? JSON.parse(raw) : []
-  } catch {
-    return []
+    const res = await fetch(`${API_URL}/connections/${connectionId}/saved`)
+    if (res.ok) return await res.json()
+  } catch (error) {
+    console.error('Failed to load saved queries:', error)
   }
+  return []
 }
 
-export function persistSaved(id, list) {
-  try {
-    localStorage.setItem(KEY(id), JSON.stringify(list))
-  } catch {
-    /* ignore quota / privacy-mode errors */
-  }
+export async function createSaved(connectionId, { name, sql }) {
+  const res = await fetch(`${API_URL}/connections/${connectionId}/saved`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, sql }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(data.error || 'Failed to save query')
+  return data
+}
+
+export async function deleteSaved(connectionId, savedId) {
+  await fetch(`${API_URL}/connections/${connectionId}/saved/${savedId}`, { method: 'DELETE' })
 }
