@@ -31,7 +31,9 @@ const TONE = {
 
 function ToastItem({ toast, onClose }) {
   return (
-    <div className="flex w-[320px] max-w-[calc(100vw-2rem)] animate-slide-in items-start gap-3 rounded-soft border border-edge-strong bg-elevated px-4 py-3 shadow-[0_16px_40px_-12px_rgba(0,0,0,0.8)]">
+    <div className={`flex w-[320px] max-w-[calc(100vw-2rem)] items-start gap-3 rounded-soft border border-edge-strong bg-elevated px-4 py-3 shadow-[0_16px_40px_-12px_rgba(0,0,0,0.8)] ${
+      toast.leaving ? 'animate-slide-out' : 'animate-slide-in'
+    }`}>
       <span className={`mt-0.5 shrink-0 ${TONE[toast.type]}`}>{ICONS[toast.type]}</span>
       <div className="min-w-0 flex-1 text-xs leading-relaxed text-ink">{toast.message}</div>
       <button className="shrink-0 text-ink-faint hover:text-ink" onClick={onClose} aria-label="Dismiss">
@@ -44,7 +46,11 @@ function ToastItem({ toast, onClose }) {
 export function ToastProvider({ children }) {
   const [toasts, setToasts] = useState([])
 
-  const remove = useCallback((id) => setToasts((t) => t.filter((x) => x.id !== id)), [])
+  // Play the exit animation first, then drop the toast from the list.
+  const remove = useCallback((id) => {
+    setToasts((t) => t.map((x) => (x.id === id ? { ...x, leaving: true } : x)))
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 200)
+  }, [])
 
   const push = useCallback(
     (type, message, opts = {}) => {

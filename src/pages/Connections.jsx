@@ -13,6 +13,7 @@ import {
   MenuIcon,
   MoreVerticalIcon,
   SearchIcon,
+  SettingsIcon,
   TrashIcon,
 } from '../components/icons.jsx'
 import Popover from '../components/ui/Popover.jsx'
@@ -216,6 +217,15 @@ export default function Connections() {
             {user?.name?.[0]?.toUpperCase() || 'A'}
           </div>
           <span className="flex-1 text-[11px] text-ink-faint">v1.0.0</span>
+          <Tooltip label="Settings" placement="top">
+            <button
+              onClick={() => navigate('/settings')}
+              className="flex h-8 w-8 items-center justify-center rounded-[9px] text-ink-dim hover:bg-elevated hover:text-ink"
+              aria-label="Settings"
+            >
+              <SettingsIcon width={16} height={16} />
+            </button>
+          </Tooltip>
           <Tooltip label="Sign out" placement="top">
             <button
               onClick={logout}

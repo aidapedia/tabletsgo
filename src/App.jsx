@@ -3,6 +3,7 @@ import { useAuth } from './context/AuthContext.jsx'
 import Login from './pages/Login.jsx'
 import Connections from './pages/Connections.jsx'
 import Workspace from './pages/Workspace.jsx'
+import Settings from './pages/Settings.jsx'
 
 function RequireAuth({ children }) {
   const { user } = useAuth()
@@ -30,6 +31,14 @@ export default function App() {
         element={
           <RequireAuth>
             <Workspace />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path="/settings"
+        element={
+          <RequireAuth>
+            <Settings />
           </RequireAuth>
         }
       />

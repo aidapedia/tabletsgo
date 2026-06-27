@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext.jsx'
 import { useConnections } from '../context/ConnectionsContext.jsx'
 import { useToast } from '../components/ui/Toast.jsx'
-import { listTables } from '../db/sqlite.js'
+import { listTables, runQuery } from '../db/sqlite.js'
 import { addRecent, loadRecents, relativeTime, saveRecents } from '../recents.js'
 import { loadSaved, persistSaved } from '../savedQueries.js'
 import TableView from '../components/workspace/TableView.jsx'
@@ -14,6 +14,7 @@ const QueryEditor = lazy(() => import('../components/workspace/QueryEditor.jsx')
 import IconRail from '../components/workspace/IconRail.jsx'
 import SavedQueriesPanel from '../components/workspace/SavedQueriesPanel.jsx'
 import SaveQueryPanel from '../components/workspace/SaveQueryPanel.jsx'
+import ChangesPanel from '../components/workspace/ChangesPanel.jsx'
 import Segmented from '../components/ui/Segmented.jsx'
 import Tooltip from '../components/ui/Tooltip.jsx'
 import { btnGhost, btnPrimary, iconMini } from '../ui.js'
@@ -59,6 +60,10 @@ export default function Workspace() {
   const [saved, setSaved] = useState(() => loadSaved(id))
   const [tabMenu, setTabMenu] = useState(null) // { x, y, key } | null
   const [savingQuery, setSavingQuery] = useState(null) // sql string being saved | null
+  const [changes, setChanges] = useState([]) // staged (uncommitted) SQL mutations
+  const [changesOpen, setChangesOpen] = useState(false)
+  const [committing, setCommitting] = useState(false)
+  const [dataVersion, setDataVersion] = useState(0) // bump to force table reloads
   const [sidebarOpen, setSidebarOpen] = useState(false) // mobile drawer
   const [tablesVisible, setTablesVisible] = useState(true) // left panel visible
   const [panel, setPanel] = useState('browser') // 'browser' | 'queries'
@@ -156,6 +161,42 @@ export default function Workspace() {
     setTabs((prev) => [...prev, { key, kind: 'query', title: `Query ${queryCounter}`, sql: initialSql }])
     setActiveTab(key)
     setSidebarOpen(false)
+  }
+
+  const addChange = (c) =>
+    setChanges((prev) => [{ id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, ts: Date.now(), ...c }, ...prev])
+
+  // Execute every staged change in order (oldest first). Stop at the first
+  // failure, keeping it (and the rest) in the list so they can be retried.
+  const commitChanges = async () => {
+    if (!changes.length || committing) return
+    setCommitting(true)
+    const ordered = [...changes].reverse()
+    const remaining = []
+    let okCount = 0
+    let failure = null
+    for (const ch of ordered) {
+      if (failure) {
+        remaining.push(ch)
+        continue
+      }
+      const res = await runQuery(conn, ch.sql)
+      if (res?.error) {
+        failure = res.error
+        remaining.push(ch)
+      } else {
+        okCount++
+      }
+    }
+    setCommitting(false)
+    setChanges(remaining.reverse())
+    setDataVersion((v) => v + 1)
+    if (failure) {
+      toast.error(`Committed ${okCount}, then failed: ${failure}`)
+    } else {
+      toast.success(`Committed ${okCount} change${okCount > 1 ? 's' : ''}.`)
+      setChangesOpen(false)
+    }
   }
 
   const pushRecent = (entry) => setRecents((r) => addRecent(id, r, entry))
@@ -258,7 +299,7 @@ export default function Workspace() {
           onBrowser={() => selectPanel('browser')}
           onQueries={() => selectPanel('queries')}
           onHome={() => navigate('/')}
-          onSettings={() => toast.info('Settings — coming soon.')}
+          onSettings={() => navigate('/settings')}
           onProfile={logout}
         />
         <div
@@ -389,9 +430,24 @@ export default function Workspace() {
             />
             <kbd className="absolute right-3 rounded-[5px] border border-edge bg-card px-1.5 py-px text-[11px] text-ink-faint">⌘K</kbd>
           </div>
-          <div className="ml-auto flex items-center gap-2 rounded-[10px] border border-edge bg-elevated px-3 py-[7px] text-xs font-semibold text-ink-dim max-[560px]:hidden">
-            Changes <span className="rounded-[20px] bg-green-dim px-[7px] text-xs text-green-bright">0</span>
-          </div>
+          <button
+            onClick={() => setChangesOpen(true)}
+            title="View changes"
+            className={`ml-auto flex items-center gap-2 rounded-[10px] border px-3 py-[7px] text-xs font-semibold transition-colors ${
+              changes.length > 0
+                ? 'border-green-dim bg-green/10 text-green-bright hover:bg-green/15'
+                : 'border-edge bg-elevated text-ink-dim hover:text-ink'
+            }`}
+          >
+            Changes
+            <span
+              className={`rounded-[20px] px-[7px] text-xs ${
+                changes.length > 0 ? 'bg-green text-white' : 'bg-edge text-ink-faint'
+              }`}
+            >
+              {changes.length}
+            </span>
+          </button>
         </div>
 
         <div className="flex items-stretch gap-1 overflow-x-auto border-b border-edge bg-panel px-1.5 pt-1.5">
@@ -417,14 +473,13 @@ export default function Workspace() {
                   <TableIcon className={active ? 'text-ink' : 'text-ink-faint'} />
                 )}
                 <span>{t.title}</span>
-                <Tooltip label="Close tab" placement="bottom">
-                  <button
-                    className="flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded text-ink-faint opacity-70 transition-colors hover:bg-card-hover hover:text-ink group-hover/tab:opacity-100"
-                    onClick={(e) => closeTab(e, t.key)}
-                  >
-                    <CloseIcon width={13} height={13} />
-                  </button>
-                </Tooltip>
+                <button
+                  className="flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded text-ink-faint opacity-70 transition-colors hover:bg-card-hover hover:text-ink group-hover/tab:opacity-100"
+                  onClick={(e) => closeTab(e, t.key)}
+                  aria-label="Close tab"
+                >
+                  <CloseIcon width={13} height={13} />
+                </button>
               </div>
             )
           })}
@@ -433,7 +488,7 @@ export default function Workspace() {
 
         <div className="flex min-h-0 flex-1 overflow-hidden">
           {conn && current?.kind === 'table' && (
-            <TableView key={current.key} conn={conn} table={current.table} />
+            <TableView key={`${current.key}:${dataVersion}`} conn={conn} table={current.table} onChange={addChange} />
           )}
           {conn && current?.kind === 'query' && (
             <Suspense fallback={<div className="flex-1 p-8 text-center text-xs text-ink-faint">Loading editor…</div>}>
@@ -568,6 +623,16 @@ export default function Workspace() {
           defaultName={`Query ${saved.length + 1}`}
           onClose={() => setSavingQuery(null)}
           onSave={commitSaveQuery}
+        />
+      )}
+
+      {changesOpen && (
+        <ChangesPanel
+          changes={changes}
+          committing={committing}
+          onCommit={commitChanges}
+          onClear={() => setChanges([])}
+          onClose={() => setChangesOpen(false)}
         />
       )}
     </div>

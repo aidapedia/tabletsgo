@@ -109,6 +109,7 @@ export default function QueryEditor({ conn, dialect, initialSql, onRan, onSave }
   }, [conn])
 
   const run = async () => {
+    if (!sql.trim() || loading) return
     setError(null)
     setLoading(true)
     try {

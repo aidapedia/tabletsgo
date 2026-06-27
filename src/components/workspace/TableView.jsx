@@ -1,21 +1,32 @@
 import { useEffect, useMemo, useState } from 'react'
-import { getTableData } from '../../db/sqlite.js'
+import { getColumns, getTableData } from '../../db/sqlite.js'
 import DataGrid from './DataGrid.jsx'
 import InsertRowPanel from './InsertRowPanel.jsx'
 import Button from '../ui/Button.jsx'
 import Popover from '../ui/Popover.jsx'
 import Select from '../ui/Select.jsx'
+import { useToast } from '../ui/Toast.jsx'
 import {
   ChevronLeft,
   ChevronRight,
   CloseIcon,
   ColumnsIcon,
+  CopyIcon,
   DownloadIcon,
   FilterIcon,
   PlusSmall,
   RefreshIcon,
   SortIcon,
+  TrashIcon,
 } from '../icons.jsx'
+
+// Quote a JS value for inline SQL (dev tool — table is trusted, values escaped).
+const sqlValue = (v) => {
+  if (v === null || v === undefined) return 'NULL'
+  if (typeof v === 'number') return String(v)
+  if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE'
+  return `'${String(v).replace(/'/g, "''")}'`
+}
 
 const OPERATORS = [
   { value: 'contains', label: 'contains' },
@@ -52,11 +63,14 @@ function matchFilter(row, f) {
   }
 }
 
-export default function TableView({ conn, table }) {
+export default function TableView({ conn, table, onChange }) {
+  const toast = useToast()
   const [columns, setColumns] = useState([])
   const [rows, setRows] = useState([])
+  const [pkCols, setPkCols] = useState([])
   const [loading, setLoading] = useState(true)
   const [showInsert, setShowInsert] = useState(false)
+  const [selected, setSelected] = useState(() => new Set()) // row keys
 
   const [filters, setFilters] = useState([])
   const [sort, setSort] = useState(null) // { col, dir }
@@ -66,9 +80,11 @@ export default function TableView({ conn, table }) {
 
   const load = async () => {
     setLoading(true)
-    const result = await getTableData(conn, table)
+    const [result, meta] = await Promise.all([getTableData(conn, table), getColumns(conn, table)])
     setColumns(result.columns || [])
     setRows(result.rows || [])
+    setPkCols((meta || []).filter((c) => c.pk).map((c) => c.name))
+    setSelected(new Set())
     setLoading(false)
   }
 
@@ -80,6 +96,11 @@ export default function TableView({ conn, table }) {
     load()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conn, table])
+
+  // Selection is only possible when we know a primary key to target rows by.
+  const selectable = pkCols.length > 0
+  const rowKey = (row) => pkCols.map((c) => String(row[c])).join('¦')
+  const rowWhere = (row) => pkCols.map((c) => `"${c}" = ${sqlValue(row[c])}`).join(' AND ')
 
   const filtered = useMemo(() => rows.filter((r) => filters.every((f) => matchFilter(r, f))), [rows, filters])
 
@@ -129,10 +150,87 @@ export default function TableView({ conn, table }) {
   const toggleColumn = (c) =>
     setHidden((h) => (h.includes(c) ? h.filter((x) => x !== c) : [...h, c]))
 
+  // ---- Row selection + bulk actions ----
+  const toggleRow = (row) => {
+    const k = rowKey(row)
+    setSelected((s) => {
+      const n = new Set(s)
+      n.has(k) ? n.delete(k) : n.add(k)
+      return n
+    })
+  }
+  const toggleAll = () => {
+    setSelected((s) => {
+      const allOnPage = pageRows.length > 0 && pageRows.every((r) => s.has(rowKey(r)))
+      const n = new Set(s)
+      pageRows.forEach((r) => (allOnPage ? n.delete(rowKey(r)) : n.add(rowKey(r))))
+      return n
+    })
+  }
+  const clearSelection = () => setSelected(new Set())
+  const selectedRows = () => rows.filter((r) => selected.has(rowKey(r)))
+
+  const insertSql = (values) => {
+    const cols = Object.keys(values)
+    return `INSERT INTO "${table}" (${cols.map((c) => `"${c}"`).join(', ')}) VALUES (${cols
+      .map((c) => sqlValue(values[c]))
+      .join(', ')})`
+  }
+
+  // Actions stage SQL into Changes; nothing executes until the user commits.
+  const deleteSelected = () => {
+    const targets = selectedRows()
+    if (!targets.length) return
+    const sql = `DELETE FROM "${table}" WHERE ${targets.map((r) => `(${rowWhere(r)})`).join(' OR ')}`
+    onChange?.({ kind: 'delete', label: `Delete ${targets.length} row(s)`, sql, table })
+    toast.info(`Added delete to changes — commit to apply.`)
+    clearSelection()
+  }
+
+  const duplicateSelected = () => {
+    const targets = selectedRows()
+    if (!targets.length) return
+    for (const row of targets) {
+      const values = {}
+      for (const c of columns) if (!pkCols.includes(c)) values[c] = row[c]
+      onChange?.({ kind: 'duplicate', label: 'Duplicate row', sql: insertSql(values), table })
+    }
+    toast.info(`Added ${targets.length} insert(s) to changes — commit to apply.`)
+    clearSelection()
+  }
+
+  const stageInsert = (values) => {
+    onChange?.({ kind: 'insert', label: 'Insert row', sql: insertSql(values), table })
+    toast.info('Added insert to changes — commit to apply.')
+  }
+
+  const selCount = selected.size
+
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      {/* Selection action bar — replaces the toolbar while rows are selected */}
+      {selCount > 0 && (
+        <div className="flex items-center gap-2 border-b border-edge px-3 py-2">
+          <Button variant="primary" size="sm" icon={TrashIcon} onClick={deleteSelected}
+            className="!bg-red !text-white hover:!bg-red/90">
+            Delete
+          </Button>
+          <Button variant="subtle" size="sm" icon={CopyIcon} onClick={duplicateSelected}>
+            Duplicate
+          </Button>
+
+          <div className="mx-0.5 h-5 w-px bg-edge" />
+
+          <span className="text-[11px] font-semibold text-ink">{selCount} selected</span>
+
+          <Button variant="subtle" size="sm" className="ml-auto !px-2" onClick={clearSelection} aria-label="Clear selection">
+            <CloseIcon width={16} height={16} />
+          </Button>
+        </div>
+      )}
+
       {/* Toolbar / action list */}
-      <div className="flex flex-wrap items-center gap-2 border-b border-edge px-3 py-2">
+      <div className={`flex flex-wrap items-center gap-2 border-b border-edge px-3 py-2 ${selCount > 0 ? 'hidden' : ''}`}>
         <Button variant="primary" size="sm" icon={PlusSmall} onClick={() => setShowInsert(true)} disabled={loading}>
           Insert
         </Button>
@@ -263,7 +361,15 @@ export default function TableView({ conn, table }) {
       {loading ? (
         <div className="p-5 text-center text-xs">Loading…</div>
       ) : (
-        <DataGrid columns={visibleColumns} rows={pageRows} />
+        <DataGrid
+          columns={visibleColumns}
+          rows={pageRows}
+          selectable={selectable}
+          getRowKey={rowKey}
+          selectedKeys={selected}
+          onToggleRow={toggleRow}
+          onToggleAll={toggleAll}
+        />
       )}
 
       {showInsert && (
@@ -271,9 +377,9 @@ export default function TableView({ conn, table }) {
           conn={conn}
           table={table}
           onClose={() => setShowInsert(false)}
-          onSaved={() => {
+          onStage={(values) => {
+            stageInsert(values)
             setShowInsert(false)
-            load()
           }}
         />
       )}

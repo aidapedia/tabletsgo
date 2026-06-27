@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import { getColumns, insertRow } from '../../db/sqlite.js'
+import { getColumns } from '../../db/sqlite.js'
 import Button from '../ui/Button.jsx'
 import Segmented from '../ui/Segmented.jsx'
-import { useToast } from '../ui/Toast.jsx'
 import { useSlideOver } from '../ui/useSlideOver.js'
 import { ChevronRight } from '../icons.jsx'
 import { fieldInput } from '../../ui.js'
@@ -24,8 +23,7 @@ const coerce = (col, v) => {
   return v
 }
 
-export default function InsertRowPanel({ conn, table, onClose, onSaved }) {
-  const toast = useToast()
+export default function InsertRowPanel({ conn, table, onClose, onStage }) {
   const { show, close } = useSlideOver(onClose)
   const [columns, setColumns] = useState([])
   const [loading, setLoading] = useState(true)
@@ -33,7 +31,6 @@ export default function InsertRowPanel({ conn, table, onClose, onSaved }) {
   const [tab, setTab] = useState('fields')
   const [jsonText, setJsonText] = useState('')
   const [error, setError] = useState(null)
-  const [saving, setSaving] = useState(false)
 
   useEffect(() => {
     let alive = true
@@ -100,8 +97,7 @@ export default function InsertRowPanel({ conn, table, onClose, onSaved }) {
     return out
   }
 
-  const handleSave = async () => {
-    if (saving) return
+  const handleSave = () => {
     setError(null)
     const data = collect()
     if (!data) return
@@ -109,16 +105,7 @@ export default function InsertRowPanel({ conn, table, onClose, onSaved }) {
       setError('Set at least one value before saving.')
       return
     }
-    setSaving(true)
-    const res = await insertRow(conn, table, data)
-    setSaving(false)
-    if (res?.error) {
-      setError(res.error)
-      toast.error(`Insert failed: ${res.error}`)
-      return
-    }
-    toast.success(`Row inserted into “${table}”.`)
-    close(() => onSaved())
+    close(() => onStage(data))
   }
 
   // ⌘S / Ctrl+S to save
@@ -237,8 +224,8 @@ export default function InsertRowPanel({ conn, table, onClose, onSaved }) {
         )}
         <div className="flex items-center justify-end gap-3 border-t border-edge px-5 py-4">
           <Button variant="subtle" onClick={() => close()}>Cancel</Button>
-          <Button variant="primary" onClick={handleSave} disabled={saving || loading}>
-            {saving ? 'Saving…' : 'Save'}
+          <Button variant="primary" onClick={handleSave} disabled={loading}>
+            Add to changes
             <kbd className="rounded bg-black/20 px-1.5 py-px text-[10px] font-semibold">⌘S</kbd>
           </Button>
         </div>

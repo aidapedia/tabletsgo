@@ -27,6 +27,7 @@
   --animate-fade: fade 0.15s ease;
   --animate-pop: pop 0.18s ease;
   --animate-slide-in: slide-in 0.2s ease;
+  --animate-slide-out: slide-out 0.2s ease forwards;
 
   @keyframes fade {
     from { opacity: 0; }
@@ -40,6 +41,29 @@
     from { transform: translateX(100%); }
     to { transform: translateX(0); }
   }
+  @keyframes slide-out {
+    from { transform: translateX(0); opacity: 1; }
+    to { transform: translateX(110%); opacity: 0; }
+  }
+}
+
+/* ---------- Light theme (applied via .light on <html>) ---------- */
+html.light {
+  --color-bg: #ffffff;
+  --color-panel: #f6f7f6;
+  --color-elevated: #eef0ee;
+  --color-card: #ffffff;
+  --color-card-hover: #f0f2f0;
+  --color-edge: #e3e6e3;
+  --color-edge-strong: #cdd1cd;
+  --color-ink: #16181c;
+  --color-ink-dim: #555b63;
+  --color-ink-faint: #939aa1;
+  --color-green: #2f9e44;
+  --color-green-bright: #2b8a3e;
+  --color-green-dim: #d3f0d6;
+  --color-red: #e03131;
+  --color-amber: #b8860b;
 }
 
 /* ---------- Base ---------- */
