@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useConnections } from '../context/ConnectionsContext.jsx'
+import { useToast } from './ui/Toast.jsx'
 import { CloseIcon, DbLogo, EyeIcon, EyeOffIcon, PlusSmall, ShieldIcon } from './icons.jsx'
 import Select from './ui/Select.jsx'
 import { useSlideOver } from './ui/useSlideOver.js'
@@ -50,12 +51,18 @@ function parseUri(uri) {
   try {
     const u = new URL(uri)
     if (!/^postgres(ql)?:$/.test(u.protocol)) return null
+    const q = u.searchParams
+    const extra = {}
+    if (q.get('name')) extra.name = q.get('name')
+    if (q.get('env')) extra.environment = q.get('env')
+    if (q.get('sslmode')) extra.sslmode = q.get('sslmode')
     return {
       host: u.hostname || '',
       port: u.port || '5432',
       username: decodeURIComponent(u.username || ''),
       password: decodeURIComponent(u.password || ''),
       database: u.pathname ? decodeURIComponent(u.pathname.replace(/^\//, '')) : '',
+      ...extra,
     }
   } catch {
     return null
@@ -64,6 +71,7 @@ function parseUri(uri) {
 
 export default function ConnectionModal({ initial, initialType, onClose, onSave }) {
   const { testConnection } = useConnections()
+  const toast = useToast()
   const { show, close } = useSlideOver(onClose)
   const isEdit = !!initial
 
@@ -76,6 +84,7 @@ export default function ConnectionModal({ initial, initialType, onClose, onSave 
   const [tagDraft, setTagDraft] = useState('')
   const [addingTag, setAddingTag] = useState(false)
   const [test, setTest] = useState(null) // { ok, message } | 'loading'
+  const [saving, setSaving] = useState(false)
 
   const isSqlite = form.type === 'sqlite'
 
@@ -113,12 +122,15 @@ export default function ConnectionModal({ initial, initialType, onClose, onSave 
   const runTest = async () => {
     if (!valid) return
     setTest('loading')
-    setTest(await testConnection(form))
+    const result = await testConnection(form)
+    setTest(result)
+    if (result?.ok) toast.success(result.message || 'Connection successful!')
+    else toast.error(result?.message || 'Connection failed')
   }
 
-  const handleSave = (e) => {
+  const handleSave = async (e) => {
     e.preventDefault()
-    if (!valid) return
+    if (!valid || saving) return
     const payload = {
       ...form,
       name: form.name.trim(),
@@ -128,6 +140,17 @@ export default function ConnectionModal({ initial, initialType, onClose, onSave 
       database: form.database?.trim() || '',
       folder: form.folder.trim(),
     }
+    // Verify the connection works before saving so we never store a broken one.
+    setSaving(true)
+    const result = await testConnection(payload)
+    setSaving(false)
+    if (!result?.ok) {
+      setTest(result || { ok: false, message: 'Connection test failed' })
+      toast.error(result?.message || 'Connection failed')
+      return
+    }
+    setTest(result)
+    toast.success(`Connected — saving “${payload.name}”.`)
     close(() => onSave(payload))
   }
 
@@ -439,11 +462,11 @@ export default function ConnectionModal({ initial, initialType, onClose, onSave 
           </div>
 
           <div className="flex shrink-0 justify-end gap-3 border-t border-edge px-6 py-[18px]">
-            <button type="button" className={btnGhost} onClick={runTest} disabled={!valid || test === 'loading'}>
+            <button type="button" className={btnGhost} onClick={runTest} disabled={!valid || test === 'loading' || saving}>
               {test === 'loading' ? 'Testing…' : 'Test Connection'}
             </button>
-            <button type="submit" className={btnPrimary} disabled={!valid}>
-              {isEdit ? 'Update' : 'Create'} Connection
+            <button type="submit" className={btnPrimary} disabled={!valid || saving}>
+              {saving ? 'Connecting…' : `${isEdit ? 'Update' : 'Create'} Connection`}
             </button>
           </div>
         </form>

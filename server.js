@@ -253,11 +253,21 @@ async function getPostgresColumns(pool, table) {
      ORDER BY ordinal_position`,
     [table]
   )
+  // Identify the primary-key columns so row selection / delete / duplicate work.
+  const pkRes = await pool.query(
+    `SELECT kcu.column_name
+     FROM information_schema.table_constraints tc
+     JOIN information_schema.key_column_usage kcu
+       ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+     WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_name = $1 AND tc.table_schema = 'public'`,
+    [table]
+  )
+  const pkSet = new Set(pkRes.rows.map((row) => row.column_name))
   return r.rows.map((c) => ({
     name: c.column_name,
     type: c.data_type,
     notnull: c.is_nullable === 'NO',
-    pk: false,
+    pk: pkSet.has(c.column_name),
     default: c.column_default,
   }))
 }

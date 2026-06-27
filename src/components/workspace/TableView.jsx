@@ -97,10 +97,13 @@ export default function TableView({ conn, table, onChange }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conn, table])
 
-  // Selection is only possible when we know a primary key to target rows by.
-  const selectable = pkCols.length > 0
-  const rowKey = (row) => pkCols.map((c) => String(row[c])).join('¦')
-  const rowWhere = (row) => pkCols.map((c) => `"${c}" = ${sqlValue(row[c])}`).join(' AND ')
+  // Rows are targeted by primary key when available; otherwise we fall back to
+  // matching every column so selection / delete / duplicate work on any table.
+  const identCols = pkCols.length ? pkCols : columns
+  const selectable = columns.length > 0
+  const rowKey = (row) => identCols.map((c) => String(row[c])).join('¦')
+  const rowWhere = (row) =>
+    identCols.map((c) => (row[c] == null ? `"${c}" IS NULL` : `"${c}" = ${sqlValue(row[c])}`)).join(' AND ')
 
   const filtered = useMemo(() => rows.filter((r) => filters.every((f) => matchFilter(r, f))), [rows, filters])
 
