@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { getColumns, getSchema } from '../../db/sqlite.js'
 import Button from '../ui/Button.jsx'
+import Checkbox from '../ui/Checkbox.jsx'
 import Select from '../ui/Select.jsx'
 import Tooltip from '../ui/Tooltip.jsx'
 import { useSlideOver } from '../ui/useSlideOver.js'
@@ -181,25 +182,24 @@ export default function CreateTablePanel({ conn, initialTable, onClose, onStage 
 
                     <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1.5 px-0.5">
                       {!isEdit && (
-                        <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-ink-dim">
-                          <input type="checkbox" checked={col.pk} onChange={(e) => setCol(col.id, { pk: e.target.checked })} className="accent-green" />
+                        <div className="flex items-center gap-1.5 text-[11px] text-ink-dim">
+                          <Checkbox checked={col.pk} onChange={(v) => setCol(col.id, { pk: v })} ariaLabel="Primary key" />
                           Primary key
-                        </label>
+                        </div>
                       )}
-                      <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-ink-dim">
-                        <input type="checkbox" checked={col.notNull} onChange={(e) => setCol(col.id, { notNull: e.target.checked })} className="accent-green" />
+                      <div className="flex items-center gap-1.5 text-[11px] text-ink-dim">
+                        <Checkbox checked={col.notNull} onChange={(v) => setCol(col.id, { notNull: v })} ariaLabel="Not null" />
                         Not null
-                      </label>
-                      <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-ink-dim">
-                        <input
-                          type="checkbox"
+                      </div>
+                      <div className="flex items-center gap-1.5 text-[11px] text-ink-dim">
+                        <Checkbox
                           checked={col.fk}
-                          onChange={(e) => setCol(col.id, { fk: e.target.checked })}
-                          className="accent-green"
                           disabled={tableNames.length === 0}
+                          onChange={(v) => setCol(col.id, { fk: v })}
+                          ariaLabel="Foreign key"
                         />
                         Foreign key
-                      </label>
+                      </div>
                     </div>
 
                     {col.fk && (

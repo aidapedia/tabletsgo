@@ -1,9 +1,10 @@
-import { lazy, Suspense, useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext.jsx'
 import { useConnections } from '../context/ConnectionsContext.jsx'
 import { useToast } from '../components/ui/Toast.jsx'
-import { listTables, runQuery } from '../db/sqlite.js'
+import Select from '../components/ui/Select.jsx'
+import { getNamespaces, listTables, runQuery } from '../db/sqlite.js'
 import { addRecent, loadRecents, relativeTime, saveRecents } from '../recents.js'
 import { fetchSaved, createSaved, deleteSaved } from '../savedQueries.js'
 import TableView from '../components/workspace/TableView.jsx'
@@ -59,6 +60,12 @@ export default function Workspace() {
   const { connections } = useConnections()
   const conn = connections.find((c) => c.id === id)
 
+  // Selected database/schema namespace (for browsing other DBs/schemas).
+  const [ns, setNs] = useState({ database: undefined, schema: undefined })
+  const [namespaces, setNamespaces] = useState({ databases: [], schemas: [] })
+  // Connection augmented with the selected namespace; passed to data views.
+  const nsConn = useMemo(() => (conn ? { ...conn, ns } : conn), [conn, ns])
+
   const [tables, setTables] = useState([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState('')
@@ -94,7 +101,7 @@ export default function Workspace() {
   const loadTables = async () => {
     if (!conn) return
     setLoading(true)
-    const t = await listTables(conn)
+    const t = await listTables(nsConn)
     setTables(t || [])
     // First time opening this connection with no tabs yet: open a query tab.
     // Otherwise keep whatever tabs/active tab already exist. The ref guards
@@ -106,9 +113,36 @@ export default function Workspace() {
     setLoading(false)
   }
 
+  // Reload the table list when the connection or selected namespace changes.
   useEffect(() => {
     loadTables()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conn, ns])
+
+  // Load available databases/schemas and pick sensible defaults per connection.
+  useEffect(() => {
+    if (!conn) return
+    let alive = true
+    getNamespaces(conn).then((data) => {
+      if (!alive) return
+      setNamespaces(data)
+      setNs({
+        database: data.currentDatabase || conn.database || data.databases?.[0],
+        schema: data.schemas?.includes('public') ? 'public' : data.schemas?.[0],
+      })
+    })
+    return () => {
+      alive = false
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conn])
+
+  const changeDatabase = async (db) => {
+    const data = await getNamespaces(conn, db)
+    setNamespaces(data)
+    setNs({ database: db, schema: data.schemas?.includes('public') ? 'public' : data.schemas?.[0] })
+  }
+  const changeSchema = (schema) => setNs((p) => ({ ...p, schema }))
 
   // Load this connection's saved queries from the backend.
   useEffect(() => {
@@ -224,7 +258,7 @@ export default function Workspace() {
         remaining.push(ch)
         continue
       }
-      const res = await runQuery(conn, ch.sql)
+      const res = await runQuery(nsConn, ch.sql)
       if (res?.error) {
         failure = res.error
         remaining.push(ch)
@@ -361,6 +395,24 @@ export default function Workspace() {
           }`}
         >
         <aside className="flex h-full min-h-0 w-[280px] flex-col border-r border-edge bg-panel">
+        {/* Database / schema breadcrumb */}
+        <div className="flex items-center gap-0.5 px-3 pt-3">
+          <Select
+            className="max-w-[110px] rounded px-1.5 py-0.5 text-[11px] font-medium text-ink hover:bg-elevated"
+            value={ns.database || ''}
+            onChange={changeDatabase}
+            options={(namespaces.databases || []).map((d) => ({ value: d, label: d }))}
+            placeholder="database"
+          />
+          <span className="text-[11px] text-ink-faint">/</span>
+          <Select
+            className="max-w-[110px] rounded px-1.5 py-0.5 text-[11px] font-medium text-ink hover:bg-elevated"
+            value={ns.schema || ''}
+            onChange={changeSchema}
+            options={(namespaces.schemas || []).map((s) => ({ value: s, label: s }))}
+            placeholder="schema"
+          />
+        </div>
         {panel === 'browser' ? (
         <>
         <div className="flex items-center justify-between px-4 pb-2.5 pt-4 text-[11px] font-semibold">
@@ -565,13 +617,11 @@ export default function Workspace() {
                 onContextMenu={(e) => openTabMenu(e, t.key)}
                 className={`group/tab relative flex cursor-pointer items-center gap-2.5 whitespace-nowrap rounded-t-[8px] px-3.5 py-2.5 text-xs transition-colors ${
                   active
-                    ? 'bg-elevated text-ink'
-                    : 'text-ink-dim hover:bg-elevated/50 hover:text-ink'
+                    ? 'bg-elevated font-medium text-ink'
+                    : 'text-ink-dim hover:bg-elevated/40 hover:text-ink'
                 }`}
               >
-                {active && (
-                  <span className="absolute inset-x-0 top-0 h-[2px] rounded-t-[8px] bg-ink" />
-                )}
+                {active && <span className="absolute inset-x-0 bottom-0 h-[2px] bg-green" />}
                 {t.kind === 'query' ? (
                   <CodeIcon className={active ? 'text-ink' : 'text-ink-faint'} />
                 ) : t.kind === 'schema' ? (
@@ -597,21 +647,21 @@ export default function Workspace() {
 
         <div className="flex min-h-0 flex-1 overflow-hidden">
           {conn && current?.kind === 'table' && (
-            <TableView key={`${current.key}:${dataVersion}`} conn={conn} table={current.table} onChange={addChange} />
+            <TableView key={`${current.key}:${dataVersion}:${ns.database}:${ns.schema}`} conn={nsConn} table={current.table} onChange={addChange} />
           )}
           {conn && current?.kind === 'schema' && (
-            <SchemaView key={`${current.key}:${dataVersion}`} conn={conn} table={current.table} />
+            <SchemaView key={`${current.key}:${dataVersion}:${ns.database}:${ns.schema}`} conn={nsConn} table={current.table} />
           )}
           {conn && current?.kind === 'schemaEditor' && (
             <Suspense fallback={<div className="flex-1 p-8 text-center text-xs text-ink-faint">Loading schema…</div>}>
-              <SchemaEditor key={`schema-editor:${dataVersion}`} conn={conn} onStage={stageTableChanges} />
+              <SchemaEditor key={`schema-editor:${dataVersion}:${ns.database}:${ns.schema}`} conn={nsConn} onStage={stageTableChanges} />
             </Suspense>
           )}
           {conn && current?.kind === 'query' && (
             <Suspense fallback={<div className="flex-1 p-8 text-center text-xs text-ink-faint">Loading editor…</div>}>
               <QueryEditor
                 key={current.key}
-                conn={conn}
+                conn={nsConn}
                 dialect={DIALECT[conn.type]}
                 initialSql={current.sql ?? ''}
                 onRan={pushRecent}
@@ -728,7 +778,7 @@ export default function Workspace() {
 
       {creatingTable && (
         <CreateTablePanel
-          conn={conn}
+          conn={nsConn}
           initialTable={creatingTable?.table}
           onClose={() => setCreatingTable(false)}
           onStage={stageTableChanges}

@@ -72,6 +72,7 @@ function TableNode({ data }) {
 
 const nodeTypes = { table: TableNode }
 
+const ctlBtn = 'flex h-7 w-7 items-center justify-center rounded text-ink-dim transition-colors hover:bg-card-hover hover:text-ink'
 const NODE_W = 230 // matches the node style width
 const JUMP_R = 5 // hop radius where edges cross
 const CORNER_R = 8 // rounded corner radius at turns
@@ -301,31 +302,6 @@ export default function SchemaEditor({ conn, onStage }) {
         <Button variant="primary" size="sm" icon={WandIcon} onClick={autoLayout} disabled={loading || !diagram.tables.length}>
           Organize
         </Button>
-
-        <div className="mx-0.5 h-5 w-px bg-edge" />
-
-        <Button variant="subtle" size="sm" className="!px-2" onClick={() => rf.current?.zoomOut()} aria-label="Zoom out">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-            <path d="M5 12h14" />
-          </svg>
-        </Button>
-        <Button variant="subtle" size="sm" className="!px-2" onClick={() => rf.current?.zoomIn()} aria-label="Zoom in">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-            <path d="M12 5v14M5 12h14" />
-          </svg>
-        </Button>
-        <Button
-          variant="subtle"
-          size="sm"
-          className="!px-2"
-          onClick={() => rf.current?.fitView({ duration: 300, padding: 0.2 })}
-          aria-label="Fit view"
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M3 16v3a2 2 0 0 0 2 2h3" />
-          </svg>
-        </Button>
-
         <span className="ml-1 text-[11px] text-ink-faint">{conn.name} · {diagram.tables.length} table(s)</span>
       </div>
 
@@ -336,27 +312,52 @@ export default function SchemaEditor({ conn, onStage }) {
           ) : diagram.tables.length === 0 ? (
             <div className="flex h-full items-center justify-center text-xs text-ink-faint">No tables to show.</div>
           ) : (
-            <ReactFlow
-              nodes={nodes}
-              edges={edges}
-              nodeTypes={nodeTypes}
-              edgeTypes={edgeTypes}
-              onNodesChange={onNodesChange}
-              onInit={(inst) => (rf.current = inst)}
-              onNodeClick={(_, node) => setSelected(node.id)}
-              fitView
-              proOptions={{ hideAttribution: true }}
-            >
-              <Background color="#222" gap={18} />
-              <MiniMap
-                pannable
-                zoomable
-                style={{ width: 120, height: 84 }}
-                maskColor="rgba(0,0,0,0.55)"
-                nodeColor="#2a352a"
-                nodeStrokeColor="#6fcf6a"
-              />
-            </ReactFlow>
+            <>
+              <ReactFlow
+                nodes={nodes}
+                edges={edges}
+                nodeTypes={nodeTypes}
+                edgeTypes={edgeTypes}
+                onNodesChange={onNodesChange}
+                onInit={(inst) => (rf.current = inst)}
+                onNodeClick={(_, node) => setSelected(node.id)}
+                fitView
+                proOptions={{ hideAttribution: true }}
+              >
+                <Background color="var(--color-edge-strong)" gap={18} size={1.6} />
+                <MiniMap
+                  pannable
+                  zoomable
+                  style={{ width: 120, height: 84 }}
+                  maskColor="rgba(0,0,0,0.55)"
+                  nodeColor="#2a352a"
+                  nodeStrokeColor="#6fcf6a"
+                />
+              </ReactFlow>
+
+              {/* Zoom / fit controls — bottom-left of the canvas */}
+              <div className="absolute bottom-3 left-3 z-10 flex items-center gap-0.5 rounded-soft border border-edge bg-elevated p-1 shadow-[0_8px_24px_-12px_rgba(0,0,0,0.7)]">
+                <button className={ctlBtn} onClick={() => rf.current?.zoomOut()} aria-label="Zoom out">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                    <path d="M5 12h14" />
+                  </svg>
+                </button>
+                <button className={ctlBtn} onClick={() => rf.current?.zoomIn()} aria-label="Zoom in">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                    <path d="M12 5v14M5 12h14" />
+                  </svg>
+                </button>
+                <button
+                  className={ctlBtn}
+                  onClick={() => rf.current?.fitView({ duration: 300, padding: 0.2 })}
+                  aria-label="Fit view"
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M3 16v3a2 2 0 0 0 2 2h3" />
+                  </svg>
+                </button>
+              </div>
+            </>
           )}
         </div>
       </div>

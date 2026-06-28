@@ -28,6 +28,8 @@
   --animate-pop: pop 0.18s ease;
   --animate-slide-in: slide-in 0.2s ease;
   --animate-slide-out: slide-out 0.2s ease forwards;
+  --animate-toast-in: toast-in 0.2s ease;
+  --animate-toast-out: toast-out 0.2s ease forwards;
 
   @keyframes fade {
     from { opacity: 0; }
@@ -44,6 +46,14 @@
   @keyframes slide-out {
     from { transform: translateX(0); opacity: 1; }
     to { transform: translateX(110%); opacity: 0; }
+  }
+  @keyframes toast-in {
+    from { transform: translateY(12px); opacity: 0; }
+    to { transform: translateY(0); opacity: 1; }
+  }
+  @keyframes toast-out {
+    from { transform: translateY(0); opacity: 1; }
+    to { transform: translateY(12px); opacity: 0; }
   }
 }
 

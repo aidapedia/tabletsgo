@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import Button from '../ui/Button.jsx'
+import Checkbox from '../ui/Checkbox.jsx'
 import Select from '../ui/Select.jsx'
 import { useSlideOver } from '../ui/useSlideOver.js'
 import { ChevronRight, PlusIcon, TrashIcon } from '../icons.jsx'
@@ -112,16 +113,10 @@ export default function TableEditPanel({ table, dialect, types, onStage, onClose
                   {c.pk && <span className="shrink-0 rounded bg-green/15 px-1 text-[9px] font-bold text-green-bright">PK</span>}
                 </div>
                 <div className="mt-2 flex items-center gap-3">
-                  <label className={`flex items-center gap-1.5 text-[11px] ${isPg ? 'cursor-pointer text-ink-dim' : 'text-ink-faint'}`}>
-                    <input
-                      type="checkbox"
-                      checked={c.notNull}
-                      disabled={!isPg}
-                      onChange={(e) => setEx(i, { notNull: e.target.checked })}
-                      className="accent-green"
-                    />
+                  <div className={`flex items-center gap-1.5 text-[11px] ${isPg ? 'text-ink-dim' : 'text-ink-faint'}`}>
+                    <Checkbox checked={c.notNull} disabled={!isPg} onChange={(v) => setEx(i, { notNull: v })} ariaLabel="Not null" />
                     Not null
-                  </label>
+                  </div>
                   <input
                     className={`${fieldInput} !w-auto min-w-0 flex-1`}
                     placeholder="default…"
@@ -167,15 +162,10 @@ export default function TableEditPanel({ table, dialect, types, onStage, onClose
                   </button>
                 </div>
                 <div className="mt-2 flex items-center gap-3">
-                  <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-ink-dim">
-                    <input
-                      type="checkbox"
-                      checked={c.notNull}
-                      onChange={(e) => setAd(c.id, { notNull: e.target.checked })}
-                      className="accent-green"
-                    />
+                  <div className="flex items-center gap-1.5 text-[11px] text-ink-dim">
+                    <Checkbox checked={c.notNull} onChange={(v) => setAd(c.id, { notNull: v })} ariaLabel="Not null" />
                     Not null
-                  </label>
+                  </div>
                   <input
                     className={`${fieldInput} !w-auto min-w-0 flex-1`}
                     placeholder="default…"

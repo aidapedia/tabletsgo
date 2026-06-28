@@ -1,23 +1,17 @@
-import { useState } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import Checkbox from '../ui/Checkbox.jsx'
 
-// Default fixed-ish column width so columns don't collapse/stretch to fit the
-// screen; wide tables overflow and scroll horizontally instead.
-const colW = 'min-w-[160px] max-w-[360px]'
+// Columns share one consistent default width and can be dragged to resize,
+// regardless of how many columns the table has.
+const DEFAULT_W = 180
+const MIN_W = 70
+const INDEX_W = 44
 const thBase =
-  `sticky top-0 z-[1] whitespace-nowrap border-b border-edge bg-elevated px-3 py-1.5 text-left font-semibold text-ink-dim ${colW}`
+  'sticky top-0 z-[1] whitespace-nowrap border-b border-r border-edge bg-elevated px-3 py-1.5 text-left font-semibold text-ink-dim relative'
 const tdBase =
-  `overflow-hidden text-ellipsis whitespace-nowrap border-b border-edge px-3 py-1 text-ink ${colW}`
-const firstTh = `${thBase} left-0 z-[2] text-right !min-w-0`
-const firstTd = 'sticky left-0 border-b border-edge bg-panel px-3 py-1 text-right tabular-nums text-ink-faint'
-
-const EmptyIcon = (props) => (
-  <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-    strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" {...props}>
-    <rect x="3" y="3" width="18" height="18" rx="2" />
-    <path d="M3 9h18M3 15h18M9 3v18M15 3v18" />
-  </svg>
-)
+  'overflow-hidden text-ellipsis whitespace-nowrap border-b border-r border-edge px-3 py-1 text-ink'
+const firstTh = `${thBase} left-0 z-[2] text-right`
+const firstTd = 'sticky left-0 border-b border-r border-edge bg-panel px-3 py-1 text-right tabular-nums text-ink-faint'
 
 export default function DataGrid({
   columns,
@@ -33,6 +27,46 @@ export default function DataGrid({
 }) {
   const [editing, setEditing] = useState(null) // { rowIndex, col }
   const [draft, setDraft] = useState('')
+  const [sel, setSel] = useState(null) // selected cell { r, c }
+  const scrollRef = useRef(null)
+  const [fill, setFill] = useState({ rowH: 24, remaining: 0 }) // empty grid fill
+  const [clientW, setClientW] = useState(0) // container width (to fill horizontally)
+  const [widths, setWidths] = useState({}) // per-column override widths
+  const colW = (c) => widths[c] ?? DEFAULT_W
+
+  const startResize = (e, c) => {
+    e.preventDefault()
+    e.stopPropagation()
+    const startX = e.clientX
+    const startW = colW(c)
+    const onMove = (ev) => setWidths((p) => ({ ...p, [c]: Math.max(MIN_W, startW + ev.clientX - startX) }))
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+
+  // Measure leftover space so we can pad the grid with empty rows.
+  useLayoutEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const measure = () => {
+      const head = el.querySelector('thead')?.offsetHeight ?? 28
+      const sample = el.querySelector('tbody tr[data-row]')?.offsetHeight ?? 24
+      const remaining = el.clientHeight - head - rows.length * sample
+      setFill((f) => {
+        const next = { rowH: sample, remaining: remaining > 0 ? remaining : 0 }
+        return f.rowH === next.rowH && f.remaining === next.remaining ? f : next
+      })
+      setClientW((w) => (w === el.clientWidth ? w : el.clientWidth))
+    }
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [rows, columns])
 
   if (!columns || columns.length === 0) {
     return <div className="p-[30px] text-center text-ink-faint">No columns to display.</div>
@@ -52,9 +86,37 @@ export default function DataGrid({
   const allSelected = selectable && rows.length > 0 && rows.every((r, i) => selectedKeys?.has(keyOf(r, i)))
   const someSelected = selectable && !allSelected && rows.some((r, i) => selectedKeys?.has(keyOf(r, i)))
 
+  // Spacer column fills leftover width so the grid spans the whole viewport
+  // even for tables with only a few columns.
+  const usedW = INDEX_W + columns.reduce((a, c) => a + colW(c), 0)
+  const spacerW = Math.max(0, clientW - usedW)
+
+  // Empty rows that pad the grid so the lines reach the bottom of the viewport.
+  const fillerRow = (key, h) => (
+    <tr key={key} aria-hidden className="pointer-events-none">
+      <td className={firstTd} style={{ height: h }} />
+      {columns.map((c, j) => (
+        <td key={j} className={tdBase} style={{ height: h }} />
+      ))}
+      {spacerW > 0 && <td className={tdBase} style={{ height: h }} />}
+    </tr>
+  )
+  const fillerCount = fill.remaining > 0 ? Math.floor(fill.remaining / fill.rowH) : 0
+  const fillerRem = fill.remaining - fillerCount * fill.rowH
+  const fillers = []
+  for (let k = 0; k < fillerCount; k++) fillers.push(fillerRow(`f${k}`, fill.rowH))
+  if (fillerRem > 4) fillers.push(fillerRow('frem', fillerRem))
+
   return (
-    <div className="min-h-0 w-full min-w-0 flex-1 overflow-auto">
-      <table className="w-full border-collapse text-[11px]">
+    <div ref={scrollRef} className="relative min-h-0 w-full min-w-0 flex-1 overflow-auto">
+      <table className="table-fixed border-collapse text-[11px]">
+        <colgroup>
+          <col style={{ width: INDEX_W }} />
+          {columns.map((c) => (
+            <col key={c} style={{ width: colW(c) }} />
+          ))}
+          {spacerW > 0 && <col style={{ width: spacerW }} />}
+        </colgroup>
         <thead>
           <tr>
             <th className={firstTh}>
@@ -72,29 +134,23 @@ export default function DataGrid({
               )}
             </th>
             {columns.map((c) => (
-              <th key={c} className={thBase}>{c}</th>
+              <th key={c} className={thBase}>
+                <span className="block truncate">{c}</span>
+                <div
+                  onMouseDown={(e) => startResize(e, c)}
+                  className="absolute right-0 top-0 z-10 h-full w-1.5 cursor-col-resize hover:bg-green/40"
+                />
+              </th>
             ))}
+            {spacerW > 0 && <th className={thBase} />}
           </tr>
         </thead>
         <tbody>
-          {rows.length === 0 ? (
-            <tr>
-              <td colSpan={columns.length + 1}>
-                <div className="flex flex-col items-center justify-center gap-3 py-20 text-center text-ink-faint">
-                  <EmptyIcon />
-                  <div>
-                    <div className="text-sm font-medium text-ink-dim">No data found</div>
-                    <div className="mt-1 text-[11px]">This table doesn’t have any rows yet.</div>
-                  </div>
-                </div>
-              </td>
-            </tr>
-          ) : (
-            rows.map((row, i) => {
+          {rows.map((row, i) => {
               const key = keyOf(row, i)
               const selected = selectable && selectedKeys?.has(key)
               return (
-                <tr key={i} className={selected ? '[&>td]:bg-green/10' : 'hover:[&>td]:bg-card'}>
+                <tr key={i} data-row className={selected ? '[&>td]:bg-green/10' : 'hover:[&>td]:bg-card'}>
                   <td className={`${firstTd} ${selected ? '!bg-green/10' : ''}`}>
                     {selectable ? (
                       <div className="flex justify-center">
@@ -114,12 +170,14 @@ export default function DataGrid({
                     const dirty = rowEdits && Object.prototype.hasOwnProperty.call(rowEdits, c)
                     const val = dirty ? rowEdits[c] : raw
                     const isEditing = editable && editing && editing.rowIndex === i && editing.col === c
+                    const isSel = sel && sel.r === i && sel.c === c
                     return (
                       <td
                         key={j}
                         className={`${tdBase} ${editable && !isEditing ? 'cursor-text' : ''} ${
                           dirty ? '!bg-amber/10 text-amber' : ''
-                        }`}
+                        } ${isSel && !isEditing ? '!bg-green/15 outline outline-1 -outline-offset-1 outline-green' : ''}`}
+                        onClick={() => setSel({ r: i, c })}
                         onDoubleClick={() => editable && !Array.isArray(row) && !isEditing && startEdit(i, c, val)}
                         title={editable ? 'Double-click to edit' : undefined}
                       >
@@ -147,10 +205,11 @@ export default function DataGrid({
                       </td>
                     )
                   })}
+                  {spacerW > 0 && <td className={`${tdBase} ${selected ? '!bg-green/10' : ''}`} />}
                 </tr>
               )
-            })
-          )}
+            })}
+          {fillers}
         </tbody>
       </table>
     </div>

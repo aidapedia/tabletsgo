@@ -3,6 +3,7 @@ import { getColumns, getTableData } from '../../db/sqlite.js'
 import DataGrid from './DataGrid.jsx'
 import InsertRowPanel from './InsertRowPanel.jsx'
 import Button from '../ui/Button.jsx'
+import Checkbox from '../ui/Checkbox.jsx'
 import Popover from '../ui/Popover.jsx'
 import Select from '../ui/Select.jsx'
 import { useToast } from '../ui/Toast.jsx'
@@ -469,11 +470,10 @@ function FilterPanel({ columns, initial, onApply, onClose }) {
       <div className="flex flex-col gap-2">
         {draft.map((f) => (
           <div key={f.id} className="flex items-center gap-1.5">
-            <input
-              type="checkbox"
+            <Checkbox
               checked={f.enabled}
-              onChange={(e) => update(f.id, { enabled: e.target.checked })}
-              className="accent-green"
+              onChange={(v) => update(f.id, { enabled: v })}
+              ariaLabel="Enable filter"
             />
             <Select
               className={`${ctl} min-w-0 flex-1`}
@@ -584,13 +584,14 @@ function ColumnsPanel({ columns, hidden, onToggle }) {
     <div className="max-h-[300px] overflow-y-auto p-2">
       <div className="px-1.5 pb-1.5 text-[11px] font-semibold text-ink-dim">Toggle columns</div>
       {columns.map((c) => (
-        <label
+        <div
           key={c}
+          onClick={() => onToggle(c)}
           className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1.5 text-[11px] text-ink-dim hover:bg-card-hover hover:text-ink"
         >
-          <input type="checkbox" checked={!hidden.includes(c)} onChange={() => onToggle(c)} className="accent-green" />
+          <Checkbox checked={!hidden.includes(c)} onChange={() => onToggle(c)} ariaLabel={`Toggle ${c}`} />
           <span className="truncate">{c}</span>
-        </label>
+        </div>
       ))}
     </div>
   )

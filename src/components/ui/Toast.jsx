@@ -32,7 +32,7 @@ const TONE = {
 function ToastItem({ toast, onClose }) {
   return (
     <div className={`flex w-[320px] max-w-[calc(100vw-2rem)] items-start gap-3 rounded-soft border border-edge-strong bg-elevated px-4 py-3 shadow-[0_16px_40px_-12px_rgba(0,0,0,0.8)] ${
-      toast.leaving ? 'animate-slide-out' : 'animate-slide-in'
+      toast.leaving ? 'animate-toast-out' : 'animate-toast-in'
     }`}>
       <span className={`mt-0.5 shrink-0 ${TONE[toast.type]}`}>{ICONS[toast.type]}</span>
       <div className="min-w-0 flex-1 text-xs leading-relaxed text-ink">{toast.message}</div>
@@ -75,7 +75,7 @@ export function ToastProvider({ children }) {
   return (
     <ToastContext.Provider value={toast}>
       {children}
-      <div className="pointer-events-none fixed bottom-4 right-4 z-[100] flex flex-col gap-2">
+      <div className="pointer-events-none fixed bottom-4 left-1/2 z-[100] flex -translate-x-1/2 flex-col items-center gap-2">
         {toasts.map((t) => (
           <div key={t.id} className="pointer-events-auto">
             <ToastItem toast={t} onClose={() => remove(t.id)} />

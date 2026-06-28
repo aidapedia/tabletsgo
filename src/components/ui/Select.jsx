@@ -75,7 +75,7 @@ export default function Select({
       {open && (
         <div
           role="listbox"
-          className="absolute left-0 right-0 top-[calc(100%+6px)] z-50 max-h-[240px] min-w-full overflow-y-auto rounded-soft border border-edge-strong bg-elevated p-1 shadow-[0_16px_40px_-12px_rgba(0,0,0,0.8)]"
+          className="absolute left-0 top-[calc(100%+6px)] z-50 max-h-[240px] w-max min-w-full max-w-[280px] overflow-y-auto rounded-soft border border-edge-strong bg-elevated p-1 shadow-[0_16px_40px_-12px_rgba(0,0,0,0.8)]"
         >
           {options.map((o) => {
             const active = o.value === value

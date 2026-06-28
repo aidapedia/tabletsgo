@@ -209,49 +209,60 @@ function pgConfig(config) {
   }
 }
 
-async function getPostgresPool(id, config) {
-  if (!postgresConnections.has(id)) {
-    postgresConnections.set(id, new Pool(pgConfig(config)))
+// A pool per (connection, database) so we can browse other databases on the
+// same server using the same credentials.
+function getPostgresPool(conn, database) {
+  const db = database || conn.database
+  const key = `${conn.id}::${db || ''}`
+  if (!postgresConnections.has(key)) {
+    postgresConnections.set(key, new Pool(pgConfig({ ...conn, database: db })))
   }
-  return postgresConnections.get(id)
+  return postgresConnections.get(key)
 }
 
-async function listPostgresTables(pool) {
+function closePostgresPools(id) {
+  for (const [key, pool] of postgresConnections) {
+    if (key === id || key.startsWith(`${id}::`)) {
+      pool.end()
+      postgresConnections.delete(key)
+    }
+  }
+}
+
+async function listPostgresTables(pool, schema = 'public') {
   try {
-    const res = await pool.query(`
-      SELECT tablename FROM pg_tables 
-      WHERE schemaname = 'public'
-      ORDER BY tablename
-    `)
-    return res.rows.map(r => r.tablename)
+    const res = await pool.query(
+      `SELECT tablename FROM pg_tables WHERE schemaname = $1 ORDER BY tablename`,
+      [schema]
+    )
+    return res.rows.map((r) => r.tablename)
   } catch (error) {
     return []
   }
 }
 
-async function getPostgresTableData(pool, table, limit = 200) {
+async function getPostgresTableData(pool, table, limit = 200, schema = 'public') {
   try {
-    const columns = await pool.query(`
-      SELECT column_name FROM information_schema.columns 
-      WHERE table_name = $1 AND table_schema = 'public'
-      ORDER BY ordinal_position
-    `, [table])
-    const columnNames = columns.rows.map(r => r.column_name)
-    
-    const rows = await pool.query(`SELECT * FROM "${table}" LIMIT ${limit}`)
+    const columns = await pool.query(
+      `SELECT column_name FROM information_schema.columns
+       WHERE table_name = $1 AND table_schema = $2 ORDER BY ordinal_position`,
+      [table, schema]
+    )
+    const columnNames = columns.rows.map((r) => r.column_name)
+    const rows = await pool.query(`SELECT * FROM "${schema}"."${table}" LIMIT ${limit}`)
     return { columns: columnNames, rows: rows.rows }
   } catch (error) {
     return { columns: [], rows: [], error: error.message }
   }
 }
 
-async function getPostgresColumns(pool, table) {
+async function getPostgresColumns(pool, table, schema = 'public') {
   const r = await pool.query(
     `SELECT column_name, data_type, is_nullable, column_default
      FROM information_schema.columns
-     WHERE table_name = $1 AND table_schema = 'public'
+     WHERE table_name = $1 AND table_schema = $2
      ORDER BY ordinal_position`,
-    [table]
+    [table, schema]
   )
   // Identify the primary-key columns so row selection / delete / duplicate work.
   const pkRes = await pool.query(
@@ -259,8 +270,8 @@ async function getPostgresColumns(pool, table) {
      FROM information_schema.table_constraints tc
      JOIN information_schema.key_column_usage kcu
        ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
-     WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_name = $1 AND tc.table_schema = 'public'`,
-    [table]
+     WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_name = $1 AND tc.table_schema = $2`,
+    [table, schema]
   )
   const pkSet = new Set(pkRes.rows.map((row) => row.column_name))
   return r.rows.map((c) => ({
@@ -272,13 +283,24 @@ async function getPostgresColumns(pool, table) {
   }))
 }
 
-async function runPostgresQuery(pool, sql) {
+async function runPostgresQuery(pool, sql, schema) {
   try {
-    const result = await pool.query(sql)
+    let result
+    if (schema && schema !== 'public') {
+      // Run on a dedicated client with the schema first on the search path.
+      const client = await pool.connect()
+      try {
+        await client.query(`SET search_path TO "${schema}", public`)
+        result = await client.query(sql)
+      } finally {
+        client.release()
+      }
+    } else {
+      result = await pool.query(sql)
+    }
     const isSelect = sql.trim().toUpperCase().startsWith('SELECT')
-    
     if (isSelect) {
-      const columns = result.fields ? result.fields.map(f => f.name) : []
+      const columns = result.fields ? result.fields.map((f) => f.name) : []
       return { type: 'rows', columns, rows: result.rows }
     } else {
       return { type: 'message', message: `Query OK · ${result.rowCount} row(s) affected.` }
@@ -345,11 +367,7 @@ app.put('/api/connections/:id', (req, res) => {
 
   // Drop any cached pool/handle so the next query reconnects with the new
   // config (otherwise edits to host/credentials/database are ignored).
-  const pool = postgresConnections.get(req.params.id)
-  if (pool) {
-    pool.end()
-    postgresConnections.delete(req.params.id)
-  }
+  closePostgresPools(req.params.id)
   if (existing.filepath) sqliteConnections.delete(existing.filepath)
   if (updated.filepath && updated.filepath !== existing.filepath) sqliteConnections.delete(updated.filepath)
 
@@ -364,9 +382,7 @@ app.delete('/api/connections/:id', (req, res) => {
   if (conn.type === 'sqlite') {
     sqliteConnections.delete(conn.filepath)
   } else if (conn.type === 'postgresql') {
-    const pool = postgresConnections.get(conn.id)
-    if (pool) pool.end()
-    postgresConnections.delete(conn.id)
+    closePostgresPools(conn.id)
   }
 
   deleteConnectionRow(req.params.id)
@@ -408,8 +424,8 @@ app.get('/api/connections/:id/tables', async (req, res) => {
       const db = getSqliteDb(conn.filepath)
       tables = listSqliteTables(db)
     } else if (conn.type === 'postgresql') {
-      const pool = await getPostgresPool(conn.id, conn)
-      tables = await listPostgresTables(pool)
+      const pool = getPostgresPool(conn, req.query.database)
+      tables = await listPostgresTables(pool, req.query.schema || 'public')
     }
     res.json(tables)
   } catch (error) {
@@ -428,8 +444,8 @@ app.get('/api/connections/:id/table/:table', async (req, res) => {
       const db = getSqliteDb(conn.filepath)
       result = getSqliteTableData(db, req.params.table, parseInt(req.query.limit) || 200)
     } else if (conn.type === 'postgresql') {
-      const pool = await getPostgresPool(conn.id, conn)
-      result = await getPostgresTableData(pool, req.params.table, parseInt(req.query.limit) || 200)
+      const pool = getPostgresPool(conn, req.query.database)
+      result = await getPostgresTableData(pool, req.params.table, parseInt(req.query.limit) || 200, req.query.schema || 'public')
     }
     res.json(result)
   } catch (error) {
@@ -447,7 +463,7 @@ app.get('/api/connections/:id/columns/:table', async (req, res) => {
     if (conn.type === 'sqlite') {
       columns = getSqliteColumns(getSqliteDb(conn.filepath), req.params.table)
     } else if (conn.type === 'postgresql') {
-      columns = await getPostgresColumns(await getPostgresPool(conn.id, conn), req.params.table)
+      columns = await getPostgresColumns(getPostgresPool(conn, req.query.database), req.params.table, req.query.schema || 'public')
     }
     res.json(columns)
   } catch (error) {
@@ -468,16 +484,48 @@ app.get('/api/connections/:id/schema', async (req, res) => {
         schema[t] = getSqliteColumns(db, t).map((c) => c.name)
       }
     } else if (conn.type === 'postgresql') {
-      const pool = await getPostgresPool(conn.id, conn)
+      const pool = getPostgresPool(conn, req.query.database)
       const r = await pool.query(
         `SELECT table_name, column_name FROM information_schema.columns
-         WHERE table_schema = 'public' ORDER BY table_name, ordinal_position`
+         WHERE table_schema = $1 ORDER BY table_name, ordinal_position`,
+        [req.query.schema || 'public']
       )
       for (const row of r.rows) {
         ;(schema[row.table_name] ||= []).push(row.column_name)
       }
     }
     res.json(schema)
+  } catch (error) {
+    res.status(500).json({ error: error.message })
+  }
+})
+
+// List databases + schemas available on a connection (for the breadcrumb).
+app.get('/api/connections/:id/namespaces', async (req, res) => {
+  const conn = getConnection(req.params.id)
+  if (!conn) return res.status(404).json({ error: 'Connection not found' })
+
+  try {
+    if (conn.type === 'sqlite') {
+      const name = path.basename(conn.filepath || 'database')
+      return res.json({ databases: [name], schemas: ['main'], currentDatabase: name })
+    }
+    const database = req.query.database || conn.database || undefined
+    const pool = getPostgresPool(conn, database)
+    const dbs = await pool.query(
+      `SELECT datname FROM pg_database WHERE datistemplate = false AND datallowconn ORDER BY datname`
+    )
+    const schemas = await pool.query(
+      `SELECT schema_name FROM information_schema.schemata
+       WHERE schema_name NOT LIKE 'pg\\_%' AND schema_name <> 'information_schema'
+       ORDER BY schema_name`
+    )
+    const cur = await pool.query('SELECT current_database() AS db')
+    res.json({
+      databases: dbs.rows.map((r) => r.datname),
+      schemas: schemas.rows.map((r) => r.schema_name),
+      currentDatabase: cur.rows[0]?.db,
+    })
   } catch (error) {
     res.status(500).json({ error: error.message })
   }
@@ -501,19 +549,22 @@ app.get('/api/connections/:id/diagram', async (req, res) => {
         }
       }
     } else if (conn.type === 'postgresql') {
-      const pool = await getPostgresPool(conn.id, conn)
-      for (const t of await listPostgresTables(pool)) {
-        tables.push({ name: t, columns: await getPostgresColumns(pool, t) })
+      const schema = req.query.schema || 'public'
+      const pool = getPostgresPool(conn, req.query.database)
+      for (const t of await listPostgresTables(pool, schema)) {
+        tables.push({ name: t, columns: await getPostgresColumns(pool, t, schema) })
       }
-      const fkRes = await pool.query(`
-        SELECT tc.table_name AS table, kcu.column_name AS column,
+      const fkRes = await pool.query(
+        `SELECT tc.table_name AS table, kcu.column_name AS column,
                ccu.table_name AS ref_table, ccu.column_name AS ref_column
         FROM information_schema.table_constraints tc
         JOIN information_schema.key_column_usage kcu
           ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
         JOIN information_schema.constraint_column_usage ccu
           ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema
-        WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_schema = 'public'`)
+        WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_schema = $1`,
+        [schema]
+      )
       for (const r of fkRes.rows) {
         foreignKeys.push({ table: r.table, column: r.column, refTable: r.ref_table, refColumn: r.ref_column })
       }
@@ -529,7 +580,7 @@ app.post('/api/connections/:id/insert', async (req, res) => {
   const conn = getConnection(req.params.id)
   if (!conn) return res.status(404).json({ error: 'Connection not found' })
 
-  const { table, values } = req.body
+  const { table, values, database, schema } = req.body
   const cols = Object.keys(values || {})
   if (!table || cols.length === 0) {
     return res.status(400).json({ error: 'A table and at least one value are required' })
@@ -549,8 +600,8 @@ app.post('/api/connections/:id/insert', async (req, res) => {
       const info = db.prepare(sql).run(...params)
       res.json({ ok: true, changes: info.changes, lastInsertRowid: info.lastInsertRowid })
     } else if (conn.type === 'postgresql') {
-      const pool = await getPostgresPool(conn.id, conn)
-      const sql = `INSERT INTO "${table}" (${colList}) VALUES (${cols.map((_, i) => `$${i + 1}`).join(', ')})`
+      const pool = getPostgresPool(conn, database)
+      const sql = `INSERT INTO "${schema || 'public'}"."${table}" (${colList}) VALUES (${cols.map((_, i) => `$${i + 1}`).join(', ')})`
       const result = await pool.query(sql, cols.map((c) => values[c]))
       res.json({ ok: true, changes: result.rowCount })
     }
@@ -564,7 +615,7 @@ app.post('/api/connections/:id/query', async (req, res) => {
   const conn = getConnection(req.params.id)
   if (!conn) return res.status(404).json({ error: 'Connection not found' })
 
-  const { sql } = req.body
+  const { sql, database, schema } = req.body
   if (!sql || !sql.trim()) {
     return res.status(400).json({ error: 'SQL query required' })
   }
@@ -575,8 +626,8 @@ app.post('/api/connections/:id/query', async (req, res) => {
       const db = getSqliteDb(conn.filepath)
       result = runSqliteQuery(db, sql)
     } else if (conn.type === 'postgresql') {
-      const pool = await getPostgresPool(conn.id, conn)
-      result = await runPostgresQuery(pool, sql)
+      const pool = getPostgresPool(conn, database)
+      result = await runPostgresQuery(pool, sql, schema)
     }
     res.json(result)
   } catch (error) {
