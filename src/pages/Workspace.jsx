@@ -11,6 +11,8 @@ import CreateTablePanel from '../components/workspace/CreateTablePanel.jsx'
 
 // Lazy — pulls in the (heavy) CodeMirror editor only when a query tab opens.
 const QueryEditor = lazy(() => import('../components/workspace/QueryEditor.jsx'))
+// Lazy — React Flow is heavy; only load when the schema editor opens.
+const SchemaEditor = lazy(() => import('../components/workspace/SchemaEditor.jsx'))
 import IconRail from '../components/workspace/IconRail.jsx'
 import SavedQueriesPanel from '../components/workspace/SavedQueriesPanel.jsx'
 import SaveQueryPanel from '../components/workspace/SaveQueryPanel.jsx'
@@ -25,6 +27,7 @@ import {
   CloseIcon,
   CodeIcon,
   ColumnsIcon,
+  DiagramIcon,
   EditIcon,
   MenuIcon,
   MoreVerticalIcon,
@@ -183,6 +186,14 @@ export default function Workspace() {
     setTabs((prev) =>
       prev.some((t) => t.key === key) ? prev : [...prev, { key, kind: 'schema', table, title: `${table} · schema` }]
     )
+    setActiveTab(key)
+    setSidebarOpen(false)
+  }
+
+  // Singleton "Schema editor" tab — focus it if already open.
+  const openSchemaEditor = () => {
+    const key = 'schema-editor'
+    setTabs((prev) => (prev.some((t) => t.key === key) ? prev : [...prev, { key, kind: 'schemaEditor', title: 'Schema editor' }]))
     setActiveTab(key)
     setSidebarOpen(false)
   }
@@ -504,9 +515,24 @@ export default function Workspace() {
           >
             <MenuIcon />
           </button>
-          <button className={btnSql} onClick={() => openQuery()}>
-            <CodeIcon /> <span className="max-[480px]:hidden">SQL Query</span>
-          </button>
+          <Tooltip label="New SQL query" placement="bottom">
+            <button
+              onClick={() => openQuery()}
+              aria-label="New SQL query"
+              className="flex h-[34px] w-[34px] items-center justify-center rounded-[10px] text-ink-dim transition-colors hover:bg-elevated hover:text-ink"
+            >
+              <CodeIcon width={16} height={16} />
+            </button>
+          </Tooltip>
+          <Tooltip label="Schema editor" placement="bottom">
+            <button
+              onClick={openSchemaEditor}
+              aria-label="Schema editor"
+              className="flex h-[34px] w-[34px] items-center justify-center rounded-[10px] text-ink-dim transition-colors hover:bg-elevated hover:text-ink"
+            >
+              <DiagramIcon width={16} height={16} />
+            </button>
+          </Tooltip>
           <div className="relative flex max-w-[560px] flex-1 items-center">
             <SearchIcon width={16} height={16} className="absolute left-3.5 text-ink-faint" />
             <input
@@ -515,24 +541,18 @@ export default function Workspace() {
             />
             <kbd className="absolute right-3 rounded-[5px] border border-edge bg-card px-1.5 py-px text-[11px] text-ink-faint">⌘K</kbd>
           </div>
-          <button
-            onClick={() => setChangesOpen(true)}
-            title="View changes"
-            className={`ml-auto flex items-center gap-2 rounded-[10px] border px-3 py-[7px] text-xs font-semibold transition-colors ${
-              changes.length > 0
-                ? 'border-green-dim bg-green/10 text-green-bright hover:bg-green/15'
-                : 'border-edge bg-elevated text-ink-dim hover:text-ink'
-            }`}
-          >
-            Changes
-            <span
-              className={`rounded-[20px] px-[7px] text-xs ${
-                changes.length > 0 ? 'bg-green text-white' : 'bg-edge text-ink-faint'
-              }`}
-            >
-              {changes.length}
-            </span>
-          </button>
+          <div className="ml-auto flex items-center gap-2">
+            <button onClick={() => setChangesOpen(true)} title="View changes" className={btnSql}>
+              Changes
+              <span
+                className={`rounded-[20px] px-[7px] text-xs ${
+                  changes.length > 0 ? 'bg-green text-white' : 'bg-edge text-ink-faint'
+                }`}
+              >
+                {changes.length}
+              </span>
+            </button>
+          </div>
         </div>
 
         <div className="flex items-stretch gap-1 overflow-x-auto border-b border-edge bg-panel px-1.5 pt-1.5">
@@ -556,6 +576,8 @@ export default function Workspace() {
                   <CodeIcon className={active ? 'text-ink' : 'text-ink-faint'} />
                 ) : t.kind === 'schema' ? (
                   <ColumnsIcon className={active ? 'text-ink' : 'text-ink-faint'} />
+                ) : t.kind === 'schemaEditor' ? (
+                  <DiagramIcon className={active ? 'text-ink' : 'text-ink-faint'} />
                 ) : (
                   <TableIcon className={active ? 'text-ink' : 'text-ink-faint'} />
                 )}
@@ -579,6 +601,11 @@ export default function Workspace() {
           )}
           {conn && current?.kind === 'schema' && (
             <SchemaView key={`${current.key}:${dataVersion}`} conn={conn} table={current.table} />
+          )}
+          {conn && current?.kind === 'schemaEditor' && (
+            <Suspense fallback={<div className="flex-1 p-8 text-center text-xs text-ink-faint">Loading schema…</div>}>
+              <SchemaEditor key={`schema-editor:${dataVersion}`} conn={conn} onStage={stageTableChanges} />
+            </Suspense>
           )}
           {conn && current?.kind === 'query' && (
             <Suspense fallback={<div className="flex-1 p-8 text-center text-xs text-ink-faint">Loading editor…</div>}>
@@ -726,6 +753,7 @@ export default function Workspace() {
           onClose={() => setChangesOpen(false)}
         />
       )}
+
     </div>
   )
 }

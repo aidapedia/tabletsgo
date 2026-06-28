@@ -342,6 +342,17 @@ app.put('/api/connections/:id', (req, res) => {
   if (!existing) return res.status(404).json({ error: 'Connection not found' })
   const updated = { ...existing, ...req.body, id: req.params.id }
   saveConnection(updated)
+
+  // Drop any cached pool/handle so the next query reconnects with the new
+  // config (otherwise edits to host/credentials/database are ignored).
+  const pool = postgresConnections.get(req.params.id)
+  if (pool) {
+    pool.end()
+    postgresConnections.delete(req.params.id)
+  }
+  if (existing.filepath) sqliteConnections.delete(existing.filepath)
+  if (updated.filepath && updated.filepath !== existing.filepath) sqliteConnections.delete(updated.filepath)
+
   res.json(updated)
 })
 
@@ -467,6 +478,47 @@ app.get('/api/connections/:id/schema', async (req, res) => {
       }
     }
     res.json(schema)
+  } catch (error) {
+    res.status(500).json({ error: error.message })
+  }
+})
+
+// Schema diagram: every table's columns + foreign-key relationships.
+app.get('/api/connections/:id/diagram', async (req, res) => {
+  const conn = getConnection(req.params.id)
+  if (!conn) return res.status(404).json({ error: 'Connection not found' })
+
+  try {
+    const tables = []
+    const foreignKeys = []
+
+    if (conn.type === 'sqlite') {
+      const db = getSqliteDb(conn.filepath)
+      for (const t of listSqliteTables(db)) {
+        tables.push({ name: t, columns: getSqliteColumns(db, t) })
+        for (const fk of db.prepare(`PRAGMA foreign_key_list("${t}")`).all()) {
+          foreignKeys.push({ table: t, column: fk.from, refTable: fk.table, refColumn: fk.to })
+        }
+      }
+    } else if (conn.type === 'postgresql') {
+      const pool = await getPostgresPool(conn.id, conn)
+      for (const t of await listPostgresTables(pool)) {
+        tables.push({ name: t, columns: await getPostgresColumns(pool, t) })
+      }
+      const fkRes = await pool.query(`
+        SELECT tc.table_name AS table, kcu.column_name AS column,
+               ccu.table_name AS ref_table, ccu.column_name AS ref_column
+        FROM information_schema.table_constraints tc
+        JOIN information_schema.key_column_usage kcu
+          ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+        JOIN information_schema.constraint_column_usage ccu
+          ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema
+        WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_schema = 'public'`)
+      for (const r of fkRes.rows) {
+        foreignKeys.push({ table: r.table, column: r.column, refTable: r.ref_table, refColumn: r.ref_column })
+      }
+    }
+    res.json({ tables, foreignKeys })
   } catch (error) {
     res.status(500).json({ error: error.message })
   }

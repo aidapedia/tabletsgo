@@ -105,6 +105,30 @@ html.light {
   }
 }
 
+/* ---------- React Flow (schema editor) dark theming ---------- */
+.react-flow__minimap {
+  background-color: var(--color-panel) !important;
+  border: 1px solid var(--color-edge);
+  border-radius: 8px;
+}
+.react-flow__controls {
+  border: 1px solid var(--color-edge);
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 8px 24px -12px rgba(0, 0, 0, 0.7);
+}
+.react-flow__controls-button {
+  background: var(--color-elevated);
+  border-bottom: 1px solid var(--color-edge);
+  color: var(--color-ink);
+}
+.react-flow__controls-button:hover {
+  background: var(--color-card-hover);
+}
+.react-flow__controls-button svg {
+  fill: var(--color-ink-dim);
+}
+
 /* ---------- Login hero grid backdrop (not expressible as utilities) ---------- */
 @utility login-grid {
   background-image:

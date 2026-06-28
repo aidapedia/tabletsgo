@@ -64,6 +64,16 @@ export async function getSchema(conn) {
   return {}
 }
 
+export async function getDiagram(conn) {
+  try {
+    const res = await fetch(`${API_URL}/connections/${conn.id}/diagram`)
+    if (res.ok) return await res.json()
+  } catch (error) {
+    console.error('Failed to get diagram:', error)
+  }
+  return { tables: [], foreignKeys: [] }
+}
+
 export async function insertRow(conn, table, values) {
   try {
     const res = await fetch(`${API_URL}/connections/${conn.id}/insert`, {
