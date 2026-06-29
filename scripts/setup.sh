@@ -22,15 +22,6 @@ npm install
 echo "✅ Dependencies installed"
 echo ""
 
-# Create demo database
-echo "📊 Creating demo SQLite database..."
-if [ ! -f "demo.db" ]; then
-    node scripts/create-demo-db.js
-else
-    echo "   demo.db already exists, skipping..."
-fi
-echo ""
-
 # Show next steps
 echo "🎉 Setup complete!"
 echo ""
@@ -47,8 +38,5 @@ echo "    • Starts only backend server (requires frontend running separately)"
 echo ""
 echo "📖 Open http://localhost:5173 in your browser once everything is running!"
 echo ""
-echo "🎨 Default Demo Connection:"
-echo "   Name: Demo Database"
-echo "   Type: SQLite"
-echo "   File: ./demo.db"
+echo "➕ Add a database connection from the app's Connections screen to get started."
 echo ""

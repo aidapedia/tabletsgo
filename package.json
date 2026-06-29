@@ -7,7 +7,6 @@
     "dev": "vite",
     "server": "node server.js",
     "dev:all": "concurrently \"npm run dev\" \"npm run server\"",
-    "db:setup": "node scripts/create-demo-db.js",
     "build": "vite build",
     "preview": "vite preview",
     "start": "node server.js"

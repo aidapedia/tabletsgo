@@ -3,33 +3,19 @@ import { createContext, useContext, useEffect, useState } from 'react'
 const ConnectionsContext = createContext(null)
 const API_URL = '/api'
 
-const INITIAL_CONNECTIONS = [
-  {
-    id: 'demo-sqlite',
-    name: 'Demo Database',
-    type: 'sqlite',
-    environment: 'local',
-    filepath: './demo.db',
-    folder: 'Demo',
-  },
-]
-
 export function ConnectionsProvider({ children }) {
-  const [connections, setConnections] = useState(INITIAL_CONNECTIONS)
+  const [connections, setConnections] = useState([])
   const [loading, setLoading] = useState(true)
 
-  // Load connections from backend
+  // Load connections from backend — the list reflects exactly what the server returns.
   useEffect(() => {
     const loadConnections = async () => {
       try {
         const res = await fetch(`${API_URL}/connections`)
-        if (res.ok) {
-          const data = await res.json()
-          setConnections(data.length > 0 ? data : INITIAL_CONNECTIONS)
-        }
+        if (res.ok) setConnections(await res.json())
       } catch (error) {
         console.error('Failed to load connections:', error)
-        setConnections(INITIAL_CONNECTIONS)
+        setConnections([])
       } finally {
         setLoading(false)
       }

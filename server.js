@@ -12,7 +12,6 @@ import { fileURLToPath } from 'url'
 import { randomUUID, createHash } from 'crypto'
 import Database from 'better-sqlite3'
 import pkg from 'pg'
-import { POSTGRES_SEED } from './src/db/seed-data.js'
 const { Client, Pool } = pkg
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -101,19 +100,6 @@ function initMetaDb() {
       .run(randomUUID(), 'admin', sha256('admin123'), 'Admin', 'admin')
     console.log('🌱 Seeded default user: admin / admin123')
   }
-
-  // Seed the demo connection so its id resolves for table/query routes.
-  if (!meta.prepare('SELECT 1 FROM connections WHERE id = ?').get('demo-sqlite')) {
-    const demo = {
-      id: 'demo-sqlite',
-      name: 'Demo Database',
-      type: 'sqlite',
-      environment: 'local',
-      filepath: './demo.db',
-      folder: 'Demo',
-    }
-    meta.prepare('INSERT INTO connections (id, data, created_at) VALUES (?, ?, ?)').run(demo.id, JSON.stringify(demo), Date.now())
-  }
 }
 initMetaDb()
 
@@ -136,36 +122,9 @@ const deleteConnectionRow = (id) => meta.prepare('DELETE FROM connections WHERE 
 
 function getSqliteDb(path) {
   if (!sqliteConnections.has(path)) {
-    const db = new Database(path)
-    // Auto-seed the demo database the first time it's opened empty so a fresh
-    // (deleted/recreated) demo.db always comes back with sample data.
-    if (path.endsWith('demo.db')) seedDemoIfEmpty(db)
-    sqliteConnections.set(path, db)
+    sqliteConnections.set(path, new Database(path))
   }
   return sqliteConnections.get(path)
-}
-
-function seedDemoIfEmpty(db) {
-  const { n } = db
-    .prepare(`SELECT COUNT(*) AS n FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`)
-    .get()
-  if (n > 0) return false
-
-  console.log('🌱 demo.db is empty — seeding sample data...')
-  const statements = POSTGRES_SEED.split(';').map((s) => s.trim()).filter(Boolean)
-  const seed = db.transaction(() => {
-    for (const stmt of statements) {
-      try {
-        db.exec(stmt)
-      } catch (error) {
-        console.error('   seed statement failed:', error.message)
-      }
-    }
-  })
-  seed()
-  const tables = listSqliteTables(db)
-  console.log(`✅ Seeded ${tables.length} table(s): ${tables.join(', ')}`)
-  return true
 }
 
 function listSqliteTables(db) {
@@ -832,7 +791,7 @@ app.use((error, req, res, next) => {
 app.listen(PORT, () => {
   console.log(`✅ Server running on http://localhost:${PORT}`)
   console.log(`📊 API available at http://localhost:${PORT}/api`)
-  // Open (and seed if empty) any seeded SQLite connections up front.
+  // Pre-open existing SQLite connections so the first query is fast.
   for (const conn of listConnections()) {
     if (conn.type === 'sqlite' && conn.filepath) {
       try {
