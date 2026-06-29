@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { getColumns, getTableData } from '../../db/sqlite.js'
+import { useSettings } from '../../context/SettingsContext.jsx'
 import DataGrid from './DataGrid.jsx'
 import InsertRowPanel from './InsertRowPanel.jsx'
 import Button from '../ui/Button.jsx'
@@ -66,6 +67,7 @@ function matchFilter(row, f) {
 
 export default function TableView({ conn, table, onChange }) {
   const toast = useToast()
+  const { tableRowLimit } = useSettings()
   const [columns, setColumns] = useState([])
   const [rows, setRows] = useState([])
   const [pkCols, setPkCols] = useState([])
@@ -82,7 +84,7 @@ export default function TableView({ conn, table, onChange }) {
 
   const load = async () => {
     setLoading(true)
-    const [result, meta] = await Promise.all([getTableData(conn, table), getColumns(conn, table)])
+    const [result, meta] = await Promise.all([getTableData(conn, table, tableRowLimit), getColumns(conn, table)])
     setColumns(result.columns || [])
     setRows(result.rows || [])
     setPkCols((meta || []).filter((c) => c.pk).map((c) => c.name))

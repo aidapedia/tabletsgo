@@ -7,7 +7,17 @@ import Select from '../components/ui/Select.jsx'
 import ConfirmDialog from '../components/ui/ConfirmDialog.jsx'
 import { getNamespaces, listTables, runQuery } from '../db/sqlite.js'
 import { addRecent, loadRecents, relativeTime, saveRecents } from '../recents.js'
-import { fetchSaved, createSaved, deleteSaved, renameSaved } from '../savedQueries.js'
+import {
+  fetchSaved,
+  createSaved,
+  deleteSaved,
+  renameSaved,
+  updateSaved,
+  fetchFolders,
+  createFolder,
+  renameFolder,
+  deleteFolder,
+} from '../savedQueries.js'
 import { draftToItems } from '../schemaDraft.js'
 import TableView from '../components/workspace/TableView.jsx'
 import CreateTablePanel from '../components/workspace/CreateTablePanel.jsx'
@@ -76,6 +86,7 @@ export default function Workspace() {
   const [creatingTable, setCreatingTable] = useState(false)
   const [recents, setRecents] = useState(() => loadRecents(id))
   const [saved, setSaved] = useState([])
+  const [folders, setFolders] = useState([])
   const [tabMenu, setTabMenu] = useState(null) // { x, y, key } | null
   const [savingQuery, setSavingQuery] = useState(null) // sql string being saved | null
   const [changes, setChanges] = useState([]) // staged (uncommitted) SQL mutations
@@ -148,10 +159,11 @@ export default function Workspace() {
   }
   const changeSchema = (schema) => setNs((p) => ({ ...p, schema }))
 
-  // Load this connection's saved queries from the backend.
+  // Load this connection's saved queries and folders from the backend.
   useEffect(() => {
     let alive = true
     fetchSaved(id).then((list) => alive && setSaved(list))
+    fetchFolders(id).then((list) => alive && setFolders(list))
     return () => {
       alive = false
     }
@@ -215,6 +227,17 @@ export default function Workspace() {
     const key = `query:${queryCounter}`
     const initialSql = typeof sql === 'string' ? sql : undefined
     setTabs((prev) => [...prev, { key, kind: 'query', title: `Query ${queryCounter}`, sql: initialSql }])
+    setActiveTab(key)
+    setSidebarOpen(false)
+  }
+
+  // Open a saved query in its own identity-bearing tab: title tracks the saved
+  // query's name (and stays in sync on rename), focus if already open.
+  const openSavedQuery = (q) => {
+    const key = `query:saved:${q.id}`
+    setTabs((prev) =>
+      prev.some((t) => t.key === key) ? prev : [...prev, { key, kind: 'query', title: q.name, sql: q.sql, savedId: q.id }]
+    )
     setActiveTab(key)
     setSidebarOpen(false)
   }
@@ -289,8 +312,23 @@ export default function Workspace() {
   }
 
   const saveQuery = (sql) => {
-    if (!sql.trim()) return
-    setSavingQuery(sql.trim())
+    const trimmed = sql.trim()
+    if (!trimmed) return
+    // Saving a tab opened from a saved query updates it in place — no drawer.
+    if (current?.savedId) {
+      updateSavedQuery(current.savedId, trimmed)
+      return
+    }
+    setSavingQuery(trimmed)
+  }
+  const updateSavedQuery = async (sid, sql) => {
+    setSaved((prev) => prev.map((s) => (s.id === sid ? { ...s, sql } : s)))
+    try {
+      await updateSaved(id, sid, { sql })
+      toast.success('Query updated.')
+    } catch (e) {
+      toast.error(`Update failed: ${e.message}`)
+    }
   }
   const commitSaveQuery = async (name) => {
     const sqlToSave = savingQuery
@@ -308,6 +346,46 @@ export default function Workspace() {
   const removeSaved = async (sid) => {
     setSaved((prev) => prev.filter((s) => s.id !== sid))
     await deleteSaved(id, sid)
+  }
+
+  // ---- Folders ----
+  const addFolder = async (name) => {
+    const next = name?.trim()
+    if (!next) return
+    try {
+      const folder = await createFolder(id, next)
+      setFolders((prev) => [...prev, folder])
+    } catch (e) {
+      toast.error(`Couldn't create folder: ${e.message}`)
+    }
+  }
+  const renameFolderById = async (fid, name) => {
+    const next = name?.trim()
+    if (!next) return
+    setFolders((prev) => prev.map((f) => (f.id === fid ? { ...f, name: next } : f)))
+    try {
+      await renameFolder(id, fid, next)
+    } catch (e) {
+      toast.error(`Rename failed: ${e.message}`)
+    }
+  }
+  const removeFolder = async (fid) => {
+    // Detach the folder's queries back to the root locally, mirroring the server.
+    setFolders((prev) => prev.filter((f) => f.id !== fid))
+    setSaved((prev) => prev.map((s) => (s.folderId === fid ? { ...s, folderId: null } : s)))
+    try {
+      await deleteFolder(id, fid)
+    } catch (e) {
+      toast.error(`Delete failed: ${e.message}`)
+    }
+  }
+  const moveSavedToFolder = async (sid, folderId) => {
+    setSaved((prev) => prev.map((s) => (s.id === sid ? { ...s, folderId: folderId || null } : s)))
+    try {
+      await updateSaved(id, sid, { folderId: folderId || null })
+    } catch (e) {
+      toast.error(`Move failed: ${e.message}`)
+    }
   }
 
   // Sidebar "Create table" stages directly into Changes.
@@ -362,8 +440,10 @@ export default function Workspace() {
     const next = name?.trim()
     if (!next) return
     setSaved((prev) => prev.map((s) => (s.id === sid ? { ...s, name: next } : s)))
-    // Keep the matching open schema-editor tab's title in sync.
-    setTabs((prev) => prev.map((t) => (t.key === `schema:${sid}` ? { ...t, title: next } : t)))
+    // Keep the matching open schema-editor / saved-query tab's title in sync.
+    setTabs((prev) =>
+      prev.map((t) => (t.key === `schema:${sid}` || t.key === `query:saved:${sid}` ? { ...t, title: next } : t))
+    )
     try {
       await renameSaved(id, sid, next)
       toast.success(`Renamed to “${next}”.`)
@@ -604,15 +684,22 @@ export default function Workspace() {
         ) : (
           <SavedQueriesPanel
             saved={saved}
+            folders={folders}
             recents={recents}
             onOpen={(sql) => openQuery(sql)}
+            onOpenSaved={openSavedQuery}
             onOpenSchemaDraft={openSchemaDraft}
             onRenameSaved={renameSavedQuery}
             onDeleteSaved={removeSaved}
+            onCreateFolder={addFolder}
+            onRenameFolder={renameFolderById}
+            onDeleteFolder={removeFolder}
+            onMoveToFolder={moveSavedToFolder}
             onNew={() => openQuery()}
             onRefresh={() => {
               setRecents(loadRecents(id))
               fetchSaved(id).then(setSaved)
+              fetchFolders(id).then(setFolders)
             }}
             onClear={clearRecents}
           />

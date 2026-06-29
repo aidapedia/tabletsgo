@@ -99,6 +99,7 @@ export default function QueryEditor({ conn, dialect, initialSql, onRan, onSave }
   const [result, setResult] = useState(null)
   const [error, setError] = useState(null)
   const [loading, setLoading] = useState(false)
+  const [elapsedMs, setElapsedMs] = useState(null) // execution latency of the last run
 
   useEffect(() => {
     let alive = true
@@ -112,8 +113,11 @@ export default function QueryEditor({ conn, dialect, initialSql, onRan, onSave }
     if (!sql.trim() || loading) return
     setError(null)
     setLoading(true)
+    const startedAt = performance.now()
     try {
       const queryResult = await runQuery(conn, sql)
+      const ms = Math.round(performance.now() - startedAt)
+      setElapsedMs(ms)
       if (queryResult.error) {
         setError(queryResult.error)
         setResult(null)
@@ -124,11 +128,12 @@ export default function QueryEditor({ conn, dialect, initialSql, onRan, onSave }
         onRan?.({ sql: sql.trim(), ts: Date.now(), rows })
         toast.success(
           queryResult.type === 'rows'
-            ? `Query OK · ${rows.toLocaleString()} row(s) returned.`
-            : queryResult.message || 'Query executed successfully.'
+            ? `Query OK · ${rows.toLocaleString()} row(s) · ${ms} ms`
+            : `${queryResult.message || 'Query executed successfully.'} · ${ms} ms`
         )
       }
     } catch (e) {
+      setElapsedMs(Math.round(performance.now() - startedAt))
       setResult(null)
       setError(e.message)
       toast.error(`Query failed: ${e.message}`)
@@ -233,7 +238,10 @@ export default function QueryEditor({ conn, dialect, initialSql, onRan, onSave }
         )}
         {!error && result?.type === 'rows' && (
           <>
-            <div className="border-b border-edge px-[18px] py-2 text-xs text-ink-dim">{result.rows.length} row(s)</div>
+            <div className="border-b border-edge px-[18px] py-2 text-xs text-ink-dim">
+              {result.rows.length} row(s)
+              {elapsedMs != null && <span className="text-ink-faint"> · {elapsedMs} ms</span>}
+            </div>
             <DataGrid columns={result.columns} rows={result.rows} />
           </>
         )}

@@ -62,12 +62,24 @@ function initMetaDb() {
       kind TEXT,
       ts INTEGER
     );
+    CREATE TABLE IF NOT EXISTS saved_folders (
+      id TEXT PRIMARY KEY,
+      connection_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      ts INTEGER
+    );
   `)
   // Migrate older DBs that predate the `kind` column.
   try {
     meta.prepare('SELECT kind FROM saved_queries LIMIT 1').get()
   } catch {
     meta.exec('ALTER TABLE saved_queries ADD COLUMN kind TEXT')
+  }
+  // Migrate older DBs that predate the `folder_id` column.
+  try {
+    meta.prepare('SELECT folder_id FROM saved_queries LIMIT 1').get()
+  } catch {
+    meta.exec('ALTER TABLE saved_queries ADD COLUMN folder_id TEXT')
   }
 
   // Seed the default admin user.
@@ -394,15 +406,53 @@ app.delete('/api/connections/:id', (req, res) => {
 
   deleteConnectionRow(req.params.id)
   meta.prepare('DELETE FROM saved_queries WHERE connection_id = ?').run(req.params.id)
+  meta.prepare('DELETE FROM saved_folders WHERE connection_id = ?').run(req.params.id)
   res.json({ ok: true })
 })
 
 // ---- Saved queries (per connection) ----
 app.get('/api/connections/:id/saved', (req, res) => {
   const rows = meta
-    .prepare('SELECT id, name, sql, kind, ts FROM saved_queries WHERE connection_id = ? ORDER BY ts DESC')
+    .prepare('SELECT id, name, sql, kind, folder_id, ts FROM saved_queries WHERE connection_id = ? ORDER BY ts DESC')
     .all(req.params.id)
-  res.json(rows.map((r) => ({ ...r, kind: r.kind || 'query' })))
+  res.json(rows.map((r) => ({ ...r, kind: r.kind || 'query', folderId: r.folder_id || null })))
+})
+
+// ---- Saved folders (per connection) ----
+app.get('/api/connections/:id/folders', (req, res) => {
+  const rows = meta
+    .prepare('SELECT id, name, ts FROM saved_folders WHERE connection_id = ? ORDER BY ts ASC')
+    .all(req.params.id)
+  res.json(rows)
+})
+
+app.post('/api/connections/:id/folders', (req, res) => {
+  const { name } = req.body || {}
+  if (!name?.trim()) return res.status(400).json({ error: 'A folder name is required' })
+  const entry = { id: randomUUID(), name: name.trim(), ts: Date.now() }
+  meta
+    .prepare('INSERT INTO saved_folders (id, connection_id, name, ts) VALUES (?, ?, ?, ?)')
+    .run(entry.id, req.params.id, entry.name, entry.ts)
+  res.json(entry)
+})
+
+app.put('/api/connections/:id/folders/:fid', (req, res) => {
+  const { name } = req.body || {}
+  if (!name?.trim()) return res.status(400).json({ error: 'A folder name is required' })
+  const r = meta
+    .prepare('UPDATE saved_folders SET name = ? WHERE id = ? AND connection_id = ?')
+    .run(name.trim(), req.params.fid, req.params.id)
+  if (!r.changes) return res.status(404).json({ error: 'Not found' })
+  res.json({ ok: true, name: name.trim() })
+})
+
+app.delete('/api/connections/:id/folders/:fid', (req, res) => {
+  // Detach the folder's queries back to the root, then remove the folder.
+  meta
+    .prepare('UPDATE saved_queries SET folder_id = NULL WHERE folder_id = ? AND connection_id = ?')
+    .run(req.params.fid, req.params.id)
+  meta.prepare('DELETE FROM saved_folders WHERE id = ? AND connection_id = ?').run(req.params.fid, req.params.id)
+  res.json({ ok: true })
 })
 
 app.post('/api/connections/:id/saved', (req, res) => {
@@ -416,13 +466,31 @@ app.post('/api/connections/:id/saved', (req, res) => {
 })
 
 app.put('/api/connections/:id/saved/:sid', (req, res) => {
-  const { name } = req.body || {}
-  if (!name?.trim()) return res.status(400).json({ error: 'A name is required' })
+  const body = req.body || {}
+  const { name, sql } = body
+  const sets = []
+  const vals = []
+  if (name != null) {
+    if (!name.trim()) return res.status(400).json({ error: 'A name is required' })
+    sets.push('name = ?')
+    vals.push(name.trim())
+  }
+  if (sql != null) {
+    if (!sql.trim()) return res.status(400).json({ error: 'SQL is required' })
+    sets.push('sql = ?')
+    vals.push(sql.trim())
+  }
+  // folderId is explicitly settable (null moves the query back to the root).
+  if ('folderId' in body) {
+    sets.push('folder_id = ?')
+    vals.push(body.folderId || null)
+  }
+  if (!sets.length) return res.status(400).json({ error: 'Nothing to update' })
   const r = meta
-    .prepare('UPDATE saved_queries SET name = ? WHERE id = ? AND connection_id = ?')
-    .run(name.trim(), req.params.sid, req.params.id)
+    .prepare(`UPDATE saved_queries SET ${sets.join(', ')} WHERE id = ? AND connection_id = ?`)
+    .run(...vals, req.params.sid, req.params.id)
   if (!r.changes) return res.status(404).json({ error: 'Not found' })
-  res.json({ ok: true, name: name.trim() })
+  res.json({ ok: true })
 })
 
 app.delete('/api/connections/:id/saved/:sid', (req, res) => {
