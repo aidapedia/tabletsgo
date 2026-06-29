@@ -92,14 +92,16 @@ const highlightStyle = HighlightStyle.define([
   { tag: t.variableName, color: '#f4f4f5' },
 ])
 
-export default function QueryEditor({ conn, dialect, initialSql, onRan, onSave }) {
+export default function QueryEditor({ conn, dialect, initialSql, tabKey, persisted, onPersist, onRan, onSave }) {
   const toast = useToast()
-  const [sql, setSql] = useState(initialSql || '')
+  // Seed from the persisted snapshot (restored on tab switch) when present,
+  // otherwise from initialSql for a fresh tab.
+  const [sql, setSql] = useState(persisted?.sql ?? initialSql ?? '')
   const [schema, setSchema] = useState({})
-  const [result, setResult] = useState(null)
-  const [error, setError] = useState(null)
+  const [result, setResult] = useState(persisted?.result ?? null)
+  const [error, setError] = useState(persisted?.error ?? null)
   const [loading, setLoading] = useState(false)
-  const [elapsedMs, setElapsedMs] = useState(null) // execution latency of the last run
+  const [elapsedMs, setElapsedMs] = useState(persisted?.elapsedMs ?? null) // latency of last run
 
   useEffect(() => {
     let alive = true
@@ -108,6 +110,14 @@ export default function QueryEditor({ conn, dialect, initialSql, onRan, onSave }
       alive = false
     }
   }, [conn])
+
+  // Persist the editor's state when this tab is switched away (unmount), so its
+  // SQL and result survive until the tab is closed.
+  const snapshotRef = useRef(null)
+  snapshotRef.current = { sql, result, error, elapsedMs }
+  const persistRef = useRef(null)
+  persistRef.current = () => onPersist?.(tabKey, snapshotRef.current)
+  useEffect(() => () => persistRef.current?.(), [])
 
   const run = async () => {
     if (!sql.trim() || loading) return

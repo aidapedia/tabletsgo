@@ -6,3 +6,4 @@ dist-ssr
 .vite
 demo.db
 data/*
+CLAUDE.MD

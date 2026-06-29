@@ -92,6 +92,7 @@ export default function Workspace() {
   const [changes, setChanges] = useState([]) // staged (uncommitted) SQL mutations
   const [changesOpen, setChangesOpen] = useState(false)
   const [schemaPending, setSchemaPending] = useState({}) // per schema-editor tab: key -> items[]
+  const [queryState, setQueryState] = useState({}) // per query tab: key -> { sql, result, error, elapsedMs }
   const [closingTab, setClosingTab] = useState(null) // tab key awaiting close confirmation
   const [committing, setCommitting] = useState(false)
   const [dataVersion, setDataVersion] = useState(0) // bump to force table reloads
@@ -452,9 +453,15 @@ export default function Workspace() {
     }
   }
 
-  // Actually drop a tab (and its pending schema changes).
+  // Persist a query tab's editor state (SQL + result) so it survives tab
+  // switches; held until the tab is closed.
+  const persistQueryState = (key, snapshot) =>
+    setQueryState((p) => ({ ...p, [key]: snapshot }))
+
+  // Actually drop a tab (and its pending schema changes / query state).
   const dropTab = (key) => {
     if (schemaPending[key]) setSchemaPending((p) => { const n = { ...p }; delete n[key]; return n })
+    if (queryState[key]) setQueryState((p) => { const n = { ...p }; delete n[key]; return n })
     setTabs((prev) => {
       const next = prev.filter((t) => t.key !== key)
       if (activeTab === key) setActiveTab(next.length ? next[next.length - 1].key : null)
@@ -820,9 +827,12 @@ export default function Workspace() {
             <Suspense fallback={<div className="flex-1 p-8 text-center text-xs text-ink-faint">Loading editor…</div>}>
               <QueryEditor
                 key={current.key}
+                tabKey={current.key}
                 conn={nsConn}
                 dialect={DIALECT[conn.type]}
                 initialSql={current.sql ?? ''}
+                persisted={queryState[current.key]}
+                onPersist={persistQueryState}
                 onRan={pushRecent}
                 onSave={saveQuery}
               />

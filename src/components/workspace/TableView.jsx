@@ -258,37 +258,38 @@ export default function TableView({ conn, table, onChange }) {
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      {/* Selection action bar — replaces the toolbar while rows are selected */}
-      {selCount > 0 && (
-        <div className="flex items-center gap-2 border-b border-edge px-3 py-2">
-          <Button variant="primary" size="sm" icon={TrashIcon} onClick={deleteSelected}
-            className="!bg-red !text-white hover:!bg-red/90">
-            Delete
-          </Button>
-          <Button variant="subtle" size="sm" icon={CopyIcon} onClick={duplicateSelected}>
-            Duplicate
-          </Button>
+      {/* Toolbar / action list — the left actions swap to bulk actions while
+          rows are selected; the right cluster (columns, pagination, page size)
+          stays visible in both states. */}
+      <div className="flex flex-wrap items-center gap-2 border-b border-edge px-3 py-2">
+        {selCount > 0 ? (
+          <>
+            <Button variant="primary" size="sm" icon={TrashIcon} onClick={deleteSelected}
+              className="!bg-red !text-white hover:!bg-red/90">
+              Delete
+            </Button>
+            <Button variant="subtle" size="sm" icon={CopyIcon} onClick={duplicateSelected}>
+              Duplicate
+            </Button>
 
-          <div className="mx-0.5 h-5 w-px bg-edge" />
+            <div className="mx-0.5 h-5 w-px bg-edge" />
 
-          <span className="text-[11px] font-semibold text-ink">{selCount} selected</span>
+            <span className="text-[11px] font-semibold text-ink">{selCount} selected</span>
 
-          <Button variant="subtle" size="sm" className="ml-auto !px-2" onClick={clearSelection} aria-label="Clear selection">
-            <CloseIcon width={16} height={16} />
-          </Button>
-        </div>
-      )}
+            <Button variant="subtle" size="sm" className="!px-2" onClick={clearSelection} aria-label="Clear selection">
+              <CloseIcon width={16} height={16} />
+            </Button>
+          </>
+        ) : (
+          <>
+            <Button variant="primary" size="sm" icon={PlusSmall} onClick={() => setShowInsert(true)} disabled={loading}>
+              Insert
+            </Button>
+            <Button variant="subtle" size="sm" icon={RefreshIcon} onClick={load} disabled={loading}>
+              Refresh
+            </Button>
 
-      {/* Toolbar / action list */}
-      <div className={`flex flex-wrap items-center gap-2 border-b border-edge px-3 py-2 ${selCount > 0 ? 'hidden' : ''}`}>
-        <Button variant="primary" size="sm" icon={PlusSmall} onClick={() => setShowInsert(true)} disabled={loading}>
-          Insert
-        </Button>
-        <Button variant="subtle" size="sm" icon={RefreshIcon} onClick={load} disabled={loading}>
-          Refresh
-        </Button>
-
-        <div className="mx-0.5 h-5 w-px bg-edge" />
+            <div className="mx-0.5 h-5 w-px bg-edge" />
 
         <Popover
           width={380}
@@ -332,11 +333,13 @@ export default function TableView({ conn, table, onChange }) {
           )}
         </Popover>
 
-        <Button variant="subtle" size="sm" icon={DownloadIcon} onClick={exportCsv} disabled={!sorted.length}>
-          Export
-        </Button>
+            <Button variant="subtle" size="sm" icon={DownloadIcon} onClick={exportCsv} disabled={!sorted.length}>
+              Export
+            </Button>
+          </>
+        )}
 
-        {/* Right cluster */}
+        {/* Right cluster — columns / pagination / page size — always visible */}
         <div className="ml-auto flex items-center gap-1">
           <Popover
             align="right"
