@@ -18,6 +18,7 @@ import {
   FilterIcon,
   PlusSmall,
   RefreshIcon,
+  SaveIcon,
   SortIcon,
   TrashIcon,
 } from '../icons.jsx'
@@ -72,6 +73,7 @@ export default function TableView({ conn, table, onChange }) {
   const [columns, setColumns] = useState([])
   const [rows, setRows] = useState([])
   const [pkCols, setPkCols] = useState([])
+  const [colTypes, setColTypes] = useState({}) // { colName: sqlType } for the editor
   const [loading, setLoading] = useState(true)
   const [showInsert, setShowInsert] = useState(false)
   const [selected, setSelected] = useState(() => new Set()) // row keys
@@ -89,6 +91,7 @@ export default function TableView({ conn, table, onChange }) {
     setColumns(result.columns || [])
     setRows(result.rows || [])
     setPkCols((meta || []).filter((c) => c.pk).map((c) => c.name))
+    setColTypes(Object.fromEntries((meta || []).map((c) => [c.name, c.type])))
     setSelected(new Set())
     setEdits({})
     setLoading(false)
@@ -259,11 +262,27 @@ export default function TableView({ conn, table, onChange }) {
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      {/* Toolbar / action list — the left actions swap to bulk actions while
-          rows are selected; the right cluster (columns, pagination, page size)
-          stays visible in both states. */}
+      {/* Toolbar / action list — the left actions swap to Save/Discard while
+          there are unsaved cell edits, or to bulk actions while rows are
+          selected; the right cluster (columns, pagination, page size) stays
+          visible in every state. */}
       <div className="flex flex-wrap items-center gap-2 border-b border-edge px-3 py-2">
-        {selCount > 0 ? (
+        {editCount > 0 ? (
+          <>
+            <Button variant="primary" size="sm" icon={SaveIcon} onClick={saveEdits}>
+              Save
+            </Button>
+            <Button variant="subtle" size="sm" onClick={discardEdits}>
+              Discard
+            </Button>
+
+            <div className="mx-0.5 h-5 w-px bg-edge" />
+
+            <span className="text-[11px] font-semibold text-amber">
+              {editCount} unsaved edit{editCount > 1 ? 's' : ''}
+            </span>
+          </>
+        ) : selCount > 0 ? (
           <>
             <Button variant="primary" size="sm" icon={TrashIcon} onClick={deleteSelected}
               className="!bg-red !text-white hover:!bg-red/90">
@@ -418,6 +437,7 @@ export default function TableView({ conn, table, onChange }) {
         <DataGrid
           columns={visibleColumns}
           rows={pageRows}
+          columnTypes={colTypes}
           selectable={selectable}
           getRowKey={rowKey}
           selectedKeys={selected}
@@ -427,22 +447,6 @@ export default function TableView({ conn, table, onChange }) {
           edits={editOverlay}
           onEdit={editCell}
         />
-      )}
-
-      {editCount > 0 && (
-        <div className="flex shrink-0 items-center gap-2 border-t border-edge bg-amber/10 px-3 py-2 shadow-[0_-8px_24px_-12px_rgba(0,0,0,0.6)]">
-          <span className="text-[11px] font-semibold text-amber">
-            {editCount} unsaved edit{editCount > 1 ? 's' : ''}
-          </span>
-          <div className="ml-auto flex gap-2">
-            <Button variant="subtle" size="sm" onClick={discardEdits}>
-              Discard
-            </Button>
-            <Button variant="primary" size="sm" onClick={saveEdits}>
-              Save to changes
-            </Button>
-          </div>
-        </div>
       )}
 
       {showInsert && (

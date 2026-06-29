@@ -257,7 +257,7 @@ export default function Workspace() {
   // Generic "Schema editor" scratch tab — focus it if already open.
   const openSchemaEditor = () => {
     const key = 'schema-editor'
-    setTabs((prev) => (prev.some((t) => t.key === key) ? prev : [...prev, { key, kind: 'schemaEditor', title: 'Schema editor' }]))
+    setTabs((prev) => (prev.some((t) => t.key === key) ? prev : [...prev, { key, kind: 'schemaEditor', title: 'Schema Editor' }]))
     setActiveTab(key)
     setSidebarOpen(false)
   }
@@ -451,9 +451,21 @@ export default function Workspace() {
 
   // Schema editor "Save as draft" — store the SQL in Saved Queries (schema kind).
   const saveSchemaDraft = async (items, name) => {
+    const tabKey = activeTab // the schema-editor tab that triggered the save
     try {
       const entry = await createSaved(id, { name, sql: items.map((i) => i.sql).join('\n'), kind: 'schema' })
       setSaved((prev) => [entry, ...prev])
+      // Link the active schema-editor tab to the saved draft: re-key it so it
+      // dedupes with the draft, its title tracks the name, and it keeps its
+      // pending items as the draft's working state.
+      const newKey = `schema:${entry.id}`
+      setSchemaPending((p) => {
+        const n = { ...p, [newKey]: items }
+        if (tabKey && tabKey !== newKey) delete n[tabKey]
+        return n
+      })
+      setTabs((prev) => prev.map((t) => (t.key === tabKey ? { ...t, key: newKey, title: name } : t)))
+      setActiveTab((cur) => (cur === tabKey ? newKey : cur))
       toast.success(`Saved draft “${name}”.`)
     } catch (e) {
       toast.error(`Save failed: ${e.message}`)

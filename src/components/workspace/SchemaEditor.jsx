@@ -15,11 +15,12 @@ import { toJpeg, toPng, toSvg } from 'html-to-image'
 import { getDiagram } from '../../db/sqlite.js'
 import Button from '../ui/Button.jsx'
 import Popover from '../ui/Popover.jsx'
+import Checkbox from '../ui/Checkbox.jsx'
 import TableEditPanel from './TableEditPanel.jsx'
 import CreateTablePanel from './CreateTablePanel.jsx'
 import SaveQueryPanel from './SaveQueryPanel.jsx'
 import { newItemId } from '../../schemaDraft.js'
-import { ChevronRight, DownloadIcon, PlusIcon, WandIcon } from '../icons.jsx'
+import { ChevronRight, DownloadIcon, PlusIcon, SaveIcon, TableIcon, WandIcon } from '../icons.jsx'
 
 const TYPES = {
   sqlite: ['INTEGER', 'TEXT', 'REAL', 'BLOB', 'NUMERIC'],
@@ -157,12 +158,14 @@ const JUMP_R = 5 // hop radius where edges cross
 const CORNER_R = 8 // rounded corner radius at turns
 
 // Custom edge: pre-computed rounded path + a dot at each connected endpoint.
+// Endpoint dots follow the edge's stroke colour so they match the theme.
 function FkEdge({ data, style, markerEnd }) {
+  const dot = style?.stroke || 'var(--color-ink)'
   return (
     <>
       <BaseEdge path={data.path} style={style} markerEnd={markerEnd} />
-      <circle cx={data.start.x} cy={data.start.y} r={3.5} fill="var(--color-green)" />
-      <circle cx={data.end.x} cy={data.end.y} r={3.5} fill="var(--color-green)" />
+      <circle cx={data.start.x} cy={data.start.y} r={3.5} fill={dot} />
+      <circle cx={data.end.x} cy={data.end.y} r={3.5} fill={dot} />
     </>
   )
 }
@@ -248,6 +251,9 @@ export default function SchemaEditor({ conn, changes, pending = [], onPendingCha
   const [diagram, setDiagram] = useState({ tables: [], foreignKeys: [] })
   const [loading, setLoading] = useState(true)
   const [selected, setSelected] = useState(null) // table name being edited
+  const [selectedEdge, setSelectedEdge] = useState(null) // clicked FK edge id
+  const [edgePopup, setEdgePopup] = useState(null) // { x, y, fk } — FK info popup
+  const [hiddenTables, setHiddenTables] = useState(() => new Set()) // tables hidden from the diagram
   const [menu, setMenu] = useState(null) // canvas context menu { x, y }
   const [creating, setCreating] = useState(false) // create-table panel open
   const [naming, setNaming] = useState(false) // "save as draft" name prompt open
@@ -318,18 +324,21 @@ export default function SchemaEditor({ conn, changes, pending = [], onPendingCha
     g.setDefaultEdgeLabel(() => ({}))
     g.setGraph({ rankdir: 'LR', nodesep: 50, ranksep: 110, marginx: 24, marginy: 24 })
 
+    const visible = augmented.filter((t) => !hiddenTables.has(t.name))
     const sizes = {}
-    for (const t of augmented) {
+    for (const t of visible) {
       const s = sizeOf(t)
       sizes[t.name] = s
       g.setNode(t.name, { width: s.w, height: s.h })
     }
     for (const fk of diagram.foreignKeys) {
-      if (fk.table !== fk.refTable) g.setEdge(fk.table, fk.refTable)
+      if (fk.table !== fk.refTable && !hiddenTables.has(fk.table) && !hiddenTables.has(fk.refTable)) {
+        g.setEdge(fk.table, fk.refTable)
+      }
     }
     dagre.layout(g)
 
-    return augmented.map((t) => {
+    return visible.map((t) => {
       const p = g.node(t.name)
       const s = sizes[t.name]
       return {
@@ -347,7 +356,14 @@ export default function SchemaEditor({ conn, changes, pending = [], onPendingCha
         },
       }
     })
-  }, [augmented, diagram, fkInfo])
+  }, [augmented, diagram, fkInfo, hiddenTables])
+
+  const toggleTable = (name) =>
+    setHiddenTables((s) => {
+      const n = new Set(s)
+      n.has(name) ? n.delete(name) : n.add(name)
+      return n
+    })
 
   // (Re)build nodes whenever the diagram or staged changes update.
   useEffect(() => {
@@ -355,7 +371,7 @@ export default function SchemaEditor({ conn, changes, pending = [], onPendingCha
   }, [layoutNodes, setNodes])
 
   // Edges are derived from live node positions, with jump arcs over crossings.
-  const edges = useMemo(() => {
+  const baseEdges = useMemo(() => {
     const byId = {}
     for (const n of nodes) byId[n.id] = n
 
@@ -393,14 +409,35 @@ export default function SchemaEditor({ conn, changes, pending = [], onPendingCha
       source: e.fk.table,
       target: e.fk.refTable,
       type: 'fk',
-      style: { stroke: '#6fcf6a', strokeWidth: 1.5 },
       data: {
+        fk: e.fk,
         path: pathWithJumps(e.points, verticals.filter((v) => v.id !== e.id)),
         start: e.points[0],
         end: e.points[e.points.length - 1],
       },
     }))
   }, [nodes, diagram])
+
+  // Apply theme colour + selection state without recomputing the routed paths.
+  // FK lines use the ink colour (white on dark, black on light); the selected
+  // edge animates (marching dots) and highlights green.
+  const edges = useMemo(
+    () =>
+      baseEdges.map((e) => {
+        const isSel = e.id === selectedEdge
+        return {
+          ...e,
+          animated: isSel, // drives React Flow's marching-ants animation
+          style: {
+            stroke: isSel ? 'var(--color-green)' : 'var(--color-ink)',
+            strokeWidth: isSel ? 2 : 1.5,
+            // Round dotted pattern so the animation reads as "moving dots".
+            ...(isSel ? { strokeDasharray: '0.1 6', strokeLinecap: 'round' } : {}),
+          },
+        }
+      }),
+    [baseEdges, selectedEdge]
+  )
 
   const autoLayout = () => {
     setNodes(layoutNodes())
@@ -449,35 +486,108 @@ export default function SchemaEditor({ conn, changes, pending = [], onPendingCha
     }
   }, [menu])
 
+  // Dismiss the FK popup (and clear the edge selection) on Escape / resize.
+  useEffect(() => {
+    if (!edgePopup) return
+    const close = () => {
+      setEdgePopup(null)
+      setSelectedEdge(null)
+    }
+    const onKey = (e) => e.key === 'Escape' && close()
+    window.addEventListener('resize', close)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('resize', close)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [edgePopup])
+
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      {/* Toolbar / action list */}
+      {/* Toolbar / action list — Save sits on the left; Export on the right.
+          Save is always shown but disabled until there are pending changes. */}
       <div className="flex items-center gap-2 border-b border-edge px-3 py-2">
-        <Button variant="primary" size="sm" icon={WandIcon} onClick={autoLayout} disabled={loading || !augmented.length}>
-          Organize
+        <Button
+          variant="primary"
+          size="sm"
+          icon={SaveIcon}
+          onClick={() => { onStageItems?.(pending); clearPending() }}
+          disabled={pending.length === 0}
+        >
+          Save
         </Button>
+
+        {pending.length > 0 && (
+          <>
+            <Button variant="ghost" size="sm" onClick={() => setNaming(true)}>
+              Save as draft
+            </Button>
+            <Button variant="subtle" size="sm" onClick={clearPending}>
+              Discard
+            </Button>
+            <span className="text-[11px] font-semibold text-amber">
+              {pending.length} pending change{pending.length > 1 ? 's' : ''}
+            </span>
+          </>
+        )}
+
         <span className="ml-1 text-[11px] text-ink-faint">{conn.name} · {diagram.tables.length} table(s)</span>
 
-        <Popover
-          align="right"
-          width={150}
-          trigger={({ open, toggle }) => (
-            <Button
-              variant="subtle"
-              size="sm"
-              icon={DownloadIcon}
-              chevron
-              active={open}
-              onClick={toggle}
-              disabled={loading || !augmented.length}
-              className="ml-auto"
-            >
-              Export
-            </Button>
-          )}
-        >
-          {({ close }) => <ExportOptions onExport={(f) => { exportImage(f); close() }} />}
-        </Popover>
+        {/* Right cluster — Tables (show/hide) + Export */}
+        <div className="ml-auto flex items-center gap-2">
+          <Popover
+            width={220}
+            trigger={({ open, toggle }) => (
+              <Button
+                variant="subtle"
+                size="sm"
+                icon={TableIcon}
+                chevron
+                active={open}
+                onClick={toggle}
+                disabled={loading || !augmented.length}
+              >
+                Tables
+              </Button>
+            )}
+          >
+            <div className="max-h-[320px] overflow-y-auto p-2">
+              <div className="px-1.5 pb-1.5 text-[11px] font-semibold text-ink-dim">Show / hide tables</div>
+              {[...augmented]
+                .sort((a, b) => a.name.localeCompare(b.name))
+                .map((t) => (
+                  <div
+                    key={t.name}
+                    onClick={() => toggleTable(t.name)}
+                    className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1.5 text-[11px] text-ink-dim hover:bg-card-hover hover:text-ink"
+                  >
+                    <Checkbox checked={!hiddenTables.has(t.name)} onChange={() => toggleTable(t.name)} ariaLabel={`Toggle ${t.name}`} />
+                    <span className="truncate">{t.name}</span>
+                  </div>
+                ))}
+            </div>
+          </Popover>
+
+          <Popover
+            align="right"
+            width={150}
+            trigger={({ open, toggle }) => (
+              <Button
+                variant="subtle"
+                size="sm"
+                icon={DownloadIcon}
+                chevron
+                active={open}
+                onClick={toggle}
+                disabled={loading || !augmented.length}
+              >
+                Export
+              </Button>
+            )}
+          >
+            {({ close }) => <ExportOptions onExport={(f) => { exportImage(f); close() }} />}
+          </Popover>
+        </div>
       </div>
 
       <div className="flex min-h-0 flex-1">
@@ -504,6 +614,14 @@ export default function SchemaEditor({ conn, changes, pending = [], onPendingCha
                 onNodesChange={onNodesChange}
                 onInit={(inst) => (rf.current = inst)}
                 onNodeClick={(_, node) => setSelected(node.id)}
+                onEdgeClick={(e, edge) => {
+                  setSelectedEdge(edge.id)
+                  setEdgePopup({ x: e.clientX, y: e.clientY, fk: edge.data.fk })
+                }}
+                onPaneClick={() => {
+                  setSelectedEdge(null)
+                  setEdgePopup(null)
+                }}
                 fitView
                 proOptions={{ hideAttribution: true }}
               >
@@ -545,26 +663,6 @@ export default function SchemaEditor({ conn, changes, pending = [], onPendingCha
         </div>
       </div>
 
-      {/* Pending changes review bar */}
-      {pending.length > 0 && (
-        <div className="flex shrink-0 items-center gap-2 border-t border-edge bg-amber/10 px-3 py-2 shadow-[0_-8px_24px_-12px_rgba(0,0,0,0.6)]">
-          <span className="text-[11px] font-semibold text-amber">
-            {pending.length} pending change{pending.length > 1 ? 's' : ''}
-          </span>
-          <div className="ml-auto flex gap-2">
-            <Button variant="subtle" size="sm" onClick={clearPending}>
-              Discard
-            </Button>
-            <Button variant="ghost" size="sm" onClick={() => setNaming(true)}>
-              Save as draft
-            </Button>
-            <Button variant="primary" size="sm" onClick={() => { onStageItems?.(pending); clearPending() }}>
-              Stage commit
-            </Button>
-          </div>
-        </div>
-      )}
-
       {selectedTable && (
         <TableEditPanel
           table={selectedTable}
@@ -586,11 +684,31 @@ export default function SchemaEditor({ conn, changes, pending = [], onPendingCha
           defaultName={`${conn.name} schema`}
           onClose={() => setNaming(false)}
           onSave={(name) => {
+            // Keep the pending changes — saving links this tab to the draft and
+            // its items become the draft's working state (handled in Workspace).
             onSaveDraft?.(pending, name)
-            clearPending()
             setNaming(false)
           }}
         />
+      )}
+
+      {/* Foreign-key info popup (shown on edge click) */}
+      {edgePopup && (
+        <div
+          className="fixed z-[60] min-w-[200px] rounded-soft border border-edge-strong bg-elevated px-3 py-2.5 shadow-[0_12px_34px_-10px_rgba(0,0,0,0.75)]"
+          style={{ left: Math.min(edgePopup.x, window.innerWidth - 260), top: Math.min(edgePopup.y, window.innerHeight - 110) }}
+          onClick={(e) => e.stopPropagation()}
+          onContextMenu={(e) => e.preventDefault()}
+        >
+          <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-ink-faint">Foreign key</div>
+          <div className="font-mono text-[12px] text-ink">
+            {edgePopup.fk.table}.{edgePopup.fk.column}
+          </div>
+          <div className="mt-0.5 flex items-center gap-1.5 font-mono text-[11px] text-ink-dim">
+            <ChevronRight width={12} height={12} className="text-green" />
+            {edgePopup.fk.refTable}.{edgePopup.fk.refColumn}
+          </div>
+        </div>
       )}
 
       {/* Canvas right-click menu */}
