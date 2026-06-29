@@ -59,9 +59,16 @@ function initMetaDb() {
       connection_id TEXT NOT NULL,
       name TEXT NOT NULL,
       sql TEXT NOT NULL,
+      kind TEXT,
       ts INTEGER
     );
   `)
+  // Migrate older DBs that predate the `kind` column.
+  try {
+    meta.prepare('SELECT kind FROM saved_queries LIMIT 1').get()
+  } catch {
+    meta.exec('ALTER TABLE saved_queries ADD COLUMN kind TEXT')
+  }
 
   // Seed the default admin user.
   if (!meta.prepare('SELECT 1 FROM users LIMIT 1').get()) {
@@ -393,19 +400,29 @@ app.delete('/api/connections/:id', (req, res) => {
 // ---- Saved queries (per connection) ----
 app.get('/api/connections/:id/saved', (req, res) => {
   const rows = meta
-    .prepare('SELECT id, name, sql, ts FROM saved_queries WHERE connection_id = ? ORDER BY ts DESC')
+    .prepare('SELECT id, name, sql, kind, ts FROM saved_queries WHERE connection_id = ? ORDER BY ts DESC')
     .all(req.params.id)
-  res.json(rows)
+  res.json(rows.map((r) => ({ ...r, kind: r.kind || 'query' })))
 })
 
 app.post('/api/connections/:id/saved', (req, res) => {
-  const { name, sql } = req.body || {}
+  const { name, sql, kind } = req.body || {}
   if (!name?.trim() || !sql?.trim()) return res.status(400).json({ error: 'A name and SQL are required' })
-  const entry = { id: randomUUID(), name: name.trim(), sql: sql.trim(), ts: Date.now() }
+  const entry = { id: randomUUID(), name: name.trim(), sql: sql.trim(), kind: kind || 'query', ts: Date.now() }
   meta
-    .prepare('INSERT INTO saved_queries (id, connection_id, name, sql, ts) VALUES (?, ?, ?, ?, ?)')
-    .run(entry.id, req.params.id, entry.name, entry.sql, entry.ts)
+    .prepare('INSERT INTO saved_queries (id, connection_id, name, sql, kind, ts) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(entry.id, req.params.id, entry.name, entry.sql, entry.kind, entry.ts)
   res.json(entry)
+})
+
+app.put('/api/connections/:id/saved/:sid', (req, res) => {
+  const { name } = req.body || {}
+  if (!name?.trim()) return res.status(400).json({ error: 'A name is required' })
+  const r = meta
+    .prepare('UPDATE saved_queries SET name = ? WHERE id = ? AND connection_id = ?')
+    .run(name.trim(), req.params.sid, req.params.id)
+  if (!r.changes) return res.status(404).json({ error: 'Not found' })
+  res.json({ ok: true, name: name.trim() })
 })
 
 app.delete('/api/connections/:id/saved/:sid', (req, res) => {

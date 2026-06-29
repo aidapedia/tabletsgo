@@ -4,9 +4,11 @@ import { useAuth } from '../context/AuthContext.jsx'
 import { useConnections } from '../context/ConnectionsContext.jsx'
 import { useToast } from '../components/ui/Toast.jsx'
 import Select from '../components/ui/Select.jsx'
+import ConfirmDialog from '../components/ui/ConfirmDialog.jsx'
 import { getNamespaces, listTables, runQuery } from '../db/sqlite.js'
 import { addRecent, loadRecents, relativeTime, saveRecents } from '../recents.js'
-import { fetchSaved, createSaved, deleteSaved } from '../savedQueries.js'
+import { fetchSaved, createSaved, deleteSaved, renameSaved } from '../savedQueries.js'
+import { draftToItems } from '../schemaDraft.js'
 import TableView from '../components/workspace/TableView.jsx'
 import CreateTablePanel from '../components/workspace/CreateTablePanel.jsx'
 
@@ -78,6 +80,8 @@ export default function Workspace() {
   const [savingQuery, setSavingQuery] = useState(null) // sql string being saved | null
   const [changes, setChanges] = useState([]) // staged (uncommitted) SQL mutations
   const [changesOpen, setChangesOpen] = useState(false)
+  const [schemaPending, setSchemaPending] = useState({}) // per schema-editor tab: key -> items[]
+  const [closingTab, setClosingTab] = useState(null) // tab key awaiting close confirmation
   const [committing, setCommitting] = useState(false)
   const [dataVersion, setDataVersion] = useState(0) // bump to force table reloads
   const [sidebarOpen, setSidebarOpen] = useState(false) // mobile drawer
@@ -224,7 +228,7 @@ export default function Workspace() {
     setSidebarOpen(false)
   }
 
-  // Singleton "Schema editor" tab — focus it if already open.
+  // Generic "Schema editor" scratch tab — focus it if already open.
   const openSchemaEditor = () => {
     const key = 'schema-editor'
     setTabs((prev) => (prev.some((t) => t.key === key) ? prev : [...prev, { key, kind: 'schemaEditor', title: 'Schema editor' }]))
@@ -306,6 +310,7 @@ export default function Workspace() {
     await deleteSaved(id, sid)
   }
 
+  // Sidebar "Create table" stages directly into Changes.
   const stageTableChanges = (statements, tableName, mode) => {
     statements.forEach((sql) =>
       addChange({
@@ -318,12 +323,69 @@ export default function Workspace() {
     setCreatingTable(false)
   }
 
-  const removeTab = (key) => {
+  // Schema editor "Stage commit" — push its collected pending items into Changes.
+  const stageSchemaItems = (items) =>
+    items.forEach((i) =>
+      addChange({
+        kind: i.mode === 'edit' ? 'update' : 'create',
+        label: i.mode === 'edit' ? `Alter table ${i.table}` : `Create table ${i.table}`,
+        sql: i.sql,
+        table: i.table,
+      })
+    )
+
+  // Schema editor "Save as draft" — store the SQL in Saved Queries (schema kind).
+  const saveSchemaDraft = async (items, name) => {
+    try {
+      const entry = await createSaved(id, { name, sql: items.map((i) => i.sql).join('\n'), kind: 'schema' })
+      setSaved((prev) => [entry, ...prev])
+      toast.success(`Saved draft “${name}”.`)
+    } catch (e) {
+      toast.error(`Save failed: ${e.message}`)
+    }
+  }
+
+  // Open a saved schema draft in its own tab (focus if already open; keep its edits).
+  const openSchemaDraft = (q) => {
+    const key = `schema:${q.id}`
+    setTabs((prev) => {
+      if (prev.some((t) => t.key === key)) return prev
+      // Seed this tab's pending changes from the draft, once.
+      setSchemaPending((p) => ({ ...p, [key]: draftToItems(q.sql) }))
+      return [...prev, { key, kind: 'schemaEditor', title: q.name }]
+    })
+    setActiveTab(key)
+    setSidebarOpen(false)
+  }
+
+  const renameSavedQuery = async (sid, name) => {
+    const next = name?.trim()
+    if (!next) return
+    setSaved((prev) => prev.map((s) => (s.id === sid ? { ...s, name: next } : s)))
+    // Keep the matching open schema-editor tab's title in sync.
+    setTabs((prev) => prev.map((t) => (t.key === `schema:${sid}` ? { ...t, title: next } : t)))
+    try {
+      await renameSaved(id, sid, next)
+      toast.success(`Renamed to “${next}”.`)
+    } catch (e) {
+      toast.error(`Rename failed: ${e.message}`)
+    }
+  }
+
+  // Actually drop a tab (and its pending schema changes).
+  const dropTab = (key) => {
+    if (schemaPending[key]) setSchemaPending((p) => { const n = { ...p }; delete n[key]; return n })
     setTabs((prev) => {
       const next = prev.filter((t) => t.key !== key)
       if (activeTab === key) setActiveTab(next.length ? next[next.length - 1].key : null)
       return next
     })
+  }
+
+  const removeTab = (key) => {
+    // Confirm before closing a schema-editor tab that has unsaved changes.
+    if (schemaPending[key]?.length) setClosingTab(key)
+    else dropTab(key)
   }
 
   const closeTab = (e, key) => {
@@ -544,6 +606,8 @@ export default function Workspace() {
             saved={saved}
             recents={recents}
             onOpen={(sql) => openQuery(sql)}
+            onOpenSchemaDraft={openSchemaDraft}
+            onRenameSaved={renameSavedQuery}
             onDeleteSaved={removeSaved}
             onNew={() => openQuery()}
             onRefresh={() => {
@@ -654,7 +718,15 @@ export default function Workspace() {
           )}
           {conn && current?.kind === 'schemaEditor' && (
             <Suspense fallback={<div className="flex-1 p-8 text-center text-xs text-ink-faint">Loading schema…</div>}>
-              <SchemaEditor key={`schema-editor:${dataVersion}:${ns.database}:${ns.schema}`} conn={nsConn} onStage={stageTableChanges} />
+              <SchemaEditor
+                key={`${current.key}:${dataVersion}:${ns.database}:${ns.schema}`}
+                conn={nsConn}
+                changes={changes}
+                pending={schemaPending[current.key] || []}
+                onPendingChange={(items) => setSchemaPending((p) => ({ ...p, [current.key]: items }))}
+                onStageItems={stageSchemaItems}
+                onSaveDraft={saveSchemaDraft}
+              />
             </Suspense>
           )}
           {conn && current?.kind === 'query' && (
@@ -803,6 +875,22 @@ export default function Workspace() {
           onClose={() => setChangesOpen(false)}
         />
       )}
+
+      {closingTab && (
+        <ConfirmDialog
+          title="Discard unsaved changes?"
+          message="This schema editor tab has unsaved changes that will be lost if you close it."
+          confirmLabel="Close tab"
+          cancelLabel="Keep editing"
+          danger
+          onConfirm={() => {
+            dropTab(closingTab)
+            setClosingTab(null)
+          }}
+          onCancel={() => setClosingTab(null)}
+        />
+      )}
+
 
     </div>
   )

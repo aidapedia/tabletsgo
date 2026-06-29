@@ -4,7 +4,7 @@ import { useSlideOver } from '../ui/useSlideOver.js'
 import { ChevronRight, CodeIcon } from '../icons.jsx'
 import { fieldInput } from '../../ui.js'
 
-export default function SaveQueryPanel({ sql, defaultName = '', onClose, onSave }) {
+export default function SaveQueryPanel({ sql, defaultName = '', title = 'Save Query', onClose, onSave }) {
   const { show, close } = useSlideOver(onClose)
   const [name, setName] = useState(defaultName)
   const [error, setError] = useState(null)
@@ -54,7 +54,7 @@ export default function SaveQueryPanel({ sql, defaultName = '', onClose, onSave 
       >
         {/* Header */}
         <div className="flex items-center justify-between border-b border-edge px-5 py-4">
-          <h3 className="text-base font-bold">Save Query</h3>
+          <h3 className="text-base font-bold">{title}</h3>
           <button
             className="flex h-8 w-8 items-center justify-center rounded-soft text-ink-dim hover:bg-elevated hover:text-ink"
             onClick={() => close()}

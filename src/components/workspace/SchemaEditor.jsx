@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ReactFlow, {
   Background,
   BaseEdge,
+  getRectOfNodes,
+  getTransformForBounds,
   Handle,
   MiniMap,
   Position,
@@ -9,10 +11,15 @@ import ReactFlow, {
 } from 'reactflow'
 import 'reactflow/dist/style.css'
 import dagre from '@dagrejs/dagre'
+import { toJpeg, toPng, toSvg } from 'html-to-image'
 import { getDiagram } from '../../db/sqlite.js'
 import Button from '../ui/Button.jsx'
+import Popover from '../ui/Popover.jsx'
 import TableEditPanel from './TableEditPanel.jsx'
-import { WandIcon } from '../icons.jsx'
+import CreateTablePanel from './CreateTablePanel.jsx'
+import SaveQueryPanel from './SaveQueryPanel.jsx'
+import { newItemId } from '../../schemaDraft.js'
+import { ChevronRight, DownloadIcon, PlusIcon, WandIcon } from '../icons.jsx'
 
 const TYPES = {
   sqlite: ['INTEGER', 'TEXT', 'REAL', 'BLOB', 'NUMERIC'],
@@ -27,17 +34,26 @@ const rowCenter = (i) => HEADER_H + PAD_T + i * ROW_H + ROW_H / 2
 
 // ---- Custom node: a table with per-column FK handles ----
 function TableNode({ data }) {
+  // Pending (staged-but-uncommitted) tables/columns are marked amber.
   return (
-    <div className="overflow-hidden rounded-soft border border-edge-strong bg-panel text-[11px] shadow-[0_12px_30px_-12px_rgba(0,0,0,0.7)]">
+    <div
+      className={`overflow-hidden rounded-soft border bg-panel text-[11px] shadow-[0_12px_30px_-12px_rgba(0,0,0,0.7)] ${
+        data.pending ? 'border-amber' : 'border-edge-strong'
+      }`}
+    >
       <div
-        className="flex items-center border-b border-edge bg-elevated px-3 text-[12px] font-bold text-ink"
+        className={`flex items-center gap-2 border-b px-3 text-[12px] font-bold ${
+          data.pending ? 'border-amber/40 bg-amber/20 text-amber' : 'border-edge bg-elevated text-ink'
+        }`}
         style={{ height: HEADER_H }}
       >
         <span className="truncate">{data.name}</span>
+        {data.pending && <span className="rounded bg-amber/20 px-1 text-[9px] font-bold uppercase tracking-wide text-amber">staged</span>}
       </div>
       <div style={{ paddingTop: PAD_T, paddingBottom: PAD_T }}>
         {data.columns.map((c, i) => {
           const involved = data.srcCols.has(c.name) || data.tgtCols.has(c.name)
+          const pendingCol = data.pendingCols.has(c.name)
           return (
             <div key={c.name} className="flex items-center gap-2 px-3" style={{ height: ROW_H }}>
               {involved && (
@@ -58,7 +74,13 @@ function TableNode({ data }) {
                   />
                 </>
               )}
-              <span className={`flex-1 truncate ${c.pk ? 'font-semibold text-ink' : 'text-ink-dim'}`}>{c.name}</span>
+              <span
+                className={`flex-1 truncate ${
+                  pendingCol ? 'text-amber' : c.pk ? 'font-semibold text-ink' : 'text-ink-dim'
+                }`}
+              >
+                {c.name}
+              </span>
               <span className="font-mono text-[10px] text-ink-faint">{(c.type || '').toUpperCase()}</span>
               {c.pk && <span className="rounded bg-green/15 px-1 text-[9px] font-bold text-green-bright">PK</span>}
               {data.srcCols.has(c.name) && <span className="rounded bg-amber/15 px-1 text-[9px] font-bold text-amber">FK</span>}
@@ -72,7 +94,64 @@ function TableNode({ data }) {
 
 const nodeTypes = { table: TableNode }
 
+// ---- Parse staged change SQL into pending tables / columns ----
+function parsePendingColumns(body) {
+  const parts = []
+  let depth = 0
+  let cur = ''
+  for (const ch of body) {
+    if (ch === '(') depth++
+    else if (ch === ')') depth--
+    if (ch === ',' && depth === 0) {
+      parts.push(cur)
+      cur = ''
+    } else cur += ch
+  }
+  if (cur.trim()) parts.push(cur)
+  return parts
+    .map((p) => {
+      const m = p.trim().match(/^"([^"]+)"\s+(\S+)/)
+      return m ? { name: m[1], type: m[2] } : null
+    })
+    .filter(Boolean)
+}
+
+function parsePending(changes) {
+  const newTables = {} // name -> [{name,type}]
+  const newCols = {} // table -> { colName: type }
+  for (const ch of changes || []) {
+    const sql = ch.sql || ''
+    let m = sql.match(/^\s*CREATE TABLE\s+"([^"]+)"\s*\(([\s\S]*)\)\s*;?\s*$/i)
+    if (m) {
+      newTables[m[1]] = parsePendingColumns(m[2])
+      continue
+    }
+    m = sql.match(/^\s*ALTER TABLE\s+"([^"]+)"\s+ADD COLUMN\s+"([^"]+)"\s+(\S+)/i)
+    if (m) (newCols[m[1]] ||= {})[m[2]] = m[3]
+  }
+  return { newTables, newCols }
+}
+
 const ctlBtn = 'flex h-7 w-7 items-center justify-center rounded text-ink-dim transition-colors hover:bg-card-hover hover:text-ink'
+const exportItem =
+  'flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-left text-[12px] text-ink-dim transition-colors hover:bg-card-hover hover:text-ink'
+
+// Reusable export format list (used by the toolbar dropdown and the canvas menu).
+function ExportOptions({ onExport }) {
+  return (
+    <div className="p-1">
+      <button className={exportItem} onClick={() => onExport('png')}>
+        <DownloadIcon width={14} height={14} /> PNG image
+      </button>
+      <button className={exportItem} onClick={() => onExport('jpg')}>
+        <DownloadIcon width={14} height={14} /> JPG image
+      </button>
+      <button className={exportItem} onClick={() => onExport('svg')}>
+        <DownloadIcon width={14} height={14} /> SVG vector
+      </button>
+    </div>
+  )
+}
 const NODE_W = 230 // matches the node style width
 const JUMP_R = 5 // hop radius where edges cross
 const CORNER_R = 8 // rounded corner radius at turns
@@ -162,13 +241,22 @@ function pathWithJumps(points, verticals) {
   return d
 }
 
-export default function SchemaEditor({ conn, onStage }) {
+export default function SchemaEditor({ conn, changes, pending = [], onPendingChange, onStageItems, onSaveDraft }) {
   const dialect = conn.type === 'postgresql' ? 'postgresql' : 'sqlite'
   const types = TYPES[dialect]
 
   const [diagram, setDiagram] = useState({ tables: [], foreignKeys: [] })
   const [loading, setLoading] = useState(true)
   const [selected, setSelected] = useState(null) // table name being edited
+  const [menu, setMenu] = useState(null) // canvas context menu { x, y }
+  const [creating, setCreating] = useState(false) // create-table panel open
+  const [naming, setNaming] = useState(false) // "save as draft" name prompt open
+
+  // Pending changes are owned by the workspace (per tab) so they survive tab
+  // switches; the panels hand their statements up via onPendingChange.
+  const addPending = (statements, tableName, mode) =>
+    onPendingChange?.([...pending, ...statements.map((sql) => ({ id: newItemId(), sql, table: tableName, mode }))])
+  const clearPending = () => onPendingChange?.([])
 
   useEffect(() => {
     let alive = true
@@ -194,6 +282,30 @@ export default function SchemaEditor({ conn, onStage }) {
     return { src, tgt }
   }, [diagram])
 
+  // Merge committed schema with pending edits (local bar) + staged Changes.
+  const augmented = useMemo(() => {
+    const { newTables, newCols } = parsePending([...pending, ...(changes || [])])
+    const existing = new Set(diagram.tables.map((t) => t.name))
+    const tables = diagram.tables.map((t) => {
+      const add = newCols[t.name]
+      const pendingCols = new Set()
+      let columns = t.columns
+      if (add) {
+        const extra = Object.entries(add)
+          .filter(([c]) => !t.columns.some((x) => x.name === c))
+          .map(([c, type]) => ({ name: c, type }))
+        extra.forEach((c) => pendingCols.add(c.name))
+        columns = [...t.columns, ...extra]
+      }
+      return { ...t, columns, pending: false, pendingCols }
+    })
+    for (const [name, cols] of Object.entries(newTables)) {
+      if (existing.has(name)) continue
+      tables.push({ name, columns: cols, pending: true, pendingCols: new Set() })
+    }
+    return tables
+  }, [diagram, changes, pending])
+
   const [nodes, setNodes, onNodesChange] = useNodesState([])
   const rf = useRef(null)
 
@@ -207,7 +319,7 @@ export default function SchemaEditor({ conn, onStage }) {
     g.setGraph({ rankdir: 'LR', nodesep: 50, ranksep: 110, marginx: 24, marginy: 24 })
 
     const sizes = {}
-    for (const t of diagram.tables) {
+    for (const t of augmented) {
       const s = sizeOf(t)
       sizes[t.name] = s
       g.setNode(t.name, { width: s.w, height: s.h })
@@ -217,7 +329,7 @@ export default function SchemaEditor({ conn, onStage }) {
     }
     dagre.layout(g)
 
-    return diagram.tables.map((t) => {
+    return augmented.map((t) => {
       const p = g.node(t.name)
       const s = sizes[t.name]
       return {
@@ -228,17 +340,19 @@ export default function SchemaEditor({ conn, onStage }) {
         data: {
           name: t.name,
           columns: t.columns,
+          pending: t.pending,
+          pendingCols: t.pendingCols,
           srcCols: fkInfo.src[t.name] || new Set(),
           tgtCols: fkInfo.tgt[t.name] || new Set(),
         },
       }
     })
-  }, [diagram, fkInfo])
+  }, [augmented, diagram, fkInfo])
 
-  // (Re)build nodes whenever the diagram loads.
+  // (Re)build nodes whenever the diagram or staged changes update.
   useEffect(() => {
     setNodes(layoutNodes())
-  }, [diagram, fkInfo, layoutNodes, setNodes])
+  }, [layoutNodes, setNodes])
 
   // Edges are derived from live node positions, with jump arcs over crossings.
   const edges = useMemo(() => {
@@ -293,24 +407,93 @@ export default function SchemaEditor({ conn, onStage }) {
     setTimeout(() => rf.current?.fitView({ duration: 300, padding: 0.2 }), 0)
   }
 
+  // Export the whole diagram (all nodes) as a PNG/JPG image.
+  const exportImage = async (fmt) => {
+    const viewport = document.querySelector('.react-flow__viewport')
+    if (!viewport || !nodes.length) return
+    const pad = 48
+    const bounds = getRectOfNodes(nodes)
+    const w = Math.ceil(bounds.width) + pad * 2
+    const h = Math.ceil(bounds.height) + pad * 2
+    const [x, y, zoom] = getTransformForBounds(bounds, w, h, 1, 1)
+    const bg = getComputedStyle(document.documentElement).getPropertyValue('--color-bg').trim() || '#080808'
+    const opts = {
+      backgroundColor: bg,
+      width: w,
+      height: h,
+      pixelRatio: 2,
+      style: { width: `${w}px`, height: `${h}px`, transform: `translate(${x}px, ${y}px) scale(${zoom})` },
+    }
+    const fn = fmt === 'jpg' ? toJpeg : fmt === 'svg' ? toSvg : toPng
+    const dataUrl = await fn(viewport, fmt === 'jpg' ? { ...opts, quality: 0.95 } : opts)
+    const a = document.createElement('a')
+    a.href = dataUrl
+    a.download = `${conn.name || 'schema'}.${fmt}`
+    a.click()
+  }
+
   const selectedTable = selected ? diagram.tables.find((t) => t.name === selected) : null
+
+  // Close the canvas context menu on any outside interaction.
+  useEffect(() => {
+    if (!menu) return
+    const close = () => setMenu(null)
+    const onKey = (e) => e.key === 'Escape' && close()
+    window.addEventListener('click', close)
+    window.addEventListener('resize', close)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('click', close)
+      window.removeEventListener('resize', close)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [menu])
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       {/* Toolbar / action list */}
       <div className="flex items-center gap-2 border-b border-edge px-3 py-2">
-        <Button variant="primary" size="sm" icon={WandIcon} onClick={autoLayout} disabled={loading || !diagram.tables.length}>
+        <Button variant="primary" size="sm" icon={WandIcon} onClick={autoLayout} disabled={loading || !augmented.length}>
           Organize
         </Button>
         <span className="ml-1 text-[11px] text-ink-faint">{conn.name} · {diagram.tables.length} table(s)</span>
+
+        <Popover
+          align="right"
+          width={150}
+          trigger={({ open, toggle }) => (
+            <Button
+              variant="subtle"
+              size="sm"
+              icon={DownloadIcon}
+              chevron
+              active={open}
+              onClick={toggle}
+              disabled={loading || !augmented.length}
+              className="ml-auto"
+            >
+              Export
+            </Button>
+          )}
+        >
+          {({ close }) => <ExportOptions onExport={(f) => { exportImage(f); close() }} />}
+        </Popover>
       </div>
 
       <div className="flex min-h-0 flex-1">
-        <div className="relative min-w-0 flex-1">
+        <div
+          className="relative min-w-0 flex-1"
+          onContextMenu={(e) => {
+            e.preventDefault()
+            setMenu({ x: e.clientX, y: e.clientY })
+          }}
+        >
           {loading ? (
             <div className="flex h-full items-center justify-center text-xs text-ink-faint">Loading schema…</div>
-          ) : diagram.tables.length === 0 ? (
-            <div className="flex h-full items-center justify-center text-xs text-ink-faint">No tables to show.</div>
+          ) : augmented.length === 0 ? (
+            <div className="flex h-full items-center justify-center text-xs text-ink-faint">
+              No tables yet — right-click to create one.
+            </div>
           ) : (
             <>
               <ReactFlow
@@ -362,14 +545,80 @@ export default function SchemaEditor({ conn, onStage }) {
         </div>
       </div>
 
+      {/* Pending changes review bar */}
+      {pending.length > 0 && (
+        <div className="flex shrink-0 items-center gap-2 border-t border-edge bg-amber/10 px-3 py-2 shadow-[0_-8px_24px_-12px_rgba(0,0,0,0.6)]">
+          <span className="text-[11px] font-semibold text-amber">
+            {pending.length} pending change{pending.length > 1 ? 's' : ''}
+          </span>
+          <div className="ml-auto flex gap-2">
+            <Button variant="subtle" size="sm" onClick={clearPending}>
+              Discard
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => setNaming(true)}>
+              Save as draft
+            </Button>
+            <Button variant="primary" size="sm" onClick={() => { onStageItems?.(pending); clearPending() }}>
+              Stage commit
+            </Button>
+          </div>
+        </div>
+      )}
+
       {selectedTable && (
         <TableEditPanel
           table={selectedTable}
           dialect={dialect}
           types={types}
-          onStage={onStage}
+          onStage={addPending}
           onClose={() => setSelected(null)}
         />
+      )}
+
+      {creating && (
+        <CreateTablePanel conn={conn} onClose={() => setCreating(false)} onStage={addPending} />
+      )}
+
+      {naming && (
+        <SaveQueryPanel
+          title="Save schema draft"
+          sql={pending.map((p) => p.sql).join('\n')}
+          defaultName={`${conn.name} schema`}
+          onClose={() => setNaming(false)}
+          onSave={(name) => {
+            onSaveDraft?.(pending, name)
+            clearPending()
+            setNaming(false)
+          }}
+        />
+      )}
+
+      {/* Canvas right-click menu */}
+      {menu && (
+        <div
+          className="fixed z-[60] min-w-[180px] rounded-soft border border-edge-strong bg-elevated p-1 shadow-[0_12px_34px_-10px_rgba(0,0,0,0.75)]"
+          style={{ left: Math.min(menu.x, window.innerWidth - 200), top: Math.min(menu.y, window.innerHeight - 180) }}
+          onClick={(e) => e.stopPropagation()}
+          onContextMenu={(e) => e.preventDefault()}
+        >
+          <button className={exportItem} onClick={() => { setCreating(true); setMenu(null) }}>
+            <PlusIcon width={14} height={14} /> Create new Table
+          </button>
+          <div className="group relative">
+            <button className={`${exportItem} justify-between`}>
+              <span className="flex items-center gap-2">
+                <DownloadIcon width={14} height={14} /> Export
+              </span>
+              <ChevronRight width={13} height={13} />
+            </button>
+            <div className="absolute left-full top-0 z-10 hidden min-w-[150px] rounded-soft border border-edge-strong bg-elevated shadow-[0_12px_34px_-10px_rgba(0,0,0,0.75)] group-hover:block">
+              <ExportOptions onExport={(f) => { exportImage(f); setMenu(null) }} />
+            </div>
+          </div>
+          <button className={exportItem} onClick={() => { autoLayout(); setMenu(null) }}>
+            <WandIcon width={14} height={14} /> Auto arrange
+          </button>
+        </div>
       )}
     </div>
   )

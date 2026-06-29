@@ -13,15 +13,27 @@ export async function fetchSaved(connectionId) {
   return []
 }
 
-export async function createSaved(connectionId, { name, sql }) {
+export async function createSaved(connectionId, { name, sql, kind }) {
   const res = await fetch(`${API_URL}/connections/${connectionId}/saved`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, sql }),
+    body: JSON.stringify({ name, sql, kind }),
   })
   const data = await res.json().catch(() => ({}))
   if (!res.ok) throw new Error(data.error || 'Failed to save query')
   return data
+}
+
+export async function renameSaved(connectionId, savedId, name) {
+  const res = await fetch(`${API_URL}/connections/${connectionId}/saved/${savedId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  })
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}))
+    throw new Error(data.error || `Rename failed (HTTP ${res.status})`)
+  }
 }
 
 export async function deleteSaved(connectionId, savedId) {

@@ -94,7 +94,12 @@ export default function CreateTablePanel({ conn, initialTable, onClose, onStage 
   const handleSubmit = (e) => {
     e.preventDefault()
     if (!valid) return
-    close(() => onStage(statements, name.trim(), isEdit ? 'edit' : 'new'))
+    // Run the stage action AND close — otherwise the invisible slide-over
+    // overlay stays mounted and blocks all clicks.
+    close(() => {
+      onStage(statements, name.trim(), isEdit ? 'edit' : 'new')
+      onClose()
+    })
   }
 
   return (
