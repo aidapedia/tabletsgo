@@ -39,17 +39,18 @@ const OPERATORS = [
   { value: '>=', label: '≥' },
   { value: '<=', label: '≤' },
 ]
-const PAGE_SIZES = [25, 50, 100, 200]
+export const PAGE_SIZES = [25, 50, 100, 200]
 
 const ctl =
   'rounded-soft border border-edge bg-bg px-2.5 py-1.5 text-[11px] text-ink outline-none focus:border-green-dim'
-const menuItem =
+export const gridMenuItem =
   'flex w-full rounded px-3 py-1.5 text-left text-[11px] text-ink-dim transition-colors hover:bg-card-hover hover:text-ink'
+const menuItem = gridMenuItem
 
 let filterId = 0
 const blankFilter = () => ({ id: `f${++filterId}`, col: '', op: 'contains', value: '', enabled: true })
 
-function matchFilter(row, f) {
+export function matchFilter(row, f) {
   if (!f.enabled || !f.col || f.value === '') return true
   const raw = row[f.col]
   const v = raw == null ? '' : String(raw)
@@ -459,7 +460,7 @@ export default function TableView({ conn, table, onChange }) {
   )
 }
 
-function FilterPanel({ columns, initial, onApply, onClose }) {
+export function FilterPanel({ columns, initial, onApply, onClose }) {
   const [draft, setDraft] = useState(() => (initial.length ? initial.map((f) => ({ ...f })) : [blankFilter()]))
   const update = (id, patch) => setDraft((d) => d.map((f) => (f.id === id ? { ...f, ...patch } : f)))
 
@@ -534,7 +535,7 @@ function FilterPanel({ columns, initial, onApply, onClose }) {
   )
 }
 
-function SortPanel({ columns, value, onChange, onClose }) {
+export function SortPanel({ columns, value, onChange, onClose }) {
   const [col, setCol] = useState(value?.col || '')
   const [dir, setDir] = useState(value?.dir || 'asc')
 
@@ -584,7 +585,7 @@ function SortPanel({ columns, value, onChange, onClose }) {
   )
 }
 
-function ColumnsPanel({ columns, hidden, onToggle }) {
+export function ColumnsPanel({ columns, hidden, onToggle }) {
   return (
     <div className="max-h-[300px] overflow-y-auto p-2">
       <div className="px-1.5 pb-1.5 text-[11px] font-semibold text-ink-dim">Toggle columns</div>

@@ -68,6 +68,18 @@ function initMetaDb() {
       name TEXT NOT NULL,
       ts INTEGER
     );
+    CREATE TABLE IF NOT EXISTS query_history (
+      id TEXT PRIMARY KEY,
+      connection_id TEXT NOT NULL,
+      table_name TEXT,
+      query TEXT NOT NULL,
+      status TEXT NOT NULL,        -- 'success' | 'failed'
+      latency INTEGER,             -- execution latency in ms
+      error TEXT,
+      executor_id TEXT,
+      executor_name TEXT,
+      ts INTEGER                   -- execution time (epoch ms)
+    );
   `)
   // Migrate older DBs that predate the `kind` column.
   try {
@@ -407,6 +419,7 @@ app.delete('/api/connections/:id', (req, res) => {
   deleteConnectionRow(req.params.id)
   meta.prepare('DELETE FROM saved_queries WHERE connection_id = ?').run(req.params.id)
   meta.prepare('DELETE FROM saved_folders WHERE connection_id = ?').run(req.params.id)
+  meta.prepare('DELETE FROM query_history WHERE connection_id = ?').run(req.params.id)
   res.json({ ok: true })
 })
 
@@ -495,6 +508,78 @@ app.put('/api/connections/:id/saved/:sid', (req, res) => {
 
 app.delete('/api/connections/:id/saved/:sid', (req, res) => {
   meta.prepare('DELETE FROM saved_queries WHERE id = ? AND connection_id = ?').run(req.params.sid, req.params.id)
+  res.json({ ok: true })
+})
+
+// ---- Query history (per connection) ----
+app.get('/api/connections/:id/history', (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit) || 500, 5000)
+  const rows = meta
+    .prepare(
+      `SELECT id, table_name, query, status, latency, error, executor_id, executor_name, ts
+       FROM query_history WHERE connection_id = ? ORDER BY ts DESC LIMIT ?`
+    )
+    .all(req.params.id, limit)
+  res.json(
+    rows.map((r) => ({
+      id: r.id,
+      table: r.table_name || null,
+      query: r.query,
+      status: r.status,
+      latency: r.latency,
+      error: r.error || null,
+      executorId: r.executor_id || null,
+      executorName: r.executor_name || r.executor_id || null,
+      executedAt: r.ts,
+    }))
+  )
+})
+
+app.post('/api/connections/:id/history', (req, res) => {
+  const { table, query, status, latency, error, executorId, executorName } = req.body || {}
+  if (!query?.trim()) return res.status(400).json({ error: 'A query is required' })
+  const entry = {
+    id: randomUUID(),
+    table: table?.trim() || null,
+    query: query.trim(),
+    status: status === 'failed' ? 'failed' : 'success',
+    latency: Number.isFinite(latency) ? Math.round(latency) : null,
+    error: error || null,
+    executorId: executorId || null,
+    executorName: executorName || null,
+    executedAt: Date.now(),
+  }
+  meta
+    .prepare(
+      `INSERT INTO query_history
+       (id, connection_id, table_name, query, status, latency, error, executor_id, executor_name, ts)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      entry.id,
+      req.params.id,
+      entry.table,
+      entry.query,
+      entry.status,
+      entry.latency,
+      entry.error,
+      entry.executorId,
+      entry.executorName,
+      entry.executedAt
+    )
+  res.json(entry)
+})
+
+app.delete('/api/connections/:id/history', (req, res) => {
+  // With { ids: [...] } delete just those entries; otherwise clear everything.
+  const ids = req.body?.ids
+  if (Array.isArray(ids) && ids.length) {
+    const del = meta.prepare('DELETE FROM query_history WHERE id = ? AND connection_id = ?')
+    const tx = meta.transaction((list) => list.forEach((hid) => del.run(hid, req.params.id)))
+    tx(ids)
+  } else {
+    meta.prepare('DELETE FROM query_history WHERE connection_id = ?').run(req.params.id)
+  }
   res.json({ ok: true })
 })
 

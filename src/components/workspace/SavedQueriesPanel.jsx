@@ -12,7 +12,6 @@ import {
   TrashIcon,
 } from '../icons.jsx'
 import { fieldInput, iconMini } from '../../ui.js'
-import { relativeTime } from '../../recents.js'
 import Popover from '../ui/Popover.jsx'
 import Tooltip from '../ui/Tooltip.jsx'
 
@@ -31,7 +30,6 @@ const byName = (a, b) => a.name.localeCompare(b.name)
 export default function SavedQueriesPanel({
   saved = [],
   folders = [],
-  recents,
   onOpen,
   onOpenSaved,
   onOpenSchemaDraft,
@@ -42,7 +40,6 @@ export default function SavedQueriesPanel({
   onDeleteFolder,
   onMoveToFolder,
   onRefresh,
-  onClear,
 }) {
   const [searchOpen, setSearchOpen] = useState(false)
   const [filter, setFilter] = useState('')
@@ -61,8 +58,6 @@ export default function SavedQueriesPanel({
   const visibleSaved = useMemo(() => saved.filter(matches), [saved, q])
   const itemsIn = (fid) => visibleSaved.filter((s) => (s.folderId || null) === fid).sort(byName)
   const rootItems = useMemo(() => itemsIn(null), [visibleSaved])
-
-  const sortedRecents = useMemo(() => [...recents].sort((a, b) => a.sql.localeCompare(b.sql)), [recents])
 
   const toggleFolder = (fid) =>
     setOpenFolders((s) => {
@@ -347,40 +342,6 @@ export default function SavedQueriesPanel({
                 </div>
               )}
             </div>
-          </div>
-        )}
-
-        {/* Recent queries from history */}
-        <div className="mt-3 flex items-center justify-between px-2 pb-1">
-          <span className="text-[11px] font-semibold uppercase tracking-wide text-ink-dim">Recent</span>
-          {recents.length > 0 && (
-            <button className="text-[11px] text-ink-faint hover:text-ink" onClick={onClear}>
-              Clear
-            </button>
-          )}
-        </div>
-
-        {recents.length === 0 ? (
-          <div className="px-2 py-1 text-[11px] text-ink-faint">Run a query and it'll show up here.</div>
-        ) : (
-          <div className="flex flex-col gap-0.5">
-            {sortedRecents.map((r, i) => (
-              <Tooltip key={i} label={r.sql} placement="right" multiline wrapperClassName="w-full">
-                <button
-                  onClick={() => onOpen(r.sql)}
-                  className="flex w-full items-start gap-2 rounded-[7px] px-2.5 py-1.5 text-left text-ink-dim hover:bg-elevated hover:text-ink"
-                >
-                  <CodeIcon className="mt-0.5 shrink-0 text-ink-faint" width={14} height={14} />
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate font-mono text-[11px] text-ink">{r.sql}</div>
-                    <div className="mt-0.5 text-[10px] text-ink-faint">
-                      {relativeTime(r.ts)}
-                      {r.rows != null && ` · ${r.rows.toLocaleString()} rows`}
-                    </div>
-                  </div>
-                </button>
-              </Tooltip>
-            ))}
           </div>
         )}
       </div>

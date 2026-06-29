@@ -6,7 +6,6 @@ import { useToast } from '../components/ui/Toast.jsx'
 import Select from '../components/ui/Select.jsx'
 import ConfirmDialog from '../components/ui/ConfirmDialog.jsx'
 import { getNamespaces, listTables, runQuery } from '../db/sqlite.js'
-import { addRecent, loadRecents, relativeTime, saveRecents } from '../recents.js'
 import {
   fetchSaved,
   createSaved,
@@ -28,6 +27,8 @@ const QueryEditor = lazy(() => import('../components/workspace/QueryEditor.jsx')
 const SchemaEditor = lazy(() => import('../components/workspace/SchemaEditor.jsx'))
 import IconRail from '../components/workspace/IconRail.jsx'
 import SavedQueriesPanel from '../components/workspace/SavedQueriesPanel.jsx'
+import QueryHistoryView from '../components/workspace/QueryHistoryView.jsx'
+import { fetchHistory, recordHistory, clearHistory, deleteHistory } from '../queryHistory.js'
 import SaveQueryPanel from '../components/workspace/SaveQueryPanel.jsx'
 import ChangesPanel from '../components/workspace/ChangesPanel.jsx'
 import SchemaView from '../components/workspace/SchemaView.jsx'
@@ -36,12 +37,12 @@ import Tooltip from '../components/ui/Tooltip.jsx'
 import Popover from '../components/ui/Popover.jsx'
 import { btnGhost, btnPrimary, iconMini } from '../ui.js'
 import {
-  ChevronLeft,
   CloseIcon,
   CodeIcon,
   ColumnsIcon,
   DiagramIcon,
   EditIcon,
+  HistoryIcon,
   MenuIcon,
   MoreVerticalIcon,
   PlusIcon,
@@ -84,7 +85,8 @@ export default function Workspace() {
   const [tabs, setTabs] = useState([])
   const [activeTab, setActiveTab] = useState(null)
   const [creatingTable, setCreatingTable] = useState(false)
-  const [recents, setRecents] = useState(() => loadRecents(id))
+  const [history, setHistory] = useState([])
+  const [historyLoading, setHistoryLoading] = useState(false)
   const [saved, setSaved] = useState([])
   const [folders, setFolders] = useState([])
   const [tabMenu, setTabMenu] = useState(null) // { x, y, key } | null
@@ -306,10 +308,44 @@ export default function Workspace() {
     }
   }
 
-  const pushRecent = (entry) => setRecents((r) => addRecent(id, r, entry))
-  const clearRecents = () => {
-    saveRecents(id, [])
-    setRecents([])
+  // ---- Query history (persisted on the backend) ----
+  const loadHistory = async () => {
+    setHistoryLoading(true)
+    try {
+      setHistory(await fetchHistory(id))
+    } finally {
+      setHistoryLoading(false)
+    }
+  }
+  // Record one execution; refresh the list if a history tab is open.
+  const recordRun = async (entry) => {
+    await recordHistory(id, {
+      table: entry.table,
+      query: entry.sql,
+      status: entry.status,
+      latency: entry.latency,
+      error: entry.error,
+      executorId: user?.id,
+      executorName: user?.name || user?.username,
+    })
+    if (tabs.some((t) => t.kind === 'history')) loadHistory()
+  }
+  const clearHistoryAll = async () => {
+    setHistory([])
+    await clearHistory(id)
+  }
+  const deleteHistoryEntries = async (ids) => {
+    if (!ids?.length) return
+    const drop = new Set(ids)
+    setHistory((prev) => prev.filter((h) => !drop.has(h.id)))
+    await deleteHistory(id, ids)
+  }
+  // Open the query-history tab (focus if already open).
+  const openHistory = () => {
+    const key = 'history'
+    setTabs((prev) => (prev.some((t) => t.key === key) ? prev : [...prev, { key, kind: 'history', title: 'Query history' }]))
+    setActiveTab(key)
+    setSidebarOpen(false)
   }
 
   const saveQuery = (sql) => {
@@ -692,7 +728,6 @@ export default function Workspace() {
           <SavedQueriesPanel
             saved={saved}
             folders={folders}
-            recents={recents}
             onOpen={(sql) => openQuery(sql)}
             onOpenSaved={openSavedQuery}
             onOpenSchemaDraft={openSchemaDraft}
@@ -704,11 +739,9 @@ export default function Workspace() {
             onMoveToFolder={moveSavedToFolder}
             onNew={() => openQuery()}
             onRefresh={() => {
-              setRecents(loadRecents(id))
               fetchSaved(id).then(setSaved)
               fetchFolders(id).then(setFolders)
             }}
-            onClear={clearRecents}
           />
         )}
         </aside>
@@ -752,6 +785,15 @@ export default function Workspace() {
             <kbd className="absolute right-3 rounded-[5px] border border-edge bg-card px-1.5 py-px text-[11px] text-ink-faint">⌘K</kbd>
           </div>
           <div className="ml-auto flex items-center gap-2">
+            <Tooltip label="Query history" placement="bottom">
+              <button
+                onClick={openHistory}
+                aria-label="Query history"
+                className="flex h-[34px] w-[34px] items-center justify-center rounded-[10px] text-ink-dim transition-colors hover:bg-elevated hover:text-ink"
+              >
+                <HistoryIcon width={16} height={16} />
+              </button>
+            </Tooltip>
             <button onClick={() => setChangesOpen(true)} title="View changes" className={btnSql}>
               Changes
               <span
@@ -786,6 +828,8 @@ export default function Workspace() {
                   <ColumnsIcon className={active ? 'text-ink' : 'text-ink-faint'} />
                 ) : t.kind === 'schemaEditor' ? (
                   <DiagramIcon className={active ? 'text-ink' : 'text-ink-faint'} />
+                ) : t.kind === 'history' ? (
+                  <HistoryIcon className={active ? 'text-ink' : 'text-ink-faint'} />
                 ) : (
                   <TableIcon className={active ? 'text-ink' : 'text-ink-faint'} />
                 )}
@@ -833,10 +877,19 @@ export default function Workspace() {
                 initialSql={current.sql ?? ''}
                 persisted={queryState[current.key]}
                 onPersist={persistQueryState}
-                onRan={pushRecent}
+                onRan={recordRun}
                 onSave={saveQuery}
               />
             </Suspense>
+          )}
+          {conn && current?.kind === 'history' && (
+            <QueryHistoryView
+              history={history}
+              loading={historyLoading}
+              onRefresh={loadHistory}
+              onClear={clearHistoryAll}
+              onDelete={deleteHistoryEntries}
+            />
           )}
           {!current && (
             <div className="flex h-full w-full items-center justify-center overflow-auto p-8">
@@ -862,35 +915,11 @@ export default function Workspace() {
                   </button>
                 </div>
 
-                {recents.length > 0 && (
-                  <div className="mt-10 text-left">
-                    <div className="mb-2.5 flex items-center justify-between">
-                      <span className="text-[11px] font-semibold uppercase tracking-wide text-ink-dim">Recent queries</span>
-                      <button className="text-[11px] text-ink-faint hover:text-ink" onClick={clearRecents}>
-                        Clear
-                      </button>
-                    </div>
-                    <div className="flex flex-col gap-2.5">
-                      {recents.map((q, i) => (
-                        <button
-                          key={i}
-                          onClick={() => openQuery(q.sql)}
-                          className="group flex items-center gap-3 rounded-card border border-edge bg-card px-4 py-3 text-left transition-all hover:border-edge-strong hover:bg-card-hover"
-                        >
-                          <CodeIcon className="flex-shrink-0 text-ink-faint" />
-                          <div className="min-w-0 flex-1">
-                            <div className="truncate font-mono text-[13px] text-ink">{q.sql}</div>
-                            <div className="mt-1 text-[11px] text-ink-faint">
-                              {relativeTime(q.ts)}
-                              {q.rows != null && ` · ${q.rows.toLocaleString()} rows`}
-                            </div>
-                          </div>
-                          <ChevronLeft className="flex-shrink-0 rotate-180 text-ink-faint opacity-0 transition-opacity group-hover:opacity-100" />
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
+                <div className="mt-9">
+                  <button className={btnGhost} onClick={openHistory}>
+                    <HistoryIcon width={16} height={16} /> View query history
+                  </button>
+                </div>
 
                 <div className="mt-10 flex flex-wrap items-center justify-center gap-6 text-[11px] text-ink-faint">
                   <span className="flex items-center gap-1.5"><kbd className={kbd}>⌘K</kbd> Search tables</span>

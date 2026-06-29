@@ -13,6 +13,13 @@ import Tooltip from '../ui/Tooltip.jsx'
 import { useToast } from '../ui/Toast.jsx'
 import { SaveIcon, WandIcon } from '../icons.jsx'
 
+// Best-effort: pull the primary table name out of a SQL statement so the
+// history can show which table a query touched. Returns null when unknown.
+function primaryTable(sql) {
+  const m = sql.match(/\b(?:from|join|into|update|table)\s+["'`]?([A-Za-z_][\w.$]*)["'`]?/i)
+  return m ? m[1].replace(/^.*\./, '') : null
+}
+
 // Editor chrome themed to match the app (dark).
 const editorTheme = EditorView.theme(
   {
@@ -124,6 +131,8 @@ export default function QueryEditor({ conn, dialect, initialSql, tabKey, persist
     setError(null)
     setLoading(true)
     const startedAt = performance.now()
+    const trimmed = sql.trim()
+    const table = primaryTable(trimmed)
     try {
       const queryResult = await runQuery(conn, sql)
       const ms = Math.round(performance.now() - startedAt)
@@ -131,11 +140,12 @@ export default function QueryEditor({ conn, dialect, initialSql, tabKey, persist
       if (queryResult.error) {
         setError(queryResult.error)
         setResult(null)
+        onRan?.({ sql: trimmed, table, status: 'failed', latency: ms, error: queryResult.error, rows: null })
         toast.error(`Query failed: ${queryResult.error}`)
       } else {
         setResult(queryResult)
         const rows = queryResult.type === 'rows' ? queryResult.rows.length : null
-        onRan?.({ sql: sql.trim(), ts: Date.now(), rows })
+        onRan?.({ sql: trimmed, table, status: 'success', latency: ms, error: null, rows })
         toast.success(
           queryResult.type === 'rows'
             ? `Query OK · ${rows.toLocaleString()} row(s) · ${ms} ms`
@@ -143,9 +153,11 @@ export default function QueryEditor({ conn, dialect, initialSql, tabKey, persist
         )
       }
     } catch (e) {
-      setElapsedMs(Math.round(performance.now() - startedAt))
+      const ms = Math.round(performance.now() - startedAt)
+      setElapsedMs(ms)
       setResult(null)
       setError(e.message)
+      onRan?.({ sql: trimmed, table, status: 'failed', latency: ms, error: e.message, rows: null })
       toast.error(`Query failed: ${e.message}`)
     } finally {
       setLoading(false)

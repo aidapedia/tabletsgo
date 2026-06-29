@@ -87,6 +87,21 @@ Stored as JSON in the metadata DB. SQLite and PostgreSQL variants:
 { "id": "uuid", "name": "Reports", "ts": 1719600000000 }
 ```
 
+### Query history entry
+```jsonc
+{
+  "id": "uuid",
+  "table": "users",          // best-effort table name, may be null
+  "query": "SELECT * FROM users",
+  "status": "success",       // "success" | "failed"
+  "latency": 12,              // execution latency in ms (nullable)
+  "error": null,             // error message when status = "failed"
+  "executorId": "user-uuid",
+  "executorName": "Admin",   // resolved display name (falls back to id)
+  "executedAt": 1719600000000 // epoch ms
+}
+```
+
 ### Column (from `/columns` and `/diagram`)
 ```jsonc
 { "name": "id", "type": "integer", "notnull": true, "pk": true, "default": null }
@@ -136,6 +151,18 @@ CREATE TABLE saved_folders (
   connection_id TEXT NOT NULL,
   name TEXT NOT NULL,
   ts INTEGER
+);
+CREATE TABLE query_history (
+  id TEXT PRIMARY KEY,
+  connection_id TEXT NOT NULL,
+  table_name TEXT,             -- best-effort table touched by the query
+  query TEXT NOT NULL,
+  status TEXT NOT NULL,        -- "success" | "failed"
+  latency INTEGER,             -- execution latency in ms
+  error TEXT,
+  executor_id TEXT,
+  executor_name TEXT,
+  ts INTEGER                   -- execution time (epoch ms)
 );
 ```
 
@@ -274,6 +301,34 @@ not deleted.
 
 ---
 
+## Query history (per connection)
+
+Persisted log of query executions, recorded by the SQL editor.
+
+### GET `/api/connections/:id/history`
+List executions (newest first).
+
+- **Query:** `limit` (default `500`, max `5000`)
+- **200:** `QueryHistoryEntry[]` (see Data models)
+- **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/history?limit=200`
+
+### POST `/api/connections/:id/history`
+Record one execution.
+
+- **Body:** `{ "table": "users", "query": "SELECT ...", "status": "success", "latency": 12, "error": null, "executorId": "user-uuid", "executorName": "Admin" }`
+  (`status` defaults to `"success"` unless `"failed"`; `table`/`error` nullable)
+- **200:** the created entry (with `id`, `executedAt`)
+- **400:** `{ "error": "A query is required" }`
+- **Example:** `POST http://localhost:3000/api/connections/demo-sqlite/history`
+
+### DELETE `/api/connections/:id/history`
+Clear all history for the connection.
+
+- **200:** `{ "ok": true }`
+- **Example:** `DELETE http://localhost:3000/api/connections/demo-sqlite/history`
+
+---
+
 ## Schema & data browsing
 
 > All routes below accept optional `?database=` and `?schema=` query params
@@ -386,6 +441,9 @@ Liveness probe.
 | POST   | `/api/connections/:id/folders`            | Create folder                   |
 | PUT    | `/api/connections/:id/folders/:fid`       | Rename folder                   |
 | DELETE | `/api/connections/:id/folders/:fid`       | Delete folder (detach queries)  |
+| GET    | `/api/connections/:id/history`            | List query history              |
+| POST   | `/api/connections/:id/history`            | Record a query execution        |
+| DELETE | `/api/connections/:id/history`            | Clear query history             |
 | GET    | `/api/connections/:id/tables`             | List tables                     |
 | GET    | `/api/connections/:id/table/:table`       | Read table rows                 |
 | GET    | `/api/connections/:id/columns/:table`     | Column metadata                 |
