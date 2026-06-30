@@ -225,6 +225,18 @@ export default function Workspace() {
     setSidebarOpen(false)
   }
 
+  // Open a table in a new tab pre-filtered by a column = value (FK drill-down).
+  const openTableFiltered = (table, column, value) => {
+    const key = `table:${table}:${column}=${value}`
+    setTabs((prev) =>
+      prev.some((t) => t.key === key)
+        ? prev
+        : [...prev, { key, kind: 'table', table, title: `${table} · ${column}=${value}`, initialFilter: { col: column, value } }]
+    )
+    setActiveTab(key)
+    setSidebarOpen(false)
+  }
+
   const openQuery = (sql) => {
     queryCounter += 1
     const key = `query:${queryCounter}`
@@ -861,7 +873,14 @@ export default function Workspace() {
 
         <div className="flex min-h-0 flex-1 overflow-hidden">
           {conn && current?.kind === 'table' && (
-            <TableView key={`${current.key}:${dataVersion}:${ns.database}:${ns.schema}`} conn={nsConn} table={current.table} onChange={addChange} />
+            <TableView
+              key={`${current.key}:${dataVersion}:${ns.database}:${ns.schema}`}
+              conn={nsConn}
+              table={current.table}
+              onChange={addChange}
+              onOpenReference={openTableFiltered}
+              initialFilter={current.initialFilter}
+            />
           )}
           {conn && current?.kind === 'schema' && (
             <SchemaView key={`${current.key}:${dataVersion}:${ns.database}:${ns.schema}`} conn={nsConn} table={current.table} />

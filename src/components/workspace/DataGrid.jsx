@@ -1,7 +1,8 @@
 import { useLayoutEffect, useRef, useState } from 'react'
 import Checkbox from '../ui/Checkbox.jsx'
 import Button from '../ui/Button.jsx'
-import { CloseIcon } from '../icons.jsx'
+import Tooltip from '../ui/Tooltip.jsx'
+import { CloseIcon, ExternalLinkIcon } from '../icons.jsx'
 
 // JSON helpers — Postgres JSONB columns arrive as parsed objects/arrays.
 // Dates arrive as JS Date objects and are handled separately (not JSON).
@@ -112,6 +113,8 @@ export default function DataGrid({
   columns,
   rows,
   columnTypes, // { [colName]: sqlType } — drives the editor input
+  columnRefs, // { [colName]: { table, column } } — FK targets
+  onOpenReference, // (refTable, refColumn, value) => void
   selectable = false,
   getRowKey,
   selectedKeys,
@@ -280,6 +283,8 @@ export default function DataGrid({
                     const dirty = rowEdits && Object.prototype.hasOwnProperty.call(rowEdits, c)
                     const val = dirty ? rowEdits[c] : raw
                     const isSel = sel && sel.r === i && sel.c === c
+                    const ref = columnRefs?.[c]
+                    const hasRef = ref && val != null && val !== ''
                     return (
                       <td
                         key={j}
@@ -292,6 +297,20 @@ export default function DataGrid({
                       >
                         {val === null || val === undefined ? (
                           <span className="italic text-ink-faint">NULL</span>
+                        ) : hasRef ? (
+                          <div className="group/fk flex items-center gap-1">
+                            <span className="min-w-0 flex-1 truncate">{cellText(val)}</span>
+                            <Tooltip label={`Open ${ref.table} where ${ref.column} = ${cellText(val)}`} placement="left">
+                              <button
+                                onClick={(e) => { e.stopPropagation(); onOpenReference?.(ref.table, ref.column, val) }}
+                                onDoubleClick={(e) => e.stopPropagation()}
+                                aria-label={`Open ${ref.table}`}
+                                className="shrink-0 text-ink-faint opacity-0 transition-opacity hover:text-green group-hover/fk:opacity-100"
+                              >
+                                <ExternalLinkIcon width={13} height={13} />
+                              </button>
+                            </Tooltip>
+                          </div>
                         ) : (
                           cellText(val)
                         )}

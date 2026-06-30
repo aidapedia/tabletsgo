@@ -104,7 +104,14 @@ Stored as JSON in the metadata DB. SQLite and PostgreSQL variants:
 
 ### Column (from `/columns` and `/diagram`)
 ```jsonc
-{ "name": "id", "type": "integer", "notnull": true, "pk": true, "default": null }
+{
+  "name": "user_id",
+  "type": "integer",
+  "notnull": true,
+  "pk": false,
+  "default": null,
+  "references": { "table": "users", "column": "id" } // null when not a foreign key (only on /columns)
+}
 ```
 
 ### Query result (from `/query`)

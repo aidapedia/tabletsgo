@@ -150,12 +150,18 @@ function getSqliteTableData(db, table, limit = 200) {
 
 function getSqliteColumns(db, table) {
   const cols = db.prepare(`PRAGMA table_info("${table}")`).all()
+  // Map each FK column to its referenced table/column.
+  const fkMap = {}
+  for (const fk of db.prepare(`PRAGMA foreign_key_list("${table}")`).all()) {
+    fkMap[fk.from] = { table: fk.table, column: fk.to }
+  }
   return cols.map((c) => ({
     name: c.name,
     type: c.type || '',
     notnull: !!c.notnull,
     pk: !!c.pk,
     default: c.dflt_value,
+    references: fkMap[c.name] || null,
   }))
 }
 
@@ -264,12 +270,26 @@ async function getPostgresColumns(pool, table, schema = 'public') {
     [table, schema]
   )
   const pkSet = new Set(pkRes.rows.map((row) => row.column_name))
+  // Map each FK column to its referenced table/column.
+  const fkRes = await pool.query(
+    `SELECT kcu.column_name AS column, ccu.table_name AS ref_table, ccu.column_name AS ref_column
+     FROM information_schema.table_constraints tc
+     JOIN information_schema.key_column_usage kcu
+       ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+     JOIN information_schema.constraint_column_usage ccu
+       ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema
+     WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_name = $1 AND tc.table_schema = $2`,
+    [table, schema]
+  )
+  const fkMap = {}
+  for (const row of fkRes.rows) fkMap[row.column] = { table: row.ref_table, column: row.ref_column }
   return r.rows.map((c) => ({
     name: c.column_name,
     type: c.data_type,
     notnull: c.is_nullable === 'NO',
     pk: pkSet.has(c.column_name),
     default: c.column_default,
+    references: fkMap[c.column_name] || null,
   }))
 }
 

@@ -67,13 +67,14 @@ export function matchFilter(row, f) {
   }
 }
 
-export default function TableView({ conn, table, onChange }) {
+export default function TableView({ conn, table, onChange, onOpenReference, initialFilter }) {
   const toast = useToast()
   const { tableRowLimit } = useSettings()
   const [columns, setColumns] = useState([])
   const [rows, setRows] = useState([])
   const [pkCols, setPkCols] = useState([])
   const [colTypes, setColTypes] = useState({}) // { colName: sqlType } for the editor
+  const [colRefs, setColRefs] = useState({}) // { colName: { table, column } } FK targets
   const [loading, setLoading] = useState(true)
   const [showInsert, setShowInsert] = useState(false)
   const [selected, setSelected] = useState(() => new Set()) // row keys
@@ -92,19 +93,25 @@ export default function TableView({ conn, table, onChange }) {
     setRows(result.rows || [])
     setPkCols((meta || []).filter((c) => c.pk).map((c) => c.name))
     setColTypes(Object.fromEntries((meta || []).map((c) => [c.name, c.type])))
+    setColRefs(Object.fromEntries((meta || []).filter((c) => c.references).map((c) => [c.name, c.references])))
     setSelected(new Set())
     setEdits({})
     setLoading(false)
   }
 
   useEffect(() => {
-    setFilters([])
+    // Seed a filter when opened from a foreign-key link (e.g. col = value).
+    setFilters(
+      initialFilter
+        ? [{ id: `f${++filterId}`, col: initialFilter.col, op: '=', value: String(initialFilter.value ?? ''), enabled: true }]
+        : []
+    )
     setSort(null)
     setHidden([])
     setPage(1)
     load()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conn, table])
+  }, [conn, table, initialFilter])
 
   // Rows are targeted by primary key when available; otherwise we fall back to
   // matching every column so selection / delete / duplicate work on any table.
@@ -438,6 +445,8 @@ export default function TableView({ conn, table, onChange }) {
           columns={visibleColumns}
           rows={pageRows}
           columnTypes={colTypes}
+          columnRefs={colRefs}
+          onOpenReference={onOpenReference}
           selectable={selectable}
           getRowKey={rowKey}
           selectedKeys={selected}
