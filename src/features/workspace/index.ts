@@ -1,0 +1,13 @@
+// Public API for the workspace feature (data grid, query editor, tab panels).
+export { default as DataGrid } from './components/DataGrid'
+export { default as TableView } from './components/TableView'
+export { default as SchemaView } from './components/SchemaView'
+export { default as QueryEditor } from './components/QueryEditor'
+export { default as QueryHistoryView } from './components/QueryHistoryView'
+export { default as InsertRowPanel } from './components/InsertRowPanel'
+export { default as ChangesPanel } from './components/ChangesPanel'
+export { default as SavedQueriesPanel } from './components/SavedQueriesPanel'
+export { default as IconRail } from './components/IconRail'
+
+export * from './lib/savedQueries'
+export * from './lib/queryHistory'

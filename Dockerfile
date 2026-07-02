@@ -13,6 +13,12 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm install
 
+# Frontend API base URL — baked into the static build (Vite inlines VITE_* at
+# build time). Override for a split deploy where the API lives elsewhere:
+#   docker build --build-arg VITE_API_URL=https://api.example.com/api .
+ARG VITE_API_URL=/api
+ENV VITE_API_URL=${VITE_API_URL}
+
 # Build the frontend.
 COPY . .
 RUN npm run build
@@ -21,6 +27,9 @@ ENV NODE_ENV=production
 ENV PORT=3000
 # Persist app metadata (users, connections, saved queries) outside the image.
 ENV META_DB=/app/data/app.db
+# Default admin seed — override at runtime (compose / -e) for production.
+ENV ADMIN_USERNAME=admin
+ENV ADMIN_PASSWORD=admin123
 
 EXPOSE 3000
 CMD ["node", "server.js"]

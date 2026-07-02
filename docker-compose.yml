@@ -1,11 +1,19 @@
 services:
   tabletsgo:
-    build: .
+    build:
+      context: .
+      args:
+        # Baked into the static frontend build. Same-origin `/api` by default.
+        VITE_API_URL: ${VITE_API_URL:-/api}
     ports:
-      - "3000:3000"
+      - "${PORT:-3000}:3000"
     environment:
+      - NODE_ENV=production
       - PORT=3000
       - META_DB=/app/data/app.db
+      # Admin user seeded on first run — override in a .env file for production.
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin123}
     volumes:
       # Persist app metadata (users / connections / saved queries) across
       # container restarts. The demo SQLite DB re-seeds itself on a fresh start.

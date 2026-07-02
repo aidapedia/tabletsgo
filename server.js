@@ -93,12 +93,15 @@ function initMetaDb() {
     meta.exec('ALTER TABLE saved_queries ADD COLUMN folder_id TEXT')
   }
 
-  // Seed the default admin user.
+  // Seed the default admin user. Credentials are configurable via env so a
+  // deploy can set a strong password instead of the built-in default.
   if (!meta.prepare('SELECT 1 FROM users LIMIT 1').get()) {
+    const adminUser = process.env.ADMIN_USERNAME || 'admin'
+    const adminPass = process.env.ADMIN_PASSWORD || 'admin123'
     meta
       .prepare('INSERT INTO users (id, username, password_hash, name, role) VALUES (?, ?, ?, ?, ?)')
-      .run(randomUUID(), 'admin', sha256('admin123'), 'Admin', 'admin')
-    console.log('🌱 Seeded default user: admin / admin123')
+      .run(randomUUID(), adminUser, sha256(adminPass), 'Admin', 'admin')
+    console.log(`🌱 Seeded default user: ${adminUser}`)
   }
 }
 initMetaDb()

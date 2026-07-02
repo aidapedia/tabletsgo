@@ -2,6 +2,7 @@ node_modules
 dist
 dist-ssr
 *.local
+.env
 .DS_Store
 .vite
 demo.db
