@@ -20,8 +20,8 @@ import TableEditPanel from '@/features/schema-designer/components/TableEditPanel
 import CreateTablePanel from '@/features/schema-designer/components/CreateTablePanel'
 import SaveQueryPanel from '@/shared/ui/SaveQueryPanel'
 import { newItemId } from '@/shared/lib/schemaDraft'
-import { TYPES } from '@/features/schema-designer/components/columnFields'
-import { ChevronRight, DownloadIcon, PlusIcon, SaveIcon, TableIcon, WandIcon } from '@/shared/ui/icons'
+import { useColumnTypes } from '@/features/schema-designer/components/columnFields'
+import { ChevronRight, ColumnsIcon, DownloadIcon, EditIcon, PlusIcon, SaveIcon, TableIcon, TrashIcon, WandIcon } from '@/shared/ui/icons'
 
 // Fixed metrics so per-column handles line up with their rows.
 const HEADER_H = 34
@@ -30,12 +30,12 @@ const PAD_T = 4
 const rowCenter = (i) => HEADER_H + PAD_T + i * ROW_H + ROW_H / 2
 
 // ---- Custom node: a table with per-column FK handles ----
-function TableNode({ data }) {
+function TableNode({ data, selected }) {
   // Pending (staged-but-uncommitted) tables/columns are marked amber.
   return (
     <div
-      className={`overflow-hidden rounded-soft border bg-panel text-[11px] shadow-[0_12px_30px_-12px_rgba(0,0,0,0.7)] ${
-        data.pending ? 'border-amber' : 'border-edge-strong'
+      className={`group cursor-pointer overflow-hidden rounded-soft border-2 bg-panel text-[11px] shadow-[0_12px_30px_-12px_rgba(0,0,0,0.7)] transition-colors hover:border-green-bright ${
+        selected ? 'border-[var(--color-green)]' : data.pending ? 'border-amber' : 'border-edge-strong'
       }`}
     >
       <div
@@ -240,17 +240,20 @@ function pathWithJumps(points, verticals) {
   return d
 }
 
-export default function SchemaEditor({ conn, changes, pending = [], onPendingChange, onStageItems, onSaveDraft }) {
+export default function SchemaEditor({ conn, changes, pending = [], onPendingChange, onStageItems, onSaveDraft, onOpenTable, onOpenSchema }) {
   const dialect = conn.type === 'postgresql' ? 'postgresql' : 'sqlite'
-  const types = TYPES[dialect]
+  const types = useColumnTypes(conn)
 
   const [diagram, setDiagram] = useState({ tables: [], foreignKeys: [] })
   const [loading, setLoading] = useState(true)
   const [selected, setSelected] = useState(null) // table name being edited
   const [selectedEdge, setSelectedEdge] = useState(null) // clicked FK edge id
+  const [hoveredEdge, setHoveredEdge] = useState(null) // FK edge under the cursor
   const [edgePopup, setEdgePopup] = useState(null) // { x, y, fk } — FK info popup
   const [hiddenTables, setHiddenTables] = useState(() => new Set()) // tables hidden from the diagram
+  const [tableSearch, setTableSearch] = useState('') // filter for the show/hide list
   const [menu, setMenu] = useState(null) // canvas context menu { x, y }
+  const [nodeMenu, setNodeMenu] = useState(null) // table right-click menu { x, y, table, pending }
   const [creating, setCreating] = useState(false) // create-table panel open
   const [naming, setNaming] = useState(false) // "save as draft" name prompt open
 
@@ -259,6 +262,13 @@ export default function SchemaEditor({ conn, changes, pending = [], onPendingCha
   const addPending = (statements, tableName, mode) =>
     onPendingChange?.([...pending, ...statements.map((sql) => ({ id: newItemId(), sql, table: tableName, mode }))])
   const clearPending = () => onPendingChange?.([])
+
+  // Delete a table: a pending (uncommitted) table just drops its staged
+  // statements; an existing table stages a DROP TABLE for the next commit.
+  const deleteTable = (table, isPending) => {
+    if (isPending) onPendingChange?.(pending.filter((p) => p.table !== table))
+    else addPending([`DROP TABLE "${table}";`], table, 'delete')
+  }
 
   useEffect(() => {
     let alive = true
@@ -360,6 +370,8 @@ export default function SchemaEditor({ conn, changes, pending = [], onPendingCha
       n.has(name) ? n.delete(name) : n.add(name)
       return n
     })
+  const showAllTables = () => setHiddenTables(new Set())
+  const hideAllTables = () => setHiddenTables(new Set(augmented.map((t) => t.name)))
 
   // (Re)build nodes whenever the diagram or staged changes update.
   useEffect(() => {
@@ -421,18 +433,20 @@ export default function SchemaEditor({ conn, changes, pending = [], onPendingCha
     () =>
       baseEdges.map((e) => {
         const isSel = e.id === selectedEdge
+        const isHover = !isSel && e.id === hoveredEdge
+        const active = isSel || isHover
         return {
           ...e,
           animated: isSel, // drives React Flow's marching-ants animation
           style: {
-            stroke: isSel ? 'var(--color-green)' : 'var(--color-ink)',
-            strokeWidth: isSel ? 2 : 1.5,
+            stroke: active ? 'var(--color-green)' : 'var(--color-ink)',
+            strokeWidth: active ? 2 : 1.5,
             // Round dotted pattern so the animation reads as "moving dots".
             ...(isSel ? { strokeDasharray: '0.1 6', strokeLinecap: 'round' } : {}),
           },
         }
       }),
-    [baseEdges, selectedEdge]
+    [baseEdges, selectedEdge, hoveredEdge]
   )
 
   const autoLayout = () => {
@@ -466,6 +480,8 @@ export default function SchemaEditor({ conn, changes, pending = [], onPendingCha
   }
 
   const selectedTable = selected ? diagram.tables.find((t) => t.name === selected) : null
+  // Foreign keys originating from the selected table (shown read-only per column).
+  const selectedForeignKeys = selected ? diagram.foreignKeys.filter((fk) => fk.table === selected) : []
 
   // Table -> column-name list, for the FK "references" pickers in the panels.
   const schemaMap = useMemo(() => {
@@ -477,8 +493,11 @@ export default function SchemaEditor({ conn, changes, pending = [], onPendingCha
 
   // Close the canvas context menu on any outside interaction.
   useEffect(() => {
-    if (!menu) return
-    const close = () => setMenu(null)
+    if (!menu && !nodeMenu) return
+    const close = () => {
+      setMenu(null)
+      setNodeMenu(null)
+    }
     const onKey = (e) => e.key === 'Escape' && close()
     window.addEventListener('click', close)
     window.addEventListener('resize', close)
@@ -488,7 +507,7 @@ export default function SchemaEditor({ conn, changes, pending = [], onPendingCha
       window.removeEventListener('resize', close)
       window.removeEventListener('keydown', onKey)
     }
-  }, [menu])
+  }, [menu, nodeMenu])
 
   // Dismiss the FK popup (and clear the edge selection) on Escape / resize.
   useEffect(() => {
@@ -540,7 +559,8 @@ export default function SchemaEditor({ conn, changes, pending = [], onPendingCha
         {/* Right cluster — Tables (show/hide) + Export */}
         <div className="ml-auto flex items-center gap-2">
           <Popover
-            width={220}
+            align="right"
+            width={240}
             trigger={({ open, toggle }) => (
               <Button
                 variant="subtle"
@@ -555,20 +575,43 @@ export default function SchemaEditor({ conn, changes, pending = [], onPendingCha
               </Button>
             )}
           >
-            <div className="max-h-[320px] overflow-y-auto p-2">
-              <div className="px-1.5 pb-1.5 text-[11px] font-semibold text-ink-dim">Show / hide tables</div>
-              {[...augmented]
-                .sort((a, b) => a.name.localeCompare(b.name))
-                .map((t) => (
-                  <div
-                    key={t.name}
-                    onClick={() => toggleTable(t.name)}
-                    className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1.5 text-[11px] text-ink-dim hover:bg-card-hover hover:text-ink"
-                  >
-                    <Checkbox checked={!hiddenTables.has(t.name)} onChange={() => toggleTable(t.name)} ariaLabel={`Toggle ${t.name}`} />
-                    <span className="truncate">{t.name}</span>
-                  </div>
-                ))}
+            <div className="p-2">
+              <div className="mb-1.5 flex items-center justify-between px-1.5">
+                <span className="text-[11px] font-semibold text-ink-dim">Show / hide tables</span>
+                <div className="flex items-center gap-1.5 text-[11px] font-semibold">
+                  <button type="button" className="text-green hover:text-green-bright" onClick={showAllTables}>
+                    All
+                  </button>
+                  <span className="text-ink-faint">·</span>
+                  <button type="button" className="text-ink-dim hover:text-ink" onClick={hideAllTables}>
+                    None
+                  </button>
+                </div>
+              </div>
+              <input
+                value={tableSearch}
+                onChange={(e) => setTableSearch(e.target.value)}
+                placeholder="Search tables…"
+                className="mb-1.5 w-full rounded-soft border border-edge bg-elevated px-2 py-1.5 text-[11px] text-ink outline-none placeholder:text-ink-faint focus:border-green-dim"
+              />
+              <div className="max-h-[260px] overflow-y-auto">
+                {[...augmented]
+                  .sort((a, b) => a.name.localeCompare(b.name))
+                  .filter((t) => t.name.toLowerCase().includes(tableSearch.trim().toLowerCase()))
+                  .map((t) => (
+                    <div
+                      key={t.name}
+                      onClick={() => toggleTable(t.name)}
+                      className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1.5 text-[11px] text-ink-dim hover:bg-card-hover hover:text-ink"
+                    >
+                      <Checkbox checked={!hiddenTables.has(t.name)} onChange={() => toggleTable(t.name)} ariaLabel={`Toggle ${t.name}`} />
+                      <span className="truncate">{t.name}</span>
+                    </div>
+                  ))}
+                {augmented.every((t) => !t.name.toLowerCase().includes(tableSearch.trim().toLowerCase())) && (
+                  <div className="px-1.5 py-2 text-[11px] text-ink-faint">No tables match.</div>
+                )}
+              </div>
             </div>
           </Popover>
 
@@ -617,11 +660,24 @@ export default function SchemaEditor({ conn, changes, pending = [], onPendingCha
                 edgeTypes={edgeTypes as any}
                 onNodesChange={onNodesChange}
                 onInit={(inst) => (rf.current = inst)}
+                // Dragging shouldn't select a node (which would leave the active
+                // green outline stuck on it) — only an explicit click selects.
+                selectNodesOnDrag={false}
                 onNodeClick={(_, node) => setSelected(node.id)}
+                onNodeContextMenu={(e, node) => {
+                  e.preventDefault()
+                  // Stop the event bubbling to the canvas' onContextMenu, which
+                  // would otherwise also open the empty-space menu on top.
+                  e.stopPropagation()
+                  setMenu(null)
+                  setNodeMenu({ x: e.clientX, y: e.clientY, table: node.id, pending: !!node.data?.pending })
+                }}
                 onEdgeClick={(e, edge) => {
                   setSelectedEdge(edge.id)
                   setEdgePopup({ x: e.clientX, y: e.clientY, fk: edge.data.fk })
                 }}
+                onEdgeMouseEnter={(_, edge) => setHoveredEdge(edge.id)}
+                onEdgeMouseLeave={() => setHoveredEdge(null)}
                 onPaneClick={() => {
                   setSelectedEdge(null)
                   setEdgePopup(null)
@@ -674,8 +730,14 @@ export default function SchemaEditor({ conn, changes, pending = [], onPendingCha
           types={types}
           tableNames={tableNames}
           schema={schemaMap}
+          foreignKeys={selectedForeignKeys}
           onStage={addPending}
-          onClose={() => setSelected(null)}
+          onClose={() => {
+            setSelected(null)
+            // Clear ReactFlow's node selection so the active outline doesn't
+            // linger on the table after the edit drawer closes.
+            setNodes((nds) => nds.map((n) => (n.selected ? { ...n, selected: false } : n)))
+          }}
         />
       )}
 
@@ -714,6 +776,57 @@ export default function SchemaEditor({ conn, changes, pending = [], onPendingCha
             <ChevronRight width={12} height={12} className="text-green" />
             {edgePopup.fk.refTable}.{edgePopup.fk.refColumn}
           </div>
+          {(edgePopup.fk.onDelete && edgePopup.fk.onDelete !== 'NO ACTION') ||
+          (edgePopup.fk.onUpdate && edgePopup.fk.onUpdate !== 'NO ACTION') ? (
+            <div className="mt-2 flex flex-col gap-0.5 border-t border-edge pt-2 text-[10px] text-ink-faint">
+              {edgePopup.fk.onDelete && edgePopup.fk.onDelete !== 'NO ACTION' && (
+                <span>
+                  ON DELETE <span className="font-mono text-ink-dim">{edgePopup.fk.onDelete}</span>
+                </span>
+              )}
+              {edgePopup.fk.onUpdate && edgePopup.fk.onUpdate !== 'NO ACTION' && (
+                <span>
+                  ON UPDATE <span className="font-mono text-ink-dim">{edgePopup.fk.onUpdate}</span>
+                </span>
+              )}
+            </div>
+          ) : null}
+        </div>
+      )}
+
+      {/* Table right-click menu */}
+      {nodeMenu && (
+        <div
+          className="fixed z-[60] min-w-[180px] rounded-soft border border-edge-strong bg-elevated p-1 shadow-[0_12px_34px_-10px_rgba(0,0,0,0.75)]"
+          style={{ left: Math.min(nodeMenu.x, window.innerWidth - 200), top: Math.min(nodeMenu.y, window.innerHeight - 150) }}
+          onClick={(e) => e.stopPropagation()}
+          onContextMenu={(e) => e.preventDefault()}
+        >
+          <div className="truncate px-2.5 pb-1.5 pt-1 text-[11px] font-semibold text-ink-dim">{nodeMenu.table}</div>
+          <button
+            className={`${exportItem} disabled:pointer-events-none disabled:opacity-40`}
+            disabled={nodeMenu.pending}
+            onClick={() => { onOpenTable?.(nodeMenu.table); setNodeMenu(null) }}
+          >
+            <TableIcon width={14} height={14} /> Open in new tab
+          </button>
+          <button
+            className={`${exportItem} disabled:pointer-events-none disabled:opacity-40`}
+            disabled={nodeMenu.pending}
+            onClick={() => { onOpenSchema?.(nodeMenu.table); setNodeMenu(null) }}
+          >
+            <ColumnsIcon width={14} height={14} /> View table schema
+          </button>
+          <button className={exportItem} onClick={() => { setSelected(nodeMenu.table); setNodeMenu(null) }}>
+            <EditIcon width={14} height={14} /> Edit table
+          </button>
+          <div className="my-1 h-px bg-edge" />
+          <button
+            className={`${exportItem} !text-red hover:!text-red`}
+            onClick={() => { deleteTable(nodeMenu.table, nodeMenu.pending); setNodeMenu(null) }}
+          >
+            <TrashIcon width={14} height={14} /> Delete table
+          </button>
         </div>
       )}
 

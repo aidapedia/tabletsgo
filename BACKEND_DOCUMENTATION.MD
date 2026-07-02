@@ -349,6 +349,37 @@ List table names.
 - **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/tables`
 - **PG example:** `GET .../tables?database=appdb&schema=public`
 
+### GET `/api/connections/:id/objects`
+Generic list of every browsable database object, so the data browser can group
+them by kind. Dialect-agnostic contract — each engine maps its own catalog onto
+`{ name, type }` (SQLite: tables/views; PostgreSQL: tables/views/functions;
+Redis (roadmap): keys by type).
+
+- **200:** `Object[]`
+  ```jsonc
+  [
+    { "name": "users", "type": "table" },
+    { "name": "active_users", "type": "view", "materialized": false },
+    { "name": "calc_total", "type": "function", "detail": "integer, integer" }
+  ]
+  ```
+  - `type` is one of `table` | `view` | `function` (extensible per dialect).
+  - Optional extras: `schema`, `materialized` (views), `detail` (function args).
+- **Query:** optional `database`, `schema` (PG)
+- **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/objects`
+
+### GET `/api/connections/:id/function/:name`
+Definition(s) of a function/routine by name (a name may have several overloads).
+Empty for engines without listable functions (e.g. SQLite).
+
+- **200:**
+  ```jsonc
+  [ { "name": "calc_total", "args": "a integer, b integer",
+      "definition": "CREATE OR REPLACE FUNCTION public.calc_total(...) ..." } ]
+  ```
+- **Query:** optional `database`, `schema` (PG)
+- **Example:** `GET http://localhost:3000/api/connections/demo-pg/function/calc_total`
+
 ### GET `/api/connections/:id/table/:table`
 Read rows from a table (capped by `limit`).
 
@@ -360,8 +391,21 @@ Read rows from a table (capped by `limit`).
 ### GET `/api/connections/:id/columns/:table`
 Column metadata for a table (used for PK detection, inserts, editing).
 
-- **200:** `Column[]` → `[{ "name", "type", "notnull", "pk", "default" }]`
+- **200:** `Column[]` → `[{ "name", "type", "notnull", "pk", "default", "references": { "table", "column" } | null }]`
 - **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/columns/users`
+
+### GET `/api/connections/:id/indexes/:table`
+Indexes on a table (shown in the schema tab's index grid).
+
+- **200:**
+  ```jsonc
+  [
+    { "name": "assets_pkey", "algorithm": "BTREE", "unique": true,
+      "columns": "id", "condition": "", "include": "", "comment": "" }
+  ]
+  ```
+- **Query:** optional `database`, `schema` (PG)
+- **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/indexes/users`
 
 ### GET `/api/connections/:id/schema`
 Map of every table to its column names (editor autocomplete).
@@ -377,6 +421,18 @@ Databases + schemas available on the connection (breadcrumb selector).
 - **Query:** optional `database` (PG, to list schemas of another DB)
 - **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/namespaces`
 
+### GET `/api/connections/:id/types`
+Column data types the schema editor offers for this connection's dialect.
+
+- **200:** (Postgres uses the database's own type vocabulary, matching `/columns`)
+  ```jsonc
+  { "types": ["INTEGER", "TEXT", "REAL", "BLOB", "NUMERIC"] }   // sqlite
+  // postgresql: ["serial","bigserial","smallint","integer","bigint","numeric",
+  //   "character varying","timestamp without time zone", ...]
+  ```
+- **404:** `{ "error": "Connection not found" }`
+- **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/types`
+
 ### GET `/api/connections/:id/diagram`
 Tables with columns + foreign-key relationships (ER diagram).
 
@@ -385,7 +441,9 @@ Tables with columns + foreign-key relationships (ER diagram).
   {
     "tables": [{ "name": "orders", "columns": [Column, ...] }],
     "foreignKeys": [
-      { "table": "orders", "column": "user_id", "refTable": "users", "refColumn": "id" }
+      // `constraint` (PG only) is the constraint name, used to drop/modify the FK.
+      { "constraint": "orders_user_id_fkey", "table": "orders", "column": "user_id",
+        "refTable": "users", "refColumn": "id", "onDelete": "CASCADE", "onUpdate": "NO ACTION" }
     ]
   }
   ```
@@ -452,10 +510,14 @@ Liveness probe.
 | POST   | `/api/connections/:id/history`            | Record a query execution        |
 | DELETE | `/api/connections/:id/history`            | Clear query history             |
 | GET    | `/api/connections/:id/tables`             | List tables                     |
+| GET    | `/api/connections/:id/objects`            | List objects (tables/views/fns) |
+| GET    | `/api/connections/:id/function/:name`     | Function definition(s)          |
 | GET    | `/api/connections/:id/table/:table`       | Read table rows                 |
 | GET    | `/api/connections/:id/columns/:table`     | Column metadata                 |
+| GET    | `/api/connections/:id/indexes/:table`     | Table indexes                   |
 | GET    | `/api/connections/:id/schema`             | Table → columns map             |
 | GET    | `/api/connections/:id/namespaces`         | Databases + schemas             |
+| GET    | `/api/connections/:id/types`              | Column data types (per dialect) |
 | GET    | `/api/connections/:id/diagram`            | Tables + foreign keys           |
 | POST   | `/api/connections/:id/insert`             | Insert a row                    |
 | POST   | `/api/connections/:id/query`              | Execute SQL                     |

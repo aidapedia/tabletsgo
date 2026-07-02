@@ -29,6 +29,16 @@ export async function listTables(conn) {
   return safeRequest(withNs(conn, `/connections/${conn.id}/tables`), [])
 }
 
+// Generic browsable objects: [{ name, type, ... }] (tables, views, functions, …).
+export async function listObjects(conn) {
+  return safeRequest(withNs(conn, `/connections/${conn.id}/objects`), [])
+}
+
+// Definition(s) of a function/routine by name (may return multiple overloads).
+export async function getFunction(conn, name) {
+  return safeRequest(withNs(conn, `/connections/${conn.id}/function/${encodeURIComponent(name)}`), [])
+}
+
 export async function tableRowCount(conn, table) {
   const data: any = await getTableData(conn, table, 1)
   return data.rowCount !== undefined ? data.rowCount : 0
@@ -49,6 +59,15 @@ export async function getColumns(conn, table) {
 
 export async function getSchema(conn) {
   return safeRequest(withNs(conn, `/connections/${conn.id}/schema`), {})
+}
+
+export async function getIndexes(conn, table) {
+  return safeRequest(withNs(conn, `/connections/${conn.id}/indexes/${encodeURIComponent(table)}`), [])
+}
+
+export async function getTypes(conn) {
+  const data = await safeRequest<any>(`/connections/${conn.id}/types`, { types: [] })
+  return data.types || []
 }
 
 export async function getNamespaces(conn, database?) {

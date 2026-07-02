@@ -132,11 +132,24 @@ function getSqliteDb(path) {
 
 function listSqliteTables(db) {
   const res = db.prepare(`
-    SELECT name FROM sqlite_master 
-    WHERE type='table' AND name NOT LIKE 'sqlite_%' 
+    SELECT name FROM sqlite_master
+    WHERE type='table' AND name NOT LIKE 'sqlite_%'
     ORDER BY name
   `).all()
   return res.map(r => r.name)
+}
+
+// Generic database-object list: [{ name, type }] where type is 'table' | 'view'
+// | 'function' | … . SQLite exposes tables and views (no listable functions).
+function listSqliteObjects(db) {
+  return db
+    .prepare(
+      `SELECT name, type FROM sqlite_master
+       WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%'
+       ORDER BY type, name`
+    )
+    .all()
+    .map((r) => ({ name: r.name, type: r.type }))
 }
 
 function getSqliteTableData(db, table, limit = 200) {
@@ -168,19 +181,36 @@ function getSqliteColumns(db, table) {
   }))
 }
 
+function getSqliteIndexes(db, table) {
+  return db
+    .prepare(`PRAGMA index_list("${table}")`)
+    .all()
+    .map((idx) => {
+      const cols = db.prepare(`PRAGMA index_info("${idx.name}")`).all().map((c) => c.name)
+      return {
+        name: idx.name,
+        algorithm: 'BTREE',
+        unique: !!idx.unique,
+        columns: cols.join(', '),
+        condition: idx.partial ? '(partial)' : '',
+        include: '',
+        comment: '',
+      }
+    })
+}
+
 function runSqliteQuery(db, sql) {
   try {
     const stmt = db.prepare(sql)
-    const isSelect = sql.trim().toUpperCase().startsWith('SELECT')
-    
-    if (isSelect) {
+    // `reader` is true for any statement that returns rows — SELECT, EXPLAIN,
+    // EXPLAIN QUERY PLAN, PRAGMA, VALUES, WITH … SELECT — not just SELECT.
+    if (stmt.reader) {
       const rows = stmt.all()
-      const columns = rows.length ? Object.keys(rows[0]) : []
+      const columns = stmt.columns().map((c) => c.name)
       return { type: 'rows', columns, rows }
-    } else {
-      const result = stmt.run()
-      return { type: 'message', message: `Query OK · ${result.changes} row(s) affected.` }
     }
+    const result = stmt.run()
+    return { type: 'message', message: `Query OK · ${result.changes} row(s) affected.` }
   } catch (error) {
     return { error: error.message }
   }
@@ -240,6 +270,42 @@ async function listPostgresTables(pool, schema = 'public') {
   }
 }
 
+// Generic object list for Postgres: tables, (materialized) views and functions.
+// Each sub-query is isolated so one failing kind never blanks the whole list.
+async function listPostgresObjects(pool, schema = 'public') {
+  const out = []
+  const safe = async (fn) => {
+    try {
+      await fn()
+    } catch (error) {
+      console.error('listPostgresObjects:', error.message)
+    }
+  }
+  await safe(async () => {
+    const r = await pool.query(`SELECT tablename AS name FROM pg_tables WHERE schemaname = $1 ORDER BY tablename`, [schema])
+    for (const row of r.rows) out.push({ name: row.name, type: 'table', schema })
+  })
+  await safe(async () => {
+    const r = await pool.query(`SELECT viewname AS name FROM pg_views WHERE schemaname = $1 ORDER BY viewname`, [schema])
+    for (const row of r.rows) out.push({ name: row.name, type: 'view', schema })
+  })
+  await safe(async () => {
+    const r = await pool.query(`SELECT matviewname AS name FROM pg_matviews WHERE schemaname = $1 ORDER BY matviewname`, [schema])
+    for (const row of r.rows) out.push({ name: row.name, type: 'view', schema, materialized: true })
+  })
+  await safe(async () => {
+    const r = await pool.query(
+      `SELECT p.proname AS name, pg_get_function_identity_arguments(p.oid) AS args
+       FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+       WHERE n.nspname = $1 AND p.prokind = 'f'
+       ORDER BY p.proname`,
+      [schema]
+    )
+    for (const row of r.rows) out.push({ name: row.name, type: 'function', schema, detail: row.args || '' })
+  })
+  return out
+}
+
 async function getPostgresTableData(pool, table, limit = 200, schema = 'public') {
   try {
     const columns = await pool.query(
@@ -255,9 +321,24 @@ async function getPostgresTableData(pool, table, limit = 200, schema = 'public')
   }
 }
 
+// Reconstruct the column's real Postgres type, including its length/precision
+// (e.g. "character varying(255)", "numeric(10,2)") exactly as the database
+// reports it — no aliasing to short names.
+function pgFullType(c) {
+  const t = c.data_type
+  if ((t === 'character varying' || t === 'character') && c.character_maximum_length != null) {
+    return `${t}(${c.character_maximum_length})`
+  }
+  if (t === 'numeric' && c.numeric_precision != null) {
+    return c.numeric_scale ? `${t}(${c.numeric_precision},${c.numeric_scale})` : `${t}(${c.numeric_precision})`
+  }
+  return t
+}
+
 async function getPostgresColumns(pool, table, schema = 'public') {
   const r = await pool.query(
-    `SELECT column_name, data_type, is_nullable, column_default
+    `SELECT column_name, data_type, is_nullable, column_default,
+            character_maximum_length, numeric_precision, numeric_scale
      FROM information_schema.columns
      WHERE table_name = $1 AND table_schema = $2
      ORDER BY ordinal_position`,
@@ -288,12 +369,54 @@ async function getPostgresColumns(pool, table, schema = 'public') {
   for (const row of fkRes.rows) fkMap[row.column] = { table: row.ref_table, column: row.ref_column }
   return r.rows.map((c) => ({
     name: c.column_name,
-    type: c.data_type,
+    type: pgFullType(c),
     notnull: c.is_nullable === 'NO',
     pk: pkSet.has(c.column_name),
     default: c.column_default,
     references: fkMap[c.column_name] || null,
   }))
+}
+
+async function getPostgresIndexes(pool, table, schema = 'public') {
+  const r = await pool.query(
+    `SELECT i.relname AS name, am.amname AS algorithm, ix.indisunique AS unique,
+            (SELECT string_agg(a.attname, ', ' ORDER BY k.ord)
+             FROM unnest(ix.indkey) WITH ORDINALITY AS k(attnum, ord)
+             JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = k.attnum) AS columns,
+            pg_get_expr(ix.indpred, ix.indrelid) AS condition,
+            obj_description(i.oid) AS comment
+     FROM pg_index ix
+     JOIN pg_class i ON i.oid = ix.indexrelid
+     JOIN pg_class t ON t.oid = ix.indrelid
+     JOIN pg_am am ON am.oid = i.relam
+     JOIN pg_namespace n ON n.oid = t.relnamespace
+     WHERE t.relname = $1 AND n.nspname = $2
+     ORDER BY i.relname`,
+    [table, schema]
+  )
+  return r.rows.map((row) => ({
+    name: row.name,
+    algorithm: (row.algorithm || '').toUpperCase(),
+    unique: row.unique,
+    columns: row.columns || '',
+    condition: row.condition || '',
+    include: '',
+    comment: row.comment || '',
+  }))
+}
+
+// Function definition(s) for a name (a name may have several overloads).
+async function getPostgresFunction(pool, name, schema = 'public') {
+  const r = await pool.query(
+    `SELECT p.proname AS name,
+            pg_get_function_identity_arguments(p.oid) AS args,
+            pg_get_functiondef(p.oid) AS definition
+     FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+     WHERE n.nspname = $1 AND p.proname = $2 AND p.prokind = 'f'
+     ORDER BY p.proname`,
+    [schema, name]
+  )
+  return r.rows.map((row) => ({ name: row.name, args: row.args || '', definition: row.definition || '' }))
 }
 
 async function runPostgresQuery(pool, sql, schema) {
@@ -311,13 +434,14 @@ async function runPostgresQuery(pool, sql, schema) {
     } else {
       result = await pool.query(sql)
     }
-    const isSelect = sql.trim().toUpperCase().startsWith('SELECT')
-    if (isSelect) {
-      const columns = result.fields ? result.fields.map((f) => f.name) : []
+    // A populated `fields` list means the command returned a result set —
+    // SELECT, EXPLAIN [ANALYZE], SHOW, VALUES, WITH … SELECT, INSERT … RETURNING.
+    // Commands like INSERT/UPDATE/DELETE leave it empty, so we report rowCount.
+    const columns = result.fields ? result.fields.map((f) => f.name) : []
+    if (columns.length) {
       return { type: 'rows', columns, rows: result.rows }
-    } else {
-      return { type: 'message', message: `Query OK · ${result.rowCount} row(s) affected.` }
     }
+    return { type: 'message', message: `Query OK · ${result.rowCount ?? 0} row(s) affected.` }
   } catch (error) {
     return { error: error.message }
   }
@@ -585,6 +709,41 @@ app.get('/api/connections/:id/tables', async (req, res) => {
   }
 })
 
+// List all browsable database objects (tables, views, functions, …) as a
+// generic [{ name, type, ... }] list so any dialect can populate the browser.
+app.get('/api/connections/:id/objects', async (req, res) => {
+  const conn = getConnection(req.params.id)
+  if (!conn) return res.status(404).json({ error: 'Connection not found' })
+
+  try {
+    let objects = []
+    if (conn.type === 'sqlite') {
+      objects = listSqliteObjects(getSqliteDb(conn.filepath))
+    } else if (conn.type === 'postgresql') {
+      objects = await listPostgresObjects(getPostgresPool(conn, req.query.database), req.query.schema || 'public')
+    }
+    res.json(objects)
+  } catch (error) {
+    res.status(500).json({ error: error.message })
+  }
+})
+
+// Function definition(s) for a named routine (empty for engines without them).
+app.get('/api/connections/:id/function/:name', async (req, res) => {
+  const conn = getConnection(req.params.id)
+  if (!conn) return res.status(404).json({ error: 'Connection not found' })
+
+  try {
+    let functions = []
+    if (conn.type === 'postgresql') {
+      functions = await getPostgresFunction(getPostgresPool(conn, req.query.database), req.params.name, req.query.schema || 'public')
+    }
+    res.json(functions)
+  } catch (error) {
+    res.status(500).json({ error: error.message })
+  }
+})
+
 // Get table data
 app.get('/api/connections/:id/table/:table', async (req, res) => {
   const conn = getConnection(req.params.id)
@@ -618,6 +777,24 @@ app.get('/api/connections/:id/columns/:table', async (req, res) => {
       columns = await getPostgresColumns(getPostgresPool(conn, req.query.database), req.params.table, req.query.schema || 'public')
     }
     res.json(columns)
+  } catch (error) {
+    res.status(500).json({ error: error.message })
+  }
+})
+
+// List a table's indexes.
+app.get('/api/connections/:id/indexes/:table', async (req, res) => {
+  const conn = getConnection(req.params.id)
+  if (!conn) return res.status(404).json({ error: 'Connection not found' })
+
+  try {
+    let indexes = []
+    if (conn.type === 'sqlite') {
+      indexes = getSqliteIndexes(getSqliteDb(conn.filepath), req.params.table)
+    } else if (conn.type === 'postgresql') {
+      indexes = await getPostgresIndexes(getPostgresPool(conn, req.query.database), req.params.table, req.query.schema || 'public')
+    }
+    res.json(indexes)
   } catch (error) {
     res.status(500).json({ error: error.message })
   }
@@ -683,6 +860,25 @@ app.get('/api/connections/:id/namespaces', async (req, res) => {
   }
 })
 
+// Column data types the schema editor offers, per dialect. Postgres uses the
+// database's own type vocabulary (matching what /columns reports) so the same
+// list is consistent for both existing and new columns.
+const DATA_TYPES = {
+  sqlite: ['INTEGER', 'TEXT', 'REAL', 'BLOB', 'NUMERIC'],
+  postgresql: [
+    'serial', 'bigserial', 'smallint', 'integer', 'bigint', 'numeric', 'real', 'double precision',
+    'boolean', 'text', 'character varying', 'character', 'date', 'time without time zone',
+    'timestamp without time zone', 'timestamp with time zone', 'json', 'jsonb', 'uuid',
+  ],
+}
+
+// Available column types for a connection's dialect.
+app.get('/api/connections/:id/types', (req, res) => {
+  const conn = getConnection(req.params.id)
+  if (!conn) return res.status(404).json({ error: 'Connection not found' })
+  res.json({ types: DATA_TYPES[conn.type === 'postgresql' ? 'postgresql' : 'sqlite'] })
+})
+
 // Schema diagram: every table's columns + foreign-key relationships.
 app.get('/api/connections/:id/diagram', async (req, res) => {
   const conn = getConnection(req.params.id)
@@ -697,7 +893,7 @@ app.get('/api/connections/:id/diagram', async (req, res) => {
       for (const t of listSqliteTables(db)) {
         tables.push({ name: t, columns: getSqliteColumns(db, t) })
         for (const fk of db.prepare(`PRAGMA foreign_key_list("${t}")`).all()) {
-          foreignKeys.push({ table: t, column: fk.from, refTable: fk.table, refColumn: fk.to })
+          foreignKeys.push({ table: t, column: fk.from, refTable: fk.table, refColumn: fk.to, onDelete: fk.on_delete, onUpdate: fk.on_update })
         }
       }
     } else if (conn.type === 'postgresql') {
@@ -707,18 +903,21 @@ app.get('/api/connections/:id/diagram', async (req, res) => {
         tables.push({ name: t, columns: await getPostgresColumns(pool, t, schema) })
       }
       const fkRes = await pool.query(
-        `SELECT tc.table_name AS table, kcu.column_name AS column,
-               ccu.table_name AS ref_table, ccu.column_name AS ref_column
+        `SELECT tc.constraint_name AS constraint, tc.table_name AS table, kcu.column_name AS column,
+               ccu.table_name AS ref_table, ccu.column_name AS ref_column,
+               rc.delete_rule AS on_delete, rc.update_rule AS on_update
         FROM information_schema.table_constraints tc
         JOIN information_schema.key_column_usage kcu
           ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
         JOIN information_schema.constraint_column_usage ccu
           ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema
+        JOIN information_schema.referential_constraints rc
+          ON rc.constraint_name = tc.constraint_name AND rc.constraint_schema = tc.table_schema
         WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_schema = $1`,
         [schema]
       )
       for (const r of fkRes.rows) {
-        foreignKeys.push({ table: r.table, column: r.column, refTable: r.ref_table, refColumn: r.ref_column })
+        foreignKeys.push({ constraint: r.constraint, table: r.table, column: r.column, refTable: r.ref_table, refColumn: r.ref_column, onDelete: r.on_delete, onUpdate: r.on_update })
       }
     }
     res.json({ tables, foreignKeys })

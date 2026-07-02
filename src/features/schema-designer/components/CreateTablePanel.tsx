@@ -4,12 +4,12 @@ import Button from '@/shared/ui/Button'
 import { useSlideOver } from '@/shared/hooks/useSlideOver'
 import { ChevronRight, PlusIcon } from '@/shared/ui/icons'
 import { fieldInput, fieldLabel } from '@/shared/lib/styles'
-import { ColumnField, TYPES, colDef, newColumn } from '@/features/schema-designer/components/columnFields'
+import { ColumnField, colDef, newColumn, useColumnTypes } from '@/features/schema-designer/components/columnFields'
 
 export default function CreateTablePanel({ conn, initialTable, onClose, onStage }: any) {
   const dialect = conn.type === 'postgresql' ? 'postgresql' : 'sqlite'
-  const types = TYPES[dialect]
-  const defaultType = dialect === 'postgresql' ? 'SERIAL' : 'INTEGER'
+  const types = useColumnTypes(conn)
+  const defaultType = dialect === 'postgresql' ? 'serial' : 'INTEGER'
   const isEdit = !!initialTable
 
   const { show, close } = useSlideOver(onClose)

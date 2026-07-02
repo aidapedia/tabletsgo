@@ -34,10 +34,12 @@ export default function Select({
       if (ref.current && !ref.current.contains(e.target)) setOpen(false)
     }
     const onKey = (e) => e.key === 'Escape' && setOpen(false)
-    window.addEventListener('mousedown', onDown)
+    // Capture phase: some containers (e.g. the slide-over panels) stop mousedown
+    // propagation, which would prevent a bubble-phase listener from ever firing.
+    window.addEventListener('mousedown', onDown, true)
     window.addEventListener('keydown', onKey)
     return () => {
-      window.removeEventListener('mousedown', onDown)
+      window.removeEventListener('mousedown', onDown, true)
       window.removeEventListener('keydown', onKey)
     }
   }, [open])

@@ -5,7 +5,7 @@ import { useConnections } from '@/features/connections'
 import { useToast } from '@/shared/ui/Toast'
 import Select from '@/shared/ui/Select'
 import ConfirmDialog from '@/shared/ui/ConfirmDialog'
-import { getNamespaces, listTables, runQuery } from '@/shared/api/database'
+import { getNamespaces, listObjects, runQuery } from '@/shared/api/database'
 import {
   fetchSaved,
   createSaved,
@@ -32,16 +32,19 @@ import { fetchHistory, recordHistory, clearHistory, deleteHistory } from '@/feat
 import SaveQueryPanel from '@/shared/ui/SaveQueryPanel'
 import ChangesPanel from '@/features/workspace/components/ChangesPanel'
 import SchemaView from '@/features/workspace/components/SchemaView'
+import FunctionView from '@/features/workspace/components/FunctionView'
 import Segmented from '@/shared/ui/Segmented'
 import Tooltip from '@/shared/ui/Tooltip'
 import Popover from '@/shared/ui/Popover'
 import { btnGhost, btnPrimary, iconMini } from '@/shared/lib/styles'
 import {
+  ChevronRight,
   CloseIcon,
   CodeIcon,
   ColumnsIcon,
   DiagramIcon,
   EditIcon,
+  EyeIcon,
   HistoryIcon,
   MenuIcon,
   MoreVerticalIcon,
@@ -79,7 +82,10 @@ export default function Workspace() {
   // Connection augmented with the selected namespace; passed to data views.
   const nsConn = useMemo(() => (conn ? { ...conn, ns } : conn), [conn, ns])
 
-  const [tables, setTables] = useState([])
+  const [objects, setObjects] = useState([])
+  // Table names (a subset of the browsable objects) — used by the table-specific
+  // actions (open, edit, empty, delete, browse) that don't apply to views/functions.
+  const tables = useMemo(() => objects.filter((o) => o.type === 'table').map((o) => o.name), [objects])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter] = useState('')
   const [tabs, setTabs] = useState([])
@@ -99,6 +105,7 @@ export default function Workspace() {
   const [committing, setCommitting] = useState(false)
   const [dataVersion, setDataVersion] = useState(0) // bump to force table reloads
   const [sidebarOpen, setSidebarOpen] = useState(false) // mobile drawer
+  const [collapsedGroups, setCollapsedGroups] = useState(() => new Set()) // collapsed browser sections
   const [tablesVisible, setTablesVisible] = useState(true) // left panel visible
   const [panel, setPanel] = useState('browser') // 'browser' | 'queries'
   const [searchOpen, setSearchOpen] = useState(false) // table search toggle
@@ -119,8 +126,8 @@ export default function Workspace() {
   const loadTables = async () => {
     if (!conn) return
     setLoading(true)
-    const t = await listTables(nsConn)
-    setTables(t || [])
+    const objs = await listObjects(nsConn)
+    setObjects(objs || [])
     // First time opening this connection with no tabs yet: open a query tab.
     // Otherwise keep whatever tabs/active tab already exist. The ref guards
     // against the effect firing twice (e.g. React StrictMode in dev).
@@ -265,6 +272,20 @@ export default function Workspace() {
     setActiveTab(key)
     setSidebarOpen(false)
   }
+
+  const openFunction = (name) => {
+    const key = `function:${name}`
+    setTabs((prev) => (prev.some((t) => t.key === key) ? prev : [...prev, { key, kind: 'function', name, title: name }]))
+    setActiveTab(key)
+    setSidebarOpen(false)
+  }
+
+  const toggleGroup = (type) =>
+    setCollapsedGroups((s) => {
+      const n = new Set(s)
+      n.has(type) ? n.delete(type) : n.add(type)
+      return n
+    })
 
   // Generic "Schema editor" scratch tab — focus it if already open.
   const openSchemaEditor = () => {
@@ -565,9 +586,15 @@ export default function Workspace() {
     setTabMenu({ x: e.clientX, y: e.clientY, key })
   }
 
-  const visibleTables = tables
-    .filter((t) => t.toLowerCase().includes(filter.trim().toLowerCase()))
-    .sort((a, b) => (tableSort === 'az' ? a.localeCompare(b) : b.localeCompare(a)))
+  const visibleObjects = objects
+    .filter((o) => o.name.toLowerCase().includes(filter.trim().toLowerCase()))
+    .sort((a, b) => (tableSort === 'az' ? a.name.localeCompare(b.name) : b.name.localeCompare(a.name)))
+  // Group into the browser's sections, in display order.
+  const objectGroups = [
+    { type: 'table', label: 'Tables', items: visibleObjects.filter((o) => o.type === 'table') },
+    { type: 'view', label: 'Views', items: visibleObjects.filter((o) => o.type === 'view') },
+    { type: 'function', label: 'Functions', items: visibleObjects.filter((o) => o.type === 'function') },
+  ].filter((g) => g.items.length > 0)
 
   const current = tabs.find((t) => t.key === activeTab)
 
@@ -689,66 +716,119 @@ export default function Workspace() {
         <div className="flex flex-1 flex-col gap-0.5 overflow-y-auto px-2 pb-4 pt-1">
           {loading && <div className={`${centerState} text-xs`}>Loading…</div>}
           {!loading &&
-            visibleTables.map((t) => {
-              const active = current?.kind === 'table' && current.table === t
-              return (
-                <div
-                  key={t}
-                  onClick={() => openTable(t)}
-                  className={`group flex w-full cursor-pointer items-center gap-2 rounded-[7px] px-2.5 py-1.5 text-left text-xs ${
-                    active ? 'bg-card-hover text-ink' : 'text-ink-dim hover:bg-elevated hover:text-ink'
-                  }`}
+            objectGroups.map((group) => (
+              <div key={group.type}>
+                {/* Collapsible section header. */}
+                <button
+                  type="button"
+                  onClick={() => toggleGroup(group.type)}
+                  className="flex w-full items-center gap-1.5 px-1.5 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wide text-ink-faint hover:text-ink-dim"
                 >
-                  <TableIcon className={`flex-shrink-0 ${active ? 'text-ink' : 'text-ink-faint'}`} />
-                  <span className="flex-1 truncate">{t}</span>
-                  <div className="shrink-0" onClick={(e) => e.stopPropagation()}>
-                    <Popover
-                      align="right"
-                      width={210}
-                      trigger={({ open, toggle }) => (
-                        <button
-                          onClick={toggle}
-                          aria-label="Table actions"
-                          className={`flex h-6 w-6 items-center justify-center rounded transition-colors ${
-                            open
-                              ? 'bg-card-hover text-ink opacity-100'
-                              : 'text-ink-faint opacity-0 hover:text-ink group-hover:opacity-100'
-                          }`}
-                        >
-                          <MoreVerticalIcon width={15} height={15} />
-                        </button>
-                      )}
+                  <ChevronRight
+                    width={12}
+                    height={12}
+                    className={`transition-transform ${collapsedGroups.has(group.type) ? '' : 'rotate-90'}`}
+                  />
+                  {group.label} <span className="opacity-60">{group.items.length}</span>
+                </button>
+                {!collapsedGroups.has(group.type) &&
+                  group.items.map((obj) => {
+                  const active =
+                    obj.type === 'function'
+                      ? current?.kind === 'function' && current.name === obj.name
+                      : current?.kind === 'table' && current.table === obj.name
+                  const Icon = obj.type === 'view' ? EyeIcon : obj.type === 'function' ? CodeIcon : TableIcon
+                  const onOpen = obj.type === 'function' ? () => openFunction(obj.name) : () => openTable(obj.name)
+                  return (
+                    <div
+                      key={`${obj.type}:${obj.name}`}
+                      onClick={onOpen}
+                      className={`group flex w-full cursor-pointer items-center gap-2 rounded-[7px] px-2.5 py-1.5 text-left text-xs ${
+                        active ? 'bg-card-hover text-ink' : 'text-ink-dim hover:bg-elevated hover:text-ink'
+                      }`}
                     >
-                      {({ close }) => (
-                        <div className="p-1">
-                          <button className={`${menuItem} gap-2.5`} onClick={() => { openTable(t); close() }}>
-                            <TableIcon width={14} height={14} /> Open in new tab
-                          </button>
-                          <button className={`${menuItem} gap-2.5`} onClick={() => { openQuery(`SELECT * FROM "${t}";`); close() }}>
-                            <CodeIcon width={14} height={14} /> Open in SQL Editor
-                          </button>
-                          <button className={`${menuItem} gap-2.5`} onClick={() => { openSchema(t); close() }}>
-                            <ColumnsIcon width={14} height={14} /> View Table Schema
-                          </button>
-                          <button className={`${menuItem} gap-2.5`} onClick={() => { setCreatingTable({ table: t }); close() }}>
-                            <EditIcon width={14} height={14} /> Edit Table
-                          </button>
-                          <div className="my-1 h-px bg-edge" />
-                          <button className={`${menuItem} gap-2.5 hover:!text-red`} onClick={() => { emptyTable(t); close() }}>
-                            <TrashIcon width={14} height={14} /> Empty Table
-                          </button>
-                          <button className={`${menuItem} gap-2.5 hover:!text-red`} onClick={() => { deleteTable(t); close() }}>
-                            <TrashIcon width={14} height={14} /> Delete Table
-                          </button>
-                        </div>
-                      )}
-                    </Popover>
-                  </div>
-                </div>
-              )
-            })}
-          {!loading && visibleTables.length === 0 && (
-            <div className={`${centerState} text-xs`}>No tables</div>
+                      <Icon className={`flex-shrink-0 ${active ? 'text-ink' : 'text-ink-faint'}`} />
+                      <span
+                        className="flex-1 truncate"
+                        title={obj.type === 'function' && obj.detail ? `${obj.name}(${obj.detail})` : obj.name}
+                      >
+                        {obj.name}
+                      </span>
+                      <div className="shrink-0" onClick={(e) => e.stopPropagation()}>
+                        <Popover
+                          align="right"
+                          width={210}
+                          trigger={({ open, toggle }) => (
+                            <button
+                              onClick={toggle}
+                              aria-label={`${group.label} actions`}
+                              className={`flex h-6 w-6 items-center justify-center rounded transition-colors ${
+                                open
+                                  ? 'bg-card-hover text-ink opacity-100'
+                                  : 'text-ink-faint opacity-0 hover:text-ink group-hover:opacity-100'
+                              }`}
+                            >
+                              <MoreVerticalIcon width={15} height={15} />
+                            </button>
+                          )}
+                        >
+                          {({ close }) => (
+                            <div className="p-1">
+                              {obj.type === 'function' ? (
+                                <>
+                                  <button className={`${menuItem} gap-2.5`} onClick={() => { openFunction(obj.name); close() }}>
+                                    <CodeIcon width={14} height={14} /> Open definition
+                                  </button>
+                                  <button className={`${menuItem} gap-2.5`} onClick={() => { openQuery(`SELECT ${obj.name}();`); close() }}>
+                                    <CodeIcon width={14} height={14} /> Open in SQL Editor
+                                  </button>
+                                </>
+                              ) : obj.type === 'view' ? (
+                                <>
+                                  <button className={`${menuItem} gap-2.5`} onClick={() => { openTable(obj.name); close() }}>
+                                    <TableIcon width={14} height={14} /> Open in new tab
+                                  </button>
+                                  <button className={`${menuItem} gap-2.5`} onClick={() => { openQuery(`SELECT * FROM "${obj.name}";`); close() }}>
+                                    <CodeIcon width={14} height={14} /> Open in SQL Editor
+                                  </button>
+                                  <button className={`${menuItem} gap-2.5`} onClick={() => { openSchema(obj.name); close() }}>
+                                    <ColumnsIcon width={14} height={14} /> View schema
+                                  </button>
+                                </>
+                              ) : (
+                                <>
+                                  <button className={`${menuItem} gap-2.5`} onClick={() => { openTable(obj.name); close() }}>
+                                    <TableIcon width={14} height={14} /> Open in new tab
+                                  </button>
+                                  <button className={`${menuItem} gap-2.5`} onClick={() => { openQuery(`SELECT * FROM "${obj.name}";`); close() }}>
+                                    <CodeIcon width={14} height={14} /> Open in SQL Editor
+                                  </button>
+                                  <button className={`${menuItem} gap-2.5`} onClick={() => { openSchema(obj.name); close() }}>
+                                    <ColumnsIcon width={14} height={14} /> View table schema
+                                  </button>
+                                  <button className={`${menuItem} gap-2.5`} onClick={() => { setCreatingTable({ table: obj.name }); close() }}>
+                                    <EditIcon width={14} height={14} /> Edit Table
+                                  </button>
+                                  <div className="my-1 h-px bg-edge" />
+                                  <button className={`${menuItem} gap-2.5 hover:!text-red`} onClick={() => { emptyTable(obj.name); close() }}>
+                                    <TrashIcon width={14} height={14} /> Empty Table
+                                  </button>
+                                  <button className={`${menuItem} gap-2.5 hover:!text-red`} onClick={() => { deleteTable(obj.name); close() }}>
+                                    <TrashIcon width={14} height={14} /> Delete Table
+                                  </button>
+                                </>
+                              )}
+                            </div>
+                          )}
+                        </Popover>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            ))}
+          {!loading && visibleObjects.length === 0 && (
+            <div className={`${centerState} text-xs`}>No objects</div>
           )}
         </div>
         </>
@@ -858,6 +938,8 @@ export default function Workspace() {
                   <DiagramIcon className={active ? 'text-ink' : 'text-ink-faint'} />
                 ) : t.kind === 'history' ? (
                   <HistoryIcon className={active ? 'text-ink' : 'text-ink-faint'} />
+                ) : t.kind === 'function' ? (
+                  <CodeIcon className={active ? 'text-ink' : 'text-ink-faint'} />
                 ) : (
                   <TableIcon className={active ? 'text-ink' : 'text-ink-faint'} />
                 )}
@@ -889,6 +971,9 @@ export default function Workspace() {
           {conn && current?.kind === 'schema' && (
             <SchemaView key={`${current.key}:${dataVersion}:${ns.database}:${ns.schema}`} conn={nsConn} table={current.table} />
           )}
+          {conn && current?.kind === 'function' && (
+            <FunctionView key={`${current.key}:${ns.database}:${ns.schema}`} conn={nsConn} name={current.name} />
+          )}
           {conn && current?.kind === 'schemaEditor' && (
             <Suspense fallback={<div className="flex-1 p-8 text-center text-xs text-ink-faint">Loading schema…</div>}>
               <SchemaEditor
@@ -899,6 +984,8 @@ export default function Workspace() {
                 onPendingChange={(items) => setSchemaPending((p) => ({ ...p, [current.key]: items }))}
                 onStageItems={stageSchemaItems}
                 onSaveDraft={saveSchemaDraft}
+                onOpenTable={openTable}
+                onOpenSchema={openSchema}
               />
             </Suspense>
           )}

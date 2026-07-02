@@ -1,15 +1,32 @@
+import { useEffect, useState } from 'react'
 import Checkbox from '@/shared/ui/Checkbox'
 import Select from '@/shared/ui/Select'
 import Tooltip from '@/shared/ui/Tooltip'
 import { TrashIcon } from '@/shared/ui/icons'
 import { fieldInput } from '@/shared/lib/styles'
+import { getTypes } from '@/shared/api/database'
 
-// Base column types per dialect. VARCHAR is kept length-less here so the form
-// can offer a custom length (defaulting to 255) instead of hard-coding it.
+// Fallback type lists per dialect, used until the backend `/types` list loads.
+// Postgres uses the database's own vocabulary so existing and new columns share
+// one option set; a variable-length type (character varying) gets a length input.
 export const TYPES = {
   sqlite: ['INTEGER', 'TEXT', 'REAL', 'BLOB', 'NUMERIC'],
-  postgresql: ['SERIAL', 'INTEGER', 'BIGINT', 'TEXT', 'VARCHAR', 'BOOLEAN', 'TIMESTAMP', 'DATE', 'NUMERIC'],
+  postgresql: [
+    'serial', 'bigserial', 'smallint', 'integer', 'bigint', 'numeric', 'real', 'double precision',
+    'boolean', 'text', 'character varying', 'character', 'date', 'time without time zone',
+    'timestamp without time zone', 'timestamp with time zone', 'json', 'jsonb', 'uuid',
+  ],
 }
+
+// Referential actions for a foreign key's ON DELETE / ON UPDATE clause. Empty
+// value means "unspecified" (the SQL default of NO ACTION), so it's omitted.
+export const FK_ACTIONS = [
+  { value: '', label: 'No action' },
+  { value: 'CASCADE', label: 'Cascade' },
+  { value: 'SET NULL', label: 'Set null' },
+  { value: 'SET DEFAULT', label: 'Set default' },
+  { value: 'RESTRICT', label: 'Restrict' },
+]
 
 let colId = 0
 // A single, shared column model used by both the create and edit forms so the
@@ -24,14 +41,37 @@ export const newColumn = (type) => ({
   fk: false,
   fkTable: '',
   fkColumn: '',
+  fkOnDelete: '',
+  fkOnUpdate: '',
   default: '',
   existing: false,
 })
 
-const isVarchar = (type) => (type || '').toUpperCase() === 'VARCHAR'
+// Column types for a connection, fetched from the backend with the static
+// per-dialect list as an immediate fallback while the request is in flight.
+export function useColumnTypes(conn) {
+  const dialect = conn?.type === 'postgresql' ? 'postgresql' : 'sqlite'
+  const [types, setTypes] = useState(TYPES[dialect])
+  useEffect(() => {
+    let alive = true
+    getTypes(conn).then((list) => {
+      if (alive && Array.isArray(list) && list.length) setTypes(list)
+    })
+    return () => {
+      alive = false
+    }
+  }, [conn])
+  return types
+}
 
-// Resolve the SQL type string, applying the custom VARCHAR length.
-export const columnTypeSql = (c) => (isVarchar(c.type) ? `VARCHAR(${(c.varcharLen || '255').toString().trim() || '255'})` : c.type)
+// Variable-length character types get a length input (VARCHAR or the Postgres
+// spelling "character varying").
+const isVarchar = (type) => /^(varchar|character varying)$/i.test((type || '').trim())
+
+// Resolve the SQL type string, applying the custom length to a variable-length
+// character type while preserving whichever spelling the user picked.
+export const columnTypeSql = (c) =>
+  isVarchar(c.type) ? `${c.type}(${(c.varcharLen || '255').toString().trim() || '255'})` : c.type
 
 // Full column definition for CREATE TABLE / ALTER TABLE ADD COLUMN.
 export const colDef = (c) => {
@@ -39,7 +79,11 @@ export const colDef = (c) => {
   if (c.pk) d += ' PRIMARY KEY'
   if (c.notNull && !c.pk) d += ' NOT NULL'
   if ((c.default ?? '').toString().trim()) d += ` DEFAULT ${c.default.toString().trim()}`
-  if (c.fk && c.fkTable && c.fkColumn) d += ` REFERENCES "${c.fkTable}"("${c.fkColumn}")`
+  if (c.fk && c.fkTable && c.fkColumn) {
+    d += ` REFERENCES "${c.fkTable}"("${c.fkColumn}")`
+    if (c.fkOnDelete) d += ` ON DELETE ${c.fkOnDelete}`
+    if (c.fkOnUpdate) d += ` ON UPDATE ${c.fkOnUpdate}`
+  }
   return d
 }
 
@@ -122,23 +166,41 @@ export function ColumnField({ col, types, tableNames = [], schema = {}, allowPk 
       </div>
 
       {col.fk && (
-        <div className="mt-2 flex items-center gap-2 px-0.5">
-          <span className="shrink-0 text-[11px] text-ink-faint">References</span>
-          <Select
-            className={`${fieldInput} !w-auto min-w-[120px] flex-1`}
-            value={col.fkTable}
-            onChange={(v) => set({ fkTable: v, fkColumn: '' })}
-            placeholder="table"
-            options={tableNames.map((t) => ({ value: t, label: t }))}
-          />
-          <Select
-            className={`${fieldInput} !w-auto min-w-[120px] flex-1`}
-            value={col.fkColumn}
-            onChange={(v) => set({ fkColumn: v })}
-            placeholder="column"
-            options={(schema[col.fkTable] || []).map((c) => ({ value: c, label: c }))}
-          />
-        </div>
+        <>
+          <div className="mt-2 flex items-center gap-2 px-0.5">
+            <span className="shrink-0 text-[11px] text-ink-faint">References</span>
+            <Select
+              className={`${fieldInput} !w-auto min-w-[120px] flex-1`}
+              value={col.fkTable}
+              onChange={(v) => set({ fkTable: v, fkColumn: '' })}
+              placeholder="table"
+              options={tableNames.map((t) => ({ value: t, label: t }))}
+            />
+            <Select
+              className={`${fieldInput} !w-auto min-w-[120px] flex-1`}
+              value={col.fkColumn}
+              onChange={(v) => set({ fkColumn: v })}
+              placeholder="column"
+              options={(schema[col.fkTable] || []).map((c) => ({ value: c, label: c }))}
+            />
+          </div>
+          <div className="mt-2 flex items-center gap-2 px-0.5">
+            <span className="shrink-0 text-[11px] text-ink-faint">On delete</span>
+            <Select
+              className={`${fieldInput} !w-auto min-w-0 flex-1`}
+              value={col.fkOnDelete}
+              onChange={(v) => set({ fkOnDelete: v })}
+              options={FK_ACTIONS}
+            />
+            <span className="shrink-0 text-[11px] text-ink-faint">On update</span>
+            <Select
+              className={`${fieldInput} !w-auto min-w-0 flex-1`}
+              value={col.fkOnUpdate}
+              onChange={(v) => set({ fkOnUpdate: v })}
+              options={FK_ACTIONS}
+            />
+          </div>
+        </>
       )}
     </div>
   )
