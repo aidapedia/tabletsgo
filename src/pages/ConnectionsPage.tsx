@@ -18,7 +18,13 @@ import {
 } from '@/shared/ui/icons'
 import Popover from '@/shared/ui/Popover'
 import Tooltip from '@/shared/ui/Tooltip'
-import { envDotColor } from '@/shared/lib/styles'
+// Dot color per environment badge (connections are the only consumer).
+const envDotColor = {
+  staging: 'bg-amber',
+  production: 'bg-red',
+  development: 'bg-green',
+  local: 'bg-ink-faint',
+}
 import { WorkspaceSwitcher } from '@/features/workspaces'
 
 const menuRow =

@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import Popover from '@/shared/ui/Popover'
 import { CheckIcon, ChevronDown, PlusIcon, SettingsIcon } from '@/shared/ui/icons'
-import { fieldInput } from '@/shared/lib/styles'
+import { Input } from '@/shared/ui/Input'
 import { useWorkspaces } from '@/features/workspaces'
 
 const menuRow =
@@ -64,9 +64,9 @@ export default function WorkspaceSwitcher() {
 
           {creating ? (
             <div className="flex items-center gap-1.5 px-1 py-0.5">
-              <input
+              <Input
                 autoFocus
-                className={`${fieldInput} !py-1.5`}
+                className="!py-1.5"
                 placeholder="Workspace name"
                 value={name}
                 onChange={(e) => setName(e.target.value)}

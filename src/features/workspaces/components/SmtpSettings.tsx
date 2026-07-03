@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
 import Button from '@/shared/ui/Button'
 import Checkbox from '@/shared/ui/Checkbox'
+import { Input } from '@/shared/ui/Input'
+import { FormField } from '@/shared/ui/Form'
 import { useToast } from '@/shared/ui/Toast'
-import { fieldInput, fieldLabel } from '@/shared/lib/styles'
 import { getWorkspace, updateWorkspace } from '@/features/workspaces/api'
 
 // SMTP config for sending member-invite emails. Stored per workspace; Docker
@@ -52,26 +53,21 @@ export default function SmtpSettings({ workspaceId }: { workspaceId: string }) {
         Leave empty to rely on env or to send invite links manually.
       </p>
       <div className="grid grid-cols-2 gap-3">
-        <div>
-          <label className={fieldLabel}>Host</label>
-          <input className={fieldInput} value={smtp.host} onChange={set('host')} placeholder="smtp.example.com" />
-        </div>
-        <div>
-          <label className={fieldLabel}>Port</label>
-          <input className={fieldInput} type="number" value={smtp.port} onChange={set('port')} placeholder="587" />
-        </div>
-        <div>
-          <label className={fieldLabel}>Username</label>
-          <input className={fieldInput} value={smtp.user} onChange={set('user')} placeholder="apikey / user" />
-        </div>
-        <div>
-          <label className={fieldLabel}>Password</label>
-          <input className={fieldInput} type="password" value={smtp.pass} onChange={set('pass')} placeholder={hasPassword ? '•••••••• (unchanged)' : ''} />
-        </div>
-        <div className="col-span-2">
-          <label className={fieldLabel}>From address</label>
-          <input className={fieldInput} value={smtp.from} onChange={set('from')} placeholder="Tabletsgo <no-reply@example.com>" />
-        </div>
+        <FormField label="Host">
+          <Input value={smtp.host} onChange={set('host')} placeholder="smtp.example.com" />
+        </FormField>
+        <FormField label="Port">
+          <Input type="number" value={smtp.port} onChange={set('port')} placeholder="587" />
+        </FormField>
+        <FormField label="Username">
+          <Input value={smtp.user} onChange={set('user')} placeholder="apikey / user" />
+        </FormField>
+        <FormField label="Password">
+          <Input type="password" value={smtp.pass} onChange={set('pass')} placeholder={hasPassword ? '•••••••• (unchanged)' : ''} />
+        </FormField>
+        <FormField label="From address" className="col-span-2">
+          <Input value={smtp.from} onChange={set('from')} placeholder="Tabletsgo <no-reply@example.com>" />
+        </FormField>
       </div>
       <div className="mt-3 flex items-center gap-2 text-[11px] text-ink-dim">
         <Checkbox checked={smtp.secure} onChange={(v) => setSmtp((s) => ({ ...s, secure: v }))} ariaLabel="Use implicit TLS" />

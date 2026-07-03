@@ -4,7 +4,8 @@ import Button from '@/shared/ui/Button'
 import ConfirmDialog from '@/shared/ui/ConfirmDialog'
 import { useToast } from '@/shared/ui/Toast'
 import { ChevronLeft } from '@/shared/ui/icons'
-import { fieldInput, fieldLabel } from '@/shared/lib/styles'
+import { Input } from '@/shared/ui/Input'
+import { Label } from '@/shared/ui/Form'
 import { useWorkspaces, MembersPanel, SmtpSettings, updateWorkspace, deleteWorkspace } from '@/features/workspaces'
 
 const card = 'rounded-card border border-edge bg-card p-5'
@@ -67,9 +68,9 @@ export default function WorkspaceSettingsPage() {
           <div className={card}>
             <div className={sectionTitle}>General</div>
             <div className="mt-3 max-w-[360px]">
-              <label className={fieldLabel}>Workspace name</label>
+              <Label>Workspace name</Label>
               <div className="flex gap-2">
-                <input className={fieldInput} value={name} disabled={!isAdmin} onChange={(e) => setName(e.target.value)} />
+                <Input value={name} disabled={!isAdmin} onChange={(e) => setName(e.target.value)} />
                 {isAdmin && (
                   <Button variant="primary" size="sm" onClick={saveName} disabled={savingName || !name.trim() || name.trim() === current.name}>
                     Save

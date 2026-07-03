@@ -5,7 +5,8 @@ import { CloseIcon, DbLogo, EyeIcon, EyeOffIcon, PlusSmall, ShieldIcon } from '@
 import Select from '@/shared/ui/Select'
 import { useSlideOver } from '@/shared/hooks/useSlideOver'
 import Button from '@/shared/ui/Button'
-import { fieldInput, fieldLabel } from '@/shared/lib/styles'
+import { controlClass } from '@/shared/ui/Input'
+import { Label } from '@/shared/ui/Form'
 
 const DB_TYPES = [
   { id: 'sqlite', label: 'SQLite', abbr: 'SQ', defaultPort: '' },
@@ -203,9 +204,9 @@ export default function ConnectionModal({ initial, initialType, onClose, onSave 
             </div>
 
             <div className="mb-[18px]">
-              <label className={fieldLabel}>Connection Name</label>
+              <Label>Connection Name</Label>
               <input
-                className={fieldInput}
+                className={controlClass}
                 type="text"
                 placeholder={isSqlite ? 'e.g. Demo DB' : 'My Production Database'}
                 value={form.name}
@@ -261,9 +262,9 @@ export default function ConnectionModal({ initial, initialType, onClose, onSave 
 
             {isSqlite ? (
               <div className="mb-[18px]">
-                <label className={fieldLabel}>Database File Path</label>
+                <Label>Database File Path</Label>
                 <input
-                  className={fieldInput}
+                  className={controlClass}
                   type="text"
                   placeholder="./demo.db"
                   value={form.filepath}
@@ -295,9 +296,9 @@ export default function ConnectionModal({ initial, initialType, onClose, onSave 
                 {tab === 'general' ? (
                   <>
                     <div className="mb-[18px]">
-                      <label className={fieldLabel}>Connection URI</label>
+                      <Label>Connection URI</Label>
                       <input
-                        className={`${fieldInput} font-mono`}
+                        className={`${controlClass} font-mono`}
                         type="text"
                         placeholder="postgresql://user:password@host:5432/database"
                         value={form.uri || ''}
@@ -311,9 +312,9 @@ export default function ConnectionModal({ initial, initialType, onClose, onSave 
 
                     <div className={fieldRow}>
                       <div className="mb-[18px]">
-                        <label className={fieldLabel}>Host</label>
+                        <Label>Host</Label>
                         <input
-                          className={fieldInput}
+                          className={controlClass}
                           type="text"
                           placeholder="localhost"
                           value={form.host}
@@ -322,9 +323,9 @@ export default function ConnectionModal({ initial, initialType, onClose, onSave 
                         />
                       </div>
                       <div className="mb-[18px]">
-                        <label className={fieldLabel}>Port</label>
+                        <Label>Port</Label>
                         <input
-                          className={fieldInput}
+                          className={controlClass}
                           type="text"
                           placeholder="5432"
                           value={form.port}
@@ -335,9 +336,9 @@ export default function ConnectionModal({ initial, initialType, onClose, onSave 
                     </div>
 
                     <div className="mb-[18px]">
-                      <label className={fieldLabel}>Authentication</label>
+                      <Label>Authentication</Label>
                       <Select
-                        className={fieldInput}
+                        className={controlClass}
                         value={form.auth || 'password'}
                         onChange={(v) => setVal('auth', v)}
                         options={AUTH_MODES}
@@ -347,9 +348,9 @@ export default function ConnectionModal({ initial, initialType, onClose, onSave 
                     {(form.auth || 'password') === 'password' && (
                       <>
                         <div className="mb-[18px]">
-                          <label className={fieldLabel}>User</label>
+                          <Label>User</Label>
                           <input
-                            className={fieldInput}
+                            className={controlClass}
                             type="text"
                             placeholder="postgres"
                             value={form.username}
@@ -358,10 +359,10 @@ export default function ConnectionModal({ initial, initialType, onClose, onSave 
                         </div>
 
                         <div className="mb-2">
-                          <label className={fieldLabel}>Password</label>
+                          <Label>Password</Label>
                           <div className="relative">
                             <input
-                              className={`${fieldInput} pr-10`}
+                              className={`${controlClass} pr-10`}
                               type={showPassword ? 'text' : 'password'}
                               placeholder="••••••••"
                               value={form.password}
@@ -391,11 +392,11 @@ export default function ConnectionModal({ initial, initialType, onClose, onSave 
                     )}
 
                     <div className="mb-[18px]">
-                      <label className={fieldLabel}>
+                      <Label>
                         Database <span className="text-ink-faint">(optional)</span>
-                      </label>
+                      </Label>
                       <input
-                        className={fieldInput}
+                        className={controlClass}
                         type="text"
                         placeholder="Leave empty to select database after connecting"
                         value={form.database}
@@ -405,9 +406,9 @@ export default function ConnectionModal({ initial, initialType, onClose, onSave 
                   </>
                 ) : (
                   <div className="mb-[18px]">
-                    <label className={fieldLabel}>SSL Mode</label>
+                    <Label>SSL Mode</Label>
                     <Select
-                      className={fieldInput}
+                      className={controlClass}
                       value={form.sslmode || 'disable'}
                       onChange={(v) => setVal('sslmode', v)}
                       options={SSL_MODES.map((m) => ({ value: m, label: m }))}
@@ -423,9 +424,9 @@ export default function ConnectionModal({ initial, initialType, onClose, onSave 
 
             <div className={fieldRow}>
               <div className="mb-[18px]">
-                <label className={fieldLabel}>Environment</label>
+                <Label>Environment</Label>
                 <Select
-                  className={fieldInput}
+                  className={controlClass}
                   value={form.environment}
                   onChange={(v) => setVal('environment', v)}
                   options={ENVIRONMENTS.map((env) => ({
@@ -435,11 +436,11 @@ export default function ConnectionModal({ initial, initialType, onClose, onSave 
                 />
               </div>
               <div className="mb-[18px]">
-                <label className={fieldLabel}>
+                <Label>
                   Folder <span className="text-ink-faint">(optional)</span>
-                </label>
+                </Label>
                 <input
-                  className={fieldInput}
+                  className={controlClass}
                   type="text"
                   placeholder="e.g. Demo"
                   value={form.folder}

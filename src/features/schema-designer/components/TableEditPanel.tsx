@@ -5,7 +5,8 @@ import Select from '@/shared/ui/Select'
 import Tooltip from '@/shared/ui/Tooltip'
 import { useSlideOver } from '@/shared/hooks/useSlideOver'
 import { ChevronRight, PlusIcon, TrashIcon } from '@/shared/ui/icons'
-import { fieldInput, fieldLabel } from '@/shared/lib/styles'
+import { controlClass } from '@/shared/ui/Input'
+import { Label } from '@/shared/ui/Form'
 import { ColumnField, FK_ACTIONS, colDef, newColumn } from '@/features/schema-designer/components/columnFields'
 
 // Treat the SQL default (NO ACTION) as "unspecified" so it round-trips cleanly.
@@ -138,7 +139,7 @@ export default function TableEditPanel({ table, dialect, types, tableNames = [],
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-          <label className={fieldLabel}>Columns</label>
+          <Label>Columns</Label>
           <div className="flex flex-col gap-3">
             {existing.map((c, i) => (
               <div
@@ -149,14 +150,14 @@ export default function TableEditPanel({ table, dialect, types, tableNames = [],
               >
                 <div className="flex items-center gap-2">
                   <input
-                    className={`${fieldInput} !w-auto min-w-0 flex-1 ${c.drop ? 'line-through opacity-60' : ''}`}
+                    className={`${controlClass} !w-auto min-w-0 flex-1 ${c.drop ? 'line-through opacity-60' : ''}`}
                     value={c.name}
                     disabled={c.drop}
                     onChange={(e) => setEx(i, { name: e.target.value })}
                   />
                   {isPg && !c.drop ? (
                     <Select
-                      className={`${fieldInput} !w-[128px] shrink-0`}
+                      className={`${controlClass} !w-[128px] shrink-0`}
                       value={c.type}
                       onChange={(v) => setEx(i, { type: v })}
                       options={(types.some((t) => t.toLowerCase() === (c.type || '').toLowerCase())
@@ -204,7 +205,7 @@ export default function TableEditPanel({ table, dialect, types, tableNames = [],
                         Not null
                       </div>
                       <input
-                        className={`${fieldInput} !w-auto min-w-0 flex-1`}
+                        className={`${controlClass} !w-auto min-w-0 flex-1`}
                         placeholder="default…"
                         value={c.default}
                         disabled={!isPg}
@@ -227,14 +228,14 @@ export default function TableEditPanel({ table, dialect, types, tableNames = [],
                             <div className="flex items-center gap-2">
                               <span className="shrink-0 text-[11px] text-ink-faint">References</span>
                               <Select
-                                className={`${fieldInput} !w-auto min-w-0 flex-1`}
+                                className={`${controlClass} !w-auto min-w-0 flex-1`}
                                 value={c.fkTable}
                                 onChange={(v) => setEx(i, { fkTable: v, fkColumn: '' })}
                                 placeholder="table"
                                 options={tableNames.map((tn) => ({ value: tn, label: tn }))}
                               />
                               <Select
-                                className={`${fieldInput} !w-auto min-w-0 flex-1`}
+                                className={`${controlClass} !w-auto min-w-0 flex-1`}
                                 value={c.fkColumn}
                                 onChange={(v) => setEx(i, { fkColumn: v })}
                                 placeholder="column"
@@ -244,14 +245,14 @@ export default function TableEditPanel({ table, dialect, types, tableNames = [],
                             <div className="flex items-center gap-2">
                               <span className="shrink-0 text-[11px] text-ink-faint">On delete</span>
                               <Select
-                                className={`${fieldInput} !w-auto min-w-0 flex-1`}
+                                className={`${controlClass} !w-auto min-w-0 flex-1`}
                                 value={c.fkOnDelete}
                                 onChange={(v) => setEx(i, { fkOnDelete: v })}
                                 options={FK_ACTIONS}
                               />
                               <span className="shrink-0 text-[11px] text-ink-faint">On update</span>
                               <Select
-                                className={`${fieldInput} !w-auto min-w-0 flex-1`}
+                                className={`${controlClass} !w-auto min-w-0 flex-1`}
                                 value={c.fkOnUpdate}
                                 onChange={(v) => setEx(i, { fkOnUpdate: v })}
                                 options={FK_ACTIONS}

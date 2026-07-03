@@ -3,7 +3,7 @@ import Checkbox from '@/shared/ui/Checkbox'
 import Select from '@/shared/ui/Select'
 import Tooltip from '@/shared/ui/Tooltip'
 import { TrashIcon } from '@/shared/ui/icons'
-import { fieldInput } from '@/shared/lib/styles'
+import { controlClass } from '@/shared/ui/Input'
 import { getTypes } from '@/shared/api/database'
 
 // Fallback type lists per dialect, used until the backend `/types` list loads.
@@ -96,21 +96,21 @@ export function ColumnField({ col, types, tableNames = [], schema = {}, allowPk 
     <div className="rounded-soft border border-edge bg-elevated/40 p-2.5">
       <div className="flex flex-wrap items-center gap-2">
         <input
-          className={`${fieldInput} !w-auto min-w-[120px] flex-1`}
+          className={`${controlClass} !w-auto min-w-[120px] flex-1`}
           type="text"
           placeholder="column_name"
           value={col.name}
           onChange={(e) => set({ name: e.target.value })}
         />
         <Select
-          className={`${fieldInput} !w-[130px] shrink-0`}
+          className={`${controlClass} !w-[130px] shrink-0`}
           value={col.type}
           onChange={(v) => set({ type: v })}
           options={types.map((t) => ({ value: t, label: t }))}
         />
         {isVarchar(col.type) && (
           <input
-            className={`${fieldInput} !w-[72px] shrink-0`}
+            className={`${controlClass} !w-[72px] shrink-0`}
             type="number"
             min="1"
             placeholder="255"
@@ -157,7 +157,7 @@ export function ColumnField({ col, types, tableNames = [], schema = {}, allowPk 
       <div className="mt-2 flex items-center gap-2 px-0.5">
         <span className="shrink-0 text-[11px] text-ink-faint">Default</span>
         <input
-          className={`${fieldInput} !w-auto min-w-0 flex-1`}
+          className={`${controlClass} !w-auto min-w-0 flex-1`}
           type="text"
           placeholder="e.g. 0, 'active', now()"
           value={col.default}
@@ -170,14 +170,14 @@ export function ColumnField({ col, types, tableNames = [], schema = {}, allowPk 
           <div className="mt-2 flex items-center gap-2 px-0.5">
             <span className="shrink-0 text-[11px] text-ink-faint">References</span>
             <Select
-              className={`${fieldInput} !w-auto min-w-[120px] flex-1`}
+              className={`${controlClass} !w-auto min-w-[120px] flex-1`}
               value={col.fkTable}
               onChange={(v) => set({ fkTable: v, fkColumn: '' })}
               placeholder="table"
               options={tableNames.map((t) => ({ value: t, label: t }))}
             />
             <Select
-              className={`${fieldInput} !w-auto min-w-[120px] flex-1`}
+              className={`${controlClass} !w-auto min-w-[120px] flex-1`}
               value={col.fkColumn}
               onChange={(v) => set({ fkColumn: v })}
               placeholder="column"
@@ -187,14 +187,14 @@ export function ColumnField({ col, types, tableNames = [], schema = {}, allowPk 
           <div className="mt-2 flex items-center gap-2 px-0.5">
             <span className="shrink-0 text-[11px] text-ink-faint">On delete</span>
             <Select
-              className={`${fieldInput} !w-auto min-w-0 flex-1`}
+              className={`${controlClass} !w-auto min-w-0 flex-1`}
               value={col.fkOnDelete}
               onChange={(v) => set({ fkOnDelete: v })}
               options={FK_ACTIONS}
             />
             <span className="shrink-0 text-[11px] text-ink-faint">On update</span>
             <Select
-              className={`${fieldInput} !w-auto min-w-0 flex-1`}
+              className={`${controlClass} !w-auto min-w-0 flex-1`}
               value={col.fkOnUpdate}
               onChange={(v) => set({ fkOnUpdate: v })}
               options={FK_ACTIONS}

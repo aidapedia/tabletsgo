@@ -3,7 +3,8 @@ import Button from '@/shared/ui/Button'
 import ConfirmDialog from '@/shared/ui/ConfirmDialog'
 import { useToast } from '@/shared/ui/Toast'
 import { CopyIcon, TrashIcon } from '@/shared/ui/icons'
-import { fieldInput, fieldLabel } from '@/shared/lib/styles'
+import { Input } from '@/shared/ui/Input'
+import { Label } from '@/shared/ui/Form'
 import { listMembers, inviteMember, removeMember, Member } from '@/features/workspaces/api'
 
 // Member management for a workspace: invite by email (with copyable link) and
@@ -72,10 +73,9 @@ export default function MembersPanel({ workspaceId, canManage }: { workspaceId: 
     <div>
       {canManage && (
         <form onSubmit={submitInvite} className="mb-5">
-          <label className={fieldLabel}>Invite a member by email</label>
+          <Label>Invite a member by email</Label>
           <div className="flex gap-2">
-            <input
-              className={fieldInput}
+            <Input
               type="email"
               placeholder="teammate@example.com"
               value={email}
@@ -96,7 +96,7 @@ export default function MembersPanel({ workspaceId, canManage }: { workspaceId: 
         </form>
       )}
 
-      <label className={fieldLabel}>Members ({members.length})</label>
+      <Label>Members ({members.length})</Label>
       {loading ? (
         <div className="py-6 text-center text-xs text-ink-faint">Loading…</div>
       ) : (

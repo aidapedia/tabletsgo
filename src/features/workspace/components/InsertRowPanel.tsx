@@ -4,7 +4,7 @@ import Button from '@/shared/ui/Button'
 import Segmented from '@/shared/ui/Segmented'
 import { useSlideOver } from '@/shared/hooks/useSlideOver'
 import { ChevronRight } from '@/shared/ui/icons'
-import { fieldInput } from '@/shared/lib/styles'
+import { Input, Textarea } from '@/shared/ui/Input'
 
 const NUMERIC = /int|real|numeric|decimal|float|double|serial/i
 const isTextArea = (t) => /text|clob|json/i.test(t || '')
@@ -166,8 +166,8 @@ export default function InsertRowPanel({ conn, table, onClose, onStage }) {
           {loading ? (
             <div className="py-10 text-center text-xs text-ink-faint">Loading schema…</div>
           ) : tab === 'json' ? (
-            <textarea
-              className={`${fieldInput} min-h-[420px] resize-y font-mono leading-relaxed`}
+            <Textarea
+              className="min-h-[420px] resize-y font-mono leading-relaxed"
               spellCheck={false}
               value={jsonText}
               onChange={(e) => setJsonText(e.target.value)}
@@ -196,17 +196,16 @@ export default function InsertRowPanel({ conn, table, onClose, onStage }) {
                     </button>
                   </div>
                   {isTextArea(col.type) ? (
-                    <textarea
+                    <Textarea
                       id={fid}
-                      className={`${fieldInput} min-h-[90px] resize-y`}
+                      className="min-h-[90px] resize-y"
                       placeholder="NULL"
                       value={val}
                       onChange={(e) => setVal(col.name, e.target.value)}
                     />
                   ) : (
-                    <input
+                    <Input
                       id={fid}
-                      className={fieldInput}
                       placeholder="NULL"
                       value={val}
                       onChange={(e) => setVal(col.name, e.target.value)}

@@ -3,7 +3,8 @@ import { useNavigate } from 'react-router-dom'
 import { useAuth } from '@/features/auth'
 import { Logo } from '@/shared/ui/icons'
 import Button from '@/shared/ui/Button'
-import { fieldInput, fieldLabel } from '@/shared/lib/styles'
+import { Input } from '@/shared/ui/Input'
+import { Form, FormField } from '@/shared/ui/Form'
 
 export default function Login() {
   const { login } = useAuth()
@@ -39,7 +40,7 @@ export default function Login() {
       </div>
 
       <div className="flex items-center justify-center border-l border-edge bg-panel">
-        <form className="w-full max-w-[380px] px-10" onSubmit={handleSubmit}>
+        <Form className="w-full max-w-[380px] px-10" onSubmit={handleSubmit}>
           <h2 className="text-[23px] font-bold">Sign In</h2>
           <p className="mt-2 mb-8 text-[11px] text-ink-dim">Sign in to manage your database connections.</p>
 
@@ -49,11 +50,9 @@ export default function Login() {
             </div>
           )}
 
-          <div className="mb-[18px]">
-            <label className={fieldLabel} htmlFor="username">Email</label>
-            <input
+          <FormField label="Email" htmlFor="username" className="mb-[18px]">
+            <Input
               id="username"
-              className={fieldInput}
               type="email"
               autoComplete="username"
               placeholder="you@example.com"
@@ -61,13 +60,11 @@ export default function Login() {
               onChange={(e) => setUsername(e.target.value)}
               required
             />
-          </div>
+          </FormField>
 
-          <div className="mb-[18px]">
-            <label className={fieldLabel} htmlFor="password">Password</label>
-            <input
+          <FormField label="Password" htmlFor="password" className="mb-[18px]">
+            <Input
               id="password"
-              className={fieldInput}
               type="password"
               autoComplete="current-password"
               placeholder="••••••••"
@@ -75,12 +72,12 @@ export default function Login() {
               onChange={(e) => setPassword(e.target.value)}
               required
             />
-          </div>
+          </FormField>
 
           <Button type="submit" variant="primary" size="lg" className="w-full" disabled={loading}>
             {loading ? 'Signing in…' : 'Sign In'}
           </Button>
-        </form>
+        </Form>
       </div>
     </div>
   )

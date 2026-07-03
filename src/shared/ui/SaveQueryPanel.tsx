@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import Button from '@/shared/ui/Button'
 import { useSlideOver } from '@/shared/hooks/useSlideOver'
 import { ChevronRight, CodeIcon } from '@/shared/ui/icons'
-import { fieldInput } from '@/shared/lib/styles'
+import { Input } from '@/shared/ui/Input'
 
 export default function SaveQueryPanel({ sql, defaultName = '', title = 'Save Query', onClose, onSave }) {
   const { show, close } = useSlideOver(onClose)
@@ -70,10 +70,9 @@ export default function SaveQueryPanel({ sql, defaultName = '', title = 'Save Qu
             <label htmlFor="save-query-name" className="mb-2 block text-sm text-ink">
               Name
             </label>
-            <input
+            <Input
               id="save-query-name"
               ref={inputRef}
-              className={fieldInput}
               placeholder="e.g. Recent signups"
               value={name}
               onChange={(e) => {

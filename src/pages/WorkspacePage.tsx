@@ -37,7 +37,7 @@ import FunctionView from '@/features/workspace/components/FunctionView'
 import Segmented from '@/shared/ui/Segmented'
 import Tooltip from '@/shared/ui/Tooltip'
 import Popover from '@/shared/ui/Popover'
-import { iconMini } from '@/shared/lib/styles'
+import IconButton from '@/shared/ui/IconButton'
 import {
   ChevronRight,
   CloseIcon,
@@ -690,25 +690,25 @@ export default function Workspace() {
           <span className="text-xs">Tables</span>
           <div className="flex gap-1">
             <Tooltip label="Refresh" placement="bottom">
-              <button className={iconMini} onClick={loadTables}>
+              <IconButton onClick={loadTables}>
                 <RefreshIcon />
-              </button>
+              </IconButton>
             </Tooltip>
             <Tooltip label="Search tables" placement="bottom">
-              <button
-                className={`${iconMini} ${searchOpen ? 'bg-elevated text-ink' : ''}`}
+              <IconButton
+                active={searchOpen}
                 onClick={() => {
                   if (searchOpen) setFilter('')
                   setSearchOpen((o) => !o)
                 }}
               >
                 <SearchIcon width={15} height={15} />
-              </button>
+              </IconButton>
             </Tooltip>
             <Tooltip label="Create table" placement="bottom">
-              <button className={iconMini} onClick={() => setCreatingTable(true)}>
+              <IconButton onClick={() => setCreatingTable(true)}>
                 <PlusIcon width={14} height={14} />
-              </button>
+              </IconButton>
             </Tooltip>
           </div>
         </div>

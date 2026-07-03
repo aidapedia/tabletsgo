@@ -11,7 +11,8 @@ import {
   SearchIcon,
   TrashIcon,
 } from '@/shared/ui/icons'
-import { fieldInput, iconMini } from '@/shared/lib/styles'
+import { controlClass } from '@/shared/ui/Input'
+import IconButton from '@/shared/ui/IconButton'
 import Popover from '@/shared/ui/Popover'
 import Tooltip from '@/shared/ui/Tooltip'
 
@@ -120,7 +121,7 @@ export default function SavedQueriesPanel({
           <Icon className="shrink-0 text-ink-faint" width={14} height={14} />
           <input
             autoFocus
-            className={`${fieldInput} !py-1`}
+            className={`${controlClass} !py-1`}
             value={renaming.value}
             onChange={(e) => setRenaming({ id: s.id, value: e.target.value })}
             onBlur={commitRename}
@@ -192,7 +193,7 @@ export default function SavedQueriesPanel({
           <FolderIcon className="shrink-0 text-ink-faint" width={15} height={15} />
           <input
             autoFocus
-            className={`${fieldInput} !py-1`}
+            className={`${controlClass} !py-1`}
             value={renamingFolder.value}
             onChange={(e) => setRenamingFolder({ id: f.id, value: e.target.value })}
             onBlur={commitFolderRename}
@@ -265,25 +266,25 @@ export default function SavedQueriesPanel({
         <span className="text-xs font-semibold">Saved queries</span>
         <div className="flex gap-1">
           <Tooltip label="Refresh" placement="bottom">
-            <button className={iconMini} onClick={onRefresh}>
+            <IconButton onClick={onRefresh}>
               <RefreshIcon />
-            </button>
+            </IconButton>
           </Tooltip>
           <Tooltip label="Search" placement="bottom">
-            <button
-              className={`${iconMini} ${searchOpen ? 'bg-elevated text-ink' : ''}`}
+            <IconButton
+              active={searchOpen}
               onClick={() => {
                 if (searchOpen) setFilter('')
                 setSearchOpen((o) => !o)
               }}
             >
               <SearchIcon width={15} height={15} />
-            </button>
+            </IconButton>
           </Tooltip>
           <Tooltip label="New folder" placement="bottom">
-            <button className={iconMini} onClick={() => setCreatingFolder(true)}>
+            <IconButton onClick={() => setCreatingFolder(true)}>
               <FolderPlusIcon />
-            </button>
+            </IconButton>
           </Tooltip>
         </div>
       </div>
@@ -295,7 +296,7 @@ export default function SavedQueriesPanel({
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
             placeholder="Search saved queries…"
-            className={fieldInput}
+            className={controlClass}
           />
         </div>
       )}
@@ -306,7 +307,7 @@ export default function SavedQueriesPanel({
             <FolderIcon className="shrink-0 text-ink-faint" width={15} height={15} />
             <input
               autoFocus
-              className={`${fieldInput} !py-1`}
+              className={`${controlClass} !py-1`}
               placeholder="Folder name…"
               value={newFolderName}
               onChange={(e) => setNewFolderName(e.target.value)}

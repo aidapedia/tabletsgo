@@ -3,7 +3,8 @@ import { useNavigate } from 'react-router-dom'
 import { useAuth, submitSetup } from '@/features/auth'
 import { Logo } from '@/shared/ui/icons'
 import Button from '@/shared/ui/Button'
-import { fieldInput, fieldLabel } from '@/shared/lib/styles'
+import { Input } from '@/shared/ui/Input'
+import { Form, FormField } from '@/shared/ui/Form'
 
 // First-run wizard: create the admin account and the first workspace. Shown
 // (before the login page) only while no users exist — see RequireSetup.
@@ -38,7 +39,7 @@ export default function SetupPage() {
 
   return (
     <div className="flex h-full items-center justify-center bg-[radial-gradient(circle_at_50%_30%,rgba(111,207,106,0.06),transparent_60%)] bg-bg p-6">
-      <form className="w-full max-w-[420px] rounded-[16px] border border-edge bg-panel p-8 shadow-[0_30px_80px_-30px_rgba(0,0,0,0.8)]" onSubmit={handleSubmit}>
+      <Form className="w-full max-w-[420px] rounded-[16px] border border-edge bg-panel p-8 shadow-[0_30px_80px_-30px_rgba(0,0,0,0.8)]" onSubmit={handleSubmit}>
         <div className="mb-6 flex items-center gap-2.5">
           <Logo className="h-8 w-8" />
           <span className="text-[18px] font-bold tracking-[-0.3px]">
@@ -55,31 +56,27 @@ export default function SetupPage() {
           </div>
         )}
 
-        <div className="mb-[18px]">
-          <label className={fieldLabel}>Workspace name</label>
-          <input className={fieldInput} type="text" placeholder="Acme Inc." value={form.workspace} onChange={set('workspace')} required autoFocus />
-        </div>
+        <FormField label="Workspace name" className="mb-[18px]">
+          <Input type="text" placeholder="Acme Inc." value={form.workspace} onChange={set('workspace')} required autoFocus />
+        </FormField>
 
         <div className="mb-[18px] grid grid-cols-2 gap-3">
-          <div>
-            <label className={fieldLabel}>Your name</label>
-            <input className={fieldInput} type="text" placeholder="Jane Doe" value={form.name} onChange={set('name')} />
-          </div>
-          <div>
-            <label className={fieldLabel}>Admin email</label>
-            <input className={fieldInput} type="email" autoComplete="username" placeholder="admin@acme.com" value={form.email} onChange={set('email')} required />
-          </div>
+          <FormField label="Your name">
+            <Input type="text" placeholder="Jane Doe" value={form.name} onChange={set('name')} />
+          </FormField>
+          <FormField label="Admin email">
+            <Input type="email" autoComplete="username" placeholder="admin@acme.com" value={form.email} onChange={set('email')} required />
+          </FormField>
         </div>
 
-        <div className="mb-6">
-          <label className={fieldLabel}>Password</label>
-          <input className={fieldInput} type="password" autoComplete="new-password" placeholder="••••••••" value={form.password} onChange={set('password')} required />
-        </div>
+        <FormField label="Password" className="mb-6">
+          <Input type="password" autoComplete="new-password" placeholder="••••••••" value={form.password} onChange={set('password')} required />
+        </FormField>
 
         <Button type="submit" variant="primary" size="lg" className="w-full" disabled={loading}>
           {loading ? 'Creating…' : 'Create workspace'}
         </Button>
-      </form>
+      </Form>
     </div>
   )
 }

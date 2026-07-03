@@ -3,7 +3,8 @@ import { getColumns, getSchema } from '@/shared/api/database'
 import Button from '@/shared/ui/Button'
 import { useSlideOver } from '@/shared/hooks/useSlideOver'
 import { ChevronRight, PlusIcon } from '@/shared/ui/icons'
-import { fieldInput, fieldLabel } from '@/shared/lib/styles'
+import { Input } from '@/shared/ui/Input'
+import { FormField, Label } from '@/shared/ui/Form'
 import { ColumnField, colDef, newColumn, useColumnTypes } from '@/features/schema-designer/components/columnFields'
 
 export default function CreateTablePanel({ conn, initialTable, onClose, onStage }: any) {
@@ -101,10 +102,8 @@ export default function CreateTablePanel({ conn, initialTable, onClose, onStage 
           </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-            <div className="mb-[18px]">
-              <label className={fieldLabel}>Table Name</label>
-              <input
-                className={fieldInput}
+            <FormField label="Table Name" className="mb-[18px]">
+              <Input
                 type="text"
                 placeholder="e.g. users"
                 value={name}
@@ -113,9 +112,9 @@ export default function CreateTablePanel({ conn, initialTable, onClose, onStage 
                 autoFocus={!isEdit}
                 required
               />
-            </div>
+            </FormField>
 
-            <label className={fieldLabel}>Columns</label>
+            <Label>Columns</Label>
             <div className="flex flex-col gap-3">
               {columns.map((col) =>
                 col.existing ? (

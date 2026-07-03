@@ -3,7 +3,8 @@ import { useNavigate, useParams } from 'react-router-dom'
 import { useAuth, getInvite, acceptInvite } from '@/features/auth'
 import { Logo } from '@/shared/ui/icons'
 import Button from '@/shared/ui/Button'
-import { fieldInput, fieldLabel } from '@/shared/lib/styles'
+import { Input } from '@/shared/ui/Input'
+import { Form, FormField } from '@/shared/ui/Form'
 
 // Invite acceptance: the invited email sets their name + password, then is
 // logged in and dropped onto the homepage (their new workspace).
@@ -64,7 +65,7 @@ export default function AcceptInvitePage() {
   if (!invite) return shell(<div className="py-4 text-center text-xs text-ink-faint">Loading…</div>)
 
   return shell(
-    <form onSubmit={handleSubmit}>
+    <Form onSubmit={handleSubmit}>
       <h2 className="text-[20px] font-bold">Join {invite.workspaceName}</h2>
       <p className="mt-1.5 mb-6 text-[12px] text-ink-dim">
         You were invited as <span className="text-ink">{invite.email}</span>. Set a password to finish.
@@ -74,18 +75,16 @@ export default function AcceptInvitePage() {
         <div className="mb-[18px] rounded-soft border border-red/25 bg-red/10 px-3.5 py-2.5 text-[11px] text-[#ff9b9b]">{error}</div>
       )}
 
-      <div className="mb-[18px]">
-        <label className={fieldLabel}>Your name</label>
-        <input className={fieldInput} type="text" placeholder="Jane Doe" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} autoFocus />
-      </div>
-      <div className="mb-6">
-        <label className={fieldLabel}>Password</label>
-        <input className={fieldInput} type="password" autoComplete="new-password" placeholder="••••••••" value={form.password} onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))} required />
-      </div>
+      <FormField label="Your name" className="mb-[18px]">
+        <Input type="text" placeholder="Jane Doe" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} autoFocus />
+      </FormField>
+      <FormField label="Password" className="mb-6">
+        <Input type="password" autoComplete="new-password" placeholder="••••••••" value={form.password} onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))} required />
+      </FormField>
 
       <Button type="submit" variant="primary" size="lg" className="w-full" disabled={loading}>
         {loading ? 'Joining…' : 'Join workspace'}
       </Button>
-    </form>
+    </Form>
   )
 }
