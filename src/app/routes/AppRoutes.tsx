@@ -1,8 +1,12 @@
+import { useEffect, useState } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
-import { useAuth } from '@/features/auth'
+import { useAuth, getSetupStatus } from '@/features/auth'
 import LoginPage from '@/pages/LoginPage'
+import SetupPage from '@/pages/SetupPage'
+import AcceptInvitePage from '@/pages/AcceptInvitePage'
 import ConnectionsPage from '@/pages/ConnectionsPage'
 import WorkspacePage from '@/pages/WorkspacePage'
+import WorkspaceSettingsPage from '@/pages/WorkspaceSettingsPage'
 import SettingsPage from '@/pages/SettingsPage'
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
@@ -12,9 +16,37 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
 
 export function AppRoutes() {
   const { user } = useAuth()
+  const [needsSetup, setNeedsSetup] = useState<boolean | null>(null) // null = still checking
+
+  useEffect(() => {
+    getSetupStatus().then((s) => setNeedsSetup(s.needsSetup))
+  }, [])
+
+  if (needsSetup === null) return null // brief first-run check
+
+  // Fresh install with no users → force the setup wizard ahead of everything.
+  if (needsSetup && !user) {
+    return (
+      <Routes>
+        <Route path="/setup" element={<SetupPage />} />
+        <Route path="*" element={<Navigate to="/setup" replace />} />
+      </Routes>
+    )
+  }
+
   return (
     <Routes>
+      <Route path="/setup" element={<Navigate to="/" replace />} />
+      <Route path="/invite/:token" element={<AcceptInvitePage />} />
       <Route path="/login" element={user ? <Navigate to="/" replace /> : <LoginPage />} />
+      <Route
+        path="/workspace/settings"
+        element={
+          <RequireAuth>
+            <WorkspaceSettingsPage />
+          </RequireAuth>
+        }
+      />
       <Route
         path="/"
         element={

@@ -33,13 +33,13 @@ export default function Login() {
         <div className="relative z-[1] flex h-[130px] w-[130px] items-center justify-center rounded-[28px] bg-[linear-gradient(160deg,#1a1a1a,#080808)] shadow-[0_0_80px_-20px_rgba(111,207,106,0.22),inset_0_1px_0_rgba(255,255,255,0.04)]">
           <Logo width={70} height={70} />
         </div>
-        <h1 className="z-[1] mt-9 text-[28px] font-bold tracking-[-0.5px]">Work With Your Databases</h1>
-        <p className="z-[1] mt-2 font-serif text-xs italic text-ink-dim">Like A Pro</p>
+        <h1 className="z-[1] mt-9 text-[28px] font-bold tracking-[-0.5px]">Welcome to Tabletsgo!</h1>
+        <p className="z-[1] mt-2 text-xs text-ink-dim">Connecting your databases</p>
       </div>
 
       <div className="flex items-center justify-center border-l border-edge bg-panel">
         <form className="w-full max-w-[380px] px-10" onSubmit={handleSubmit}>
-          <h2 className="text-[23px] font-bold">Admin Sign In</h2>
+          <h2 className="text-[23px] font-bold">Sign In</h2>
           <p className="mt-2 mb-8 text-[11px] text-ink-dim">Sign in to manage your database connections.</p>
 
           {error && (
@@ -49,13 +49,13 @@ export default function Login() {
           )}
 
           <div className="mb-[18px]">
-            <label className={fieldLabel} htmlFor="username">Username</label>
+            <label className={fieldLabel} htmlFor="username">Email</label>
             <input
               id="username"
               className={fieldInput}
-              type="text"
+              type="email"
               autoComplete="username"
-              placeholder="admin"
+              placeholder="you@example.com"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               required
@@ -79,12 +79,6 @@ export default function Login() {
           <button type="submit" className={`${btnPrimary} w-full`} disabled={loading}>
             {loading ? 'Signing in…' : 'Sign In'}
           </button>
-
-          <p className="mt-[22px] text-center text-xs text-ink-faint">
-            Demo credentials —{' '}
-            <code className="rounded-[5px] bg-elevated px-1.5 py-0.5 text-green">admin</code> /{' '}
-            <code className="rounded-[5px] bg-elevated px-1.5 py-0.5 text-green">admin123</code>
-          </p>
         </form>
       </div>
     </div>

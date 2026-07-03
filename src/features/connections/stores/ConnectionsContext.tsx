@@ -1,20 +1,30 @@
 import { createContext, useContext, useEffect, useState } from 'react'
 import { request, safeRequest } from '@/shared/api/request'
+import { useWorkspaces } from '@/features/workspaces'
 
 const ConnectionsContext = createContext(null)
 
 export function ConnectionsProvider({ children }) {
+  const { currentId } = useWorkspaces()
   const [connections, setConnections] = useState([])
   const [loading, setLoading] = useState(true)
 
-  // Load connections from backend — the list reflects exactly what the server returns.
+  // Connections are scoped to the current workspace; reload when it changes.
   useEffect(() => {
-    safeRequest('/connections', []).then(setConnections).finally(() => setLoading(false))
-  }, [])
+    if (!currentId) {
+      setConnections([])
+      setLoading(false)
+      return
+    }
+    setLoading(true)
+    safeRequest(`/connections?workspace=${currentId}`, [])
+      .then(setConnections)
+      .finally(() => setLoading(false))
+  }, [currentId])
 
   const addConnection = async (conn) => {
     try {
-      const newConn = await request('/connections', { method: 'POST', body: conn })
+      const newConn = await request('/connections', { method: 'POST', body: { ...conn, workspaceId: currentId } })
       setConnections((prev) => [...prev, newConn])
       return newConn
     } catch (error) {

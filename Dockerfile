@@ -25,11 +25,11 @@ RUN npm run build
 
 ENV NODE_ENV=production
 ENV PORT=3000
-# Persist app metadata (users, connections, saved queries) outside the image.
+# Persist app metadata (users, workspaces, connections, saved queries) outside the image.
 ENV META_DB=/app/data/app.db
-# Default admin seed — override at runtime (compose / -e) for production.
-ENV ADMIN_USERNAME=admin
-ENV ADMIN_PASSWORD=admin123
+# NOTE: no default admin is baked in — a fresh instance shows the first-run
+# setup wizard. Set ADMIN_USERNAME + ADMIN_PASSWORD (+ optional WORKSPACE_NAME)
+# to pre-seed and skip the wizard. SMTP_* enable invite emails. See .env.example.
 
 EXPOSE 3000
 CMD ["node", "server.js"]

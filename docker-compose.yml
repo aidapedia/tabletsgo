@@ -11,9 +11,17 @@ services:
       - NODE_ENV=production
       - PORT=3000
       - META_DB=/app/data/app.db
-      # Admin user seeded on first run — override in a .env file for production.
-      - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
-      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin123}
+      # Optional admin pre-seed — leave unset to use the in-browser setup wizard.
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
+      - WORKSPACE_NAME=${WORKSPACE_NAME:-}
+      # Optional SMTP for member-invite emails (also settable per-workspace in the UI).
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASS=${SMTP_PASS:-}
+      - SMTP_FROM=${SMTP_FROM:-}
+      - SMTP_SECURE=${SMTP_SECURE:-}
     volumes:
       # Persist app metadata (users / connections / saved queries) across
       # container restarts. The demo SQLite DB re-seeds itself on a fresh start.

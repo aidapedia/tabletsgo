@@ -11,8 +11,11 @@ endpoint with its request, response, and an example URL.
 - **API prefix:** all endpoints live under `/api`.
 - **Content type:** requests and responses are JSON. JSON body limit is `10mb`.
 - **CORS:** enabled for all origins (`cors()` with defaults).
-- **Auth:** there is **no token/session**. `POST /api/auth/login` only validates
-  credentials and returns the user object; subsequent routes are unauthenticated.
+- **Auth:** login/setup/accept-invite return `{ user, token }`. Send the token as
+  `Authorization: Bearer <token>` on subsequent calls. Workspace, member and every
+  per-connection route (`/api/connections/:id/*`) require it and enforce workspace
+  membership; unauthenticated → `401`, non-member → `403`. Roles are per workspace
+  (`admin` | `member`).
 - **Error shape:** errors return `{ "error": "<message>" }` with an HTTP status of
   `400` (bad input), `401` (bad login), `404` (not found), or `500` (server error).
   The query/insert/test routes return DB errors in the body too (see each route).
@@ -181,22 +184,60 @@ when empty).
 
 # Endpoints
 
-## Auth
+## Auth & setup
+
+`user` shape: `{ id, email, name, role }`. `{ user, token }` is returned by login,
+setup and accept-invite; store the token and send it as `Authorization: Bearer`.
 
 ### POST `/api/auth/login`
-Validate credentials. No token issued — returns the user on success.
+- **Body:** `{ "username": "you@example.com", "password": "…" }` (`username` is the email)
+- **200:** `{ "user": { … }, "token": "uuid" }` · **401:** `{ "error": "Invalid email or password" }`
 
-- **Body:** `{ "username": "admin", "password": "admin123" }`
-- **200:** `{ "id": "uuid", "username": "admin", "name": "Admin", "role": "admin" }`
-- **401:** `{ "error": "Invalid username or password" }`
-- **Example:** `POST http://localhost:3000/api/auth/login`
+### POST `/api/auth/logout`
+Invalidate the current session token. **200:** `{ "ok": true }`
+
+### GET `/api/setup`
+First-run status. **200:** `{ "needsSetup": true }` (true when no users exist).
+
+### POST `/api/setup`
+Create the admin + first workspace (only while `needsSetup`).
+- **Body:** `{ "email", "password", "name", "workspace" }`
+- **200:** `{ "user", "token" }` · **403:** already completed · **400:** missing fields
+
+### GET `/api/invite/:token`
+Validate an invite. **200:** `{ "email", "workspaceName" }` · **404:** invalid/expired.
+
+### POST `/api/invite/:token/accept`
+Set password, activate, log in. **Body:** `{ "name", "password" }` → **200:** `{ "user", "token" }`.
+
+---
+
+## Workspaces (auth required)
+
+- `GET /api/workspaces` → `[{ id, name, role, createdAt }]` the caller belongs to.
+- `POST /api/workspaces` `{ name }` → creates one; caller becomes `admin`.
+- `GET /api/workspaces/:id` → `{ id, name, role, createdAt }`; admins also get
+  `smtp` (password-masked) + `smtpEnvFallback`.
+- `PUT /api/workspaces/:id` (admin) `{ name?, smtp? }` → `{ ok: true }`. `smtp` is
+  `{ host, port, secure, user, from, pass? }`; omit `pass` to keep the stored one.
+- `DELETE /api/workspaces/:id` (admin) → deletes it + its connections/queries.
+  `400` if it's the caller's only workspace.
+
+### Members
+- `GET /api/workspaces/:id/members` → `[{ userId, email, name, role, status }]`.
+- `POST /api/workspaces/:id/members` (admin) `{ email }` → `{ member, inviteLink, emailed }`.
+  Existing accounts are added directly; otherwise a pending user + invite link is
+  created (and emailed when SMTP is configured; `inviteLink` returned regardless).
+- `DELETE /api/workspaces/:id/members/:userId` (admin) → `{ ok: true }`. Can't
+  remove yourself or the last admin.
 
 ---
 
 ## Connections
 
 ### GET `/api/connections`
-List all saved connections (ordered by creation time).
+List connections in a workspace the caller belongs to.
+- **Query:** `workspace` (required — the workspace id). Missing → `[]`.
 
 - **200:** `Connection[]` (array of connection objects)
 - **Example:** `GET http://localhost:3000/api/connections`

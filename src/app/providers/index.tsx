@@ -1,6 +1,7 @@
 import { ThemeProvider } from './ThemeContext'
 import { ToastProvider } from '@/shared/ui/Toast'
 import { AuthProvider } from '@/features/auth'
+import { WorkspaceProvider } from '@/features/workspaces'
 import { ConnectionsProvider } from '@/features/connections'
 import { SettingsProvider } from '@/features/settings'
 
@@ -12,7 +13,9 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
       <SettingsProvider>
         <ToastProvider>
           <AuthProvider>
-            <ConnectionsProvider>{children}</ConnectionsProvider>
+            <WorkspaceProvider>
+              <ConnectionsProvider>{children}</ConnectionsProvider>
+            </WorkspaceProvider>
           </AuthProvider>
         </ToastProvider>
       </SettingsProvider>

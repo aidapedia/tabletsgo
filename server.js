@@ -11,6 +11,7 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import { randomUUID, createHash } from 'crypto'
 import Database from 'better-sqlite3'
+import nodemailer from 'nodemailer'
 import pkg from 'pg'
 const { Client, Pool } = pkg
 
@@ -79,32 +80,172 @@ function initMetaDb() {
       executor_name TEXT,
       ts INTEGER                   -- execution time (epoch ms)
     );
+    CREATE TABLE IF NOT EXISTS workspaces (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      settings TEXT,               -- JSON: { smtp: {...} }
+      created_at INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS workspace_members (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      role TEXT NOT NULL,          -- 'admin' | 'member'
+      created_at INTEGER,
+      UNIQUE(workspace_id, user_id)
+    );
+    CREATE TABLE IF NOT EXISTS sessions (
+      token TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      created_at INTEGER
+    );
   `)
-  // Migrate older DBs that predate the `kind` column.
-  try {
-    meta.prepare('SELECT kind FROM saved_queries LIMIT 1').get()
-  } catch {
-    meta.exec('ALTER TABLE saved_queries ADD COLUMN kind TEXT')
+  // Migrate older DBs that predate these columns.
+  const addColumn = (table, col) => {
+    const name = col.split(' ')[0]
+    try {
+      meta.prepare(`SELECT ${name} FROM ${table} LIMIT 1`).get()
+    } catch {
+      meta.exec(`ALTER TABLE ${table} ADD COLUMN ${col}`)
+    }
   }
-  // Migrate older DBs that predate the `folder_id` column.
-  try {
-    meta.prepare('SELECT folder_id FROM saved_queries LIMIT 1').get()
-  } catch {
-    meta.exec('ALTER TABLE saved_queries ADD COLUMN folder_id TEXT')
+  addColumn('saved_queries', 'kind TEXT')
+  addColumn('saved_queries', 'folder_id TEXT')
+  // Invited members: username holds the email, password blank until accepted.
+  addColumn('users', "status TEXT")           // 'active' | 'pending'
+  addColumn('users', 'invite_token TEXT')
+  addColumn('users', 'invite_workspace TEXT')
+  addColumn('users', 'token_expires INTEGER')
+  meta.exec(`UPDATE users SET status = 'active' WHERE status IS NULL`)
+
+  const hasUsers = !!meta.prepare('SELECT 1 FROM users LIMIT 1').get()
+
+  // Optional pre-seed from env — skips the first-run setup wizard.
+  if (!hasUsers && process.env.ADMIN_USERNAME && process.env.ADMIN_PASSWORD) {
+    const uid = randomUUID()
+    const wid = randomUUID()
+    const now = Date.now()
+    meta
+      .prepare('INSERT INTO users (id, username, password_hash, name, role, status) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(uid, process.env.ADMIN_USERNAME, sha256(process.env.ADMIN_PASSWORD), 'Admin', 'admin', 'active')
+    meta
+      .prepare('INSERT INTO workspaces (id, name, settings, created_at) VALUES (?, ?, ?, ?)')
+      .run(wid, process.env.WORKSPACE_NAME || 'My Workspace', '{}', now)
+    meta
+      .prepare('INSERT INTO workspace_members (id, workspace_id, user_id, role, created_at) VALUES (?, ?, ?, ?, ?)')
+      .run(randomUUID(), wid, uid, 'admin', now)
+    console.log(`🌱 Seeded admin ${process.env.ADMIN_USERNAME} + workspace`)
   }
 
-  // Seed the default admin user. Credentials are configurable via env so a
-  // deploy can set a strong password instead of the built-in default.
-  if (!meta.prepare('SELECT 1 FROM users LIMIT 1').get()) {
-    const adminUser = process.env.ADMIN_USERNAME || 'admin'
-    const adminPass = process.env.ADMIN_PASSWORD || 'admin123'
+  // Migrate pre-workspace installs: create a Default workspace, enroll existing
+  // users, and attach existing connections to it.
+  if (hasUsers && !meta.prepare('SELECT 1 FROM workspaces LIMIT 1').get()) {
+    const wid = randomUUID()
+    const now = Date.now()
+    meta.prepare('INSERT INTO workspaces (id, name, settings, created_at) VALUES (?, ?, ?, ?)').run(wid, 'Default Workspace', '{}', now)
     meta
-      .prepare('INSERT INTO users (id, username, password_hash, name, role) VALUES (?, ?, ?, ?, ?)')
-      .run(randomUUID(), adminUser, sha256(adminPass), 'Admin', 'admin')
-    console.log(`🌱 Seeded default user: ${adminUser}`)
+      .prepare('SELECT id, role FROM users')
+      .all()
+      .forEach((u, i) => {
+        meta
+          .prepare('INSERT OR IGNORE INTO workspace_members (id, workspace_id, user_id, role, created_at) VALUES (?, ?, ?, ?, ?)')
+          .run(randomUUID(), wid, u.id, u.role === 'admin' || i === 0 ? 'admin' : 'member', now)
+      })
+    for (const row of meta.prepare('SELECT id, data FROM connections').all()) {
+      const data = JSON.parse(row.data)
+      if (!data.workspaceId) {
+        data.workspaceId = wid
+        meta.prepare('UPDATE connections SET data = ? WHERE id = ?').run(JSON.stringify(data), row.id)
+      }
+    }
+    console.log('🔁 Migrated existing users/connections into Default Workspace')
   }
 }
 initMetaDb()
+
+// ---- Auth / session helpers ----
+const createSession = (userId) => {
+  const token = randomUUID()
+  meta.prepare('INSERT INTO sessions (token, user_id, created_at) VALUES (?, ?, ?)').run(token, userId, Date.now())
+  return token
+}
+const userFromToken = (token) => {
+  if (!token) return null
+  const s = meta.prepare('SELECT user_id FROM sessions WHERE token = ?').get(token)
+  if (!s) return null
+  return meta.prepare("SELECT id, username, name, role, status FROM users WHERE id = ?").get(s.user_id) || null
+}
+// Resolve the caller from the Bearer token (null if unauthenticated).
+const authUser = (req) => {
+  const h = req.headers.authorization || ''
+  return userFromToken(h.startsWith('Bearer ') ? h.slice(7) : null)
+}
+// Public shape returned to the client (never the password hash).
+const publicUser = (u) => (u ? { id: u.id, email: u.username, name: u.name, role: u.role } : null)
+
+// Require an authenticated caller; sends 401 and returns null otherwise.
+const requireAuth = (req, res) => {
+  const user = authUser(req)
+  if (!user) {
+    res.status(401).json({ error: 'Unauthorized' })
+    return null
+  }
+  return user
+}
+
+// ---- Workspace helpers ----
+const memberRole = (workspaceId, userId) => {
+  const m = meta.prepare('SELECT role FROM workspace_members WHERE workspace_id = ? AND user_id = ?').get(workspaceId, userId)
+  return m ? m.role : null
+}
+const workspaceForUser = (id, userId) => {
+  const role = memberRole(id, userId)
+  if (!role) return null
+  const w = meta.prepare('SELECT id, name, created_at FROM workspaces WHERE id = ?').get(id)
+  return w ? { id: w.id, name: w.name, role, createdAt: w.created_at } : null
+}
+const getUserByEmail = (email) =>
+  meta.prepare('SELECT id, username, name, role, status FROM users WHERE username = ?').get(email)
+// Absolute base URL of the frontend, for building invite links.
+const baseUrl = (req) => req.headers.origin || `${req.protocol}://${req.get('host')}`
+
+// ---- SMTP / email ----
+// Resolve SMTP config from the workspace settings, falling back to Docker env.
+// Returns null when no host is configured anywhere (invites still return a link).
+const smtpConfig = (wsRow) => {
+  let ws = {}
+  try {
+    ws = JSON.parse(wsRow?.settings || '{}').smtp || {}
+  } catch {
+    ws = {}
+  }
+  const host = ws.host || process.env.SMTP_HOST
+  if (!host) return null
+  const user = ws.user || process.env.SMTP_USER || ''
+  return {
+    host,
+    port: Number(ws.port || process.env.SMTP_PORT || 587),
+    secure: ws.secure ?? process.env.SMTP_SECURE === 'true',
+    user,
+    pass: ws.pass || process.env.SMTP_PASS || '',
+    from: ws.from || process.env.SMTP_FROM || user || 'no-reply@tabletsgo.local',
+  }
+}
+const sendInviteEmail = async (cfg, { to, workspaceName, link }) => {
+  const transport = nodemailer.createTransport({
+    host: cfg.host,
+    port: cfg.port,
+    secure: cfg.secure,
+    auth: cfg.user ? { user: cfg.user, pass: cfg.pass } : undefined,
+  })
+  await transport.sendMail({
+    from: cfg.from,
+    to,
+    subject: `You've been invited to ${workspaceName} on Tabletsgo`,
+    text: `You've been invited to join ${workspaceName} on Tabletsgo. Set your password: ${link}`,
+    html: `<p>You've been invited to join <b>${workspaceName}</b> on Tabletsgo.</p><p><a href="${link}">Accept your invite &amp; set a password</a></p><p style="color:#888">Or paste this link into your browser: ${link}</p>`,
+  })
+}
 
 // ---- Connection metadata helpers (DB-backed) ----
 const listConnections = () =>
@@ -451,19 +592,296 @@ async function runPostgresQuery(pool, sql, schema) {
 // API Routes
 // ============================================================================
 
-// Authenticate a user
+// Authenticate a user (by email, stored in `username`). Returns a session token.
 app.post('/api/auth/login', (req, res) => {
   const { username, password } = req.body || {}
-  const row = meta.prepare('SELECT id, username, name, role, password_hash FROM users WHERE username = ?').get(username)
-  if (!row || row.password_hash !== sha256(password)) {
-    return res.status(401).json({ error: 'Invalid username or password' })
+  const row = meta.prepare('SELECT id, username, name, role, status, password_hash FROM users WHERE username = ?').get(username)
+  if (!row || row.status === 'pending' || row.password_hash !== sha256(password)) {
+    return res.status(401).json({ error: 'Invalid email or password' })
   }
-  res.json({ id: row.id, username: row.username, name: row.name, role: row.role })
+  res.json({ user: publicUser(row), token: createSession(row.id) })
 })
 
-// Get all connections
+// Log out — invalidate the current session token.
+app.post('/api/auth/logout', (req, res) => {
+  const h = req.headers.authorization || ''
+  const token = h.startsWith('Bearer ') ? h.slice(7) : null
+  if (token) meta.prepare('DELETE FROM sessions WHERE token = ?').run(token)
+  res.json({ ok: true })
+})
+
+// First-run status — true when no users exist yet (setup wizard needed).
+app.get('/api/setup', (req, res) => {
+  res.json({ needsSetup: !meta.prepare('SELECT 1 FROM users LIMIT 1').get() })
+})
+
+// First-run setup — creates the admin account + first workspace. Only allowed
+// while no users exist, so it can't be used to hijack an initialized instance.
+app.post('/api/setup', (req, res) => {
+  if (meta.prepare('SELECT 1 FROM users LIMIT 1').get()) {
+    return res.status(403).json({ error: 'Setup has already been completed.' })
+  }
+  const { email, password, name, workspace } = req.body || {}
+  if (!email || !password || !workspace?.trim()) {
+    return res.status(400).json({ error: 'Email, password and workspace name are required.' })
+  }
+  const uid = randomUUID()
+  const wid = randomUUID()
+  const now = Date.now()
+  meta
+    .prepare('INSERT INTO users (id, username, password_hash, name, role, status) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(uid, email.trim(), sha256(password), name?.trim() || 'Admin', 'admin', 'active')
+  meta.prepare('INSERT INTO workspaces (id, name, settings, created_at) VALUES (?, ?, ?, ?)').run(wid, workspace.trim(), '{}', now)
+  meta
+    .prepare('INSERT INTO workspace_members (id, workspace_id, user_id, role, created_at) VALUES (?, ?, ?, ?, ?)')
+    .run(randomUUID(), wid, uid, 'admin', now)
+  const user = meta.prepare('SELECT id, username, name, role FROM users WHERE id = ?').get(uid)
+  res.json({ user: publicUser(user), token: createSession(uid) })
+})
+
+// Validate an invite token → who it's for and which workspace.
+app.get('/api/invite/:token', (req, res) => {
+  const u = meta
+    .prepare('SELECT username, invite_workspace, token_expires FROM users WHERE invite_token = ?')
+    .get(req.params.token)
+  if (!u || (u.token_expires && u.token_expires < Date.now())) {
+    return res.status(404).json({ error: 'This invite is invalid or has expired.' })
+  }
+  const ws = meta.prepare('SELECT name FROM workspaces WHERE id = ?').get(u.invite_workspace)
+  res.json({ email: u.username, workspaceName: ws?.name || 'a workspace' })
+})
+
+// Accept an invite — set name + password, activate the account, log in.
+app.post('/api/invite/:token/accept', (req, res) => {
+  const u = meta
+    .prepare('SELECT id, username, name, token_expires FROM users WHERE invite_token = ?')
+    .get(req.params.token)
+  if (!u || (u.token_expires && u.token_expires < Date.now())) {
+    return res.status(404).json({ error: 'This invite is invalid or has expired.' })
+  }
+  const { name, password } = req.body || {}
+  if (!password) return res.status(400).json({ error: 'A password is required.' })
+  meta
+    .prepare("UPDATE users SET password_hash = ?, name = ?, status = 'active', invite_token = NULL, invite_workspace = NULL, token_expires = NULL WHERE id = ?")
+    .run(sha256(password), name?.trim() || u.name || u.username, u.id)
+  const user = meta.prepare('SELECT id, username, name, role FROM users WHERE id = ?').get(u.id)
+  res.json({ user: publicUser(user), token: createSession(u.id) })
+})
+
+// ============================================================================
+// Workspaces
+// ============================================================================
+
+// Workspaces the caller belongs to.
+app.get('/api/workspaces', (req, res) => {
+  const user = requireAuth(req, res)
+  if (!user) return
+  const rows = meta
+    .prepare(
+      `SELECT w.id, w.name, w.created_at, m.role
+       FROM workspace_members m JOIN workspaces w ON w.id = m.workspace_id
+       WHERE m.user_id = ? ORDER BY w.created_at`
+    )
+    .all(user.id)
+  res.json(rows.map((r) => ({ id: r.id, name: r.name, role: r.role, createdAt: r.created_at })))
+})
+
+// Create a workspace — caller becomes its admin.
+app.post('/api/workspaces', (req, res) => {
+  const user = requireAuth(req, res)
+  if (!user) return
+  const { name } = req.body || {}
+  if (!name?.trim()) return res.status(400).json({ error: 'Workspace name is required.' })
+  const wid = randomUUID()
+  const now = Date.now()
+  meta.prepare('INSERT INTO workspaces (id, name, settings, created_at) VALUES (?, ?, ?, ?)').run(wid, name.trim(), '{}', now)
+  meta
+    .prepare('INSERT INTO workspace_members (id, workspace_id, user_id, role, created_at) VALUES (?, ?, ?, ?, ?)')
+    .run(randomUUID(), wid, user.id, 'admin', now)
+  res.json({ id: wid, name: name.trim(), role: 'admin', createdAt: now })
+})
+
+app.get('/api/workspaces/:id', (req, res) => {
+  const user = requireAuth(req, res)
+  if (!user) return
+  const ws = workspaceForUser(req.params.id, user.id)
+  if (!ws) return res.status(404).json({ error: 'Workspace not found' })
+  // Admins also get the (password-masked) SMTP config for the settings form.
+  if (ws.role === 'admin') {
+    const row = meta.prepare('SELECT settings FROM workspaces WHERE id = ?').get(req.params.id)
+    let smtp = {}
+    try {
+      smtp = JSON.parse(row?.settings || '{}').smtp || {}
+    } catch {
+      smtp = {}
+    }
+    ws.smtp = { host: smtp.host || '', port: smtp.port || '', secure: !!smtp.secure, user: smtp.user || '', from: smtp.from || '', hasPassword: !!smtp.pass }
+    ws.smtpEnvFallback = !!process.env.SMTP_HOST
+  }
+  res.json(ws)
+})
+
+// Rename + SMTP settings (admin).
+app.put('/api/workspaces/:id', (req, res) => {
+  const user = requireAuth(req, res)
+  if (!user) return
+  if (memberRole(req.params.id, user.id) !== 'admin') return res.status(403).json({ error: 'Admin only' })
+  const row = meta.prepare('SELECT settings FROM workspaces WHERE id = ?').get(req.params.id)
+  if (!row) return res.status(404).json({ error: 'Workspace not found' })
+  const { name, smtp } = req.body || {}
+  if (name?.trim()) meta.prepare('UPDATE workspaces SET name = ? WHERE id = ?').run(name.trim(), req.params.id)
+  if (smtp) {
+    const settings = (() => {
+      try {
+        return JSON.parse(row.settings || '{}')
+      } catch {
+        return {}
+      }
+    })()
+    const prev = settings.smtp || {}
+    settings.smtp = {
+      host: smtp.host ?? prev.host,
+      port: smtp.port ?? prev.port,
+      secure: smtp.secure ?? prev.secure,
+      user: smtp.user ?? prev.user,
+      from: smtp.from ?? prev.from,
+      // Keep the stored password unless a new one is supplied (never wiped by a save).
+      pass: smtp.pass ? smtp.pass : prev.pass,
+    }
+    meta.prepare('UPDATE workspaces SET settings = ? WHERE id = ?').run(JSON.stringify(settings), req.params.id)
+  }
+  res.json({ ok: true })
+})
+
+// Delete a workspace and everything scoped to it (admin). Never the caller's last one.
+app.delete('/api/workspaces/:id', (req, res) => {
+  const user = requireAuth(req, res)
+  if (!user) return
+  if (memberRole(req.params.id, user.id) !== 'admin') return res.status(403).json({ error: 'Admin only' })
+  const mine = meta.prepare('SELECT COUNT(*) c FROM workspace_members WHERE user_id = ?').get(user.id).c
+  if (mine <= 1) return res.status(400).json({ error: 'You must belong to at least one workspace.' })
+  for (const row of meta.prepare('SELECT id, data FROM connections').all()) {
+    if (JSON.parse(row.data).workspaceId === req.params.id) {
+      deleteConnectionRow(row.id)
+      meta.prepare('DELETE FROM saved_queries WHERE connection_id = ?').run(row.id)
+      meta.prepare('DELETE FROM saved_folders WHERE connection_id = ?').run(row.id)
+      meta.prepare('DELETE FROM query_history WHERE connection_id = ?').run(row.id)
+    }
+  }
+  meta.prepare('DELETE FROM workspace_members WHERE workspace_id = ?').run(req.params.id)
+  meta.prepare('DELETE FROM workspaces WHERE id = ?').run(req.params.id)
+  res.json({ ok: true })
+})
+
+// ---- Members ----
+
+// List a workspace's members (any member can view).
+app.get('/api/workspaces/:id/members', (req, res) => {
+  const user = requireAuth(req, res)
+  if (!user) return
+  if (!memberRole(req.params.id, user.id)) return res.status(403).json({ error: 'Forbidden' })
+  const rows = meta
+    .prepare(
+      `SELECT u.id AS userId, u.username AS email, u.name, u.status, m.role, m.created_at
+       FROM workspace_members m JOIN users u ON u.id = m.user_id
+       WHERE m.workspace_id = ? ORDER BY m.created_at`
+    )
+    .all(req.params.id)
+  res.json(rows)
+})
+
+// Invite a member by email (admin). Existing accounts are added directly;
+// unknown/pending emails get a pending account + an invite link (emailed in a
+// later phase). The link is always returned so it works without SMTP.
+app.post('/api/workspaces/:id/members', async (req, res) => {
+  const user = requireAuth(req, res)
+  if (!user) return
+  if (memberRole(req.params.id, user.id) !== 'admin') return res.status(403).json({ error: 'Admin only' })
+  const email = (req.body?.email || '').trim().toLowerCase()
+  if (!email) return res.status(400).json({ error: 'Email is required.' })
+
+  let target = getUserByEmail(email)
+  if (target && memberRole(req.params.id, target.id)) {
+    return res.status(400).json({ error: 'That person is already a member.' })
+  }
+
+  const now = Date.now()
+  const expires = now + 7 * 24 * 60 * 60 * 1000 // 7 days
+  let inviteLink = null
+  if (!target) {
+    const uid = randomUUID()
+    const token = randomUUID()
+    meta
+      .prepare('INSERT INTO users (id, username, password_hash, name, role, status, invite_token, invite_workspace, token_expires) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(uid, email, '', email, 'member', 'pending', token, req.params.id, expires)
+    target = { id: uid, username: email, status: 'pending' }
+    inviteLink = `${baseUrl(req)}/invite/${token}`
+  } else if (target.status === 'pending') {
+    const token = randomUUID()
+    meta
+      .prepare('UPDATE users SET invite_token = ?, invite_workspace = ?, token_expires = ? WHERE id = ?')
+      .run(token, req.params.id, expires, target.id)
+    inviteLink = `${baseUrl(req)}/invite/${token}`
+  }
+
+  meta
+    .prepare('INSERT OR IGNORE INTO workspace_members (id, workspace_id, user_id, role, created_at) VALUES (?, ?, ?, ?, ?)')
+    .run(randomUUID(), req.params.id, target.id, 'member', now)
+
+  // Email the invite link when SMTP is configured — non-fatal, link is returned regardless.
+  let emailed = false
+  if (inviteLink) {
+    const ws = meta.prepare('SELECT name, settings FROM workspaces WHERE id = ?').get(req.params.id)
+    const cfg = smtpConfig(ws)
+    if (cfg) {
+      try {
+        await sendInviteEmail(cfg, { to: email, workspaceName: ws.name, link: inviteLink })
+        emailed = true
+      } catch (e) {
+        console.error('Invite email failed:', e.message)
+      }
+    }
+  }
+
+  res.json({
+    member: { userId: target.id, email, name: target.name || email, role: 'member', status: target.status },
+    inviteLink,
+    emailed,
+  })
+})
+
+// Remove a member (admin). Can't remove yourself or the last admin.
+app.delete('/api/workspaces/:id/members/:userId', (req, res) => {
+  const user = requireAuth(req, res)
+  if (!user) return
+  if (memberRole(req.params.id, user.id) !== 'admin') return res.status(403).json({ error: 'Admin only' })
+  if (req.params.userId === user.id) return res.status(400).json({ error: "You can't remove yourself." })
+  const role = memberRole(req.params.id, req.params.userId)
+  if (!role) return res.status(404).json({ error: 'Member not found' })
+  if (role === 'admin') {
+    const admins = meta.prepare("SELECT COUNT(*) c FROM workspace_members WHERE workspace_id = ? AND role = 'admin'").get(req.params.id).c
+    if (admins <= 1) return res.status(400).json({ error: 'The workspace needs at least one admin.' })
+  }
+  meta.prepare('DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?').run(req.params.id, req.params.userId)
+  // Clean up a pending user that no longer belongs to any workspace.
+  const left = meta.prepare('SELECT COUNT(*) c FROM workspace_members WHERE user_id = ?').get(req.params.userId).c
+  const u = meta.prepare('SELECT status FROM users WHERE id = ?').get(req.params.userId)
+  if (left === 0 && u?.status === 'pending') meta.prepare('DELETE FROM users WHERE id = ?').run(req.params.userId)
+  res.json({ ok: true })
+})
+
+// ============================================================================
+// Connections (scoped to a workspace the caller belongs to)
+// ============================================================================
+
+// List connections for a workspace.
 app.get('/api/connections', (req, res) => {
-  res.json(listConnections())
+  const user = requireAuth(req, res)
+  if (!user) return
+  const workspaceId = req.query.workspace
+  if (!workspaceId) return res.json([])
+  if (!memberRole(workspaceId, user.id)) return res.status(403).json({ error: 'Forbidden' })
+  res.json(listConnections().filter((c) => c.workspaceId === workspaceId))
 })
 
 // Test connection
@@ -488,11 +906,26 @@ app.post('/api/test-connection', async (req, res) => {
   }
 })
 
-// Add connection
+// Add connection to a workspace.
 app.post('/api/connections', (req, res) => {
-  const conn = { ...req.body, id: randomUUID() }
+  const user = requireAuth(req, res)
+  if (!user) return
+  const workspaceId = req.body.workspaceId
+  if (!workspaceId || !memberRole(workspaceId, user.id)) return res.status(403).json({ error: 'Forbidden' })
+  const conn = { ...req.body, id: randomUUID(), workspaceId }
   saveConnection(conn)
   res.json(conn)
+})
+
+// Guard every per-connection route: caller must be a member of the connection's
+// workspace. One mount covers PUT/DELETE /:id and all /:id/* data routes.
+app.use('/api/connections/:id', (req, res, next) => {
+  const user = requireAuth(req, res)
+  if (!user) return
+  const conn = getConnection(req.params.id)
+  if (!conn) return res.status(404).json({ error: 'Connection not found' })
+  if (conn.workspaceId && !memberRole(conn.workspaceId, user.id)) return res.status(403).json({ error: 'Forbidden' })
+  next()
 })
 
 // Update connection

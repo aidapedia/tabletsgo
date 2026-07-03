@@ -19,6 +19,7 @@ import {
 import Popover from '@/shared/ui/Popover'
 import Tooltip from '@/shared/ui/Tooltip'
 import { envDotColor } from '@/shared/lib/styles'
+import { WorkspaceSwitcher } from '@/features/workspaces'
 
 const menuRow =
   'flex w-full items-center gap-2.5 rounded px-2.5 py-2 text-left text-[12px] text-ink-dim transition-colors hover:bg-card-hover hover:text-ink'
@@ -93,11 +94,15 @@ export default function Connections() {
           sidebarOpen ? 'max-[720px]:translate-x-0' : 'max-[720px]:-translate-x-full'
         }`}
       >
-        <div className="flex items-center justify-center gap-2.5 px-5 py-5">
+        <div className="flex items-center justify-center gap-2.5 px-5 pb-3.5 pt-5">
           <Logo className="h-7 w-7" />
           <span className="text-[17px] font-bold tracking-[-0.3px]">
             Tabl<span className="text-green">et</span>sgo
           </span>
+        </div>
+
+        <div className="px-4 pb-3.5">
+          <WorkspaceSwitcher />
         </div>
 
         <div className="px-4">
