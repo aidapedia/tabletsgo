@@ -4,8 +4,9 @@ import { useAuth } from '@/features/auth'
 import { useConnections } from '@/features/connections'
 import { useToast } from '@/shared/ui/Toast'
 import Select from '@/shared/ui/Select'
+import Button from '@/shared/ui/Button'
 import ConfirmDialog from '@/shared/ui/ConfirmDialog'
-import { getNamespaces, listObjects, runQuery } from '@/shared/api/database'
+import { getNamespaces, listObjects, pingConnection, runQuery } from '@/shared/api/database'
 import {
   fetchSaved,
   createSaved,
@@ -87,6 +88,8 @@ export default function Workspace() {
   // actions (open, edit, empty, delete, browse) that don't apply to views/functions.
   const tables = useMemo(() => objects.filter((o) => o.type === 'table').map((o) => o.name), [objects])
   const [loading, setLoading] = useState(true)
+  const [connError, setConnError] = useState(null) // set when the DB is unreachable
+  const [reconnecting, setReconnecting] = useState(false) // retry in progress
   const [filter, setFilter] = useState('')
   const [tabs, setTabs] = useState([])
   const [activeTab, setActiveTab] = useState(null)
@@ -105,7 +108,7 @@ export default function Workspace() {
   const [committing, setCommitting] = useState(false)
   const [dataVersion, setDataVersion] = useState(0) // bump to force table reloads
   const [sidebarOpen, setSidebarOpen] = useState(false) // mobile drawer
-  const [collapsedGroups, setCollapsedGroups] = useState(() => new Set()) // collapsed browser sections
+  const [openGroup, setOpenGroup] = useState('table') // accordion: the one expanded browser section
   const [tablesVisible, setTablesVisible] = useState(true) // left panel visible
   const [panel, setPanel] = useState('browser') // 'browser' | 'queries'
   const [searchOpen, setSearchOpen] = useState(false) // table search toggle
@@ -126,6 +129,15 @@ export default function Workspace() {
   const loadTables = async () => {
     if (!conn) return
     setLoading(true)
+    // Verify the database is reachable first; a dead connection prompts the modal.
+    const health = await pingConnection(nsConn)
+    if (!health.ok) {
+      setConnError(health.error || 'Could not connect to the database.')
+      setObjects([])
+      setLoading(false)
+      return
+    }
+    setConnError(null)
     const objs = await listObjects(nsConn)
     setObjects(objs || [])
     // First time opening this connection with no tabs yet: open a query tab.
@@ -137,6 +149,26 @@ export default function Workspace() {
     }
     setLoading(false)
   }
+
+  // Retry from the "connection lost" modal. loadTables re-pings and clears the
+  // error on success (closing the modal) or refreshes the message on failure.
+  const reconnect = async () => {
+    setReconnecting(true)
+    await loadTables()
+    setReconnecting(false)
+  }
+
+  // Heartbeat: while connected, poll so a connection that drops mid-session is
+  // detected too (not just on open). Pauses once the modal is up.
+  useEffect(() => {
+    if (!conn || connError) return
+    const iv = setInterval(async () => {
+      const health = await pingConnection(nsConn)
+      if (!health.ok) setConnError(health.error || 'The database connection was lost.')
+    }, 15000)
+    return () => clearInterval(iv)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conn, nsConn, connError])
 
   // Reload the table list when the connection or selected namespace changes.
   useEffect(() => {
@@ -232,13 +264,16 @@ export default function Workspace() {
     setSidebarOpen(false)
   }
 
-  // Open a table in a new tab pre-filtered by a column = value (FK drill-down).
+  // FK drill-down: show the referenced table filtered by column = value. Reuses
+  // the table's existing tab if one is open (re-filtering it) — including when a
+  // different FK points at the same table — otherwise opens a new table tab.
   const openTableFiltered = (table, column, value) => {
-    const key = `table:${table}:${column}=${value}`
+    const key = `table:${table}`
+    const initialFilter = { col: column, value }
     setTabs((prev) =>
       prev.some((t) => t.key === key)
-        ? prev
-        : [...prev, { key, kind: 'table', table, title: `${table} · ${column}=${value}`, initialFilter: { col: column, value } }]
+        ? prev.map((t) => (t.key === key ? { ...t, title: table, initialFilter } : t))
+        : [...prev, { key, kind: 'table', table, title: table, initialFilter }]
     )
     setActiveTab(key)
     setSidebarOpen(false)
@@ -280,12 +315,8 @@ export default function Workspace() {
     setSidebarOpen(false)
   }
 
-  const toggleGroup = (type) =>
-    setCollapsedGroups((s) => {
-      const n = new Set(s)
-      n.has(type) ? n.delete(type) : n.add(type)
-      return n
-    })
+  // Accordion: opening a section collapses the others; clicking the open one closes it.
+  const toggleGroup = (type) => setOpenGroup((prev) => (prev === type ? null : type))
 
   // Generic "Schema editor" scratch tab — focus it if already open.
   const openSchemaEditor = () => {
@@ -713,26 +744,31 @@ export default function Workspace() {
           </div>
         )}
 
-        <div className="flex flex-1 flex-col gap-0.5 overflow-y-auto px-2 pb-4 pt-1">
+        <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-hidden px-2 pb-2 pt-1">
           {loading && <div className={`${centerState} text-xs`}>Loading…</div>}
           {!loading &&
             objectGroups.map((group) => (
-              <div key={group.type}>
-                {/* Collapsible section header. */}
+              <div
+                key={group.type}
+                className={`flex min-h-0 flex-col ${openGroup === group.type ? 'flex-1' : 'shrink-0'}`}
+              >
+                {/* Accordion section header — always visible so you can jump to
+                    Tables / Views / Functions; only the open section's list scrolls. */}
                 <button
                   type="button"
                   onClick={() => toggleGroup(group.type)}
-                  className="flex w-full items-center gap-1.5 px-1.5 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wide text-ink-faint hover:text-ink-dim"
+                  className="flex w-full shrink-0 items-center gap-1.5 rounded-[6px] px-1.5 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-ink-faint hover:text-ink-dim"
                 >
                   <ChevronRight
                     width={12}
                     height={12}
-                    className={`transition-transform ${collapsedGroups.has(group.type) ? '' : 'rotate-90'}`}
+                    className={`transition-transform ${openGroup === group.type ? 'rotate-90' : ''}`}
                   />
                   {group.label} <span className="opacity-60">{group.items.length}</span>
                 </button>
-                {!collapsedGroups.has(group.type) &&
-                  group.items.map((obj) => {
+                {openGroup === group.type && (
+                  <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto pr-0.5">
+                    {group.items.map((obj) => {
                   const active =
                     obj.type === 'function'
                       ? current?.kind === 'function' && current.name === obj.name
@@ -824,7 +860,9 @@ export default function Workspace() {
                       </div>
                     </div>
                   )
-                })}
+                    })}
+                  </div>
+                )}
               </div>
             ))}
           {!loading && visibleObjects.length === 0 && (
@@ -1139,7 +1177,39 @@ export default function Workspace() {
         />
       )}
 
-
+      {/* Database unreachable — offer to retry (with a spinner) or leave. */}
+      {connError && (
+        <div className="fixed inset-0 z-[60] flex animate-fade items-center justify-center bg-black/60 p-6 backdrop-blur-[3px]">
+          <div className="w-full max-w-[400px] animate-pop rounded-[16px] border border-edge-strong bg-panel p-5 shadow-[0_30px_80px_-20px_rgba(0,0,0,0.8)]">
+            <div className="flex items-center gap-2.5">
+              {reconnecting && (
+                <span className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-green/30 border-t-green" />
+              )}
+              <h3 className="text-sm font-bold text-ink">{reconnecting ? 'Reconnecting…' : 'Connection lost'}</h3>
+            </div>
+            <p className="mt-2 text-[12px] leading-relaxed text-ink-dim">
+              {reconnecting
+                ? `Trying to reach ${conn?.name || 'the database'}…`
+                : `Couldn't connect to ${conn?.name || 'the database'}. ${connError}`}
+            </p>
+            <div className="mt-5 flex justify-end gap-2">
+              <Button variant="subtle" size="sm" disabled={reconnecting} onClick={() => navigate('/')}>
+                Back to home
+              </Button>
+              <Button variant="primary" size="sm" disabled={reconnecting} onClick={reconnect}>
+                {reconnecting ? (
+                  <>
+                    <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+                    Reconnecting
+                  </>
+                ) : (
+                  'Reconnect'
+                )}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

@@ -709,6 +709,24 @@ app.get('/api/connections/:id/tables', async (req, res) => {
   }
 })
 
+// Connectivity check — attempts to reach the database and reports { ok }.
+// Generic across engines so the client can detect a dropped connection.
+app.get('/api/connections/:id/ping', async (req, res) => {
+  const conn = getConnection(req.params.id)
+  if (!conn) return res.status(404).json({ ok: false, error: 'Connection not found' })
+
+  try {
+    if (conn.type === 'sqlite') {
+      getSqliteDb(conn.filepath).prepare('SELECT 1').get()
+    } else if (conn.type === 'postgresql') {
+      await getPostgresPool(conn, req.query.database).query('SELECT 1')
+    }
+    res.json({ ok: true })
+  } catch (error) {
+    res.json({ ok: false, error: error.message })
+  }
+})
+
 // List all browsable database objects (tables, views, functions, …) as a
 // generic [{ name, type, ... }] list so any dialect can populate the browser.
 app.get('/api/connections/:id/objects', async (req, res) => {

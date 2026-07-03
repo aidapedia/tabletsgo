@@ -341,6 +341,15 @@ Clear all history for the connection.
 > All routes below accept optional `?database=` and `?schema=` query params
 > (PostgreSQL). SQLite ignores them.
 
+### GET `/api/connections/:id/ping`
+Connectivity check — tries to reach the database (`SELECT 1`). Generic across
+engines; the client uses it to detect a dropped connection.
+
+- **200:** `{ "ok": true }` or `{ "ok": false, "error": "<msg>" }` (both HTTP 200)
+- **404:** `{ "ok": false, "error": "Connection not found" }`
+- **Query:** optional `database`, `schema` (PG)
+- **Example:** `GET http://localhost:3000/api/connections/demo-pg/ping`
+
 ### GET `/api/connections/:id/tables`
 List table names.
 
@@ -509,6 +518,7 @@ Liveness probe.
 | GET    | `/api/connections/:id/history`            | List query history              |
 | POST   | `/api/connections/:id/history`            | Record a query execution        |
 | DELETE | `/api/connections/:id/history`            | Clear query history             |
+| GET    | `/api/connections/:id/ping`               | Connectivity check `{ ok }`     |
 | GET    | `/api/connections/:id/tables`             | List tables                     |
 | GET    | `/api/connections/:id/objects`            | List objects (tables/views/fns) |
 | GET    | `/api/connections/:id/function/:name`     | Function definition(s)          |

@@ -29,6 +29,11 @@ export async function listTables(conn) {
   return safeRequest(withNs(conn, `/connections/${conn.id}/tables`), [])
 }
 
+// Connectivity check → { ok: boolean, error?: string }.
+export async function pingConnection(conn) {
+  return safeRequest(withNs(conn, `/connections/${conn.id}/ping`), { ok: false, error: 'Unable to reach the server.' })
+}
+
 // Generic browsable objects: [{ name, type, ... }] (tables, views, functions, …).
 export async function listObjects(conn) {
   return safeRequest(withNs(conn, `/connections/${conn.id}/objects`), [])
