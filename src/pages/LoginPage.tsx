@@ -2,7 +2,8 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '@/features/auth'
 import { Logo } from '@/shared/ui/icons'
-import { btnPrimary, fieldInput, fieldLabel } from '@/shared/lib/styles'
+import Button from '@/shared/ui/Button'
+import { fieldInput, fieldLabel } from '@/shared/lib/styles'
 
 export default function Login() {
   const { login } = useAuth()
@@ -76,9 +77,9 @@ export default function Login() {
             />
           </div>
 
-          <button type="submit" className={`${btnPrimary} w-full`} disabled={loading}>
+          <Button type="submit" variant="primary" size="lg" className="w-full" disabled={loading}>
             {loading ? 'Signing in…' : 'Sign In'}
-          </button>
+          </Button>
         </form>
       </div>
     </div>

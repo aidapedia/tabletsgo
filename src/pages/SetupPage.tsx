@@ -2,7 +2,8 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth, submitSetup } from '@/features/auth'
 import { Logo } from '@/shared/ui/icons'
-import { btnPrimary, fieldInput, fieldLabel } from '@/shared/lib/styles'
+import Button from '@/shared/ui/Button'
+import { fieldInput, fieldLabel } from '@/shared/lib/styles'
 
 // First-run wizard: create the admin account and the first workspace. Shown
 // (before the login page) only while no users exist — see RequireSetup.
@@ -75,9 +76,9 @@ export default function SetupPage() {
           <input className={fieldInput} type="password" autoComplete="new-password" placeholder="••••••••" value={form.password} onChange={set('password')} required />
         </div>
 
-        <button type="submit" className={`${btnPrimary} w-full`} disabled={loading}>
+        <Button type="submit" variant="primary" size="lg" className="w-full" disabled={loading}>
           {loading ? 'Creating…' : 'Create workspace'}
-        </button>
+        </Button>
       </form>
     </div>
   )

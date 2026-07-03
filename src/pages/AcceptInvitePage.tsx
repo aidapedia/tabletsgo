@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useAuth, getInvite, acceptInvite } from '@/features/auth'
 import { Logo } from '@/shared/ui/icons'
-import { btnPrimary, fieldInput, fieldLabel } from '@/shared/lib/styles'
+import Button from '@/shared/ui/Button'
+import { fieldInput, fieldLabel } from '@/shared/lib/styles'
 
 // Invite acceptance: the invited email sets their name + password, then is
 // logged in and dropped onto the homepage (their new workspace).
@@ -56,7 +57,7 @@ export default function AcceptInvitePage() {
       <>
         <h2 className="text-[18px] font-bold">Invite unavailable</h2>
         <p className="mt-2 text-[12px] text-ink-dim">This invite link is invalid or has expired. Ask an admin to send a new one.</p>
-        <button className={`${btnPrimary} mt-5 w-full`} onClick={() => navigate('/login')}>Go to sign in</button>
+        <Button variant="primary" size="lg" className="mt-5 w-full" onClick={() => navigate('/login')}>Go to sign in</Button>
       </>
     )
   }
@@ -82,9 +83,9 @@ export default function AcceptInvitePage() {
         <input className={fieldInput} type="password" autoComplete="new-password" placeholder="••••••••" value={form.password} onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))} required />
       </div>
 
-      <button type="submit" className={`${btnPrimary} w-full`} disabled={loading}>
+      <Button type="submit" variant="primary" size="lg" className="w-full" disabled={loading}>
         {loading ? 'Joining…' : 'Join workspace'}
-      </button>
+      </Button>
     </form>
   )
 }

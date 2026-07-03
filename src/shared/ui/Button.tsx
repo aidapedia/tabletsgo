@@ -6,6 +6,7 @@ type IconType = ComponentType<{ width?: number; height?: number; className?: str
 const VARIANTS = {
   primary: 'bg-green text-white hover:bg-green-bright',
   ghost: 'border border-edge bg-elevated text-ink hover:bg-card-hover hover:border-edge-strong',
+  danger: 'border border-red/30 bg-transparent text-red hover:bg-red/10',
   toolbar: 'text-ink-dim hover:bg-elevated hover:text-ink',
   subtle: 'text-ink-dim hover:bg-elevated hover:text-ink',
 }
@@ -13,6 +14,7 @@ const VARIANTS = {
 const SIZES = {
   sm: 'px-2.5 py-1.5 text-[11px] gap-1.5',
   md: 'px-3 py-2 text-xs gap-2',
+  lg: 'px-[18px] py-2.5 text-xs gap-2', // prominent CTAs (auth/setup, modal footers)
 }
 
 /**

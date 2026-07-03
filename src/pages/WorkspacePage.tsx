@@ -37,7 +37,7 @@ import FunctionView from '@/features/workspace/components/FunctionView'
 import Segmented from '@/shared/ui/Segmented'
 import Tooltip from '@/shared/ui/Tooltip'
 import Popover from '@/shared/ui/Popover'
-import { btnGhost, btnPrimary, iconMini } from '@/shared/lib/styles'
+import { iconMini } from '@/shared/lib/styles'
 import {
   ChevronRight,
   CloseIcon,
@@ -250,9 +250,9 @@ export default function Workspace() {
     return (
       <div className={centerState}>
         <p>Connection not found.</p>
-        <button className={btnPrimary} onClick={() => navigate('/')}>
+        <Button variant="primary" size="lg" onClick={() => navigate('/')}>
           Back to connections
-        </button>
+        </Button>
       </div>
     )
   }
@@ -1063,22 +1063,24 @@ export default function Workspace() {
                 </p>
 
                 <div className="mt-7 flex items-center justify-center gap-3">
-                  <button className={btnPrimary} onClick={() => openQuery()}>
-                    <CodeIcon /> New SQL query
-                  </button>
-                  <button
-                    className={btnGhost}
+                  <Button variant="primary" size="lg" icon={CodeIcon} onClick={() => openQuery()}>
+                    New SQL query
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="lg"
+                    icon={TableIcon}
                     onClick={() => tables[0] && openTable(tables[0])}
                     disabled={tables.length === 0}
                   >
-                    <TableIcon width={16} height={16} /> Browse tables
-                  </button>
+                    Browse tables
+                  </Button>
                 </div>
 
                 <div className="mt-9">
-                  <button className={btnGhost} onClick={openHistory}>
-                    <HistoryIcon width={16} height={16} /> View query history
-                  </button>
+                  <Button variant="ghost" size="lg" icon={HistoryIcon} onClick={openHistory}>
+                    View query history
+                  </Button>
                 </div>
 
                 <div className="mt-10 flex flex-wrap items-center justify-center gap-6 text-[11px] text-ink-faint">

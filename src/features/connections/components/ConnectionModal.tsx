@@ -4,7 +4,8 @@ import { useToast } from '@/shared/ui/Toast'
 import { CloseIcon, DbLogo, EyeIcon, EyeOffIcon, PlusSmall, ShieldIcon } from '@/shared/ui/icons'
 import Select from '@/shared/ui/Select'
 import { useSlideOver } from '@/shared/hooks/useSlideOver'
-import { btnGhost, btnPrimary, fieldInput, fieldLabel } from '@/shared/lib/styles'
+import Button from '@/shared/ui/Button'
+import { fieldInput, fieldLabel } from '@/shared/lib/styles'
 
 const DB_TYPES = [
   { id: 'sqlite', label: 'SQLite', abbr: 'SQ', defaultPort: '' },
@@ -462,12 +463,12 @@ export default function ConnectionModal({ initial, initialType, onClose, onSave 
           </div>
 
           <div className="flex shrink-0 justify-end gap-3 border-t border-edge px-6 py-[18px]">
-            <button type="button" className={btnGhost} onClick={runTest} disabled={!valid || test === 'loading' || saving}>
+            <Button type="button" variant="ghost" size="lg" onClick={runTest} disabled={!valid || test === 'loading' || saving}>
               {test === 'loading' ? 'Testing…' : 'Test Connection'}
-            </button>
-            <button type="submit" className={btnPrimary} disabled={!valid || saving}>
+            </Button>
+            <Button type="submit" variant="primary" size="lg" disabled={!valid || saving}>
               {saving ? 'Connecting…' : `${isEdit ? 'Update' : 'Create'} Connection`}
-            </button>
+            </Button>
           </div>
         </form>
       </div>
