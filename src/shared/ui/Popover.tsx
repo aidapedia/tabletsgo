@@ -14,10 +14,12 @@ export default function Popover({ trigger, children, align = 'left', width = 300
       if (ref.current && !ref.current.contains(e.target)) setOpen(false)
     }
     const onKey = (e) => e.key === 'Escape' && setOpen(false)
-    window.addEventListener('mousedown', onDown)
+    // Capture phase so we still hear the click even when a child (e.g. the React
+    // Flow canvas) stops propagation before it reaches window.
+    window.addEventListener('mousedown', onDown, true)
     window.addEventListener('keydown', onKey)
     return () => {
-      window.removeEventListener('mousedown', onDown)
+      window.removeEventListener('mousedown', onDown, true)
       window.removeEventListener('keydown', onKey)
     }
   }, [open])

@@ -174,6 +174,13 @@ CREATE TABLE query_history (
   executor_name TEXT,
   ts INTEGER                   -- execution time (epoch ms)
 );
+CREATE TABLE workflows (
+  id TEXT PRIMARY KEY,
+  connection_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  graph TEXT,                  -- JSON { nodes, edges } (React Flow shape)
+  ts INTEGER
+);
 ```
 
 **Seeds on first run:** user `admin` / `admin123` (role `admin`), and a
@@ -387,6 +394,73 @@ Clear all history for the connection.
 
 - **200:** `{ "ok": true }`
 - **Example:** `DELETE http://localhost:3000/api/connections/demo-sqlite/history`
+
+---
+
+## Workflows (per connection)
+
+Node-graph automations (React Flow) run against the connection. A workflow's
+`graph` is `{ nodes, edges }` in React Flow shape; each node's `type` is one of
+`manual` (trigger), `schedule` (trigger), `query`, `http`, `js`, `switch`, `loop`,
+and its config lives in `node.data` (e.g. `{ sql }`, `{ method, url, headers, body }`, `{ code }`,
+`{ cases: [{ expr, label }] }`, `{ itemsExpr }`). Edges thread a single `input`
+(a node's output) to the next node; `sourceHandle` selects a branch (`out`
+default; `case-N`/`default` for switch; `body`/`done` for loop).
+
+> ⚠️ **Security:** the `/run` executor runs arbitrary SQL, makes server-side HTTP
+> requests (internal URLs reachable — SSRF), and evaluates user JavaScript in a
+> `node:vm` context, which is **not** a hard sandbox. This is acceptable because
+> the routes sit behind auth + workspace-membership — the same trust level as the
+> "run any SQL" query editor. Do not expose to untrusted users. Guards: per-JS 3s
+> CPU timeout, ~5000-step budget, ~1000 loop iterations, ~20s overall cap.
+
+### GET `/api/connections/:id/workflows`
+List workflows for a connection (newest first; no graph body).
+
+- **200:** `[{ "id", "name", "ts" }]`
+- **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/workflows`
+
+### POST `/api/connections/:id/workflows`
+Create a workflow with an empty graph.
+
+- **Body:** `{ "name": "Nightly sync" }`
+- **200:** `{ "id", "name", "graph": { "nodes": [], "edges": [] }, "ts" }`
+- **400:** `{ "error": "A workflow name is required" }`
+- **Example:** `POST http://localhost:3000/api/connections/demo-sqlite/workflows`
+
+### GET `/api/connections/:id/workflows/:wid`
+Fetch one workflow with its full graph.
+
+- **200:** `{ "id", "name", "graph": { "nodes": [...], "edges": [...] } }`
+- **404:** `{ "error": "Not found" }`
+- **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/workflows/wf-1`
+
+### PUT `/api/connections/:id/workflows/:wid`
+Update a workflow. Any subset of `name`, `graph`.
+
+- **Body examples:**
+  - Rename: `{ "name": "Renamed" }`
+  - Save graph: `{ "graph": { "nodes": [...], "edges": [...] } }`
+- **200:** `{ "ok": true }`
+- **400:** `{ "error": "Nothing to update" }` (or name validation)
+- **404:** `{ "error": "Not found" }`
+- **Example:** `PUT http://localhost:3000/api/connections/demo-sqlite/workflows/wf-1`
+
+### DELETE `/api/connections/:id/workflows/:wid`
+Delete a workflow.
+
+- **200:** `{ "ok": true }`
+- **Example:** `DELETE http://localhost:3000/api/connections/demo-sqlite/workflows/wf-1`
+
+### POST `/api/connections/:id/workflows/:wid/run`
+Execute a workflow. Runs the posted `graph` (so unsaved edits can be tested), or
+the stored graph when `graph` is omitted.
+
+- **Body:** `{ "graph"?: { "nodes": [...], "edges": [...] } }`
+- **200:** `{ "ok": true, "log": [{ "nodeId", "nodeType", "status", "ms", "output", "logs"?, "error"? }], "output": <terminal output> }`
+  - On a failed node: `{ "ok": false, "log": [...], "error": "<message>" }` (the failing node's `log` entry has `status: "error"`)
+- **404:** `{ "error": "Connection not found" }` or `{ "error": "Not found" }`
+- **Example:** `POST http://localhost:3000/api/connections/demo-sqlite/workflows/wf-1/run`
 
 ---
 

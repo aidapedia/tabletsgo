@@ -350,3 +350,54 @@ export const PlusSmall = (props) => (
     <path d="M12 5v14M5 12h14" />
   </svg>
 )
+
+// ---- Workflow icons ----
+export const WorkflowIcon = (props) => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+    <rect x="3" y="3" width="6" height="6" rx="1" />
+    <rect x="15" y="15" width="6" height="6" rx="1" />
+    <path d="M6 9v3a3 3 0 0 0 3 3h3a3 3 0 0 1 3 3" />
+  </svg>
+)
+
+export const PlayIcon = (props) => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" {...props}>
+    <path d="M8 5v14l11-7z" />
+  </svg>
+)
+
+export const ClockIcon = (props) => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M12 7v5l3 2" />
+  </svg>
+)
+
+export const GlobeIcon = (props) => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" />
+  </svg>
+)
+
+export const BranchIcon = (props) => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+    <circle cx="6" cy="6" r="2.5" />
+    <circle cx="6" cy="18" r="2.5" />
+    <circle cx="18" cy="9" r="2.5" />
+    <path d="M6 8.5v7M8.4 7.4A6 6 0 0 0 15.5 9" />
+  </svg>
+)
+
+export const LoopIcon = (props) => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+    <path d="M17 2l4 4-4 4" />
+    <path d="M3 11V9a4 4 0 0 1 4-4h14M7 22l-4-4 4-4" />
+    <path d="M21 13v2a4 4 0 0 1-4 4H3" />
+  </svg>
+)

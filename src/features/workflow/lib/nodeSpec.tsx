@@ -1,0 +1,126 @@
+// Single source of truth for the workflow node catalog: category, label, icon,
+// accent colour, default `data`, and how each node summarises its config on the
+// canvas. Drives the palette, the node cards, and the config panel.
+
+import type { ComponentType } from 'react'
+import { BranchIcon, ClockIcon, CodeIcon, DatabaseIcon, GlobeIcon, LoopIcon, PlayIcon } from '@/shared/ui/icons'
+
+export type NodeType = 'manual' | 'schedule' | 'query' | 'http' | 'js' | 'switch' | 'loop'
+export type NodeCategory = 'Trigger' | 'Source' | 'Script' | 'Control'
+
+type IconType = ComponentType<{ width?: number; height?: number; className?: string }>
+
+export type NodeSpec = {
+  type: NodeType
+  category: NodeCategory
+  label: string
+  description: string
+  icon: IconType
+  accent: string // tailwind text colour class for the icon chip
+  hasInput: boolean // draws a target handle on the left
+  defaultData: () => Record<string, any>
+  summary: (data: any) => string // one-line config summary shown on the card
+}
+
+const firstLine = (s?: string) => (s || '').trim().split('\n')[0]
+
+export const NODE_SPECS: Record<NodeType, NodeSpec> = {
+  manual: {
+    type: 'manual',
+    category: 'Trigger',
+    label: 'Manual Trigger',
+    description: 'Starts the workflow when you press Run. No configuration needed.',
+    icon: PlayIcon,
+    accent: 'text-green-bright',
+    hasInput: false,
+    defaultData: () => ({}),
+    summary: () => 'Runs when you press Run',
+  },
+  schedule: {
+    type: 'schedule',
+    category: 'Trigger',
+    label: 'Schedule Run',
+    description: 'Manual trigger; stores a cron expression for future scheduling.',
+    icon: ClockIcon,
+    accent: 'text-amber',
+    hasInput: false,
+    defaultData: () => ({ cron: '' }),
+    summary: (d) => (d.cron?.trim() ? `cron: ${d.cron.trim()}` : 'Runs manually'),
+  },
+  query: {
+    type: 'query',
+    category: 'Source',
+    label: 'Run a query',
+    description: 'Run SQL against this connection. Output: { columns, rows }.',
+    icon: DatabaseIcon,
+    accent: 'text-green-bright',
+    hasInput: true,
+    defaultData: () => ({ sql: '' }),
+    summary: (d) => firstLine(d.sql) || 'No query yet',
+  },
+  http: {
+    type: 'http',
+    category: 'Source',
+    label: 'HTTP Request',
+    description: 'Call an HTTP endpoint from the server. Output: { status, headers, body }.',
+    icon: GlobeIcon,
+    accent: 'text-sky-400',
+    hasInput: true,
+    defaultData: () => ({ method: 'GET', url: '', headers: '', body: '' }),
+    summary: (d) => (d.url?.trim() ? `${(d.method || 'GET').toUpperCase()} ${d.url.trim()}` : 'No URL yet'),
+  },
+  js: {
+    type: 'js',
+    category: 'Script',
+    label: 'Run JavaScript',
+    description: 'Transform data. The body receives `input` and returns the node output.',
+    icon: CodeIcon,
+    accent: 'text-purple-400',
+    hasInput: true,
+    defaultData: () => ({ code: 'return input' }),
+    summary: (d) => firstLine(d.code) || 'return input',
+  },
+  switch: {
+    type: 'switch',
+    category: 'Control',
+    label: 'Switch Case',
+    description: 'Route to the first matching case (a JS expression), else default.',
+    icon: BranchIcon,
+    accent: 'text-orange-400',
+    hasInput: true,
+    defaultData: () => ({ cases: [{ expr: '', label: 'Case 1' }] }),
+    summary: (d) => `${d.cases?.length || 0} case${(d.cases?.length || 0) === 1 ? '' : 's'} + default`,
+  },
+  loop: {
+    type: 'loop',
+    category: 'Control',
+    label: 'Loop',
+    description: 'Iterate an array; run the body branch per item, then continue via done.',
+    icon: LoopIcon,
+    accent: 'text-teal-400',
+    hasInput: true,
+    defaultData: () => ({ itemsExpr: '' }),
+    summary: (d) => (d.itemsExpr?.trim() ? `items: ${d.itemsExpr.trim()}` : 'Loops the input array'),
+  },
+}
+
+export const CATEGORIES: NodeCategory[] = ['Trigger', 'Source', 'Script', 'Control']
+
+export const specsByCategory = (cat: NodeCategory) =>
+  Object.values(NODE_SPECS).filter((s) => s.category === cat)
+
+// Source handles for a node: default nodes have one ("out"); switch has one per
+// case plus "default"; loop has "body" and "done".
+export function sourceHandles(type: NodeType, data: any): { id: string; label: string }[] {
+  if (type === 'switch') {
+    const cases = (data?.cases || []).map((c: any, i: number) => ({ id: `case-${i}`, label: c.label || `Case ${i + 1}` }))
+    return [...cases, { id: 'default', label: 'Default' }]
+  }
+  if (type === 'loop') {
+    return [
+      { id: 'body', label: 'Body' },
+      { id: 'done', label: 'Done' },
+    ]
+  }
+  return [{ id: 'out', label: 'Out' }]
+}

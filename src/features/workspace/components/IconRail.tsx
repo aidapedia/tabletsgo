@@ -1,4 +1,4 @@
-import { CodeIcon, DatabaseIcon, DbLogo, HomeIcon, SettingsIcon } from '@/shared/ui/icons'
+import { CodeIcon, DatabaseIcon, DbLogo, HomeIcon, SettingsIcon, WorkflowIcon } from '@/shared/ui/icons'
 import Popover from '@/shared/ui/Popover'
 import Tooltip from '@/shared/ui/Tooltip'
 
@@ -26,6 +26,7 @@ export default function IconRail({
   active = 'browser',
   onBrowser,
   onQueries,
+  onWorkflows,
   onHome,
   onSettings,
   onProfile,
@@ -75,6 +76,7 @@ export default function IconRail({
       <div className="flex flex-col items-center gap-1.5">
         <RailButton icon={DatabaseIcon} label="Data browser" active={active === 'browser'} onClick={onBrowser} />
         <RailButton icon={CodeIcon} label="Saved queries" active={active === 'queries'} onClick={onQueries} />
+        <RailButton icon={WorkflowIcon} label="Workflows" active={active === 'workflows'} onClick={onWorkflows} />
       </div>
 
       <div className="mt-auto flex flex-col items-center gap-1.5">

@@ -10,6 +10,7 @@ import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { randomUUID, createHash } from 'crypto'
+import vm from 'node:vm'
 import Database from 'better-sqlite3'
 import nodemailer from 'nodemailer'
 import pkg from 'pg'
@@ -66,6 +67,13 @@ function initMetaDb() {
       id TEXT PRIMARY KEY,
       connection_id TEXT NOT NULL,
       name TEXT NOT NULL,
+      ts INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS workflows (
+      id TEXT PRIMARY KEY,
+      connection_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      graph TEXT,                  -- JSON { nodes, edges }
       ts INTEGER
     );
     CREATE TABLE IF NOT EXISTS query_history (
@@ -625,6 +633,205 @@ async function runPostgresQuery(pool, sql, schema) {
 }
 
 // ============================================================================
+// Workflow executor
+// ============================================================================
+// SECURITY: workflows run arbitrary SQL, make server-side HTTP requests (can
+// reach internal URLs — SSRF) and evaluate user JavaScript. `node:vm` is NOT a
+// hard security boundary. This is acceptable here because only authenticated
+// workspace members can create/run workflows — the same trust level as the
+// existing "run any SQL" query editor. Do not expose this to untrusted users.
+
+const safeJson = (s) => {
+  try {
+    return typeof s === 'string' ? JSON.parse(s) : s || {}
+  } catch {
+    return {}
+  }
+}
+// Bound a value for a JSON response: keep it structured when small, else a
+// truncated string.
+function jsonPreview(v, max = 800) {
+  let s
+  try {
+    s = JSON.stringify(v)
+  } catch {
+    s = String(v)
+  }
+  if (s === undefined) return null
+  return s.length > max ? s.slice(0, max) + '… (truncated)' : v
+}
+
+// Run a user JS snippet in a sandbox. `code` is a function body that receives
+// `input` and returns a value. 3s CPU timeout, no require/process/fs.
+function runUserJs(code, input) {
+  const logs = []
+  const sandbox = {
+    input,
+    console: { log: (...a) => logs.push(a.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join(' ')) },
+    __out: undefined,
+  }
+  vm.createContext(sandbox)
+  const script = new vm.Script(`__out = (function(input){ ${code}\n})(input)`)
+  script.runInContext(sandbox, { timeout: 3000 })
+  return { out: sandbox.__out, logs }
+}
+
+// Run one query node against the connection (dialect-dispatched).
+async function execWorkflowQuery(conn, sql) {
+  if (conn.type === 'sqlite') return runSqliteQuery(getSqliteDb(conn.filepath), sql)
+  if (conn.type === 'postgresql') return runPostgresQuery(getPostgresPool(conn), sql, 'public')
+  return { error: `Unsupported connection type: ${conn.type}` }
+}
+
+// Execute a workflow graph. Threads each node's output to its successor(s).
+// Returns { ok, log, output, error? }.
+async function runWorkflow(conn, graph) {
+  const nodes = new Map((graph?.nodes || []).map((n) => [n.id, n]))
+  const edges = graph?.edges || []
+  const outgoing = (id, handle = 'out') => edges.filter((e) => e.source === id && (e.sourceHandle || 'out') === handle)
+  const log = []
+  const started = Date.now()
+  const OVERALL_MS = 20000
+  const STEP_BUDGET = 5000
+  const MAX_ITER = 1000
+  let steps = 0
+
+  const guard = () => {
+    if (++steps > STEP_BUDGET) throw new Error('Step budget exceeded — possible infinite loop.')
+    if (Date.now() - started > OVERALL_MS) throw new Error('Workflow timed out (20s).')
+  }
+
+  // Compute a leaf node's output (schedule/query/http/js). Logs its own entry.
+  async function evalLeaf(node, input) {
+    const t0 = Date.now()
+    const entry = { nodeId: node.id, nodeType: node.type, status: 'ok', ms: 0, output: undefined }
+    log.push(entry)
+    try {
+      const d = node.data || {}
+      let output
+      if (node.type === 'schedule' || node.type === 'manual') {
+        output = input // trigger node — pass the initial input straight through
+      } else if (node.type === 'query') {
+        if (!d.sql?.trim()) throw new Error('No query configured')
+        const r = await execWorkflowQuery(conn, d.sql)
+        if (r.error) throw new Error(r.error)
+        output = r.type === 'rows' ? { columns: r.columns, rows: r.rows } : { message: r.message }
+      } else if (node.type === 'http') {
+        if (!d.url?.trim()) throw new Error('No URL configured')
+        const method = (d.method || 'GET').toUpperCase()
+        const headers = typeof d.headers === 'string' ? safeJson(d.headers) : d.headers || {}
+        const res = await fetch(d.url, {
+          method,
+          headers,
+          body: method === 'GET' || method === 'HEAD' ? undefined : d.body || undefined,
+        })
+        const ct = res.headers.get('content-type') || ''
+        const body = ct.includes('application/json') ? await res.json().catch(() => null) : await res.text()
+        output = { status: res.status, ok: res.ok, headers: Object.fromEntries(res.headers), body }
+      } else if (node.type === 'js') {
+        const { out, logs } = runUserJs(d.code || 'return input', input)
+        if (logs.length) entry.logs = logs
+        output = out
+      } else {
+        output = input
+      }
+      entry.output = jsonPreview(output)
+      entry.ms = Date.now() - t0
+      return output
+    } catch (err) {
+      entry.status = 'error'
+      entry.error = err.message
+      entry.ms = Date.now() - t0
+      throw err
+    }
+  }
+
+  // Walk the graph from `node`, returning the terminal output of its path.
+  async function walk(node, input) {
+    guard()
+    // Switch: evaluate cases, follow only the matched branch.
+    if (node.type === 'switch') {
+      const t0 = Date.now()
+      const entry = { nodeId: node.id, nodeType: 'switch', status: 'ok', ms: 0, output: undefined }
+      log.push(entry)
+      let handle = 'default'
+      try {
+        const cases = node.data?.cases || []
+        for (let i = 0; i < cases.length; i++) {
+          const { out } = runUserJs(`return (${cases[i].expr || 'false'})`, input)
+          if (out) {
+            handle = `case-${i}`
+            break
+          }
+        }
+        entry.output = jsonPreview({ matched: handle })
+        entry.ms = Date.now() - t0
+      } catch (err) {
+        entry.status = 'error'
+        entry.error = err.message
+        throw err
+      }
+      let terminal = input
+      for (const e of outgoing(node.id, handle)) {
+        const child = nodes.get(e.target)
+        if (child) terminal = await walk(child, input)
+      }
+      return terminal
+    }
+    // Loop: run the body branch per item, collect results, then continue.
+    if (node.type === 'loop') {
+      const t0 = Date.now()
+      const entry = { nodeId: node.id, nodeType: 'loop', status: 'ok', ms: 0, output: undefined }
+      log.push(entry)
+      let items = input
+      try {
+        if (node.data?.itemsExpr?.trim()) items = runUserJs(`return (${node.data.itemsExpr})`, input).out
+        if (!Array.isArray(items)) throw new Error('Loop input is not an array')
+      } catch (err) {
+        entry.status = 'error'
+        entry.error = err.message
+        throw err
+      }
+      const results = []
+      const body = outgoing(node.id, 'body')
+      for (let i = 0; i < items.length && i < MAX_ITER; i++) {
+        for (const e of body) {
+          const child = nodes.get(e.target)
+          if (child) results.push(await walk(child, items[i]))
+        }
+      }
+      entry.output = jsonPreview({ iterations: Math.min(items.length, MAX_ITER) })
+      entry.ms = Date.now() - t0
+      let terminal = results
+      for (const e of outgoing(node.id, 'done')) {
+        const child = nodes.get(e.target)
+        if (child) terminal = await walk(child, results)
+      }
+      return terminal
+    }
+    // Leaf node → compute, then follow default output.
+    const output = await evalLeaf(node, input)
+    let terminal = output
+    for (const e of outgoing(node.id, 'out')) {
+      const child = nodes.get(e.target)
+      if (child) terminal = await walk(child, output)
+    }
+    return terminal
+  }
+
+  try {
+    const hasIncoming = new Set(edges.map((e) => e.target))
+    const roots = (graph?.nodes || []).filter((n) => !hasIncoming.has(n.id))
+    if (!roots.length) return { ok: false, log, error: 'No start node (every node has an incoming connection).' }
+    let output
+    for (const r of roots) output = await walk(r, null)
+    return { ok: true, log, output: jsonPreview(output, 8000) }
+  } catch (err) {
+    return { ok: false, log, error: err.message }
+  }
+}
+
+// ============================================================================
 // API Routes
 // ============================================================================
 
@@ -849,6 +1056,7 @@ app.delete('/api/workspaces/:id', (req, res) => {
       deleteConnectionRow(row.id)
       meta.prepare('DELETE FROM saved_queries WHERE connection_id = ?').run(row.id)
       meta.prepare('DELETE FROM saved_folders WHERE connection_id = ?').run(row.id)
+      meta.prepare('DELETE FROM workflows WHERE connection_id = ?').run(row.id)
       meta.prepare('DELETE FROM query_history WHERE connection_id = ?').run(row.id)
     }
   }
@@ -1042,6 +1250,7 @@ app.delete('/api/connections/:id', (req, res) => {
   deleteConnectionRow(req.params.id)
   meta.prepare('DELETE FROM saved_queries WHERE connection_id = ?').run(req.params.id)
   meta.prepare('DELETE FROM saved_folders WHERE connection_id = ?').run(req.params.id)
+  meta.prepare('DELETE FROM workflows WHERE connection_id = ?').run(req.params.id)
   meta.prepare('DELETE FROM query_history WHERE connection_id = ?').run(req.params.id)
   res.json({ ok: true })
 })
@@ -1132,6 +1341,76 @@ app.put('/api/connections/:id/saved/:sid', (req, res) => {
 app.delete('/api/connections/:id/saved/:sid', (req, res) => {
   meta.prepare('DELETE FROM saved_queries WHERE id = ? AND connection_id = ?').run(req.params.sid, req.params.id)
   res.json({ ok: true })
+})
+
+// ---- Workflows (per connection) ----
+app.get('/api/connections/:id/workflows', (req, res) => {
+  const rows = meta
+    .prepare('SELECT id, name, ts FROM workflows WHERE connection_id = ? ORDER BY ts DESC')
+    .all(req.params.id)
+  res.json(rows)
+})
+
+app.post('/api/connections/:id/workflows', (req, res) => {
+  const { name } = req.body || {}
+  if (!name?.trim()) return res.status(400).json({ error: 'A workflow name is required' })
+  const entry = { id: randomUUID(), name: name.trim(), graph: { nodes: [], edges: [] }, ts: Date.now() }
+  meta
+    .prepare('INSERT INTO workflows (id, connection_id, name, graph, ts) VALUES (?, ?, ?, ?, ?)')
+    .run(entry.id, req.params.id, entry.name, JSON.stringify(entry.graph), entry.ts)
+  res.json(entry)
+})
+
+app.get('/api/connections/:id/workflows/:wid', (req, res) => {
+  const row = meta
+    .prepare('SELECT id, name, graph FROM workflows WHERE id = ? AND connection_id = ?')
+    .get(req.params.wid, req.params.id)
+  if (!row) return res.status(404).json({ error: 'Not found' })
+  res.json({ id: row.id, name: row.name, graph: safeJson(row.graph) })
+})
+
+app.put('/api/connections/:id/workflows/:wid', (req, res) => {
+  const body = req.body || {}
+  const sets = []
+  const vals = []
+  if (body.name != null) {
+    if (!body.name.trim()) return res.status(400).json({ error: 'A name is required' })
+    sets.push('name = ?')
+    vals.push(body.name.trim())
+  }
+  if (body.graph != null) {
+    sets.push('graph = ?')
+    vals.push(JSON.stringify(body.graph))
+  }
+  if (!sets.length) return res.status(400).json({ error: 'Nothing to update' })
+  const r = meta
+    .prepare(`UPDATE workflows SET ${sets.join(', ')} WHERE id = ? AND connection_id = ?`)
+    .run(...vals, req.params.wid, req.params.id)
+  if (!r.changes) return res.status(404).json({ error: 'Not found' })
+  res.json({ ok: true })
+})
+
+app.delete('/api/connections/:id/workflows/:wid', (req, res) => {
+  meta.prepare('DELETE FROM workflows WHERE id = ? AND connection_id = ?').run(req.params.wid, req.params.id)
+  res.json({ ok: true })
+})
+
+// Run a workflow — executes the posted graph (unsaved edits) or the stored one.
+app.post('/api/connections/:id/workflows/:wid/run', async (req, res) => {
+  const conn = getConnection(req.params.id)
+  if (!conn) return res.status(404).json({ error: 'Connection not found' })
+  let graph = req.body?.graph
+  if (!graph) {
+    const row = meta.prepare('SELECT graph FROM workflows WHERE id = ? AND connection_id = ?').get(req.params.wid, req.params.id)
+    if (!row) return res.status(404).json({ error: 'Not found' })
+    graph = safeJson(row.graph)
+  }
+  try {
+    const result = await runWorkflow(conn, graph)
+    res.json(result)
+  } catch (err) {
+    res.status(500).json({ ok: false, log: [], error: err.message })
+  }
 })
 
 // ---- Query history (per connection) ----

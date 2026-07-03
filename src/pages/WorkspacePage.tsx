@@ -26,8 +26,11 @@ import CreateTablePanel from '@/features/schema-designer/components/CreateTableP
 const QueryEditor = lazy(() => import('@/features/workspace/components/QueryEditor'))
 // Lazy — React Flow is heavy; only load when the schema editor opens.
 const SchemaEditor = lazy(() => import('@/features/schema-designer/components/SchemaEditor'))
+// Lazy — React Flow again; only load when a workflow tab opens.
+const WorkflowEditor = lazy(() => import('@/features/workflow/components/WorkflowEditor'))
 import IconRail from '@/features/workspace/components/IconRail'
 import SavedQueriesPanel from '@/features/workspace/components/SavedQueriesPanel'
+import { WorkflowsPanel, listWorkflows, createWorkflow, deleteWorkflow, updateWorkflow } from '@/features/workflow'
 import QueryHistoryView from '@/features/workspace/components/QueryHistoryView'
 import { fetchHistory, recordHistory, clearHistory, deleteHistory } from '@/features/workspace/lib/queryHistory'
 import SaveQueryPanel from '@/shared/ui/SaveQueryPanel'
@@ -54,6 +57,7 @@ import {
   SearchIcon,
   TableIcon,
   TrashIcon,
+  WorkflowIcon,
 } from '@/shared/ui/icons'
 
 const kbd =
@@ -98,6 +102,7 @@ export default function Workspace() {
   const [historyLoading, setHistoryLoading] = useState(false)
   const [saved, setSaved] = useState([])
   const [folders, setFolders] = useState([])
+  const [workflows, setWorkflows] = useState([])
   const [tabMenu, setTabMenu] = useState(null) // { x, y, key } | null
   const [savingQuery, setSavingQuery] = useState(null) // sql string being saved | null
   const [changes, setChanges] = useState([]) // staged (uncommitted) SQL mutations
@@ -105,16 +110,43 @@ export default function Workspace() {
   const [schemaPending, setSchemaPending] = useState({}) // per schema-editor tab: key -> items[]
   const [queryState, setQueryState] = useState({}) // per query tab: key -> { sql, result, error, elapsedMs }
   const [closingTab, setClosingTab] = useState(null) // tab key awaiting close confirmation
+  const [pendingConn, setPendingConn] = useState(null) // connection id awaiting switch confirmation
   const [committing, setCommitting] = useState(false)
   const [dataVersion, setDataVersion] = useState(0) // bump to force table reloads
   const [sidebarOpen, setSidebarOpen] = useState(false) // mobile drawer
   const [openGroup, setOpenGroup] = useState('table') // accordion: the one expanded browser section
   const [tablesVisible, setTablesVisible] = useState(true) // left panel visible
-  const [panel, setPanel] = useState('browser') // 'browser' | 'queries'
+  const [panel, setPanel] = useState('browser') // 'browser' | 'queries' | 'workflows'
   const [searchOpen, setSearchOpen] = useState(false) // table search toggle
   const [tableSort, setTableSort] = useState('az') // 'az' | 'za'
   const searchRef = useRef(null)
   const autoOpenedFor = useRef(null) // connection id we've already auto-opened a tab for
+
+  // Switching connections is destructive: tabs, staged changes and per-tab
+  // editor state are all scoped to the current connection. Ask first, then wipe
+  // that state and navigate. If there's nothing to lose, switch straight away.
+  const requestConnSwitch = (cid) => {
+    if (cid === id) {
+      setSidebarOpen(false)
+      return
+    }
+    if (tabs.length === 0 && changes.length === 0) {
+      switchConnection(cid)
+    } else {
+      setPendingConn(cid)
+    }
+  }
+
+  const switchConnection = (cid) => {
+    setTabs([])
+    setActiveTab(null)
+    setChanges([])
+    setQueryState({})
+    setSchemaPending({})
+    autoOpenedFor.current = null
+    navigate(`/connection/${cid}`)
+    setSidebarOpen(false)
+  }
 
   // Rail selects a panel; clicking the active one again collapses it.
   const selectPanel = (p) => {
@@ -201,11 +233,12 @@ export default function Workspace() {
   }
   const changeSchema = (schema) => setNs((p) => ({ ...p, schema }))
 
-  // Load this connection's saved queries and folders from the backend.
+  // Load this connection's saved queries, folders and workflows from the backend.
   useEffect(() => {
     let alive = true
     fetchSaved(id).then((list) => alive && setSaved(list))
     fetchFolders(id).then((list) => alive && setFolders(list))
+    listWorkflows(id).then((list) => alive && setWorkflows(list))
     return () => {
       alive = false
     }
@@ -410,6 +443,47 @@ export default function Workspace() {
     setTabs((prev) => (prev.some((t) => t.key === key) ? prev : [...prev, { key, kind: 'history', title: 'Query history' }]))
     setActiveTab(key)
     setSidebarOpen(false)
+  }
+
+  // ---- Workflows (per connection) ----
+  // Open a workflow in its own tab; title tracks the workflow name (kept in sync
+  // on rename). Focus it if already open.
+  const openWorkflow = (w) => {
+    const key = `workflow:${w.id}`
+    setTabs((prev) =>
+      prev.some((t) => t.key === key) ? prev : [...prev, { key, kind: 'workflow', workflowId: w.id, title: w.name }]
+    )
+    setActiveTab(key)
+    setSidebarOpen(false)
+  }
+  const newWorkflow = async () => {
+    try {
+      const wf = await createWorkflow(id, `Workflow ${workflows.length + 1}`)
+      setWorkflows((prev) => [{ id: wf.id, name: wf.name, ts: Date.now() }, ...prev])
+      openWorkflow(wf)
+    } catch (e) {
+      toast.error(`Couldn't create workflow: ${e.message}`)
+    }
+  }
+  const renameWorkflow = async (wid, name) => {
+    const next = name?.trim()
+    if (!next) return
+    setWorkflows((prev) => prev.map((w) => (w.id === wid ? { ...w, name: next } : w)))
+    setTabs((prev) => prev.map((t) => (t.key === `workflow:${wid}` ? { ...t, title: next } : t)))
+    try {
+      await updateWorkflow(id, wid, { name: next })
+    } catch (e) {
+      toast.error(`Rename failed: ${e.message}`)
+    }
+  }
+  const removeWorkflow = async (wid) => {
+    setWorkflows((prev) => prev.filter((w) => w.id !== wid))
+    dropTab(`workflow:${wid}`)
+    try {
+      await deleteWorkflow(id, wid)
+    } catch (e) {
+      toast.error(`Delete failed: ${e.message}`)
+    }
   }
 
   const saveQuery = (sql) => {
@@ -649,13 +723,11 @@ export default function Workspace() {
           user={user}
           connections={connections}
           currentId={id}
-          onSelectConnection={(cid) => {
-            navigate(`/connection/${cid}`)
-            setSidebarOpen(false)
-          }}
+          onSelectConnection={requestConnSwitch}
           active={tablesVisible ? panel : ''}
           onBrowser={() => selectPanel('browser')}
           onQueries={() => selectPanel('queries')}
+          onWorkflows={() => selectPanel('workflows')}
           onHome={() => navigate('/')}
           onSettings={() => navigate('/settings')}
           onProfile={logout}
@@ -870,6 +942,16 @@ export default function Workspace() {
           )}
         </div>
         </>
+        ) : panel === 'workflows' ? (
+          <WorkflowsPanel
+            workflows={workflows}
+            activeId={current?.kind === 'workflow' ? current.workflowId : null}
+            onOpen={openWorkflow}
+            onNew={newWorkflow}
+            onRename={renameWorkflow}
+            onDelete={removeWorkflow}
+            onRefresh={() => listWorkflows(id).then(setWorkflows)}
+          />
         ) : (
           <SavedQueriesPanel
             saved={saved}
@@ -978,6 +1060,8 @@ export default function Workspace() {
                   <HistoryIcon className={active ? 'text-ink' : 'text-ink-faint'} />
                 ) : t.kind === 'function' ? (
                   <CodeIcon className={active ? 'text-ink' : 'text-ink-faint'} />
+                ) : t.kind === 'workflow' ? (
+                  <WorkflowIcon className={active ? 'text-ink' : 'text-ink-faint'} />
                 ) : (
                   <TableIcon className={active ? 'text-ink' : 'text-ink-faint'} />
                 )}
@@ -1050,6 +1134,11 @@ export default function Workspace() {
               onClear={clearHistoryAll}
               onDelete={deleteHistoryEntries}
             />
+          )}
+          {conn && current?.kind === 'workflow' && (
+            <Suspense fallback={<div className="flex-1 p-8 text-center text-xs text-ink-faint">Loading workflow…</div>}>
+              <WorkflowEditor key={current.key} conn={conn} workflowId={current.workflowId} />
+            </Suspense>
           )}
           {!current && (
             <div className="flex h-full w-full items-center justify-center overflow-auto p-8">
@@ -1176,6 +1265,21 @@ export default function Workspace() {
             setClosingTab(null)
           }}
           onCancel={() => setClosingTab(null)}
+        />
+      )}
+
+      {pendingConn && (
+        <ConfirmDialog
+          title="Switch connection?"
+          message="Changing connection will close all open tabs and discard any staged changes for this connection."
+          confirmLabel="Switch connection"
+          cancelLabel="Stay here"
+          danger
+          onConfirm={() => {
+            switchConnection(pendingConn)
+            setPendingConn(null)
+          }}
+          onCancel={() => setPendingConn(null)}
         />
       )}
 
