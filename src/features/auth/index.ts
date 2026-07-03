@@ -1,3 +1,3 @@
 // Public API for the auth feature.
 export { AuthProvider, useAuth } from './stores/AuthContext'
-export { getSetupStatus, submitSetup, getInvite, acceptInvite } from './api'
+export { getSetupStatus, submitSetup, getInvite, acceptInvite, forgotPassword, getReset, resetPassword } from './api'

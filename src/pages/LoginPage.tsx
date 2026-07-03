@@ -77,6 +77,14 @@ export default function Login() {
           <Button type="submit" variant="primary" size="lg" className="w-full" disabled={loading}>
             {loading ? 'Signing in…' : 'Sign In'}
           </Button>
+
+          <button
+            type="button"
+            onClick={() => navigate('/forgot')}
+            className="mt-4 block w-full text-center text-[11px] text-ink-dim hover:text-ink"
+          >
+            Forgot password?
+          </button>
         </Form>
       </div>
     </div>

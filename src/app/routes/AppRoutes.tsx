@@ -4,6 +4,8 @@ import { useAuth, getSetupStatus } from '@/features/auth'
 import LoginPage from '@/pages/LoginPage'
 import SetupPage from '@/pages/SetupPage'
 import AcceptInvitePage from '@/pages/AcceptInvitePage'
+import ForgotPasswordPage from '@/pages/ForgotPasswordPage'
+import ResetPasswordPage from '@/pages/ResetPasswordPage'
 import ConnectionsPage from '@/pages/ConnectionsPage'
 import WorkspacePage from '@/pages/WorkspacePage'
 import WorkspaceSettingsPage from '@/pages/WorkspaceSettingsPage'
@@ -38,6 +40,8 @@ export function AppRoutes() {
     <Routes>
       <Route path="/setup" element={<Navigate to="/" replace />} />
       <Route path="/invite/:token" element={<AcceptInvitePage />} />
+      <Route path="/forgot" element={user ? <Navigate to="/" replace /> : <ForgotPasswordPage />} />
+      <Route path="/reset/:token" element={<ResetPasswordPage />} />
       <Route path="/login" element={user ? <Navigate to="/" replace /> : <LoginPage />} />
       <Route
         path="/workspace/settings"

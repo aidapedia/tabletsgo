@@ -116,6 +116,9 @@ function initMetaDb() {
   addColumn('users', 'invite_token TEXT')
   addColumn('users', 'invite_workspace TEXT')
   addColumn('users', 'token_expires INTEGER')
+  // Password reset (separate from invite tokens so the two never collide).
+  addColumn('users', 'reset_token TEXT')
+  addColumn('users', 'reset_expires INTEGER')
   meta.exec(`UPDATE users SET status = 'active' WHERE status IS NULL`)
 
   const hasUsers = !!meta.prepare('SELECT 1 FROM users LIMIT 1').get()
@@ -246,6 +249,39 @@ const sendInviteEmail = async (cfg, { to, workspaceName, link }) => {
     html: `<p>You've been invited to join <b>${workspaceName}</b> on Tabletsgo.</p><p><a href="${link}">Accept your invite &amp; set a password</a></p><p style="color:#888">Or paste this link into your browser: ${link}</p>`,
   })
 }
+
+// Generic send. `cfg` from smtpConfig(); `message` is { to, subject, text, html }.
+const sendMail = async (cfg, message) => {
+  const transport = nodemailer.createTransport({
+    host: cfg.host,
+    port: cfg.port,
+    secure: cfg.secure,
+    auth: cfg.user ? { user: cfg.user, pass: cfg.pass } : undefined,
+  })
+  await transport.sendMail({ from: cfg.from, ...message })
+}
+
+// SMTP usable for an app-level email to a user (password reset): env first,
+// then any of the user's workspaces that has SMTP configured.
+const smtpForUser = (userId) => {
+  const envCfg = smtpConfig(null)
+  if (envCfg) return envCfg
+  const rows = meta
+    .prepare('SELECT w.settings FROM workspaces w JOIN workspace_members m ON m.workspace_id = w.id WHERE m.user_id = ?')
+    .all(userId)
+  for (const r of rows) {
+    const cfg = smtpConfig(r)
+    if (cfg) return cfg
+  }
+  return null
+}
+const sendResetEmail = (cfg, { to, link }) =>
+  sendMail(cfg, {
+    to,
+    subject: 'Reset your Tabletsgo password',
+    text: `Reset your Tabletsgo password: ${link}\nThis link expires in 1 hour. If you didn't request this, ignore this email.`,
+    html: `<p>We received a request to reset your Tabletsgo password.</p><p><a href="${link}">Reset your password</a></p><p style="color:#888">This link expires in 1 hour. If you didn't request this, you can safely ignore this email.</p>`,
+  })
 
 // ---- Connection metadata helpers (DB-backed) ----
 const listConnections = () =>
@@ -608,6 +644,54 @@ app.post('/api/auth/logout', (req, res) => {
   const token = h.startsWith('Bearer ') ? h.slice(7) : null
   if (token) meta.prepare('DELETE FROM sessions WHERE token = ?').run(token)
   res.json({ ok: true })
+})
+
+// Request a password reset. Always 200 — never reveal whether the email exists.
+// When SMTP is available the reset link is emailed; the link is never returned.
+app.post('/api/auth/forgot', async (req, res) => {
+  const email = (req.body?.email || '').trim().toLowerCase()
+  const user = email ? meta.prepare('SELECT id, username, status FROM users WHERE username = ?').get(email) : null
+  if (user && user.status !== 'pending') {
+    const token = randomUUID()
+    const expires = Date.now() + 60 * 60 * 1000 // 1 hour
+    meta.prepare('UPDATE users SET reset_token = ?, reset_expires = ? WHERE id = ?').run(token, expires, user.id)
+    const cfg = smtpForUser(user.id)
+    if (cfg) {
+      try {
+        await sendResetEmail(cfg, { to: email, link: `${baseUrl(req)}/reset/${token}` })
+      } catch (e) {
+        console.error('Password reset email failed:', e.message)
+      }
+    } else {
+      console.warn('Password reset requested but no SMTP is configured; cannot email the link.')
+    }
+  }
+  res.json({ ok: true })
+})
+
+// Validate a reset token (for the reset page).
+app.get('/api/auth/reset/:token', (req, res) => {
+  const u = meta.prepare('SELECT username, reset_expires FROM users WHERE reset_token = ?').get(req.params.token)
+  if (!u || (u.reset_expires && u.reset_expires < Date.now())) {
+    return res.status(404).json({ error: 'This reset link is invalid or has expired.' })
+  }
+  res.json({ email: u.username })
+})
+
+// Set a new password, invalidate existing sessions, and log the user in.
+app.post('/api/auth/reset/:token', (req, res) => {
+  const u = meta.prepare('SELECT id, reset_expires FROM users WHERE reset_token = ?').get(req.params.token)
+  if (!u || (u.reset_expires && u.reset_expires < Date.now())) {
+    return res.status(404).json({ error: 'This reset link is invalid or has expired.' })
+  }
+  const { password } = req.body || {}
+  if (!password) return res.status(400).json({ error: 'A password is required.' })
+  meta
+    .prepare("UPDATE users SET password_hash = ?, status = 'active', reset_token = NULL, reset_expires = NULL WHERE id = ?")
+    .run(sha256(password), u.id)
+  meta.prepare('DELETE FROM sessions WHERE user_id = ?').run(u.id) // sign out other sessions
+  const user = meta.prepare('SELECT id, username, name, role FROM users WHERE id = ?').get(u.id)
+  res.json({ user: publicUser(user), token: createSession(u.id) })
 })
 
 // First-run status — true when no users exist yet (setup wizard needed).

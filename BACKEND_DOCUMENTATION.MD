@@ -196,6 +196,19 @@ setup and accept-invite; store the token and send it as `Authorization: Bearer`.
 ### POST `/api/auth/logout`
 Invalidate the current session token. **200:** `{ "ok": true }`
 
+### POST `/api/auth/forgot`
+Request a password-reset link. **Always 200** `{ "ok": true }` — never reveals
+whether the email exists. When SMTP is available (env, else any of the user's
+workspaces' SMTP) the reset link is emailed; the link is **never** returned.
+- **Body:** `{ "email" }`
+
+### GET `/api/auth/reset/:token`
+Validate a reset token. **200:** `{ "email" }` · **404:** invalid/expired.
+
+### POST `/api/auth/reset/:token`
+Set a new password, invalidate the user's other sessions, and log in.
+- **Body:** `{ "password" }` → **200:** `{ "user", "token" }` · **404:** invalid/expired · **400:** missing password
+
 ### GET `/api/setup`
 First-run status. **200:** `{ "needsSetup": true }` (true when no users exist).
 
@@ -543,6 +556,9 @@ Liveness probe.
 | Method | Path                                      | Purpose                         |
 | ------ | ----------------------------------------- | ------------------------------- |
 | POST   | `/api/auth/login`                         | Validate credentials            |
+| POST   | `/api/auth/forgot`                        | Request password-reset link     |
+| GET    | `/api/auth/reset/:token`                  | Validate reset token            |
+| POST   | `/api/auth/reset/:token`                  | Set new password + log in       |
 | GET    | `/api/connections`                        | List connections                |
 | POST   | `/api/test-connection`                    | Test connectivity (no save)     |
 | POST   | `/api/connections`                        | Create connection               |
