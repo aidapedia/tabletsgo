@@ -1244,7 +1244,14 @@ app.post('/api/workspaces/:id/smtp/test', async (req, res) => {
     })
     res.json({ ok: true })
   } catch (err) {
-    res.status(400).json({ error: err.message || 'Failed to send test email.' })
+    // "wrong version number" is OpenSSL-speak for "the TLS mode doesn't match
+    // what the server expects on that port" — translate it, since the raw
+    // error is meaningless to anyone who isn't reading OpenSSL source.
+    const raw = err.message || 'Failed to send test email.'
+    const message = /wrong version number/i.test(raw)
+      ? "SSL/TLS handshake failed — the encryption mode probably doesn't match the port. Try switching between STARTTLS (587) and Implicit TLS/SSL (465)."
+      : raw
+    res.status(400).json({ error: message })
   }
 })
 

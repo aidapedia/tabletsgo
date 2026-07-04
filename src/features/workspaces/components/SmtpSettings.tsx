@@ -1,13 +1,22 @@
 import { useEffect, useState } from 'react'
 import Button from '@/shared/ui/buttons/Button'
-import Checkbox from '@/shared/ui/form/Checkbox'
-import { Input } from '@/shared/ui/form/Input'
+import { Input, controlClass } from '@/shared/ui/form/Input'
 import { FormField } from '@/shared/ui/form/Form'
+import Select from '@/shared/ui/form/Select'
 import { useToast } from '@/shared/ui/feedback/Toast'
 import { useAuth } from '@/features/auth'
 import { getWorkspace, updateWorkspace, testSmtp } from '@/features/workspaces/api'
 
 type EnvDefaults = { host: string; port: string; secure: boolean; user: string; from: string }
+
+// Two ports need two different negotiations — mixing them up is the #1 cause
+// of "wrong version number" SSL errors, so make the encryption mode an
+// explicit choice (same pattern as the connections' SSL Mode select) instead
+// of a bare checkbox.
+const ENCRYPTION_MODES = [
+  { value: 'starttls', label: 'STARTTLS (port 587)' },
+  { value: 'tls', label: 'Implicit TLS/SSL (port 465)' },
+]
 
 // SMTP config for sending member-invite emails. Stored per workspace; Docker
 // env (SMTP_*) acts as a fallback. Password is write-only (blank = unchanged).
@@ -25,9 +34,19 @@ export default function SmtpSettings({ workspaceId }: { workspaceId: string }) {
   useEffect(() => {
     getWorkspace(workspaceId).then((w) => {
       const s = w.smtp || {}
-      setSmtp({ host: s.host || '', port: s.port ? String(s.port) : '', secure: !!s.secure, user: s.user || '', from: s.from || '', pass: '' })
+      const env = w.smtpEnvFallback ? w.smtpEnvDefaults : null
+      // Pre-fill with the Docker env values (not just a placeholder hint) so the
+      // form shows what's actually in effect; a saved workspace value always wins.
+      setSmtp({
+        host: s.host || env?.host || '',
+        port: s.port ? String(s.port) : env?.port ? String(env.port) : '',
+        secure: s.host ? !!s.secure : !!env?.secure,
+        user: s.user || env?.user || '',
+        from: s.from || env?.from || '',
+        pass: '',
+      })
       setHasPassword(!!s.hasPassword)
-      setEnvDefaults(w.smtpEnvFallback ? w.smtpEnvDefaults : null)
+      setEnvDefaults(env)
       setLoading(false)
     })
   }, [workspaceId])
@@ -37,6 +56,19 @@ export default function SmtpSettings({ workspaceId }: { workspaceId: string }) {
   }, [user?.email])
 
   const set = (k) => (e) => setSmtp((s) => ({ ...s, [k]: e.target.value }))
+
+  // Switching mode also nudges the port to that mode's default, but only when
+  // the port is still blank or at the *other* mode's default — a custom port
+  // (e.g. a provider on 2525) is left alone.
+  const setEncryption = (mode: string) => {
+    setSmtp((s) => {
+      const secure = mode === 'tls'
+      const otherDefault = secure ? '587' : '465'
+      const nextDefault = secure ? '465' : '587'
+      const port = !s.port || s.port === otherDefault ? nextDefault : s.port
+      return { ...s, secure, port }
+    })
+  }
 
   const save = async () => {
     setSaving(true)
@@ -79,7 +111,7 @@ export default function SmtpSettings({ workspaceId }: { workspaceId: string }) {
       <p className="mb-3 text-[11px] text-ink-dim">
         Used to email member invites.{' '}
         {envDefaults
-          ? `A Docker env SMTP server is configured as a fallback (${envDefaults.host}${envDefaults.port ? `:${envDefaults.port}` : ''}). `
+          ? `A Docker env SMTP server is configured as a fallback (${envDefaults.host}${envDefaults.port ? `:${envDefaults.port}` : ''}) — shown below, editing and saving overrides it for this workspace. `
           : ''}
         Leave empty to rely on env or to send invite links manually.
       </p>
@@ -89,6 +121,14 @@ export default function SmtpSettings({ workspaceId }: { workspaceId: string }) {
         </FormField>
         <FormField label="Port">
           <Input type="number" value={smtp.port} onChange={set('port')} placeholder={envDefaults?.port || '587'} />
+        </FormField>
+        <FormField label="Encryption">
+          <Select
+            className={controlClass}
+            value={smtp.secure ? 'tls' : 'starttls'}
+            onChange={setEncryption}
+            options={ENCRYPTION_MODES}
+          />
         </FormField>
         <FormField label="Username">
           <Input value={smtp.user} onChange={set('user')} placeholder={envDefaults?.user || 'apikey / user'} />
@@ -100,12 +140,8 @@ export default function SmtpSettings({ workspaceId }: { workspaceId: string }) {
           <Input value={smtp.from} onChange={set('from')} placeholder={envDefaults?.from || 'Tabletsgo <no-reply@example.com>'} />
         </FormField>
       </div>
-      <div className="mt-3 flex items-center gap-2 text-[11px] text-ink-dim">
-        <Checkbox checked={smtp.secure} onChange={(v) => setSmtp((s) => ({ ...s, secure: v }))} ariaLabel="Use implicit TLS" />
-        Use implicit TLS (port 465)
-      </div>
       <Button variant="primary" size="sm" className="mt-4" onClick={save} disabled={saving}>
-        {saving ? 'Saving…' : 'Save SMTP settings'}
+        {saving ? 'Saving…' : 'Save'}
       </Button>
 
       <div className="mt-6 border-t border-line pt-4">
