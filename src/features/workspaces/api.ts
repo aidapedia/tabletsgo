@@ -15,6 +15,9 @@ export async function createWorkspace(name: string) {
 export async function updateWorkspace(id: string, patch: { name?: string; smtp?: any }) {
   return request(`/workspaces/${id}`, { method: 'PUT', body: patch })
 }
+export async function testSmtp(id: string, body: { to?: string; smtp?: any }) {
+  return request<{ ok: true }>(`/workspaces/${id}/smtp/test`, { method: 'POST', body })
+}
 export async function deleteWorkspace(id: string) {
   return request(`/workspaces/${id}`, { method: 'DELETE' })
 }

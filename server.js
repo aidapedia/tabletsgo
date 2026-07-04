@@ -324,12 +324,17 @@ const smtpConfig = (wsRow) => {
     from: ws.from || process.env.SMTP_FROM || user || 'no-reply@tabletsgo.local',
   }
 }
+// Nodemailer's defaults (2min connect/socket timeout) make a bad host hang
+// the request for minutes instead of failing fast — cap it well below that.
+const SMTP_TIMEOUTS = { connectionTimeout: 10000, greetingTimeout: 10000, socketTimeout: 15000 }
+
 const sendInviteEmail = async (cfg, { to, workspaceName, link }) => {
   const transport = nodemailer.createTransport({
     host: cfg.host,
     port: cfg.port,
     secure: cfg.secure,
     auth: cfg.user ? { user: cfg.user, pass: cfg.pass } : undefined,
+    ...SMTP_TIMEOUTS,
   })
   await transport.sendMail({
     from: cfg.from,
@@ -347,6 +352,7 @@ const sendMail = async (cfg, message) => {
     port: cfg.port,
     secure: cfg.secure,
     auth: cfg.user ? { user: cfg.user, pass: cfg.pass } : undefined,
+    ...SMTP_TIMEOUTS,
   })
   await transport.sendMail({ from: cfg.from, ...message })
 }
@@ -1149,6 +1155,17 @@ app.get('/api/workspaces/:id', (req, res) => {
     }
     ws.smtp = { host: smtp.host || '', port: smtp.port || '', secure: !!smtp.secure, user: smtp.user || '', from: smtp.from || '', hasPassword: !!smtp.pass }
     ws.smtpEnvFallback = !!process.env.SMTP_HOST
+    // Non-secret env values, so the settings form can show what's actually in effect
+    // when the workspace hasn't overridden it (password never leaves the server).
+    if (ws.smtpEnvFallback) {
+      ws.smtpEnvDefaults = {
+        host: process.env.SMTP_HOST,
+        port: process.env.SMTP_PORT || '587',
+        secure: process.env.SMTP_SECURE === 'true',
+        user: process.env.SMTP_USER || '',
+        from: process.env.SMTP_FROM || process.env.SMTP_USER || '',
+      }
+    }
   }
   res.json(ws)
 })
@@ -1183,6 +1200,52 @@ app.put('/api/workspaces/:id', (req, res) => {
     meta.prepare('UPDATE workspaces SET settings = ? WHERE id = ?').run(JSON.stringify(settings), req.params.id)
   }
   res.json({ ok: true })
+})
+
+// Send a test email using either the unsaved form values (body.smtp) or, if
+// omitted, whatever is already saved/env-configured for this workspace.
+app.post('/api/workspaces/:id/smtp/test', async (req, res) => {
+  const user = requireAuth(req, res)
+  if (!user) return
+  if (memberRole(req.params.id, user.id) !== 'admin') return res.status(403).json({ error: 'Admin only' })
+  const row = meta.prepare('SELECT settings FROM workspaces WHERE id = ?').get(req.params.id)
+  if (!row) return res.status(404).json({ error: 'Workspace not found' })
+  const { to, smtp: overrides } = req.body || {}
+  let cfg
+  if (overrides?.host) {
+    let prev = {}
+    try {
+      prev = JSON.parse(row.settings || '{}').smtp || {}
+    } catch {
+      prev = {}
+    }
+    cfg = smtpConfig({
+      settings: JSON.stringify({
+        smtp: {
+          host: overrides.host,
+          port: overrides.port,
+          secure: overrides.secure,
+          user: overrides.user,
+          from: overrides.from,
+          pass: overrides.pass || prev.pass,
+        },
+      }),
+    })
+  } else {
+    cfg = smtpConfig(row)
+  }
+  if (!cfg) return res.status(400).json({ error: 'No SMTP host configured.' })
+  try {
+    await sendMail(cfg, {
+      to: to || user.username,
+      subject: 'Tabletsgo test email',
+      text: 'This is a test email from your Tabletsgo SMTP settings. If you received it, the configuration works.',
+      html: '<p>This is a test email from your Tabletsgo SMTP settings.</p><p>If you received it, the configuration works.</p>',
+    })
+    res.json({ ok: true })
+  } catch (err) {
+    res.status(400).json({ error: err.message || 'Failed to send test email.' })
+  }
 })
 
 // Delete a workspace and everything scoped to it (admin). Never the caller's last one.

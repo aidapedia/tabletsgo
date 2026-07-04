@@ -264,9 +264,16 @@ Set password, activate, log in. **Body:** `{ "name", "password" }` → **200:** 
 - `GET /api/workspaces` → `[{ id, name, role, createdAt }]` the caller belongs to.
 - `POST /api/workspaces` `{ name }` → creates one; caller becomes `admin`.
 - `GET /api/workspaces/:id` → `{ id, name, role, createdAt }`; admins also get
-  `smtp` (password-masked) + `smtpEnvFallback`.
+  `smtp` (password-masked) + `smtpEnvFallback` + `smtpEnvDefaults` (non-secret
+  env values — `host`, `port`, `secure`, `user`, `from` — present only when
+  `smtpEnvFallback` is true).
 - `PUT /api/workspaces/:id` (admin) `{ name?, smtp? }` → `{ ok: true }`. `smtp` is
   `{ host, port, secure, user, from, pass? }`; omit `pass` to keep the stored one.
+- `POST /api/workspaces/:id/smtp/test` (admin) `{ to?, smtp? }` → `{ ok: true }`
+  or `400 { error }`. Sends a one-off test email. `to` defaults to the caller's
+  own email. `smtp` (same shape as `PUT`, minus `pass` falling back to the
+  stored one) lets the UI test unsaved form values; omit it entirely to test
+  the saved/env config as-is.
 - `DELETE /api/workspaces/:id` (admin) → deletes it + its connections/queries.
   `400` if it's the caller's only workspace.
 
