@@ -1,15 +1,19 @@
 import { useEffect, useState } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { useAuth, getSetupStatus } from '@/features/auth'
-import LoginPage from '@/pages/LoginPage'
-import SetupPage from '@/pages/SetupPage'
-import AcceptInvitePage from '@/pages/AcceptInvitePage'
-import ForgotPasswordPage from '@/pages/ForgotPasswordPage'
-import ResetPasswordPage from '@/pages/ResetPasswordPage'
-import ConnectionsPage from '@/pages/ConnectionsPage'
-import WorkspacePage from '@/pages/WorkspacePage'
-import WorkspaceSettingsPage from '@/pages/WorkspaceSettingsPage'
-import SettingsPage from '@/pages/SettingsPage'
+import LoginPage from '@/pages/auth/LoginPage'
+import SetupPage from '@/pages/auth/SetupPage'
+import AcceptInvitePage from '@/pages/auth/AcceptInvitePage'
+import ForgotPasswordPage from '@/pages/auth/ForgotPasswordPage'
+import ResetPasswordPage from '@/pages/auth/ResetPasswordPage'
+import HomeLayout from '@/pages/home/HomeLayout'
+import DashboardPage from '@/pages/home/DashboardPage'
+import ConnectionsPage from '@/pages/home/ConnectionsPage'
+import S3Page from '@/pages/home/S3Page'
+import NotificationPage from '@/pages/home/NotificationPage'
+import WorkspaceSettingsPage from '@/pages/home/WorkspaceSettingsPage'
+import SettingsPage from '@/pages/home/SettingsPage'
+import WorkspacePage from '@/pages/console/WorkspacePage'
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { user } = useAuth()
@@ -43,35 +47,28 @@ export function AppRoutes() {
       <Route path="/forgot" element={user ? <Navigate to="/" replace /> : <ForgotPasswordPage />} />
       <Route path="/reset/:token" element={<ResetPasswordPage />} />
       <Route path="/login" element={user ? <Navigate to="/" replace /> : <LoginPage />} />
+      {/* Home shell — each sidebar section is its own page rendered into the layout's <Outlet/>. */}
       <Route
-        path="/workspace/settings"
         element={
           <RequireAuth>
-            <WorkspaceSettingsPage />
+            <HomeLayout />
           </RequireAuth>
         }
-      />
-      <Route
-        path="/"
-        element={
-          <RequireAuth>
-            <ConnectionsPage />
-          </RequireAuth>
-        }
-      />
+      >
+        <Route path="/" element={<DashboardPage />} />
+        <Route path="/connections" element={<ConnectionsPage />} />
+        <Route path="/s3" element={<S3Page />} />
+        <Route path="/notification" element={<NotificationPage />} />
+        <Route path="/workspace" element={<WorkspaceSettingsPage />} />
+        <Route path="/workspace/:sub" element={<WorkspaceSettingsPage />} />
+        <Route path="/settings" element={<SettingsPage />} />
+        <Route path="/settings/:sub" element={<SettingsPage />} />
+      </Route>
       <Route
         path="/connection/:id"
         element={
           <RequireAuth>
             <WorkspacePage />
-          </RequireAuth>
-        }
-      />
-      <Route
-        path="/settings"
-        element={
-          <RequireAuth>
-            <SettingsPage />
           </RequireAuth>
         }
       />

@@ -5,6 +5,7 @@ import { CloseIcon, DbLogo, EyeIcon, EyeOffIcon, PlusSmall, ShieldIcon } from '@
 import Select from '@/shared/ui/Select'
 import { useSlideOver } from '@/shared/hooks/useSlideOver'
 import Button from '@/shared/ui/Button'
+import Tab from '@/shared/ui/Tab'
 import { controlClass } from '@/shared/ui/Input'
 import { Label } from '@/shared/ui/Form'
 
@@ -280,16 +281,9 @@ export default function ConnectionModal({ initial, initialType, onClose, onSave 
                     { id: 'general', label: 'General' },
                     { id: 'ssh', label: 'SSH / SSL' },
                   ].map((t) => (
-                    <button
-                      key={t.id}
-                      type="button"
-                      onClick={() => setTab(t.id)}
-                      className={`-mb-px border-b-2 pb-2.5 text-xs font-medium transition-colors ${
-                        tab === t.id ? 'border-ink text-ink' : 'border-transparent text-ink-dim hover:text-ink'
-                      }`}
-                    >
+                    <Tab key={t.id} active={tab === t.id} accent="ink" onClick={() => setTab(t.id)}>
                       {t.label}
-                    </button>
+                    </Tab>
                   ))}
                 </div>
 

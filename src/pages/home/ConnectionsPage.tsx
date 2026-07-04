@@ -1,28 +1,29 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useAuth } from '@/features/auth'
 import { useConnections } from '@/features/connections'
-import { pingConnection } from '@/shared/api/database'
+import { listTables, pingConnection } from '@/shared/api/database'
 import ConnectionModal from '@/features/connections/components/ConnectionModal'
-import { WorkspaceSwitcher } from '@/features/workspaces'
 import Button from '@/shared/ui/Button'
+import Tab from '@/shared/ui/Tab'
 import Popover from '@/shared/ui/Popover'
 import { useToast } from '@/shared/ui/Toast'
 import {
+  ChevronLeft,
   CloseIcon,
   CopyIcon,
   DatabaseIcon,
   DbLogo,
   EditIcon,
+  ExternalLinkIcon,
   FolderIcon,
-  Logo,
-  LogoutIcon,
   MoreVerticalIcon,
   PlusIcon,
+  RefreshIcon,
   SearchIcon,
-  SettingsIcon,
+  TableIcon,
   TrashIcon,
 } from '@/shared/ui/icons'
+import { ComingSoon, PageHeader } from './ui'
 
 const menuRow =
   'flex w-full items-center gap-2.5 rounded px-2.5 py-2 text-left text-[12px] text-ink-dim transition-colors hover:bg-card-hover hover:text-ink'
@@ -55,16 +56,6 @@ function connectionUrl(c) {
   return `postgresql://${auth}${c.host || ''}${c.port ? ':' + c.port : ''}${db}${ssl}`
 }
 
-// A filter chip built from the shared Button — bordered when selected, plain
-// (subtle) when not, keeping the app's rounded-soft shape.
-function FilterChip({ active, onClick, icon, children }: any) {
-  return (
-    <Button variant={active ? 'ghost' : 'subtle'} size="sm" icon={icon} onClick={onClick}>
-      {children}
-    </Button>
-  )
-}
-
 function StatusBadge({ status }: { status?: string }) {
   const s = STATUS[status] || STATUS.checking
   return (
@@ -75,55 +66,167 @@ function StatusBadge({ status }: { status?: string }) {
   )
 }
 
-// Avatar → account menu (user settings + sign out).
-function AccountMenu({ user, onSettings, onLogout }) {
+// A filter chip built from the shared Button — bordered when selected.
+function FilterChip({ active, onClick, icon, children }: any) {
   return (
-    <Popover
-      align="right"
-      width={220}
-      trigger={({ open, toggle }) => (
-        <button
-          onClick={toggle}
-          aria-label="Account"
-          className={`flex h-9 w-9 items-center justify-center rounded-full bg-green text-[13px] font-bold text-white transition-opacity hover:opacity-90 ${
-            open ? 'ring-2 ring-green/40' : ''
-          }`}
-        >
-          {user?.name?.[0]?.toUpperCase() || 'A'}
-        </button>
-      )}
-    >
-      {({ close }) => (
-        <div className="p-1.5">
-          <div className="px-2 py-1.5">
-            <div className="truncate text-[12px] font-semibold text-ink">{user?.name || 'Account'}</div>
-            <div className="truncate text-[11px] text-ink-faint">{user?.email}</div>
-          </div>
-          <div className="my-1 h-px bg-edge" />
-          <button className={menuRow} onClick={() => { onSettings(); close() }}>
-            <SettingsIcon width={14} height={14} /> Settings
-          </button>
-          <button className={`${menuRow} hover:!text-red`} onClick={() => { onLogout(); close() }}>
-            <LogoutIcon width={14} height={14} /> Sign out
-          </button>
-        </div>
-      )}
-    </Popover>
+    <Button variant={active ? 'ghost' : 'subtle'} size="sm" icon={icon} onClick={onClick}>
+      {children}
+    </Button>
   )
 }
 
-export default function Connections() {
-  const { user, logout } = useAuth()
+// ---- Connection detail (Data Connection / Backup tabs) ----
+function DetailRow({ label, value }: { label: string; value?: string }) {
+  if (!value) return null
+  return (
+    <div className="flex items-start justify-between gap-4 border-b border-edge py-2.5 last:border-0">
+      <span className="text-[12px] text-ink-dim">{label}</span>
+      <span className="min-w-0 truncate text-right font-mono text-[12px] text-ink">{value}</span>
+    </div>
+  )
+}
+
+function ConnectionDetail({ conn, onBack, onOpen, onEdit }) {
+  const [tab, setTab] = useState<'data' | 'backup'>('data')
+  const [status, setStatus] = useState<'checking' | 'connected' | 'offline'>('checking')
+  const [tableCount, setTableCount] = useState<number | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    setStatus('checking')
+    setTableCount(null)
+    pingConnection(conn).then((r) => {
+      if (!alive) return
+      setStatus(r.ok ? 'connected' : 'offline')
+      if (r.ok) listTables(conn).then((t) => alive && setTableCount(Array.isArray(t) ? t.length : 0))
+      else setTableCount(0)
+    })
+    return () => {
+      alive = false
+    }
+  }, [conn.id])
+
+  const tabBtn = (id: 'data' | 'backup', label: string, soon?: boolean) => (
+    <Tab active={tab === id} onClick={() => setTab(id)}>
+      {label}
+      {soon && (
+        <span className="rounded-[5px] border border-edge bg-elevated px-1 py-0.5 text-[8px] font-bold uppercase tracking-wide text-ink-faint">
+          Soon
+        </span>
+      )}
+    </Tab>
+  )
+
+  return (
+    <div className="w-full">
+      <button onClick={onBack} className="mb-5 inline-flex items-center gap-1.5 text-[12px] text-ink-dim hover:text-ink">
+        <ChevronLeft width={16} height={16} /> All connections
+      </button>
+
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex min-w-0 items-center gap-3">
+          <DbLogo type={conn.type} className="h-12 w-12 shrink-0" />
+          <div className="min-w-0">
+            <h1 className="truncate text-[22px] font-bold tracking-[-0.4px]">{conn.name}</h1>
+            <div className="mt-0.5 flex items-center gap-2">
+              <StatusBadge status={status} />
+              <span className="text-ink-faint">·</span>
+              <span className="text-[12px] text-ink-dim">{TYPE_LABEL[conn.type] || conn.type}</span>
+            </div>
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <Button variant="subtle" size="sm" icon={EditIcon} onClick={() => onEdit(conn)}>
+            Edit
+          </Button>
+          <Button variant="primary" size="sm" icon={ExternalLinkIcon} onClick={() => onOpen(conn)}>
+            Connect
+          </Button>
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div className="mt-7 flex items-center gap-5 border-b border-edge">
+        {tabBtn('data', 'Data Connection')}
+        {tabBtn('backup', 'Backup', true)}
+      </div>
+
+      <div className="mt-6">
+        {tab === 'data' ? (
+          <div className="flex flex-col gap-5">
+            {/* Stats */}
+            <div className="grid grid-cols-3 gap-3 max-[560px]:grid-cols-1">
+              <div className="rounded-card border border-edge bg-card p-4">
+                <div className="flex items-center gap-2 text-[11px] text-ink-dim">
+                  <TableIcon width={14} height={14} /> Tables
+                </div>
+                <div className="mt-1.5 text-[22px] font-bold tabular-nums">{tableCount ?? '—'}</div>
+              </div>
+              <div className="rounded-card border border-edge bg-card p-4">
+                <div className="flex items-center gap-2 text-[11px] text-ink-dim">
+                  <DatabaseIcon width={14} height={14} /> Type
+                </div>
+                <div className="mt-1.5 text-[15px] font-semibold">{TYPE_LABEL[conn.type] || conn.type}</div>
+              </div>
+              <div className="rounded-card border border-edge bg-card p-4">
+                <div className="flex items-center gap-2 text-[11px] text-ink-dim">
+                  <RefreshIcon width={14} height={14} /> Status
+                </div>
+                <div className="mt-1.5 text-[15px] font-semibold capitalize">{status}</div>
+              </div>
+            </div>
+
+            {/* Connection info */}
+            <div className="rounded-card border border-edge bg-card p-5">
+              <div className="mb-1 text-[13px] font-bold">Connection details</div>
+              <div className="mt-2">
+                {conn.type === 'sqlite' ? (
+                  <DetailRow label="File path" value={conn.filepath} />
+                ) : (
+                  <>
+                    <DetailRow label="Host" value={conn.host} />
+                    <DetailRow label="Port" value={conn.port ? String(conn.port) : undefined} />
+                    <DetailRow label="Database" value={conn.database} />
+                    <DetailRow label="Username" value={conn.username} />
+                    <DetailRow label="SSL mode" value={conn.sslmode} />
+                  </>
+                )}
+                {conn.folder && <DetailRow label="Folder" value={conn.folder} />}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <ComingSoon
+            title="Backup & restore"
+            desc="Schedule automated backups and restore your database to any point in time. This is on the way."
+          />
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ---- Connections section: list + detail + create/edit modals ----
+export default function ConnectionsPage() {
   const navigate = useNavigate()
   const toast = useToast()
   const { connections, loading, addConnection, updateConnection, removeConnection } = useConnections()
 
+  const [detailConn, setDetailConn] = useState<any>(null) // open connection detail view
   const [query, setQuery] = useState('')
   const [activeFolder, setActiveFolder] = useState('All')
-  const [activeType, setActiveType] = useState('all') // 'all' | connection type id
-  const [modal, setModal] = useState(null) // { mode, conn?, type? }
+  const [activeType, setActiveType] = useState('all')
+  const [modal, setModal] = useState<any>(null) // { mode, conn?, type? }
   const [picker, setPicker] = useState(false) // db-type picker open
-  const [statuses, setStatuses] = useState({}) // { [id]: 'checking'|'connected'|'offline' }
+  const [statuses, setStatuses] = useState<Record<string, string>>({})
+
+  // Keep the open detail view in sync with the latest connection data (e.g. after an edit).
+  useEffect(() => {
+    if (!detailConn) return
+    const latest = connections.find((c) => c.id === detailConn.id)
+    if (!latest) setDetailConn(null)
+    else if (latest !== detailConn) setDetailConn(latest)
+  }, [connections])
 
   // Live connectivity per card.
   useEffect(() => {
@@ -145,7 +248,6 @@ export default function Connections() {
     return ['All', ...set]
   }, [connections])
 
-  // Distinct database types present, for the type filter.
   const types = useMemo(() => {
     const set = new Set<string>()
     connections.forEach((c) => c.type && set.add(c.type))
@@ -170,7 +272,10 @@ export default function Connections() {
   }
 
   const handleDelete = (conn) => {
-    if (window.confirm(`Delete connection "${conn.name}"?`)) removeConnection(conn.id)
+    if (window.confirm(`Delete connection "${conn.name}"?`)) {
+      removeConnection(conn.id)
+      if (detailConn?.id === conn.id) setDetailConn(null)
+    }
   }
 
   const copyUrl = (conn) => {
@@ -178,37 +283,32 @@ export default function Connections() {
     toast.success('Connection URL copied to clipboard.')
   }
 
+  const openConsole = (conn) => navigate(`/connection/${conn.id}`)
   const subtitle = (c) => (c.type === 'sqlite' ? c.filepath : c.host)
 
-  return (
-    <div className="min-h-screen bg-bg">
-      {/* Top bar: brand + workspace switcher (left) · account (right) */}
-      <header className="sticky top-0 z-20 flex items-center justify-between gap-4 border-b border-edge bg-panel/80 px-6 py-3 backdrop-blur max-[600px]:px-4">
-        <div className="flex min-w-0 items-center gap-4">
-          <div className="flex shrink-0 items-center gap-2">
-            <Logo className="h-7 w-7" />
-            <span className="text-[16px] font-bold tracking-[-0.3px] max-[600px]:hidden">
-              Tabl<span className="text-green">et</span>sgo
-            </span>
-          </div>
-          <div className="w-[220px] max-[600px]:w-[150px]">
-            <WorkspaceSwitcher />
-          </div>
-        </div>
-        <AccountMenu user={user} onSettings={() => navigate('/settings')} onLogout={logout} />
-      </header>
+  if (detailConn) {
+    return (
+      <ConnectionDetail
+        conn={detailConn}
+        onBack={() => setDetailConn(null)}
+        onOpen={openConsole}
+        onEdit={(c) => setModal({ mode: 'edit', conn: c })}
+      />
+    )
+  }
 
-      <main className="mx-auto max-w-[1080px] px-6 py-10 max-[600px]:px-4 max-[600px]:py-7">
-        {/* Heading + primary action */}
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <h1 className="text-[26px] font-bold tracking-[-0.5px] max-[600px]:text-[22px]">Connections</h1>
-            <p className="mt-1.5 text-[13px] text-ink-dim">Manage the databases connected to this workspace.</p>
-          </div>
-          <Button variant="primary" size="lg" icon={PlusIcon} className="shrink-0" onClick={() => setPicker(true)}>
-            New connection
-          </Button>
-        </div>
+  return (
+    <>
+      <div className="w-full">
+        <PageHeader
+          title="Connections"
+          desc="Manage the databases connected to this workspace."
+          action={
+            <Button variant="primary" size="lg" icon={PlusIcon} onClick={() => setPicker(true)}>
+              New connection
+            </Button>
+          }
+        />
 
         {/* Search + filters */}
         <div className="mt-6 flex flex-col gap-3">
@@ -252,7 +352,7 @@ export default function Connections() {
             {filtered.map((conn) => (
               <div
                 key={conn.id}
-                onClick={() => navigate(`/connection/${conn.id}`)}
+                onClick={() => setDetailConn(conn)}
                 className="group relative flex cursor-pointer flex-col rounded-card border border-edge bg-card p-5 transition-all hover:-translate-y-px hover:border-edge-strong hover:bg-card-hover"
               >
                 <div className="flex items-start justify-between">
@@ -266,11 +366,11 @@ export default function Connections() {
                   </div>
                 </div>
 
-                {/* Hover actions (bottom-right, out of the way of the status badge) */}
+                {/* Hover actions */}
                 <div className="absolute bottom-3 right-3" onClick={(e) => e.stopPropagation()}>
                   <Popover
                     align="right"
-                    width={150}
+                    width={170}
                     trigger={({ open, toggle }) => (
                       <button
                         onClick={toggle}
@@ -287,6 +387,13 @@ export default function Connections() {
                   >
                     {({ close }) => (
                       <div className="p-1">
+                        <button className={menuRow} onClick={() => { openConsole(conn); close() }}>
+                          <ExternalLinkIcon width={14} height={14} /> Connect
+                        </button>
+                        <button className={menuRow} onClick={() => { setDetailConn(conn); close() }}>
+                          <DatabaseIcon width={14} height={14} /> Open details
+                        </button>
+                        <div className="my-1 h-px bg-edge" />
                         <button className={menuRow} onClick={() => { setModal({ mode: 'edit', conn }); close() }}>
                           <EditIcon width={14} height={14} /> Edit
                         </button>
@@ -321,7 +428,7 @@ export default function Connections() {
         {!loading && connections.length > 0 && filtered.length === 0 && (
           <div className="py-16 text-center text-xs text-ink-faint">No connections match your search.</div>
         )}
-      </main>
+      </div>
 
       {/* DB-type picker */}
       {picker && (
@@ -393,6 +500,6 @@ export default function Connections() {
           onSave={handleSave}
         />
       )}
-    </div>
+    </>
   )
 }

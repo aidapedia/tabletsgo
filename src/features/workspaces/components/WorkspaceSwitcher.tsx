@@ -84,7 +84,7 @@ export default function WorkspaceSwitcher() {
               <PlusIcon width={14} height={14} /> New workspace
             </button>
           )}
-          <button className={menuRow} onClick={() => { navigate('/workspace/settings'); close() }}>
+          <button className={menuRow} onClick={() => { navigate('/workspace'); close() }}>
             <SettingsIcon width={14} height={14} /> Workspace settings
           </button>
         </div>
