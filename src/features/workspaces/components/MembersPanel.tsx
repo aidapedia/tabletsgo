@@ -56,6 +56,9 @@ export default function MembersPanel({ workspaceId, canManage }: { workspaceId: 
     }
   }
 
+  // The workspace must keep at least one admin, so the sole admin can't be removed.
+  const adminCount = members.filter((m) => m.role === 'admin').length
+
   const confirmRemove = async () => {
     const m = removing
     setRemoving(null)
@@ -116,7 +119,7 @@ export default function MembersPanel({ workspaceId, canManage }: { workspaceId: 
               {m.status === 'pending' && (
                 <span className="shrink-0 rounded bg-amber/15 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-amber">pending</span>
               )}
-              {canManage && (
+              {canManage && !(m.role === 'admin' && adminCount <= 1) && (
                 <button
                   onClick={() => setRemoving(m)}
                   className="shrink-0 text-ink-faint hover:text-red"
