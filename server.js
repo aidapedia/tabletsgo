@@ -9,7 +9,7 @@ import cors from 'cors'
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
-import { randomUUID, createHash } from 'crypto'
+import { randomUUID, createHash, randomBytes, createCipheriv, createDecipheriv, scryptSync } from 'crypto'
 import vm from 'node:vm'
 import Database from 'better-sqlite3'
 import nodemailer from 'nodemailer'
@@ -19,6 +19,14 @@ const { Client, Pool } = pkg
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const app = express()
 const PORT = process.env.PORT || 3000
+
+// Connection credentials (host/port/username/password/…) are encrypted at rest
+// with this key. Required — refuse to boot rather than silently store secrets
+// in plaintext.
+if (!process.env.CONNECTION_ENCRYPTION_KEY) {
+  console.error('❌ CONNECTION_ENCRYPTION_KEY is not set. Set it in your environment (see .env.example) before starting the server.')
+  process.exit(1)
+}
 
 // Middleware
 app.use(cors())
@@ -41,6 +49,22 @@ meta.pragma('journal_mode = WAL')
 
 const sha256 = (s) => createHash('sha256').update(String(s)).digest('hex')
 
+// ---- Connection credential encryption (AES-256-GCM) ----
+const CRED_KEY = scryptSync(process.env.CONNECTION_ENCRYPTION_KEY, 'tabletsgo-connections', 32)
+function encryptSecret(plaintext) {
+  const iv = randomBytes(12)
+  const cipher = createCipheriv('aes-256-gcm', CRED_KEY, iv)
+  const ciphertext = Buffer.concat([cipher.update(String(plaintext), 'utf8'), cipher.final()])
+  return `${iv.toString('hex')}:${cipher.getAuthTag().toString('hex')}:${ciphertext.toString('hex')}`
+}
+function decryptSecret(payload) {
+  if (!payload) return ''
+  const [ivHex, tagHex, dataHex] = payload.split(':')
+  const decipher = createDecipheriv('aes-256-gcm', CRED_KEY, Buffer.from(ivHex, 'hex'))
+  decipher.setAuthTag(Buffer.from(tagHex, 'hex'))
+  return Buffer.concat([decipher.update(Buffer.from(dataHex, 'hex')), decipher.final()]).toString('utf8')
+}
+
 function initMetaDb() {
   meta.exec(`
     CREATE TABLE IF NOT EXISTS users (
@@ -52,8 +76,19 @@ function initMetaDb() {
     );
     CREATE TABLE IF NOT EXISTS connections (
       id TEXT PRIMARY KEY,
-      data TEXT NOT NULL,
+      data TEXT,
       created_at INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      id TEXT PRIMARY KEY,
+      connection_id TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      forward_sql TEXT NOT NULL,   -- JSON array of executed statements
+      rollback_sql TEXT,           -- JSON array, same length, null entries where not reversible
+      reversible INTEGER NOT NULL, -- 0/1 — false if any statement lacks a rollback
+      executor_id TEXT,
+      executor_name TEXT,
+      ts INTEGER
     );
     CREATE TABLE IF NOT EXISTS saved_queries (
       id TEXT PRIMARY KEY,
@@ -128,6 +163,17 @@ function initMetaDb() {
   addColumn('users', 'reset_token TEXT')
   addColumn('users', 'reset_expires INTEGER')
   meta.exec(`UPDATE users SET status = 'active' WHERE status IS NULL`)
+  // Connections: split the old opaque `data` blob into plain generic columns +
+  // an encrypted `credentials` blob (see the backfill below).
+  addColumn('connections', 'type TEXT')
+  addColumn('connections', 'name TEXT')
+  addColumn('connections', 'workspace_id TEXT')
+  addColumn('connections', 'environment TEXT')
+  addColumn('connections', 'folder TEXT')
+  addColumn('connections', 'tags TEXT')
+  addColumn('connections', 'credentials TEXT')
+  addColumn('connections', 'schema_version INTEGER')
+  addColumn('connections', 'updated_at INTEGER')
 
   const hasUsers = !!meta.prepare('SELECT 1 FROM users LIMIT 1').get()
 
@@ -170,6 +216,42 @@ function initMetaDb() {
       }
     }
     console.log('🔁 Migrated existing users/connections into Default Workspace')
+  }
+
+  // Backfill legacy connections (still holding everything in the opaque `data`
+  // blob) into the new columns: generic fields as plain columns, the rest
+  // (host/port/username/password/…) encrypted into `credentials`.
+  const legacyRows = meta.prepare('SELECT id, data, created_at FROM connections WHERE type IS NULL AND data IS NOT NULL').all()
+  if (legacyRows.length) {
+    for (const row of legacyRows) {
+      let data
+      try {
+        data = JSON.parse(row.data)
+      } catch {
+        continue
+      }
+      const { id, name, type, workspaceId, environment, folder, tags, ...credentials } = data
+      meta
+        .prepare(
+          // `data` still has a NOT NULL constraint on installs predating this
+          // migration (it was created with `data TEXT NOT NULL`) — clear its
+          // plaintext contents with a harmless placeholder rather than NULL.
+          `UPDATE connections SET type = ?, name = ?, workspace_id = ?, environment = ?, folder = ?, tags = ?, credentials = ?, schema_version = ?, updated_at = ?, data = '{}' WHERE id = ?`
+        )
+        .run(
+          type || null,
+          name || null,
+          workspaceId || null,
+          environment || null,
+          folder || null,
+          JSON.stringify(tags || []),
+          encryptSecret(JSON.stringify(credentials)),
+          1,
+          row.created_at || Date.now(),
+          row.id
+        )
+    }
+    console.log(`🔐 Migrated ${legacyRows.length} connection(s) to encrypted credential storage`)
   }
 }
 initMetaDb()
@@ -292,17 +374,76 @@ const sendResetEmail = (cfg, { to, link }) =>
   })
 
 // ---- Connection metadata helpers (DB-backed) ----
-const listConnections = () =>
-  meta.prepare('SELECT data FROM connections ORDER BY created_at').all().map((r) => JSON.parse(r.data))
-const getConnection = (id) => {
-  const row = meta.prepare('SELECT data FROM connections WHERE id = ?').get(id)
-  return row ? JSON.parse(row.data) : null
+// Credentials (host/port/username/password/filepath/database/…) live encrypted
+// in the `credentials` column; everything dialect-agnostic is a plain column.
+// `rowToConnection` reassembles the flat shape the frontend has always used, so
+// no client code needs to know storage changed.
+function rowToConnection(row) {
+  if (!row) return null
+  let credentials = {}
+  if (row.credentials) {
+    try {
+      credentials = JSON.parse(decryptSecret(row.credentials))
+    } catch {
+      credentials = {}
+    }
+  }
+  let tags = []
+  try {
+    tags = JSON.parse(row.tags || '[]')
+  } catch {
+    tags = []
+  }
+  return {
+    id: row.id,
+    type: row.type,
+    name: row.name,
+    workspaceId: row.workspace_id || undefined,
+    environment: row.environment || undefined,
+    folder: row.folder || '',
+    tags,
+    schemaVersion: row.schema_version || 1,
+    ...credentials,
+  }
 }
-const saveConnection = (conn) =>
+// Split a flat connection object back into row columns + encrypted credentials.
+function connectionToRow(conn) {
+  const { id, type, name, workspaceId, environment, folder, tags, schemaVersion, ...credentials } = conn
+  return {
+    id,
+    type: type || null,
+    name: name || null,
+    workspace_id: workspaceId || null,
+    environment: environment || null,
+    folder: folder || '',
+    tags: JSON.stringify(tags || []),
+    credentials: encryptSecret(JSON.stringify(credentials)),
+    schema_version: schemaVersion || 1,
+  }
+}
+
+const listConnections = () => meta.prepare('SELECT * FROM connections ORDER BY created_at').all().map(rowToConnection)
+const getConnection = (id) => rowToConnection(meta.prepare('SELECT * FROM connections WHERE id = ?').get(id))
+const saveConnection = (conn) => {
+  const row = connectionToRow(conn)
+  const now = Date.now()
   meta
-    .prepare('INSERT OR REPLACE INTO connections (id, data, created_at) VALUES (?, ?, COALESCE((SELECT created_at FROM connections WHERE id = ?), ?))')
-    .run(conn.id, JSON.stringify(conn), conn.id, Date.now())
+    .prepare(
+      // `data` is a placeholder — installs predating this migration created it
+      // as `data TEXT NOT NULL`, so every write must still supply *something*.
+      `INSERT OR REPLACE INTO connections
+       (id, type, name, workspace_id, environment, folder, tags, credentials, schema_version, data, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', COALESCE((SELECT created_at FROM connections WHERE id = ?), ?), ?)`
+    )
+    .run(row.id, row.type, row.name, row.workspace_id, row.environment, row.folder, row.tags, row.credentials, row.schema_version, row.id, now, now)
+}
 const deleteConnectionRow = (id) => meta.prepare('DELETE FROM connections WHERE id = ?').run(id)
+// Bump a connection's schema version after a successful DDL commit. Direct
+// column update — avoids round-tripping (and re-encrypting) the full row.
+const bumpSchemaVersion = (id) => {
+  meta.prepare('UPDATE connections SET schema_version = schema_version + 1, updated_at = ? WHERE id = ?').run(Date.now(), id)
+  return meta.prepare('SELECT schema_version FROM connections WHERE id = ?').get(id)?.schema_version
+}
 
 // ============================================================================
 // SQLite Utilities
@@ -1483,6 +1624,69 @@ app.delete('/api/connections/:id/history', (req, res) => {
     meta.prepare('DELETE FROM query_history WHERE connection_id = ?').run(req.params.id)
   }
   res.json({ ok: true })
+})
+
+// ---- Schema migrations (per connection) ----
+// Records a DDL commit that has already been executed (via /query) — one row
+// per successful commitChanges() batch, bumping the connection's schema
+// version. Audit trail only; nothing here re-executes SQL or reverts it.
+app.post('/api/connections/:id/schema/migrations', (req, res) => {
+  const user = requireAuth(req, res)
+  if (!user) return
+  const statements = Array.isArray(req.body?.statements) ? req.body.statements : []
+  if (!statements.length) return res.status(400).json({ error: 'At least one statement is required' })
+  const version = bumpSchemaVersion(req.params.id)
+  const entry = {
+    id: randomUUID(),
+    connectionId: req.params.id,
+    version,
+    forwardSql: statements.map((s) => s.sql),
+    rollbackSql: statements.map((s) => s.rollbackSql || null),
+    reversible: statements.every((s) => !!s.rollbackSql),
+    executorId: user.id,
+    executorName: user.name || user.username,
+    ts: Date.now(),
+  }
+  meta
+    .prepare(
+      `INSERT INTO schema_migrations
+       (id, connection_id, version, forward_sql, rollback_sql, reversible, executor_id, executor_name, ts)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      entry.id,
+      entry.connectionId,
+      entry.version,
+      JSON.stringify(entry.forwardSql),
+      JSON.stringify(entry.rollbackSql),
+      entry.reversible ? 1 : 0,
+      entry.executorId,
+      entry.executorName,
+      entry.ts
+    )
+  res.json({ version, migration: entry })
+})
+
+// List a connection's schema migration history, newest first.
+app.get('/api/connections/:id/schema/migrations', (req, res) => {
+  const rows = meta
+    .prepare(
+      `SELECT id, version, forward_sql, rollback_sql, reversible, executor_id, executor_name, ts
+       FROM schema_migrations WHERE connection_id = ? ORDER BY version DESC`
+    )
+    .all(req.params.id)
+  res.json(
+    rows.map((r) => ({
+      id: r.id,
+      version: r.version,
+      forwardSql: safeJson(r.forward_sql) || [],
+      rollbackSql: safeJson(r.rollback_sql) || [],
+      reversible: !!r.reversible,
+      executorId: r.executor_id || null,
+      executorName: r.executor_name || r.executor_id || null,
+      ts: r.ts,
+    }))
+  )
 })
 
 // Get tables for a connection

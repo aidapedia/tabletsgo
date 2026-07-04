@@ -1,7 +1,6 @@
 import { useMemo, useState } from 'react'
 import {
   CodeIcon,
-  DiagramIcon,
   EditIcon,
   FolderIcon,
   FolderOpenIcon,
@@ -27,9 +26,7 @@ const byName = (a, b) => a.name.localeCompare(b.name)
 export default function SavedQueriesPanel({
   saved = [],
   folders = [],
-  onOpen,
   onOpenSaved,
-  onOpenSchemaDraft,
   onRenameSaved,
   onDeleteSaved,
   onCreateFolder,
@@ -107,14 +104,10 @@ export default function SavedQueriesPanel({
 
   // ---- Renderers (plain functions so rows reconcile by key, never remount) ----
   const renderItem = (s) => {
-    const isSchema = s.kind === 'schema'
-    const Icon = isSchema ? DiagramIcon : CodeIcon
-    const onDefault = () => (isSchema ? onOpenSchemaDraft?.(s) : onOpenSaved?.(s))
-
     if (renaming?.id === s.id) {
       return (
         <div key={s.id} className="flex items-center gap-2 px-2.5 py-1">
-          <Icon className="shrink-0 text-ink-faint" width={14} height={14} />
+          <CodeIcon className="shrink-0 text-ink-faint" width={14} height={14} />
           <input
             autoFocus
             className={`${controlClass} !py-1`}
@@ -138,8 +131,8 @@ export default function SavedQueriesPanel({
         onDragEnd={onItemDragEnd}
         className={`${rowBase} ${rowIdle} cursor-pointer ${dragId === s.id ? 'opacity-50' : ''}`}
       >
-        <Icon className="shrink-0 text-ink-faint" width={14} height={14} />
-        <RowLabel onClick={onDefault}>{s.name}</RowLabel>
+        <CodeIcon className="shrink-0 text-ink-faint" width={14} height={14} />
+        <RowLabel onClick={() => onOpenSaved?.(s)}>{s.name}</RowLabel>
         <div className="shrink-0" onClick={(e) => e.stopPropagation()}>
           <Popover
             align="right"
@@ -152,12 +145,7 @@ export default function SavedQueriesPanel({
           >
             {({ close }) => (
               <div className="p-1">
-                {isSchema && (
-                  <MenuItem onClick={() => { onOpenSchemaDraft?.(s); close() }}>
-                    <DiagramIcon width={14} height={14} /> Open in Schema Editor
-                  </MenuItem>
-                )}
-                <MenuItem onClick={() => { isSchema ? onOpen(s.sql) : onOpenSaved?.(s); close() }}>
+                <MenuItem onClick={() => { onOpenSaved?.(s); close() }}>
                   <CodeIcon width={14} height={14} /> Open in SQL Editor
                 </MenuItem>
                 <MenuItem onClick={() => { setRenaming({ id: s.id, value: s.name }); close() }}>

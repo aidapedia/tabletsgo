@@ -10,7 +10,7 @@ import { tags as t } from '@lezer/highlight'
 const editorTheme = EditorView.theme(
   {
     '&': { backgroundColor: 'var(--color-bg)', color: 'var(--color-ink)', fontSize: '12px' },
-    '.cm-scroller': { fontFamily: '"SF Mono", Menlo, Consolas, monospace' },
+    '.cm-scroller': { fontFamily: '"SF Mono", Menlo, Consolas, monospace',overflow: 'auto' },
     '.cm-content': { padding: '14px 0', caretColor: 'var(--color-green)' },
     '.cm-placeholder': { color: 'var(--color-ink-faint)' },
     '.cm-gutters': { backgroundColor: 'var(--color-bg)', color: 'var(--color-ink-faint)', border: 'none' },
@@ -192,7 +192,7 @@ export default function SqlEditor({
   onRun,
   editable = true,
   placeholder = 'Write SQL…',
-  minHeight = '180px',
+  minHeight = '',
   maxHeight = '460px',
 }: SqlEditorProps) {
   // Keep the keymap stable while always calling the latest onRun().
@@ -211,6 +211,11 @@ export default function SqlEditor({
       lang.language.data.of({ autocomplete: schemaCompletionSource(schema) }),
       Prec.highest(syntaxHighlighting(highlightStyle)),
       EditorView.lineWrapping,
+      // Size the editor via the scroller, not the root `&`. The tooltip parent
+      // below copies the editor's root theme class onto a <body>-level host; a
+      // min-/max-height on `&` would leak there and render as a stray blank band
+      // in normal flow. `.cm-scroller` is editor-only, so it can't leak.
+      EditorView.theme({ '.cm-scroller': { minHeight, maxHeight, overflowY: 'auto' } }),
       // Render the autocomplete popup on document.body so it isn't clipped or
       // mis-positioned by scroll/overflow/transform ancestors (e.g. the node
       // config slide-over). CodeMirror copies the theme onto the body container,

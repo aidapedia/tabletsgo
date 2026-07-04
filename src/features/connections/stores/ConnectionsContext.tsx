@@ -60,9 +60,15 @@ export function ConnectionsProvider({ children }) {
     }
   }
 
+  // Update local state only — for fields the server already persisted through
+  // a different endpoint (e.g. schemaVersion via POST .../schema/migrations),
+  // so callers don't need a redundant PUT round-trip.
+  const patchLocalConnection = (id, patch) =>
+    setConnections((prev) => prev.map((c) => (c.id === id ? { ...c, ...patch } : c)))
+
   return (
     <ConnectionsContext.Provider
-      value={{ connections, loading, addConnection, updateConnection, removeConnection, testConnection }}
+      value={{ connections, loading, addConnection, updateConnection, removeConnection, testConnection, patchLocalConnection }}
     >
       {children}
     </ConnectionsContext.Provider>

@@ -24,7 +24,7 @@ type TextButtonProps = {
 export default function TextButton({ tone = 'dim', block = false, className = '', children, ...props }: TextButtonProps) {
   const layout = block ? 'block w-full text-center' : 'inline-flex items-center gap-1.5'
   return (
-    <button type="button" className={`${layout} text-[12px] transition-colors ${TONES[tone]} ${className}`} {...props}>
+    <button type="button" className={`${layout} text-[10px] transition-colors ${TONES[tone]} ${className}`} {...props}>
       {children}
     </button>
   )

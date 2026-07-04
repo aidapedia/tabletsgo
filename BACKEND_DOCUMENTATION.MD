@@ -32,6 +32,7 @@ endpoint with its request, response, and an example URL.
 | --------- | ------------------ | ---------------------------------------- |
 | `PORT`    | `3000`             | HTTP listen port.                        |
 | `META_DB` | `./data/app.db`    | SQLite file storing app metadata (below).|
+| `CONNECTION_ENCRYPTION_KEY` | *(required)* | AES-256-GCM key encrypting connection credentials at rest — server refuses to start without it. |
 
 ### Static frontend
 
@@ -44,7 +45,10 @@ any non-`/api/...` GET returns `dist/index.html`. Otherwise unknown routes retur
 ## Data models
 
 ### Connection
-Stored as JSON in the metadata DB. SQLite and PostgreSQL variants:
+The API request/response shape is unchanged from before — a flat object.
+Server-side storage is split (dialect-agnostic fields as plain columns,
+everything else encrypted — see Metadata database below), but `rowToConnection`
+reassembles this same shape on every read, so API consumers see no difference:
 
 ```jsonc
 // SQLite
@@ -54,7 +58,8 @@ Stored as JSON in the metadata DB. SQLite and PostgreSQL variants:
   "type": "sqlite",
   "environment": "local",
   "filepath": "./demo.db",
-  "folder": "Demo"
+  "folder": "Demo",
+  "schemaVersion": 1           // bumped by POST .../schema/migrations
 }
 
 // PostgreSQL
@@ -69,7 +74,8 @@ Stored as JSON in the metadata DB. SQLite and PostgreSQL variants:
   "password": "secret",
   "database": "appdb",
   "auth": "none",            // optional: "none" skips user/password
-  "sslmode": "verify-full"   // optional: disable | require | verify-full
+  "sslmode": "verify-full",  // optional: disable | require | verify-full
+  "schemaVersion": 1
 }
 ```
 
@@ -144,8 +150,29 @@ CREATE TABLE users (
 );
 CREATE TABLE connections (
   id TEXT PRIMARY KEY,
-  data TEXT NOT NULL,           -- JSON-serialized connection
-  created_at INTEGER
+  type TEXT,                    -- "sqlite" | "postgresql"
+  name TEXT,
+  workspace_id TEXT,
+  environment TEXT,
+  folder TEXT,
+  tags TEXT,                    -- JSON array
+  credentials TEXT,             -- AES-256-GCM ciphertext: JSON of host/port/username/password/
+                                 -- filepath/database/uri/sslmode/auth/keychain (dialect-specific + secret)
+  schema_version INTEGER DEFAULT 1,
+  data TEXT,                    -- legacy pre-encryption blob; NULL once migrated, kept for backfill
+  created_at INTEGER,
+  updated_at INTEGER
+);
+CREATE TABLE schema_migrations (
+  id TEXT PRIMARY KEY,
+  connection_id TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  forward_sql TEXT NOT NULL,    -- JSON array of executed statements
+  rollback_sql TEXT,            -- JSON array, same length, null entries where not reversible
+  reversible INTEGER NOT NULL,  -- 0/1 — false if any statement lacks a rollback
+  executor_id TEXT,
+  executor_name TEXT,
+  ts INTEGER
 );
 CREATE TABLE saved_queries (
   id TEXT PRIMARY KEY,
@@ -464,6 +491,31 @@ the stored graph when `graph` is omitted.
 
 ---
 
+## Schema migrations (per connection)
+
+Audit trail of DDL commits. The frontend executes staged DDL via the existing
+`/query` endpoint (below) as before; once a batch commits successfully, it
+calls `POST .../schema/migrations` once to record what ran (and its best-effort
+rollback SQL) and bump the connection's `schemaVersion`. One version per
+successful commit batch, not per statement. There is no revert/execute-rollback
+endpoint — this is read/record only.
+
+### POST `/api/connections/:id/schema/migrations`
+Record a successfully-executed DDL batch and bump `schema_version`.
+
+- **Body:** `{ "statements": [{ "sql": "CREATE TABLE \"orders\" (...)", "rollbackSql": "DROP TABLE \"orders\";", "reversible": true, "label": "Create table orders" }, ...] }`
+- **200:** `{ "version": 2, "migration": { "id", "connectionId", "version", "forwardSql": [...], "rollbackSql": [...], "reversible": true, "executorId", "executorName", "ts" } }`
+- **400:** `{ "error": "At least one statement is required" }`
+- **Example:** `POST http://localhost:3000/api/connections/demo-sqlite/schema/migrations`
+
+### GET `/api/connections/:id/schema/migrations`
+List a connection's migration history, newest version first.
+
+- **200:** `[{ "id", "version", "forwardSql": [...], "rollbackSql": [...], "reversible", "executorId", "executorName", "ts" }]`
+- **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/schema/migrations`
+
+---
+
 ## Schema & data browsing
 
 > All routes below accept optional `?database=` and `?schema=` query params
@@ -649,6 +701,8 @@ Liveness probe.
 | GET    | `/api/connections/:id/history`            | List query history              |
 | POST   | `/api/connections/:id/history`            | Record a query execution        |
 | DELETE | `/api/connections/:id/history`            | Clear query history             |
+| POST   | `/api/connections/:id/schema/migrations`  | Record a DDL commit, bump version |
+| GET    | `/api/connections/:id/schema/migrations`  | List schema migration history   |
 | GET    | `/api/connections/:id/ping`               | Connectivity check `{ ok }`     |
 | GET    | `/api/connections/:id/tables`             | List tables                     |
 | GET    | `/api/connections/:id/objects`            | List objects (tables/views/fns) |

@@ -101,3 +101,13 @@ export async function runQuery(conn, sql) {
     return { error: (error as Error)?.message || 'Query failed' }
   }
 }
+
+// Record a successfully-executed DDL batch (already run via runQuery above) —
+// bumps the connection's schema version and appends one migration row.
+export async function recordSchemaMigration(conn, statements) {
+  return request<any>(`/connections/${conn.id}/schema/migrations`, { method: 'POST', body: { statements } })
+}
+
+export async function listSchemaMigrations(conn) {
+  return safeRequest(`/connections/${conn.id}/schema/migrations`, [])
+}

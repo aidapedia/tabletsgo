@@ -6,7 +6,12 @@ import { useToast } from '@/shared/ui/feedback/Toast'
 import Select from '@/shared/ui/form/Select'
 import Button from '@/shared/ui/buttons/Button'
 import ConfirmDialog from '@/shared/ui/feedback/ConfirmDialog'
-import { getNamespaces, listObjects, pingConnection, runQuery } from '@/shared/api/database'
+import { getNamespaces, listObjects, pingConnection, recordSchemaMigration, runQuery } from '@/shared/api/database'
+import {
+  buildDropTableRollback,
+  rollbackForAddColumn,
+  rollbackForCreateTable,
+} from '@/features/schema-designer/lib/rollback'
 import {
   fetchSaved,
   createSaved,
@@ -21,6 +26,7 @@ import {
 import { draftToItems } from '@/shared/lib/schemaDraft'
 import TableView from '@/features/workspace/components/TableView'
 import CreateTablePanel from '@/features/schema-designer/components/CreateTablePanel'
+import SchemaPanel from '@/features/schema-designer/components/SchemaPanel'
 
 // Lazy — pulls in the (heavy) CodeMirror editor only when a query tab opens.
 const QueryEditor = lazy(() => import('@/features/workspace/components/QueryEditor'))
@@ -76,7 +82,7 @@ export default function Workspace() {
   const navigate = useNavigate()
   const { user, logout } = useAuth()
   const toast = useToast()
-  const { connections } = useConnections()
+  const { connections, patchLocalConnection } = useConnections()
   const conn = connections.find((c) => c.id === id)
 
   // Selected database/schema namespace (for browsing other DBs/schemas).
@@ -357,12 +363,24 @@ export default function Workspace() {
     setSidebarOpen(false)
   }
 
+  // Data deleted by DELETE FROM can't be reconstructed — not reversible.
   const emptyTable = (table) => {
-    addChange({ kind: 'delete', label: `Empty table ${table}`, sql: `DELETE FROM "${table}"`, table })
+    addChange({
+      kind: 'delete',
+      label: `Empty table ${table}`,
+      sql: `DELETE FROM "${table}"`,
+      table,
+      ddl: true,
+      reversible: false,
+      rollbackSql: null,
+    })
     toast.info(`Added empty-table to changes — commit to apply.`)
   }
-  const deleteTable = (table) => {
-    addChange({ kind: 'delete', label: `Drop table ${table}`, sql: `DROP TABLE "${table}"`, table })
+  // Snapshot the table's columns before staging the drop so we can offer a
+  // best-effort rollback (a CREATE TABLE that reconstructs it).
+  const deleteTable = async (table) => {
+    const { rollbackSql, reversible } = await buildDropTableRollback(nsConn, table)
+    addChange({ kind: 'delete', label: `Drop table ${table}`, sql: `DROP TABLE "${table}"`, table, ddl: true, reversible, rollbackSql })
     toast.info(`Added drop-table to changes — commit to apply.`)
   }
 
@@ -376,7 +394,7 @@ export default function Workspace() {
     setCommitting(true)
     const ordered = [...changes].reverse()
     const remaining = []
-    let okCount = 0
+    const succeeded = []
     let failure = null
     for (const ch of ordered) {
       if (failure) {
@@ -388,17 +406,35 @@ export default function Workspace() {
         failure = res.error
         remaining.push(ch)
       } else {
-        okCount++
+        succeeded.push(ch)
       }
     }
     setCommitting(false)
     setChanges(remaining.reverse())
     setDataVersion((v) => v + 1)
     loadTables() // pick up created/dropped tables in the sidebar
+
+    // One schema version bump per commit, covering only the DDL that actually
+    // ran successfully in it — plain row edits never touch schemaVersion.
+    const ddlSucceeded = succeeded.filter((ch) => ch.ddl)
+    if (ddlSucceeded.length) {
+      try {
+        const { version } = await recordSchemaMigration(nsConn, ddlSucceeded.map((ch) => ({
+          sql: ch.sql,
+          rollbackSql: ch.rollbackSql ?? null,
+          reversible: !!ch.reversible,
+          label: ch.label,
+        })))
+        patchLocalConnection(id, { schemaVersion: version })
+      } catch (e) {
+        toast.error(`Couldn't record schema migration: ${e.message}`)
+      }
+    }
+
     if (failure) {
-      toast.error(`Committed ${okCount}, then failed: ${failure}`)
+      toast.error(`Committed ${succeeded.length}, then failed: ${failure}`)
     } else {
-      toast.success(`Committed ${okCount} change${okCount > 1 ? 's' : ''}.`)
+      toast.success(`Committed ${succeeded.length} change${succeeded.length > 1 ? 's' : ''}.`)
       setChangesOpen(false)
     }
   }
@@ -565,29 +601,47 @@ export default function Workspace() {
     }
   }
 
+  // Rollback SQL for one staged DDL statement, keyed by its schema-designer mode.
+  const rollbackFor = async (sql, table, mode) => {
+    if (mode === 'delete') return buildDropTableRollback(nsConn, table)
+    if (mode === 'edit') return { rollbackSql: rollbackForAddColumn(sql, table), reversible: true }
+    return { rollbackSql: rollbackForCreateTable(table), reversible: true }
+  }
+
   // Sidebar "Create table" stages directly into Changes.
   const stageTableChanges = (statements, tableName, mode) => {
-    statements.forEach((sql) =>
+    statements.forEach((sql) => {
+      const rollbackSql = mode === 'edit' ? rollbackForAddColumn(sql, tableName) : rollbackForCreateTable(tableName)
       addChange({
         kind: mode === 'edit' ? 'update' : 'create',
         label: mode === 'edit' ? `Alter table ${tableName}` : `Create table ${tableName}`,
         sql,
         table: tableName,
+        ddl: true,
+        reversible: true,
+        rollbackSql,
       })
-    )
+    })
     setCreatingTable(false)
   }
 
   // Schema editor "Stage commit" — push its collected pending items into Changes.
-  const stageSchemaItems = (items) =>
-    items.forEach((i) =>
+  // `delete` (drop table from the canvas) needs a live column snapshot to build
+  // its rollback, so this staging step is async.
+  const stageSchemaItems = async (items) => {
+    for (const i of items) {
+      const { rollbackSql, reversible } = await rollbackFor(i.sql, i.table, i.mode)
       addChange({
-        kind: i.mode === 'edit' ? 'update' : 'create',
-        label: i.mode === 'edit' ? `Alter table ${i.table}` : `Create table ${i.table}`,
+        kind: i.mode === 'edit' ? 'update' : i.mode === 'delete' ? 'delete' : 'create',
+        label: i.mode === 'edit' ? `Alter table ${i.table}` : i.mode === 'delete' ? `Drop table ${i.table}` : `Create table ${i.table}`,
         sql: i.sql,
         table: i.table,
+        ddl: true,
+        reversible,
+        rollbackSql,
       })
-    )
+    }
+  }
 
   // Schema editor "Save as draft" — store the SQL in Saved Queries (schema kind).
   const saveSchemaDraft = async (items, name) => {
@@ -726,6 +780,7 @@ export default function Workspace() {
           onBrowser={() => selectPanel('browser')}
           onQueries={() => selectPanel('queries')}
           onWorkflows={() => selectPanel('workflows')}
+          onSchema={() => selectPanel('schema')}
           onHome={() => navigate('/')}
           onSettings={() => navigate('/settings')}
           onProfile={logout}
@@ -948,13 +1003,22 @@ export default function Workspace() {
             onDelete={removeWorkflow}
             onRefresh={() => listWorkflows(id).then(setWorkflows)}
           />
+        ) : panel === 'schema' ? (
+          <SchemaPanel
+            conn={nsConn}
+            refreshKey={dataVersion}
+            drafts={saved.filter((s) => s.kind === 'schema')}
+            onOpenDraft={openSchemaDraft}
+            onNewSchema={openSchemaEditor}
+            onRenameDraft={renameSavedQuery}
+            onDeleteDraft={removeSaved}
+            onRefreshDrafts={() => fetchSaved(id).then(setSaved)}
+          />
         ) : (
           <SavedQueriesPanel
-            saved={saved}
+            saved={saved.filter((s) => s.kind !== 'schema')}
             folders={folders}
-            onOpen={(sql) => openQuery(sql)}
             onOpenSaved={openSavedQuery}
-            onOpenSchemaDraft={openSchemaDraft}
             onRenameSaved={renameSavedQuery}
             onDeleteSaved={removeSaved}
             onCreateFolder={addFolder}
@@ -985,11 +1049,6 @@ export default function Workspace() {
               <CodeIcon width={16} height={16} />
             </IconButton>
           </Tooltip>
-          <Tooltip label="Schema editor" placement="bottom">
-            <IconButton size="toolbar" onClick={openSchemaEditor} aria-label="Schema editor">
-              <DiagramIcon width={16} height={16} />
-            </IconButton>
-          </Tooltip>
           <div className="relative flex max-w-[560px] flex-1 items-center">
             <SearchIcon width={16} height={16} className="absolute left-3.5 text-ink-faint" />
             <input
@@ -999,6 +1058,11 @@ export default function Workspace() {
             <kbd className="absolute right-3 rounded-[5px] border border-edge bg-card px-1.5 py-px text-[11px] text-ink-faint">⌘K</kbd>
           </div>
           <div className="ml-auto flex items-center gap-2">
+            <Tooltip label="Schema version — bumps on every committed DDL change" placement="bottom">
+              <span className="rounded-[20px] border border-edge bg-elevated px-[9px] py-1 text-[11px] font-medium text-ink-faint">
+                v{conn.schemaVersion ?? 1}
+              </span>
+            </Tooltip>
             <Tooltip label="Query history" placement="bottom">
               <IconButton size="toolbar" onClick={openHistory} aria-label="Query history">
                 <HistoryIcon width={16} height={16} />
