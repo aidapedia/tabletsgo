@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
-import Button from '@/shared/ui/Button'
-import ConfirmDialog from '@/shared/ui/ConfirmDialog'
-import { useToast } from '@/shared/ui/Toast'
+import Button from '@/shared/ui/buttons/Button'
+import TextButton from '@/shared/ui/buttons/TextButton'
+import ConfirmDialog from '@/shared/ui/feedback/ConfirmDialog'
+import { useToast } from '@/shared/ui/feedback/Toast'
 import { CopyIcon, TrashIcon } from '@/shared/ui/icons'
-import { Input } from '@/shared/ui/Input'
-import { Label } from '@/shared/ui/Form'
+import { Input } from '@/shared/ui/form/Input'
+import { Label } from '@/shared/ui/form/Form'
 import { listMembers, inviteMember, removeMember, Member } from '@/features/workspaces/api'
 
 // Member management for a workspace: invite by email (with copyable link) and
@@ -91,9 +92,9 @@ export default function MembersPanel({ workspaceId, canManage }: { workspaceId: 
           {inviteLink && (
             <div className="mt-2 flex items-center gap-2 rounded-soft border border-edge bg-elevated px-2.5 py-2">
               <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-dim">{inviteLink}</span>
-              <button type="button" onClick={copyLink} className="shrink-0 text-ink-dim hover:text-ink" aria-label="Copy invite link">
+              <TextButton className="shrink-0" onClick={copyLink} aria-label="Copy invite link">
                 <CopyIcon width={15} height={15} />
-              </button>
+              </TextButton>
             </div>
           )}
         </form>
@@ -120,13 +121,14 @@ export default function MembersPanel({ workspaceId, canManage }: { workspaceId: 
                 <span className="shrink-0 rounded bg-amber/15 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-amber">pending</span>
               )}
               {canManage && !(m.role === 'admin' && adminCount <= 1) && (
-                <button
+                <TextButton
+                  tone="faint"
+                  className="shrink-0 hover:!text-red"
                   onClick={() => setRemoving(m)}
-                  className="shrink-0 text-ink-faint hover:text-red"
                   aria-label={`Remove ${m.email}`}
                 >
                   <TrashIcon width={15} height={15} />
-                </button>
+                </TextButton>
               )}
             </div>
           ))}

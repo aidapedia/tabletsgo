@@ -11,20 +11,16 @@ import {
   SearchIcon,
   TrashIcon,
 } from '@/shared/ui/icons'
-import { controlClass } from '@/shared/ui/Input'
-import IconButton from '@/shared/ui/IconButton'
-import Popover from '@/shared/ui/Popover'
-import Tooltip from '@/shared/ui/Tooltip'
+import { controlClass } from '@/shared/ui/form/Input'
+import IconButton from '@/shared/ui/buttons/IconButton'
+import MenuItem from '@/shared/ui/navigation/MenuItem'
+import RowLabel from '@/shared/ui/RowLabel'
+import Popover from '@/shared/ui/overlay/Popover'
+import Tooltip from '@/shared/ui/overlay/Tooltip'
 
 // Compact rows that match the table list's type style (text-xs, not bold).
 const rowBase = 'group flex w-full items-center gap-2 rounded-[7px] px-2.5 py-1.5 text-left text-xs'
 const rowIdle = 'text-ink-dim hover:bg-elevated hover:text-ink'
-const menuItem =
-  'flex w-full items-center gap-2.5 rounded px-2.5 py-1.5 text-left text-[12px] text-ink-dim transition-colors hover:bg-card-hover hover:text-ink disabled:opacity-40 disabled:hover:bg-transparent'
-const kebabBtn = (open) =>
-  `flex h-6 w-6 items-center justify-center rounded transition-colors ${
-    open ? 'bg-card-hover text-ink opacity-100' : 'text-ink-faint opacity-0 hover:text-ink group-hover:opacity-100'
-  }`
 
 const byName = (a, b) => a.name.localeCompare(b.name)
 
@@ -143,37 +139,35 @@ export default function SavedQueriesPanel({
         className={`${rowBase} ${rowIdle} cursor-pointer ${dragId === s.id ? 'opacity-50' : ''}`}
       >
         <Icon className="shrink-0 text-ink-faint" width={14} height={14} />
-        <button onClick={onDefault} className="min-w-0 flex-1 truncate text-left">
-          {s.name}
-        </button>
+        <RowLabel onClick={onDefault}>{s.name}</RowLabel>
         <div className="shrink-0" onClick={(e) => e.stopPropagation()}>
           <Popover
             align="right"
             width={210}
             trigger={({ open, toggle }) => (
-              <button onClick={toggle} aria-label="Query actions" className={kebabBtn(open)}>
+              <IconButton size="sm" active={open} onClick={toggle} aria-label="Query actions" className={open ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}>
                 <MoreVerticalIcon width={15} height={15} />
-              </button>
+              </IconButton>
             )}
           >
             {({ close }) => (
               <div className="p-1">
                 {isSchema && (
-                  <button className={menuItem} onClick={() => { onOpenSchemaDraft?.(s); close() }}>
+                  <MenuItem onClick={() => { onOpenSchemaDraft?.(s); close() }}>
                     <DiagramIcon width={14} height={14} /> Open in Schema Editor
-                  </button>
+                  </MenuItem>
                 )}
-                <button className={menuItem} onClick={() => { isSchema ? onOpen(s.sql) : onOpenSaved?.(s); close() }}>
+                <MenuItem onClick={() => { isSchema ? onOpen(s.sql) : onOpenSaved?.(s); close() }}>
                   <CodeIcon width={14} height={14} /> Open in SQL Editor
-                </button>
-                <button className={menuItem} onClick={() => { setRenaming({ id: s.id, value: s.name }); close() }}>
+                </MenuItem>
+                <MenuItem onClick={() => { setRenaming({ id: s.id, value: s.name }); close() }}>
                   <EditIcon width={14} height={14} /> Rename
-                </button>
+                </MenuItem>
 
                 <div className="my-1 h-px bg-edge" />
-                <button className={`${menuItem} hover:!text-red`} onClick={() => { onDeleteSaved?.(s.id); close() }}>
+                <MenuItem danger onClick={() => { onDeleteSaved?.(s.id); close() }}>
                   <TrashIcon width={14} height={14} /> Delete
-                </button>
+                </MenuItem>
               </div>
             )}
           </Popover>
@@ -225,20 +219,20 @@ export default function SavedQueriesPanel({
               align="right"
               width={170}
               trigger={({ open, toggle }) => (
-                <button onClick={toggle} aria-label="Folder actions" className={kebabBtn(open)}>
+                <IconButton size="sm" active={open} onClick={toggle} aria-label="Folder actions" className={open ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}>
                   <MoreVerticalIcon width={15} height={15} />
-                </button>
+                </IconButton>
               )}
             >
               {({ close }) => (
                 <div className="p-1">
-                  <button className={menuItem} onClick={() => { setRenamingFolder({ id: f.id, value: f.name }); close() }}>
+                  <MenuItem onClick={() => { setRenamingFolder({ id: f.id, value: f.name }); close() }}>
                     <EditIcon width={14} height={14} /> Rename
-                  </button>
+                  </MenuItem>
                   <div className="my-1 h-px bg-edge" />
-                  <button className={`${menuItem} hover:!text-red`} onClick={() => { onDeleteFolder?.(f.id); close() }}>
+                  <MenuItem danger onClick={() => { onDeleteFolder?.(f.id); close() }}>
                     <TrashIcon width={14} height={14} /> Delete folder
-                  </button>
+                  </MenuItem>
                 </div>
               )}
             </Popover>

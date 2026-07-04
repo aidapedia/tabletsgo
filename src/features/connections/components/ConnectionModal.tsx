@@ -1,13 +1,15 @@
 import { useState } from 'react'
 import { useConnections } from '../stores/ConnectionsContext'
-import { useToast } from '@/shared/ui/Toast'
+import { useToast } from '@/shared/ui/feedback/Toast'
 import { CloseIcon, DbLogo, EyeIcon, EyeOffIcon, PlusSmall, ShieldIcon } from '@/shared/ui/icons'
-import Select from '@/shared/ui/Select'
+import Select from '@/shared/ui/form/Select'
 import { useSlideOver } from '@/shared/hooks/useSlideOver'
-import Button from '@/shared/ui/Button'
-import Tab from '@/shared/ui/Tab'
-import { controlClass } from '@/shared/ui/Input'
-import { Label } from '@/shared/ui/Form'
+import Button from '@/shared/ui/buttons/Button'
+import IconButton from '@/shared/ui/buttons/IconButton'
+import TextButton from '@/shared/ui/buttons/TextButton'
+import Tab from '@/shared/ui/navigation/Tab'
+import { controlClass } from '@/shared/ui/form/Input'
+import { Label } from '@/shared/ui/form/Form'
 
 const DB_TYPES = [
   { id: 'sqlite', label: 'SQLite', abbr: 'SQ', defaultPort: '' },
@@ -175,14 +177,9 @@ export default function ConnectionModal({ initial, initialType, onClose, onSave 
         <form onSubmit={handleSave} className="flex h-full flex-col">
           <div className="flex shrink-0 items-center justify-between border-b border-edge px-6 py-[18px]">
             <h3 className="text-sm font-bold">{isEdit ? 'Edit Connection' : 'New Connection'}</h3>
-            <button
-              type="button"
-              className="flex h-[34px] w-[34px] items-center justify-center rounded-[9px] text-ink-dim hover:bg-elevated hover:text-ink"
-              onClick={() => close()}
-              aria-label="Close"
-            >
+            <IconButton size="toolbar" className="!rounded-[9px]" onClick={() => close()} aria-label="Close">
               <CloseIcon />
-            </button>
+            </IconButton>
           </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto p-6">
@@ -224,9 +221,9 @@ export default function ConnectionModal({ initial, initialType, onClose, onSave 
                   className="inline-flex items-center gap-1.5 rounded-[8px] border border-edge bg-elevated px-2.5 py-1 text-[11px] text-ink-dim"
                 >
                   {t}
-                  <button type="button" onClick={() => removeTag(t)} className="text-ink-faint hover:text-red">
+                  <TextButton tone="faint" className="hover:!text-red" onClick={() => removeTag(t)}>
                     <CloseIcon width={11} height={11} />
-                  </button>
+                  </TextButton>
                 </span>
               ))}
               {addingTag ? (
@@ -362,26 +359,24 @@ export default function ConnectionModal({ initial, initialType, onClose, onSave 
                               value={form.password}
                               onChange={set('password')}
                             />
-                            <button
-                              type="button"
+                            <TextButton
+                              tone="faint"
+                              className="absolute right-3 top-1/2 -translate-y-1/2"
                               onClick={() => setShowPassword((s) => !s)}
-                              className="absolute right-3 top-1/2 -translate-y-1/2 text-ink-faint hover:text-ink"
                               aria-label={showPassword ? 'Hide password' : 'Show password'}
                             >
                               {showPassword ? <EyeOffIcon /> : <EyeIcon />}
-                            </button>
+                            </TextButton>
                           </div>
                         </div>
 
-                        <button
-                          type="button"
+                        <TextButton
+                          tone={form.keychain ? 'green' : 'faint'}
+                          className="mb-[18px] !text-[11px]"
                           onClick={() => setVal('keychain', !form.keychain)}
-                          className={`mb-[18px] inline-flex items-center gap-1.5 text-[11px] transition-colors ${
-                            form.keychain ? 'text-green-bright' : 'text-ink-faint hover:text-ink'
-                          }`}
                         >
                           <ShieldIcon width={14} height={14} /> Enable keychain
-                        </button>
+                        </TextButton>
                       </>
                     )}
 

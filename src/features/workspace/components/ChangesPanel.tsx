@@ -1,5 +1,6 @@
 import { useSlideOver } from '@/shared/hooks/useSlideOver'
-import Button from '@/shared/ui/Button'
+import Button from '@/shared/ui/buttons/Button'
+import IconButton from '@/shared/ui/buttons/IconButton'
 import { ChevronRight, CodeIcon, CopyIcon, EditIcon, PlusSmall, TableIcon, TrashIcon } from '@/shared/ui/icons'
 import { relativeTime } from '@/shared/lib/recents'
 
@@ -36,13 +37,9 @@ export default function ChangesPanel({ changes = [], committing = false, onCommi
               {changes.length}
             </span>
           </div>
-          <button
-            className="flex h-8 w-8 items-center justify-center rounded-soft text-ink-dim hover:bg-elevated hover:text-ink"
-            onClick={() => close()}
-            aria-label="Close"
-          >
+          <IconButton size="lg" onClick={() => close()} aria-label="Close">
             <ChevronRight />
-          </button>
+          </IconButton>
         </div>
 
         {/* Body */}

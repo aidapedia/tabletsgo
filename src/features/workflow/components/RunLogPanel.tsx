@@ -1,4 +1,5 @@
 import { CloseIcon } from '@/shared/ui/icons'
+import IconButton from '@/shared/ui/buttons/IconButton'
 import { NODE_SPECS } from '@/features/workflow/lib/nodeSpec'
 import type { RunResult } from '@/features/workflow/lib/api'
 
@@ -45,13 +46,9 @@ export default function RunLogPanel({
             </span>
           ) : null}
         </div>
-        <button
-          className="flex h-7 w-7 items-center justify-center rounded text-ink-dim hover:bg-elevated hover:text-ink"
-          onClick={onClose}
-          aria-label="Close run log"
-        >
+        <IconButton className="!rounded" onClick={onClose} aria-label="Close run log">
           <CloseIcon width={14} height={14} />
-        </button>
+        </IconButton>
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">

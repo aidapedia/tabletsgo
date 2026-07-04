@@ -3,11 +3,13 @@ import { getColumns, getTableData } from '@/shared/api/database'
 import { useSettings } from '@/features/settings'
 import DataGrid from '@/features/workspace/components/DataGrid'
 import InsertRowPanel from '@/features/workspace/components/InsertRowPanel'
-import Button from '@/shared/ui/Button'
-import Checkbox from '@/shared/ui/Checkbox'
-import Popover from '@/shared/ui/Popover'
-import Select from '@/shared/ui/Select'
-import { useToast } from '@/shared/ui/Toast'
+import Button from '@/shared/ui/buttons/Button'
+import TextButton from '@/shared/ui/buttons/TextButton'
+import MenuItem from '@/shared/ui/navigation/MenuItem'
+import Checkbox from '@/shared/ui/form/Checkbox'
+import Popover from '@/shared/ui/overlay/Popover'
+import Select from '@/shared/ui/form/Select'
+import { useToast } from '@/shared/ui/feedback/Toast'
 import {
   ChevronLeft,
   ChevronRight,
@@ -44,9 +46,6 @@ export const PAGE_SIZES = [25, 50, 100, 200]
 
 const ctl =
   'rounded-soft border border-edge bg-bg px-2.5 py-1.5 text-[11px] text-ink outline-none focus:border-green-dim'
-export const gridMenuItem =
-  'flex w-full rounded px-3 py-1.5 text-left text-[11px] text-ink-dim transition-colors hover:bg-card-hover hover:text-ink'
-const menuItem = gridMenuItem
 
 let filterId = 0
 const blankFilter = () => ({ id: `f${++filterId}`, col: '', op: 'contains', value: '', enabled: true })
@@ -418,9 +417,8 @@ export default function TableView({ conn, table, onChange, onOpenReference, init
             {({ close }) => (
               <div className="p-1">
                 {PAGE_SIZES.map((s) => (
-                  <button
+                  <MenuItem
                     key={s}
-                    className={menuItem}
                     onClick={() => {
                       setPageSize(s)
                       setPage(1)
@@ -428,7 +426,7 @@ export default function TableView({ conn, table, onChange, onOpenReference, init
                     }}
                   >
                     {s} rows
-                  </button>
+                  </MenuItem>
                 ))}
               </div>
             )}
@@ -513,13 +511,14 @@ export function FilterPanel({ columns, initial, onApply, onClose }) {
               value={f.value}
               onChange={(e) => update(f.id, { value: e.target.value })}
             />
-            <button
-              className="shrink-0 text-ink-faint hover:text-red"
+            <TextButton
+              tone="faint"
+              className="shrink-0 hover:!text-red"
               onClick={() => setDraft((d) => (d.length > 1 ? d.filter((x) => x.id !== f.id) : [blankFilter()]))}
               aria-label="Remove filter"
             >
               <CloseIcon width={14} height={14} />
-            </button>
+            </TextButton>
           </div>
         ))}
       </div>

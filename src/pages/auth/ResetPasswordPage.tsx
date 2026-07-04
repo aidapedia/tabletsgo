@@ -2,9 +2,9 @@ import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useAuth, getReset, resetPassword } from '@/features/auth'
 import { Logo } from '@/shared/ui/icons'
-import Button from '@/shared/ui/Button'
-import { Input } from '@/shared/ui/Input'
-import { Form, FormField } from '@/shared/ui/Form'
+import Button from '@/shared/ui/buttons/Button'
+import { Input } from '@/shared/ui/form/Input'
+import { Form, FormField } from '@/shared/ui/form/Form'
 
 // Complete a password reset: validate the token, set a new password, then the
 // user is signed in and sent to the homepage.

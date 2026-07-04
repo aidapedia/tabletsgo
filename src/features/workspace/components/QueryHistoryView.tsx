@@ -1,15 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import DataGrid from '@/features/workspace/components/DataGrid'
-import Button from '@/shared/ui/Button'
-import Popover from '@/shared/ui/Popover'
-import {
-  FilterPanel,
-  SortPanel,
-  ColumnsPanel,
-  matchFilter,
-  PAGE_SIZES,
-  gridMenuItem,
-} from '@/features/workspace/components/TableView'
+import Button from '@/shared/ui/buttons/Button'
+import MenuItem from '@/shared/ui/navigation/MenuItem'
+import Popover from '@/shared/ui/overlay/Popover'
+import { FilterPanel, SortPanel, ColumnsPanel, matchFilter, PAGE_SIZES } from '@/features/workspace/components/TableView'
 import {
   ChevronLeft,
   ChevronRight,
@@ -284,9 +278,8 @@ export default function QueryHistoryView({ history = [], loading = false, onRefr
             {({ close }) => (
               <div className="p-1">
                 {PAGE_SIZES.map((s) => (
-                  <button
+                  <MenuItem
                     key={s}
-                    className={gridMenuItem}
                     onClick={() => {
                       setPageSize(s)
                       setPage(1)
@@ -294,7 +287,7 @@ export default function QueryHistoryView({ history = [], loading = false, onRefr
                     }}
                   >
                     {s} rows
-                  </button>
+                  </MenuItem>
                 ))}
               </div>
             )}

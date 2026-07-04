@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
-import Checkbox from '@/shared/ui/Checkbox'
-import Select from '@/shared/ui/Select'
-import Tooltip from '@/shared/ui/Tooltip'
+import Checkbox from '@/shared/ui/form/Checkbox'
+import Select from '@/shared/ui/form/Select'
+import Tooltip from '@/shared/ui/overlay/Tooltip'
+import TextButton from '@/shared/ui/buttons/TextButton'
 import { TrashIcon } from '@/shared/ui/icons'
-import { controlClass } from '@/shared/ui/Input'
+import { controlClass } from '@/shared/ui/form/Input'
 import { getTypes } from '@/shared/api/database'
 
 // Fallback type lists per dialect, used until the backend `/types` list loads.
@@ -121,13 +122,9 @@ export function ColumnField({ col, types, tableNames = [], schema = {}, allowPk 
         )}
         {onRemove && (
           <Tooltip label="Remove column" placement="top">
-            <button
-              type="button"
-              className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-[8px] text-ink-dim hover:text-red"
-              onClick={onRemove}
-            >
+            <TextButton className="h-[30px] w-[30px] shrink-0 justify-center rounded-[8px] hover:!text-red" onClick={onRemove}>
               <TrashIcon width={15} height={15} />
-            </button>
+            </TextButton>
           </Tooltip>
         )}
       </div>

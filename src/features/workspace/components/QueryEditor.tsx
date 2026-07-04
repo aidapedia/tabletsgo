@@ -2,10 +2,10 @@ import { useEffect, useRef, useState } from 'react'
 import { format } from 'sql-formatter'
 import { getSchema, runQuery } from '@/shared/api/database'
 import DataGrid from '@/features/workspace/components/DataGrid'
-import Button from '@/shared/ui/Button'
-import Tooltip from '@/shared/ui/Tooltip'
+import Button from '@/shared/ui/buttons/Button'
+import Tooltip from '@/shared/ui/overlay/Tooltip'
 import SqlEditor from '@/shared/ui/SqlEditor'
-import { useToast } from '@/shared/ui/Toast'
+import { useToast } from '@/shared/ui/feedback/Toast'
 import { SaveIcon, WandIcon } from '@/shared/ui/icons'
 
 // Best-effort: pull the primary table name out of a SQL statement so the

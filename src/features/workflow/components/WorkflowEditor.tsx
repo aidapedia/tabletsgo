@@ -8,9 +8,11 @@ import ReactFlow, {
 } from 'reactflow'
 import type { Connection, Node } from 'reactflow'
 import 'reactflow/dist/style.css'
-import Button from '@/shared/ui/Button'
-import Popover from '@/shared/ui/Popover'
-import { useToast } from '@/shared/ui/Toast'
+import Button from '@/shared/ui/buttons/Button'
+import IconButton from '@/shared/ui/buttons/IconButton'
+import TextButton from '@/shared/ui/buttons/TextButton'
+import Popover from '@/shared/ui/overlay/Popover'
+import { useToast } from '@/shared/ui/feedback/Toast'
 import { PlayIcon, PlusIcon } from '@/shared/ui/icons'
 import { getSchema } from '@/shared/api/database'
 import type { SqlSchema } from '@/shared/ui/SqlEditor'
@@ -22,8 +24,6 @@ import WorkflowNode from '@/features/workflow/components/nodes/WorkflowNode'
 import NodePalette from '@/features/workflow/components/NodePalette'
 import NodeConfigPanel from '@/features/workflow/components/NodeConfigPanel'
 import RunLogPanel from '@/features/workflow/components/RunLogPanel'
-
-const ctlBtn = 'flex h-7 w-7 items-center justify-center rounded text-ink-dim transition-colors hover:bg-card-hover hover:text-ink'
 
 let nodeSeq = 0
 const newNodeId = () => `n${Date.now().toString(36)}${(nodeSeq++).toString(36)}`
@@ -240,12 +240,12 @@ export default function WorkflowEditor({ conn, workflowId }: any) {
           {conn.name} · {nodes.length} node{nodes.length === 1 ? '' : 's'}
         </span>
         {result && !logOpen && (
-          <button
-            className="ml-auto text-[11px] text-ink-dim underline-offset-2 hover:text-ink hover:underline"
+          <TextButton
+            className="ml-auto !text-[11px] underline-offset-2 hover:underline"
             onClick={() => setLogOpen(true)}
           >
             Show run log
-          </button>
+          </TextButton>
         )}
       </div>
 
@@ -301,25 +301,21 @@ export default function WorkflowEditor({ conn, workflowId }: any) {
 
               {/* Zoom / fit controls */}
               <div className="absolute bottom-3 left-3 z-10 flex items-center gap-0.5 rounded-soft border border-edge bg-elevated p-1 shadow-[0_8px_24px_-12px_rgba(0,0,0,0.7)]">
-                <button className={ctlBtn} onClick={() => rf.current?.zoomOut()} aria-label="Zoom out">
+                <IconButton onClick={() => rf.current?.zoomOut()} aria-label="Zoom out">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                     <path d="M5 12h14" />
                   </svg>
-                </button>
-                <button className={ctlBtn} onClick={() => rf.current?.zoomIn()} aria-label="Zoom in">
+                </IconButton>
+                <IconButton onClick={() => rf.current?.zoomIn()} aria-label="Zoom in">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                     <path d="M12 5v14M5 12h14" />
                   </svg>
-                </button>
-                <button
-                  className={ctlBtn}
-                  onClick={() => rf.current?.fitView({ duration: 300, padding: 0.2 })}
-                  aria-label="Fit view"
-                >
+                </IconButton>
+                <IconButton onClick={() => rf.current?.fitView({ duration: 300, padding: 0.2 })} aria-label="Fit view">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M3 16v3a2 2 0 0 0 2 2h3" />
                   </svg>
-                </button>
+                </IconButton>
               </div>
 
               {/* Right-click "add node" menu, anchored at the cursor. */}

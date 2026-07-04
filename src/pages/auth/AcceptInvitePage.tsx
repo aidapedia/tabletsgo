@@ -2,9 +2,9 @@ import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useAuth, getInvite, acceptInvite } from '@/features/auth'
 import { Logo } from '@/shared/ui/icons'
-import Button from '@/shared/ui/Button'
-import { Input } from '@/shared/ui/Input'
-import { Form, FormField } from '@/shared/ui/Form'
+import Button from '@/shared/ui/buttons/Button'
+import { Input } from '@/shared/ui/form/Input'
+import { Form, FormField } from '@/shared/ui/form/Form'
 
 // Invite acceptance: the invited email sets their name + password, then is
 // logged in and dropped onto the homepage (their new workspace).

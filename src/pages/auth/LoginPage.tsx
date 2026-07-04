@@ -2,9 +2,10 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '@/features/auth'
 import { Logo } from '@/shared/ui/icons'
-import Button from '@/shared/ui/Button'
-import { Input } from '@/shared/ui/Input'
-import { Form, FormField } from '@/shared/ui/Form'
+import Button from '@/shared/ui/buttons/Button'
+import TextButton from '@/shared/ui/buttons/TextButton'
+import { Input } from '@/shared/ui/form/Input'
+import { Form, FormField } from '@/shared/ui/form/Form'
 
 export default function Login() {
   const { login } = useAuth()
@@ -78,13 +79,9 @@ export default function Login() {
             {loading ? 'Signing in…' : 'Sign In'}
           </Button>
 
-          <button
-            type="button"
-            onClick={() => navigate('/forgot')}
-            className="mt-4 block w-full text-center text-[11px] text-ink-dim hover:text-ink"
-          >
+          <TextButton block className="mt-4 !text-[11px]" onClick={() => navigate('/forgot')}>
             Forgot password?
-          </button>
+          </TextButton>
         </Form>
       </div>
     </div>

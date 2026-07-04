@@ -2,10 +2,10 @@ import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useAuth } from '@/features/auth'
 import { useConnections } from '@/features/connections'
-import { useToast } from '@/shared/ui/Toast'
-import Select from '@/shared/ui/Select'
-import Button from '@/shared/ui/Button'
-import ConfirmDialog from '@/shared/ui/ConfirmDialog'
+import { useToast } from '@/shared/ui/feedback/Toast'
+import Select from '@/shared/ui/form/Select'
+import Button from '@/shared/ui/buttons/Button'
+import ConfirmDialog from '@/shared/ui/feedback/ConfirmDialog'
 import { getNamespaces, listObjects, pingConnection, runQuery } from '@/shared/api/database'
 import {
   fetchSaved,
@@ -37,10 +37,12 @@ import SaveQueryPanel from '@/shared/ui/SaveQueryPanel'
 import ChangesPanel from '@/features/workspace/components/ChangesPanel'
 import SchemaView from '@/features/workspace/components/SchemaView'
 import FunctionView from '@/features/workspace/components/FunctionView'
-import Segmented from '@/shared/ui/Segmented'
-import Tooltip from '@/shared/ui/Tooltip'
-import Popover from '@/shared/ui/Popover'
-import IconButton from '@/shared/ui/IconButton'
+import Segmented from '@/shared/ui/navigation/Segmented'
+import Tooltip from '@/shared/ui/overlay/Tooltip'
+import Popover from '@/shared/ui/overlay/Popover'
+import IconButton from '@/shared/ui/buttons/IconButton'
+import MenuItem from '@/shared/ui/navigation/MenuItem'
+import TextButton from '@/shared/ui/buttons/TextButton'
 import {
   ChevronRight,
   CloseIcon,
@@ -66,12 +68,8 @@ const kbd =
 const DIALECT = { postgresql: 'PostgreSQL', sqlite: 'SQLite', redis: 'Redis' }
 let queryCounter = 0
 
-const btnSql =
-  'inline-flex items-center justify-center gap-2 rounded-soft border border-edge bg-elevated px-3.5 py-2 text-[11px] font-semibold text-ink whitespace-nowrap transition-all duration-150 hover:bg-card-hover hover:border-edge-strong'
 const centerState =
   'flex h-full flex-col items-center justify-center gap-4 text-ink-faint'
-const menuItem =
-  'flex w-full items-center px-3 py-1.5 text-left text-xs text-ink-dim transition-colors hover:bg-card-hover hover:text-ink disabled:cursor-not-allowed disabled:text-ink-faint disabled:hover:bg-transparent disabled:hover:text-ink-faint'
 
 export default function Workspace() {
   const { id } = useParams()
@@ -826,10 +824,10 @@ export default function Workspace() {
               >
                 {/* Accordion section header — always visible so you can jump to
                     Tables / Views / Functions; only the open section's list scrolls. */}
-                <button
-                  type="button"
+                <TextButton
+                  tone="faint"
+                  className="w-full shrink-0 rounded-[6px] px-1.5 py-1.5 text-[10px] font-semibold uppercase tracking-wide hover:!text-ink-dim"
                   onClick={() => toggleGroup(group.type)}
-                  className="flex w-full shrink-0 items-center gap-1.5 rounded-[6px] px-1.5 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-ink-faint hover:text-ink-dim"
                 >
                   <ChevronRight
                     width={12}
@@ -837,7 +835,7 @@ export default function Workspace() {
                     className={`transition-transform ${openGroup === group.type ? 'rotate-90' : ''}`}
                   />
                   {group.label} <span className="opacity-60">{group.items.length}</span>
-                </button>
+                </TextButton>
                 {openGroup === group.type && (
                   <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto pr-0.5">
                     {group.items.map((obj) => {
@@ -867,63 +865,61 @@ export default function Workspace() {
                           align="right"
                           width={210}
                           trigger={({ open, toggle }) => (
-                            <button
+                            <IconButton
+                              size="sm"
+                              active={open}
                               onClick={toggle}
                               aria-label={`${group.label} actions`}
-                              className={`flex h-6 w-6 items-center justify-center rounded transition-colors ${
-                                open
-                                  ? 'bg-card-hover text-ink opacity-100'
-                                  : 'text-ink-faint opacity-0 hover:text-ink group-hover:opacity-100'
-                              }`}
+                              className={open ? 'opacity-100' : '!text-ink-faint opacity-0 group-hover:opacity-100'}
                             >
                               <MoreVerticalIcon width={15} height={15} />
-                            </button>
+                            </IconButton>
                           )}
                         >
                           {({ close }) => (
                             <div className="p-1">
                               {obj.type === 'function' ? (
                                 <>
-                                  <button className={`${menuItem} gap-2.5`} onClick={() => { openFunction(obj.name); close() }}>
+                                  <MenuItem onClick={() => { openFunction(obj.name); close() }}>
                                     <CodeIcon width={14} height={14} /> Open definition
-                                  </button>
-                                  <button className={`${menuItem} gap-2.5`} onClick={() => { openQuery(`SELECT ${obj.name}();`); close() }}>
+                                  </MenuItem>
+                                  <MenuItem onClick={() => { openQuery(`SELECT ${obj.name}();`); close() }}>
                                     <CodeIcon width={14} height={14} /> Open in SQL Editor
-                                  </button>
+                                  </MenuItem>
                                 </>
                               ) : obj.type === 'view' ? (
                                 <>
-                                  <button className={`${menuItem} gap-2.5`} onClick={() => { openTable(obj.name); close() }}>
+                                  <MenuItem onClick={() => { openTable(obj.name); close() }}>
                                     <TableIcon width={14} height={14} /> Open in new tab
-                                  </button>
-                                  <button className={`${menuItem} gap-2.5`} onClick={() => { openQuery(`SELECT * FROM "${obj.name}";`); close() }}>
+                                  </MenuItem>
+                                  <MenuItem onClick={() => { openQuery(`SELECT * FROM "${obj.name}";`); close() }}>
                                     <CodeIcon width={14} height={14} /> Open in SQL Editor
-                                  </button>
-                                  <button className={`${menuItem} gap-2.5`} onClick={() => { openSchema(obj.name); close() }}>
+                                  </MenuItem>
+                                  <MenuItem onClick={() => { openSchema(obj.name); close() }}>
                                     <ColumnsIcon width={14} height={14} /> View schema
-                                  </button>
+                                  </MenuItem>
                                 </>
                               ) : (
                                 <>
-                                  <button className={`${menuItem} gap-2.5`} onClick={() => { openTable(obj.name); close() }}>
+                                  <MenuItem onClick={() => { openTable(obj.name); close() }}>
                                     <TableIcon width={14} height={14} /> Open in new tab
-                                  </button>
-                                  <button className={`${menuItem} gap-2.5`} onClick={() => { openQuery(`SELECT * FROM "${obj.name}";`); close() }}>
+                                  </MenuItem>
+                                  <MenuItem onClick={() => { openQuery(`SELECT * FROM "${obj.name}";`); close() }}>
                                     <CodeIcon width={14} height={14} /> Open in SQL Editor
-                                  </button>
-                                  <button className={`${menuItem} gap-2.5`} onClick={() => { openSchema(obj.name); close() }}>
+                                  </MenuItem>
+                                  <MenuItem onClick={() => { openSchema(obj.name); close() }}>
                                     <ColumnsIcon width={14} height={14} /> View table schema
-                                  </button>
-                                  <button className={`${menuItem} gap-2.5`} onClick={() => { setCreatingTable({ table: obj.name }); close() }}>
+                                  </MenuItem>
+                                  <MenuItem onClick={() => { setCreatingTable({ table: obj.name }); close() }}>
                                     <EditIcon width={14} height={14} /> Edit Table
-                                  </button>
+                                  </MenuItem>
                                   <div className="my-1 h-px bg-edge" />
-                                  <button className={`${menuItem} gap-2.5 hover:!text-red`} onClick={() => { emptyTable(obj.name); close() }}>
+                                  <MenuItem danger onClick={() => { emptyTable(obj.name); close() }}>
                                     <TrashIcon width={14} height={14} /> Empty Table
-                                  </button>
-                                  <button className={`${menuItem} gap-2.5 hover:!text-red`} onClick={() => { deleteTable(obj.name); close() }}>
+                                  </MenuItem>
+                                  <MenuItem danger onClick={() => { deleteTable(obj.name); close() }}>
                                     <TrashIcon width={14} height={14} /> Delete Table
-                                  </button>
+                                  </MenuItem>
                                 </>
                               )}
                             </div>
@@ -979,30 +975,20 @@ export default function Workspace() {
       {/* Main */}
       <main className="flex min-h-0 min-w-0 flex-1 flex-col">
         <div className="flex items-center gap-3 border-b border-edge px-[18px] py-3 max-[720px]:px-3">
-          <button
-            className="hidden h-[34px] w-[34px] items-center justify-center rounded-soft text-ink-dim hover:bg-elevated hover:text-ink max-[720px]:flex"
-            onClick={() => setSidebarOpen(true)}
-            aria-label="Open tables"
-          >
-            <MenuIcon />
-          </button>
+          <div className="hidden max-[720px]:block">
+            <IconButton size="toolbar" className="!rounded-soft" onClick={() => setSidebarOpen(true)} aria-label="Open tables">
+              <MenuIcon />
+            </IconButton>
+          </div>
           <Tooltip label="New SQL query" placement="bottom">
-            <button
-              onClick={() => openQuery()}
-              aria-label="New SQL query"
-              className="flex h-[34px] w-[34px] items-center justify-center rounded-[10px] text-ink-dim transition-colors hover:bg-elevated hover:text-ink"
-            >
+            <IconButton size="toolbar" onClick={() => openQuery()} aria-label="New SQL query">
               <CodeIcon width={16} height={16} />
-            </button>
+            </IconButton>
           </Tooltip>
           <Tooltip label="Schema editor" placement="bottom">
-            <button
-              onClick={openSchemaEditor}
-              aria-label="Schema editor"
-              className="flex h-[34px] w-[34px] items-center justify-center rounded-[10px] text-ink-dim transition-colors hover:bg-elevated hover:text-ink"
-            >
+            <IconButton size="toolbar" onClick={openSchemaEditor} aria-label="Schema editor">
               <DiagramIcon width={16} height={16} />
-            </button>
+            </IconButton>
           </Tooltip>
           <div className="relative flex max-w-[560px] flex-1 items-center">
             <SearchIcon width={16} height={16} className="absolute left-3.5 text-ink-faint" />
@@ -1014,15 +1000,11 @@ export default function Workspace() {
           </div>
           <div className="ml-auto flex items-center gap-2">
             <Tooltip label="Query history" placement="bottom">
-              <button
-                onClick={openHistory}
-                aria-label="Query history"
-                className="flex h-[34px] w-[34px] items-center justify-center rounded-[10px] text-ink-dim transition-colors hover:bg-elevated hover:text-ink"
-              >
+              <IconButton size="toolbar" onClick={openHistory} aria-label="Query history">
                 <HistoryIcon width={16} height={16} />
-              </button>
+              </IconButton>
             </Tooltip>
-            <button onClick={() => setChangesOpen(true)} title="View changes" className={btnSql}>
+            <Button variant="ghost" onClick={() => setChangesOpen(true)} title="View changes">
               Changes
               <span
                 className={`rounded-[20px] px-[7px] text-xs ${
@@ -1031,7 +1013,7 @@ export default function Workspace() {
               >
                 {changes.length}
               </span>
-            </button>
+            </Button>
           </div>
         </div>
 
@@ -1066,13 +1048,14 @@ export default function Workspace() {
                   <TableIcon className={active ? 'text-ink' : 'text-ink-faint'} />
                 )}
                 <span>{t.title}</span>
-                <button
-                  className="flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded text-ink-faint opacity-70 transition-colors hover:bg-card-hover hover:text-ink group-hover/tab:opacity-100"
+                <IconButton
+                  size="xs"
+                  className="shrink-0 !text-ink-faint opacity-70 group-hover/tab:opacity-100"
                   onClick={(e) => closeTab(e, t.key)}
                   aria-label="Close tab"
                 >
                   <CloseIcon width={13} height={13} />
-                </button>
+                </IconButton>
               </div>
             )
           })}
@@ -1193,17 +1176,15 @@ export default function Workspace() {
           onClick={(e) => e.stopPropagation()}
           onContextMenu={(e) => e.preventDefault()}
         >
-          <button
-            className={menuItem}
+          <MenuItem
             onClick={() => {
               removeTab(tabMenu.key)
               setTabMenu(null)
             }}
           >
             Close
-          </button>
-          <button
-            className={menuItem}
+          </MenuItem>
+          <MenuItem
             disabled={tabs.findIndex((t) => t.key === tabMenu.key) === tabs.length - 1}
             onClick={() => {
               closeTabsToRight(tabMenu.key)
@@ -1211,17 +1192,16 @@ export default function Workspace() {
             }}
           >
             Close tabs to the right
-          </button>
+          </MenuItem>
           <div className="my-1 h-px bg-edge" />
-          <button
-            className={menuItem}
+          <MenuItem
             onClick={() => {
               closeAllTabs()
               setTabMenu(null)
             }}
           >
             Close all tabs
-          </button>
+          </MenuItem>
         </div>
       )}
 

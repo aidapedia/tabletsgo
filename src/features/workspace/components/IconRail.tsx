@@ -1,19 +1,15 @@
 import { CodeIcon, DatabaseIcon, DbLogo, HomeIcon, SettingsIcon, WorkflowIcon } from '@/shared/ui/icons'
-import Popover from '@/shared/ui/Popover'
-import Tooltip from '@/shared/ui/Tooltip'
+import Popover from '@/shared/ui/overlay/Popover'
+import Tooltip from '@/shared/ui/overlay/Tooltip'
+import IconButton from '@/shared/ui/buttons/IconButton'
+import MenuItem from '@/shared/ui/navigation/MenuItem'
 
 function RailButton({ icon: Icon, label, active = false, onClick }) {
   return (
     <Tooltip label={label} placement="right">
-      <button
-        aria-label={label}
-        onClick={onClick}
-        className={`flex h-10 w-10 items-center justify-center rounded-soft transition-colors ${
-          active ? 'bg-elevated text-ink' : 'text-ink-faint hover:bg-elevated hover:text-ink'
-        }`}
-      >
+      <IconButton size="xl" active={active} aria-label={label} onClick={onClick} className={active ? '' : '!text-ink-faint'}>
         <Icon />
-      </button>
+      </IconButton>
     </Tooltip>
   )
 }
@@ -41,9 +37,9 @@ export default function IconRail({
         width={240}
         trigger={({ toggle }) => (
           <Tooltip label={current?.name || 'Connections'} placement="right">
-            <button onClick={toggle} className="flex h-10 w-10 items-center justify-center" aria-label="Connections">
+            <IconButton size="xl" onClick={toggle} aria-label="Connections">
               <DbLogo type={current?.type} className="h-9 w-9" />
-            </button>
+            </IconButton>
           </Tooltip>
         )}
       >
@@ -53,19 +49,17 @@ export default function IconRail({
               Connections
             </div>
             {connections.map((c) => (
-              <button
+              <MenuItem
                 key={c.id}
+                active={c.id === currentId}
                 onClick={() => {
                   onSelectConnection?.(c.id)
                   close()
                 }}
-                className={`flex w-full items-center gap-2.5 rounded px-2 py-2 text-left text-xs ${
-                  c.id === currentId ? 'bg-card-hover text-ink' : 'text-ink-dim hover:bg-elevated hover:text-ink'
-                }`}
               >
                 <DbLogo type={c.type} className="h-7 w-7 shrink-0" />
                 <span className="flex-1 truncate">{c.name}</span>
-              </button>
+              </MenuItem>
             ))}
           </div>
         )}

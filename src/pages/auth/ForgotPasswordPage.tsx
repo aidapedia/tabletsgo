@@ -2,9 +2,10 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { forgotPassword } from '@/features/auth'
 import { Logo } from '@/shared/ui/icons'
-import Button from '@/shared/ui/Button'
-import { Input } from '@/shared/ui/Input'
-import { Form, FormField } from '@/shared/ui/Form'
+import Button from '@/shared/ui/buttons/Button'
+import TextButton from '@/shared/ui/buttons/TextButton'
+import { Input } from '@/shared/ui/form/Input'
+import { Form, FormField } from '@/shared/ui/form/Form'
 
 // Request a password-reset link by email. Always shows the same confirmation
 // (whether or not the email exists) so accounts can't be enumerated.
@@ -64,13 +65,9 @@ export default function ForgotPasswordPage() {
             <Button type="submit" variant="primary" size="lg" className="w-full" disabled={loading}>
               {loading ? 'Sending…' : 'Send reset link'}
             </Button>
-            <button
-              type="button"
-              onClick={() => navigate('/login')}
-              className="mt-4 block w-full text-center text-[11px] text-ink-dim hover:text-ink"
-            >
+            <TextButton block className="mt-4 !text-[11px]" onClick={() => navigate('/login')}>
               Back to sign in
-            </button>
+            </TextButton>
           </Form>
         )}
       </div>

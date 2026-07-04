@@ -1,5 +1,5 @@
 import { ThemeProvider } from './ThemeContext'
-import { ToastProvider } from '@/shared/ui/Toast'
+import { ToastProvider } from '@/shared/ui/feedback/Toast'
 import { AuthProvider } from '@/features/auth'
 import { WorkspaceProvider } from '@/features/workspaces'
 import { ConnectionsProvider } from '@/features/connections'

@@ -2,9 +2,9 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth, submitSetup } from '@/features/auth'
 import { Logo } from '@/shared/ui/icons'
-import Button from '@/shared/ui/Button'
-import { Input } from '@/shared/ui/Input'
-import { Form, FormField } from '@/shared/ui/Form'
+import Button from '@/shared/ui/buttons/Button'
+import { Input } from '@/shared/ui/form/Input'
+import { Form, FormField } from '@/shared/ui/form/Form'
 
 // First-run wizard: create the admin account and the first workspace. Shown
 // (before the login page) only while no users exist — see RequireSetup.

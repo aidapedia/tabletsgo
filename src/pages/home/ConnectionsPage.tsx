@@ -3,10 +3,13 @@ import { useNavigate } from 'react-router-dom'
 import { useConnections } from '@/features/connections'
 import { listTables, pingConnection } from '@/shared/api/database'
 import ConnectionModal from '@/features/connections/components/ConnectionModal'
-import Button from '@/shared/ui/Button'
-import Tab from '@/shared/ui/Tab'
-import Popover from '@/shared/ui/Popover'
-import { useToast } from '@/shared/ui/Toast'
+import Button from '@/shared/ui/buttons/Button'
+import IconButton from '@/shared/ui/buttons/IconButton'
+import MenuItem from '@/shared/ui/navigation/MenuItem'
+import TextButton from '@/shared/ui/buttons/TextButton'
+import Tab from '@/shared/ui/navigation/Tab'
+import Popover from '@/shared/ui/overlay/Popover'
+import { useToast } from '@/shared/ui/feedback/Toast'
 import {
   ChevronLeft,
   CloseIcon,
@@ -24,9 +27,6 @@ import {
   TrashIcon,
 } from '@/shared/ui/icons'
 import { ComingSoon, PageHeader } from './ui'
-
-const menuRow =
-  'flex w-full items-center gap-2.5 rounded px-2.5 py-2 text-left text-[12px] text-ink-dim transition-colors hover:bg-card-hover hover:text-ink'
 
 // Database types offered when creating a connection.
 const DB_CATALOG = [
@@ -119,9 +119,9 @@ function ConnectionDetail({ conn, onBack, onOpen, onEdit }) {
 
   return (
     <div className="w-full">
-      <button onClick={onBack} className="mb-5 inline-flex items-center gap-1.5 text-[12px] text-ink-dim hover:text-ink">
+      <TextButton onClick={onBack} className="mb-5">
         <ChevronLeft width={16} height={16} /> All connections
-      </button>
+      </TextButton>
 
       <div className="flex items-start justify-between gap-4">
         <div className="flex min-w-0 items-center gap-3">
@@ -372,37 +372,34 @@ export default function ConnectionsPage() {
                     align="right"
                     width={170}
                     trigger={({ open, toggle }) => (
-                      <button
+                      <IconButton
                         onClick={toggle}
+                        active={open}
                         aria-label="Connection actions"
-                        className={`flex h-7 w-7 items-center justify-center rounded-[7px] transition-colors ${
-                          open
-                            ? 'bg-elevated text-ink opacity-100'
-                            : 'text-ink-dim opacity-0 hover:bg-elevated hover:text-ink group-hover:opacity-100'
-                        }`}
+                        className={open ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}
                       >
                         <MoreVerticalIcon width={16} height={16} />
-                      </button>
+                      </IconButton>
                     )}
                   >
                     {({ close }) => (
                       <div className="p-1">
-                        <button className={menuRow} onClick={() => { openConsole(conn); close() }}>
+                        <MenuItem onClick={() => { openConsole(conn); close() }}>
                           <ExternalLinkIcon width={14} height={14} /> Connect
-                        </button>
-                        <button className={menuRow} onClick={() => { setDetailConn(conn); close() }}>
+                        </MenuItem>
+                        <MenuItem onClick={() => { setDetailConn(conn); close() }}>
                           <DatabaseIcon width={14} height={14} /> Open details
-                        </button>
+                        </MenuItem>
                         <div className="my-1 h-px bg-edge" />
-                        <button className={menuRow} onClick={() => { setModal({ mode: 'edit', conn }); close() }}>
+                        <MenuItem onClick={() => { setModal({ mode: 'edit', conn }); close() }}>
                           <EditIcon width={14} height={14} /> Edit
-                        </button>
-                        <button className={menuRow} onClick={() => { copyUrl(conn); close() }}>
+                        </MenuItem>
+                        <MenuItem onClick={() => { copyUrl(conn); close() }}>
                           <CopyIcon width={14} height={14} /> Copy as URL
-                        </button>
-                        <button className={`${menuRow} hover:!text-red`} onClick={() => { close(); handleDelete(conn) }}>
+                        </MenuItem>
+                        <MenuItem danger onClick={() => { close(); handleDelete(conn) }}>
                           <TrashIcon width={14} height={14} /> Delete
-                        </button>
+                        </MenuItem>
                       </div>
                     )}
                   </Popover>
@@ -445,13 +442,9 @@ export default function ConnectionsPage() {
                 <h2 className="text-[18px] font-bold">Create a new connection</h2>
                 <p className="mt-1 text-[13px] text-ink-dim">Choose a database type to get started.</p>
               </div>
-              <button
-                onClick={() => setPicker(false)}
-                aria-label="Close"
-                className="flex h-8 w-8 items-center justify-center rounded-soft text-ink-dim hover:bg-elevated hover:text-ink"
-              >
+              <IconButton size="lg" onClick={() => setPicker(false)} aria-label="Close">
                 <CloseIcon />
-              </button>
+              </IconButton>
             </div>
             <div className="mt-5 grid grid-cols-3 gap-3 max-[560px]:grid-cols-2 max-[400px]:grid-cols-1">
               {DB_CATALOG.map((db) => (

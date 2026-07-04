@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/features/auth'
 import { WorkspaceSwitcher } from '@/features/workspaces'
+import NavItem from '@/shared/ui/navigation/NavItem'
+import IconButton from '@/shared/ui/buttons/IconButton'
 import {
   BellIcon,
   BuildingIcon,
@@ -26,25 +28,11 @@ const NAV = [
 ] as const
 
 function Sidebar({ activeTab, onNavigate, user, onLogout, open, onClose }: any) {
-  const NavLeaf = ({ id, label, Icon, path, soon }: any) => {
-    const active = activeTab === id
-    return (
-      <button
-        onClick={() => onNavigate(path)}
-        className={`flex w-full items-center gap-2.5 rounded-soft px-2.5 py-2 text-left text-[13px] transition-colors ${
-          active ? 'bg-card-hover font-semibold text-ink' : 'text-ink-dim hover:bg-card-hover hover:text-ink'
-        }`}
-      >
-        <Icon width={16} height={16} className={active ? 'text-green' : ''} />
-        <span className="min-w-0 flex-1 truncate">{label}</span>
-        {soon && (
-          <span className="rounded-[5px] border border-edge bg-elevated px-1 py-0.5 text-[8px] font-bold uppercase tracking-wide text-ink-faint">
-            Soon
-          </span>
-        )}
-      </button>
-    )
-  }
+  const NavLeaf = ({ id, label, Icon, path, soon }: any) => (
+    <NavItem active={activeTab === id} icon={Icon} badge={soon && 'Soon'} onClick={() => onNavigate(path)}>
+      {label}
+    </NavItem>
+  )
 
   return (
     <>
@@ -90,13 +78,9 @@ function Sidebar({ activeTab, onNavigate, user, onLogout, open, onClose }: any) 
             <div className="truncate text-[12px] font-semibold text-ink">{user?.name || 'Account'}</div>
             <div className="truncate text-[11px] text-ink-faint">{user?.email}</div>
           </div>
-          <button
-            onClick={onLogout}
-            aria-label="Sign out"
-            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-soft text-ink-dim transition-colors hover:bg-elevated hover:text-red"
-          >
+          <IconButton size="lg" onClick={onLogout} aria-label="Sign out" className="shrink-0 hover:!text-red">
             <LogoutIcon width={16} height={16} />
-          </button>
+          </IconButton>
         </div>
       </aside>
     </>
@@ -132,13 +116,9 @@ export default function HomeLayout() {
       <div className="flex min-w-0 flex-1 flex-col">
         {/* Mobile top bar */}
         <div className="flex items-center gap-3 border-b border-edge bg-panel px-4 py-3 min-[821px]:hidden">
-          <button
-            onClick={() => setSidebarOpen(true)}
-            aria-label="Open menu"
-            className="flex h-9 w-9 items-center justify-center rounded-soft text-ink-dim hover:bg-elevated hover:text-ink"
-          >
+          <IconButton size="lg" onClick={() => setSidebarOpen(true)} aria-label="Open menu">
             <MenuIcon />
-          </button>
+          </IconButton>
           <span className="text-[15px] font-bold tracking-[-0.3px]">
             Tabl<span className="text-green">et</span>sgo
           </span>

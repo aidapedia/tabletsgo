@@ -1,12 +1,11 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import Popover from '@/shared/ui/Popover'
+import Popover from '@/shared/ui/overlay/Popover'
+import Button from '@/shared/ui/buttons/Button'
+import MenuItem from '@/shared/ui/navigation/MenuItem'
 import { CheckIcon, ChevronDown, PlusIcon, SettingsIcon } from '@/shared/ui/icons'
-import { Input } from '@/shared/ui/Input'
+import { Input } from '@/shared/ui/form/Input'
 import { useWorkspaces } from '@/features/workspaces'
-
-const menuRow =
-  'flex w-full items-center gap-2.5 rounded px-2 py-1.5 text-left text-[12px] text-ink-dim transition-colors hover:bg-card-hover hover:text-ink'
 
 // Current-workspace picker + create + link to workspace settings.
 export default function WorkspaceSwitcher() {
@@ -50,13 +49,13 @@ export default function WorkspaceSwitcher() {
           <div className="px-1.5 pb-1 text-[10px] font-semibold uppercase tracking-wide text-ink-faint">Workspaces</div>
           <div className="max-h-[240px] overflow-y-auto">
             {workspaces.map((w) => (
-              <button key={w.id} className={menuRow} onClick={() => { switchWorkspace(w.id); close() }}>
+              <MenuItem key={w.id} onClick={() => { switchWorkspace(w.id); close() }}>
                 <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-elevated text-[10px] font-bold text-ink-dim">
                   {w.name[0]?.toUpperCase()}
                 </span>
                 <span className="min-w-0 flex-1 truncate">{w.name}</span>
                 {w.id === current?.id && <CheckIcon width={14} height={14} className="shrink-0 text-green" />}
-              </button>
+              </MenuItem>
             ))}
           </div>
 
@@ -75,18 +74,18 @@ export default function WorkspaceSwitcher() {
                   if (e.key === 'Escape') { setCreating(false); setName('') }
                 }}
               />
-              <button className="shrink-0 rounded bg-green px-2 py-1.5 text-[11px] font-semibold text-white hover:bg-green-bright" onClick={() => submitCreate(close)}>
+              <Button variant="primary" size="sm" className="shrink-0" onClick={() => submitCreate(close)}>
                 Add
-              </button>
+              </Button>
             </div>
           ) : (
-            <button className={menuRow} onClick={() => setCreating(true)}>
+            <MenuItem onClick={() => setCreating(true)}>
               <PlusIcon width={14} height={14} /> New workspace
-            </button>
+            </MenuItem>
           )}
-          <button className={menuRow} onClick={() => { navigate('/workspace'); close() }}>
+          <MenuItem onClick={() => { navigate('/workspace'); close() }}>
             <SettingsIcon width={14} height={14} /> Workspace settings
-          </button>
+          </MenuItem>
         </div>
       )}
     </Popover>

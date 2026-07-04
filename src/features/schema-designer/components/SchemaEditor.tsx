@@ -13,9 +13,12 @@ import 'reactflow/dist/style.css'
 import dagre from '@dagrejs/dagre'
 import { toJpeg, toPng, toSvg } from 'html-to-image'
 import { getDiagram } from '@/shared/api/database'
-import Button from '@/shared/ui/Button'
-import Popover from '@/shared/ui/Popover'
-import Checkbox from '@/shared/ui/Checkbox'
+import Button from '@/shared/ui/buttons/Button'
+import IconButton from '@/shared/ui/buttons/IconButton'
+import MenuItem from '@/shared/ui/navigation/MenuItem'
+import TextButton from '@/shared/ui/buttons/TextButton'
+import Popover from '@/shared/ui/overlay/Popover'
+import Checkbox from '@/shared/ui/form/Checkbox'
 import TableEditPanel from '@/features/schema-designer/components/TableEditPanel'
 import CreateTablePanel from '@/features/schema-designer/components/CreateTablePanel'
 import SaveQueryPanel from '@/shared/ui/SaveQueryPanel'
@@ -129,23 +132,20 @@ function parsePending(changes) {
   return { newTables, newCols }
 }
 
-const ctlBtn = 'flex h-7 w-7 items-center justify-center rounded text-ink-dim transition-colors hover:bg-card-hover hover:text-ink'
-const exportItem =
-  'flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-left text-[12px] text-ink-dim transition-colors hover:bg-card-hover hover:text-ink'
 
 // Reusable export format list (used by the toolbar dropdown and the canvas menu).
 function ExportOptions({ onExport }) {
   return (
     <div className="p-1">
-      <button className={exportItem} onClick={() => onExport('png')}>
+      <MenuItem onClick={() => onExport('png')}>
         <DownloadIcon width={14} height={14} /> PNG image
-      </button>
-      <button className={exportItem} onClick={() => onExport('jpg')}>
+      </MenuItem>
+      <MenuItem onClick={() => onExport('jpg')}>
         <DownloadIcon width={14} height={14} /> JPG image
-      </button>
-      <button className={exportItem} onClick={() => onExport('svg')}>
+      </MenuItem>
+      <MenuItem onClick={() => onExport('svg')}>
         <DownloadIcon width={14} height={14} /> SVG vector
-      </button>
+      </MenuItem>
     </div>
   )
 }
@@ -579,13 +579,13 @@ export default function SchemaEditor({ conn, changes, pending = [], onPendingCha
               <div className="mb-1.5 flex items-center justify-between px-1.5">
                 <span className="text-[11px] font-semibold text-ink-dim">Show / hide tables</span>
                 <div className="flex items-center gap-1.5 text-[11px] font-semibold">
-                  <button type="button" className="text-green hover:text-green-bright" onClick={showAllTables}>
+                  <TextButton tone="green" className="!text-[11px]" onClick={showAllTables}>
                     All
-                  </button>
+                  </TextButton>
                   <span className="text-ink-faint">·</span>
-                  <button type="button" className="text-ink-dim hover:text-ink" onClick={hideAllTables}>
+                  <TextButton className="!text-[11px]" onClick={hideAllTables}>
                     None
-                  </button>
+                  </TextButton>
                 </div>
               </div>
               <input
@@ -698,25 +698,21 @@ export default function SchemaEditor({ conn, changes, pending = [], onPendingCha
 
               {/* Zoom / fit controls — bottom-left of the canvas */}
               <div className="absolute bottom-3 left-3 z-10 flex items-center gap-0.5 rounded-soft border border-edge bg-elevated p-1 shadow-[0_8px_24px_-12px_rgba(0,0,0,0.7)]">
-                <button className={ctlBtn} onClick={() => rf.current?.zoomOut()} aria-label="Zoom out">
+                <IconButton onClick={() => rf.current?.zoomOut()} aria-label="Zoom out">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                     <path d="M5 12h14" />
                   </svg>
-                </button>
-                <button className={ctlBtn} onClick={() => rf.current?.zoomIn()} aria-label="Zoom in">
+                </IconButton>
+                <IconButton onClick={() => rf.current?.zoomIn()} aria-label="Zoom in">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                     <path d="M12 5v14M5 12h14" />
                   </svg>
-                </button>
-                <button
-                  className={ctlBtn}
-                  onClick={() => rf.current?.fitView({ duration: 300, padding: 0.2 })}
-                  aria-label="Fit view"
-                >
+                </IconButton>
+                <IconButton onClick={() => rf.current?.fitView({ duration: 300, padding: 0.2 })} aria-label="Fit view">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                     <path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M3 16v3a2 2 0 0 0 2 2h3" />
                   </svg>
-                </button>
+                </IconButton>
               </div>
             </>
           )}
@@ -803,30 +799,19 @@ export default function SchemaEditor({ conn, changes, pending = [], onPendingCha
           onContextMenu={(e) => e.preventDefault()}
         >
           <div className="truncate px-2.5 pb-1.5 pt-1 text-[11px] font-semibold text-ink-dim">{nodeMenu.table}</div>
-          <button
-            className={`${exportItem} disabled:pointer-events-none disabled:opacity-40`}
-            disabled={nodeMenu.pending}
-            onClick={() => { onOpenTable?.(nodeMenu.table); setNodeMenu(null) }}
-          >
+          <MenuItem disabled={nodeMenu.pending} onClick={() => { onOpenTable?.(nodeMenu.table); setNodeMenu(null) }}>
             <TableIcon width={14} height={14} /> Open in new tab
-          </button>
-          <button
-            className={`${exportItem} disabled:pointer-events-none disabled:opacity-40`}
-            disabled={nodeMenu.pending}
-            onClick={() => { onOpenSchema?.(nodeMenu.table); setNodeMenu(null) }}
-          >
+          </MenuItem>
+          <MenuItem disabled={nodeMenu.pending} onClick={() => { onOpenSchema?.(nodeMenu.table); setNodeMenu(null) }}>
             <ColumnsIcon width={14} height={14} /> View table schema
-          </button>
-          <button className={exportItem} onClick={() => { setSelected(nodeMenu.table); setNodeMenu(null) }}>
+          </MenuItem>
+          <MenuItem onClick={() => { setSelected(nodeMenu.table); setNodeMenu(null) }}>
             <EditIcon width={14} height={14} /> Edit table
-          </button>
+          </MenuItem>
           <div className="my-1 h-px bg-edge" />
-          <button
-            className={`${exportItem} !text-red hover:!text-red`}
-            onClick={() => { deleteTable(nodeMenu.table, nodeMenu.pending); setNodeMenu(null) }}
-          >
+          <MenuItem danger className="!text-red" onClick={() => { deleteTable(nodeMenu.table, nodeMenu.pending); setNodeMenu(null) }}>
             <TrashIcon width={14} height={14} /> Delete table
-          </button>
+          </MenuItem>
         </div>
       )}
 
@@ -838,23 +823,23 @@ export default function SchemaEditor({ conn, changes, pending = [], onPendingCha
           onClick={(e) => e.stopPropagation()}
           onContextMenu={(e) => e.preventDefault()}
         >
-          <button className={exportItem} onClick={() => { setCreating(true); setMenu(null) }}>
+          <MenuItem onClick={() => { setCreating(true); setMenu(null) }}>
             <PlusIcon width={14} height={14} /> Create new Table
-          </button>
+          </MenuItem>
           <div className="group relative">
-            <button className={`${exportItem} justify-between`}>
+            <MenuItem className="justify-between">
               <span className="flex items-center gap-2">
                 <DownloadIcon width={14} height={14} /> Export
               </span>
               <ChevronRight width={13} height={13} />
-            </button>
+            </MenuItem>
             <div className="absolute left-full top-0 z-10 hidden min-w-[150px] rounded-soft border border-edge-strong bg-elevated shadow-[0_12px_34px_-10px_rgba(0,0,0,0.75)] group-hover:block">
               <ExportOptions onExport={(f) => { exportImage(f); setMenu(null) }} />
             </div>
           </div>
-          <button className={exportItem} onClick={() => { autoLayout(); setMenu(null) }}>
+          <MenuItem onClick={() => { autoLayout(); setMenu(null) }}>
             <WandIcon width={14} height={14} /> Auto arrange
-          </button>
+          </MenuItem>
         </div>
       )}
     </div>

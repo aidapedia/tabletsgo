@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import Button from '@/shared/ui/Button'
+import Button from '@/shared/ui/buttons/Button'
 import { useSlideOver } from '@/shared/hooks/useSlideOver'
 import { ChevronRight, CodeIcon } from '@/shared/ui/icons'
-import { Input } from '@/shared/ui/Input'
+import { Input } from '@/shared/ui/form/Input'
 
 export default function SaveQueryPanel({ sql, defaultName = '', title = 'Save Query', onClose, onSave }) {
   const { show, close } = useSlideOver(onClose)

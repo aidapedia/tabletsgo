@@ -1,5 +1,6 @@
 import { CATEGORIES, specsByCategory } from '@/features/workflow/lib/nodeSpec'
 import type { NodeType } from '@/features/workflow/lib/nodeSpec'
+import MenuItem from '@/shared/ui/navigation/MenuItem'
 
 // Grouped node picker (Trigger / Source / Script / Control). Rendered inside the
 // "+" Popover on the canvas; picking a node adds it at the canvas centre.
@@ -23,11 +24,7 @@ export default function NodePalette({
           {specs.map((spec) => {
             const Icon = spec.icon
             return (
-              <button
-                key={spec.type}
-                onClick={() => onAdd(spec.type)}
-                className="flex w-full items-start gap-2.5 rounded px-2 py-1.5 text-left transition-colors hover:bg-card-hover"
-              >
+              <MenuItem key={spec.type} className="!items-start" onClick={() => onAdd(spec.type)}>
                 <span className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded bg-elevated ${spec.accent}`}>
                   <Icon width={14} height={14} />
                 </span>
@@ -35,7 +32,7 @@ export default function NodePalette({
                   <span className="block truncate text-[12px] font-medium text-ink">{spec.label}</span>
                   <span className="block text-[10px] leading-tight text-ink-faint">{spec.description}</span>
                 </span>
-              </button>
+              </MenuItem>
             )
           })}
         </div>

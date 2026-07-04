@@ -1,6 +1,6 @@
 // Shared, left-aligned page primitives used by every home section page.
 import type { ReactNode } from 'react'
-import Tab from '@/shared/ui/Tab'
+import Tab from '@/shared/ui/navigation/Tab'
 
 // Page header (title + subtitle + optional right-aligned action).
 export function PageHeader({ title, desc, action }: { title: string; desc?: string; action?: ReactNode }) {

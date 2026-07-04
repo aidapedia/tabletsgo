@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import Button from '@/shared/ui/Button'
-import ConfirmDialog from '@/shared/ui/ConfirmDialog'
-import { useToast } from '@/shared/ui/Toast'
-import { Input } from '@/shared/ui/Input'
-import { Label } from '@/shared/ui/Form'
+import Button from '@/shared/ui/buttons/Button'
+import ConfirmDialog from '@/shared/ui/feedback/ConfirmDialog'
+import { useToast } from '@/shared/ui/feedback/Toast'
+import { Input } from '@/shared/ui/form/Input'
+import { Label } from '@/shared/ui/form/Form'
 import { useWorkspaces, updateWorkspace, deleteWorkspace } from '@/features/workspaces'
 
 // General workspace settings: rename the workspace and (admin) delete it.

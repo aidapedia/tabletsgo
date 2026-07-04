@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
-import Button from '@/shared/ui/Button'
-import Checkbox from '@/shared/ui/Checkbox'
-import { Input } from '@/shared/ui/Input'
-import { FormField } from '@/shared/ui/Form'
-import { useToast } from '@/shared/ui/Toast'
+import Button from '@/shared/ui/buttons/Button'
+import Checkbox from '@/shared/ui/form/Checkbox'
+import { Input } from '@/shared/ui/form/Input'
+import { FormField } from '@/shared/ui/form/Form'
+import { useToast } from '@/shared/ui/feedback/Toast'
 import { getWorkspace, updateWorkspace } from '@/features/workspaces/api'
 
 // SMTP config for sending member-invite emails. Stored per workspace; Docker

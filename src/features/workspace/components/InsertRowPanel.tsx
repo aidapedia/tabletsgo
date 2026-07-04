@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { getColumns } from '@/shared/api/database'
-import Button from '@/shared/ui/Button'
-import Segmented from '@/shared/ui/Segmented'
+import Button from '@/shared/ui/buttons/Button'
+import IconButton from '@/shared/ui/buttons/IconButton'
+import TextButton from '@/shared/ui/buttons/TextButton'
+import Segmented from '@/shared/ui/navigation/Segmented'
 import { useSlideOver } from '@/shared/hooks/useSlideOver'
 import { ChevronRight } from '@/shared/ui/icons'
-import { Input, Textarea } from '@/shared/ui/Input'
+import { Input, Textarea } from '@/shared/ui/form/Input'
 
 const NUMERIC = /int|real|numeric|decimal|float|double|serial/i
 const isTextArea = (t) => /text|clob|json/i.test(t || '')
@@ -140,13 +142,9 @@ export default function InsertRowPanel({ conn, table, onClose, onStage }) {
         {/* Header */}
         <div className="flex items-center justify-between border-b border-edge px-5 py-4">
           <h3 className="text-base font-bold">Insert New Row</h3>
-          <button
-            className="flex h-8 w-8 items-center justify-center rounded-soft text-ink-dim hover:bg-elevated hover:text-ink"
-            onClick={() => close()}
-            aria-label="Close"
-          >
+          <IconButton size="lg" onClick={() => close()} aria-label="Close">
             <ChevronRight />
-          </button>
+          </IconButton>
         </div>
 
         {/* Fields / JSON toggle */}
@@ -187,13 +185,9 @@ export default function InsertRowPanel({ conn, table, onClose, onStage }) {
                         <span className="rounded bg-green/15 px-1.5 py-0.5 text-[9px] font-bold tracking-wide text-green-bright">PK</span>
                       )}
                     </div>
-                    <button
-                      type="button"
-                      className="text-[11px] text-ink-dim hover:text-ink"
-                      onClick={() => document.getElementById(fid)?.focus()}
-                    >
+                    <TextButton className="!text-[11px]" onClick={() => document.getElementById(fid)?.focus()}>
                       Set value
-                    </button>
+                    </TextButton>
                   </div>
                   {isTextArea(col.type) ? (
                     <Textarea

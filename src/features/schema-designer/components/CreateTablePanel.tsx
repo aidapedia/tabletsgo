@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import { getColumns, getSchema } from '@/shared/api/database'
-import Button from '@/shared/ui/Button'
+import Button from '@/shared/ui/buttons/Button'
+import IconButton from '@/shared/ui/buttons/IconButton'
+import TextButton from '@/shared/ui/buttons/TextButton'
 import { useSlideOver } from '@/shared/hooks/useSlideOver'
 import { ChevronRight, PlusIcon } from '@/shared/ui/icons'
-import { Input } from '@/shared/ui/Input'
-import { FormField, Label } from '@/shared/ui/Form'
+import { Input } from '@/shared/ui/form/Input'
+import { FormField, Label } from '@/shared/ui/form/Form'
 import { ColumnField, colDef, newColumn, useColumnTypes } from '@/features/schema-designer/components/columnFields'
 
 export default function CreateTablePanel({ conn, initialTable, onClose, onStage }: any) {
@@ -91,14 +93,9 @@ export default function CreateTablePanel({ conn, initialTable, onClose, onStage 
         <form onSubmit={handleSubmit} className="flex h-full flex-col">
           <div className="flex shrink-0 items-center justify-between border-b border-edge px-5 py-4">
             <h3 className="text-sm font-bold">{isEdit ? 'Edit Table' : 'Create Table'}</h3>
-            <button
-              type="button"
-              className="flex h-8 w-8 items-center justify-center rounded-soft text-ink-dim hover:bg-elevated hover:text-ink"
-              onClick={() => close()}
-              aria-label="Close"
-            >
+            <IconButton size="lg" onClick={() => close()} aria-label="Close">
               <ChevronRight />
-            </button>
+            </IconButton>
           </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
@@ -144,13 +141,9 @@ export default function CreateTablePanel({ conn, initialTable, onClose, onStage 
               )}
             </div>
 
-            <button
-              type="button"
-              className="mt-3 inline-flex items-center gap-1.5 text-[11px] font-semibold text-green hover:text-green-bright"
-              onClick={addCol}
-            >
+            <TextButton tone="green" className="mt-3 !text-[11px] font-semibold" onClick={addCol}>
               <PlusIcon width={14} height={14} /> Add column
-            </button>
+            </TextButton>
 
             {isEdit && (
               <p className="mt-3 text-[11px] text-ink-faint">

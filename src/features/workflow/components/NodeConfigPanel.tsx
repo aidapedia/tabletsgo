@@ -1,9 +1,9 @@
-import Button from '@/shared/ui/Button'
-import Select from '@/shared/ui/Select'
-import IconButton from '@/shared/ui/IconButton'
+import Button from '@/shared/ui/buttons/Button'
+import Select from '@/shared/ui/form/Select'
+import IconButton from '@/shared/ui/buttons/IconButton'
 import SqlEditor from '@/shared/ui/SqlEditor'
-import { Input, Textarea, controlClass } from '@/shared/ui/Input'
-import { FormField, Label } from '@/shared/ui/Form'
+import { Input, Textarea, controlClass } from '@/shared/ui/form/Input'
+import { FormField, Label } from '@/shared/ui/form/Form'
 import { useSlideOver } from '@/shared/hooks/useSlideOver'
 import { ChevronRight, PlusIcon, TrashIcon } from '@/shared/ui/icons'
 import { NODE_SPECS } from '@/features/workflow/lib/nodeSpec'
@@ -51,13 +51,9 @@ export default function NodeConfigPanel({ node, onChange, onChangeType, allowTyp
               <p className="text-[10px] uppercase tracking-wide text-ink-faint">{spec.category}</p>
             </div>
           </div>
-          <button
-            className="flex h-8 w-8 items-center justify-center rounded-soft text-ink-dim hover:bg-elevated hover:text-ink"
-            onClick={() => close()}
-            aria-label="Close"
-          >
+          <IconButton size="lg" onClick={() => close()} aria-label="Close">
             <ChevronRight />
-          </button>
+          </IconButton>
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">

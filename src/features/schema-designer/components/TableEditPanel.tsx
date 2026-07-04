@@ -1,12 +1,14 @@
 import { useState } from 'react'
-import Button from '@/shared/ui/Button'
-import Checkbox from '@/shared/ui/Checkbox'
-import Select from '@/shared/ui/Select'
-import Tooltip from '@/shared/ui/Tooltip'
+import Button from '@/shared/ui/buttons/Button'
+import IconButton from '@/shared/ui/buttons/IconButton'
+import TextButton from '@/shared/ui/buttons/TextButton'
+import Checkbox from '@/shared/ui/form/Checkbox'
+import Select from '@/shared/ui/form/Select'
+import Tooltip from '@/shared/ui/overlay/Tooltip'
 import { useSlideOver } from '@/shared/hooks/useSlideOver'
 import { ChevronRight, PlusIcon, TrashIcon } from '@/shared/ui/icons'
-import { controlClass } from '@/shared/ui/Input'
-import { Label } from '@/shared/ui/Form'
+import { controlClass } from '@/shared/ui/form/Input'
+import { Label } from '@/shared/ui/form/Form'
 import { ColumnField, FK_ACTIONS, colDef, newColumn } from '@/features/schema-designer/components/columnFields'
 
 // Treat the SQL default (NO ACTION) as "unspecified" so it round-trips cleanly.
@@ -129,13 +131,9 @@ export default function TableEditPanel({ table, dialect, types, tableNames = [],
       >
         <div className="flex shrink-0 items-center justify-between border-b border-edge px-5 py-4">
           <h3 className="text-sm font-bold">{table.name}</h3>
-          <button
-            className="flex h-8 w-8 items-center justify-center rounded-soft text-ink-dim hover:bg-elevated hover:text-ink"
-            onClick={() => close()}
-            aria-label="Close"
-          >
+          <IconButton size="lg" onClick={() => close()} aria-label="Close">
             <ChevronRight />
-          </button>
+          </IconButton>
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
@@ -175,23 +173,18 @@ export default function TableEditPanel({ table, dialect, types, tableNames = [],
                   {c.pk && <span className="shrink-0 rounded bg-green/15 px-1 text-[9px] font-bold text-green-bright">PK</span>}
                   {c.fkEnabled && <span className="shrink-0 rounded bg-amber/15 px-1 text-[9px] font-bold text-amber">FK</span>}
                   {c.drop ? (
-                    <button
-                      type="button"
-                      className="shrink-0 text-[11px] font-semibold text-ink-dim hover:text-ink"
-                      onClick={() => toggleDrop(i)}
-                    >
+                    <TextButton className="shrink-0 !text-[11px] font-semibold" onClick={() => toggleDrop(i)}>
                       Undo
-                    </button>
+                    </TextButton>
                   ) : (
                     <Tooltip label="Drop column" placement="top">
-                      <button
-                        type="button"
-                        className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-[7px] text-ink-dim hover:text-red"
+                      <TextButton
+                        className="h-[26px] w-[26px] shrink-0 justify-center rounded-[7px] hover:!text-red"
                         onClick={() => toggleDrop(i)}
                         aria-label="Drop column"
                       >
                         <TrashIcon width={14} height={14} />
-                      </button>
+                      </TextButton>
                     </Tooltip>
                   )}
                 </div>
@@ -309,13 +302,9 @@ export default function TableEditPanel({ table, dialect, types, tableNames = [],
             ))}
           </div>
 
-          <button
-            type="button"
-            className="mt-3 inline-flex items-center gap-1.5 text-[11px] font-semibold text-green hover:text-green-bright"
-            onClick={addColumn}
-          >
+          <TextButton tone="green" className="mt-3 !text-[11px] font-semibold" onClick={addColumn}>
             <PlusIcon width={14} height={14} /> Add column
-          </button>
+          </TextButton>
 
           <p className="mt-3 text-[11px] text-ink-faint">
             Default can be a literal or expression — e.g. <span className="text-ink-dim">0</span>,{' '}

@@ -1,7 +1,8 @@
 import { useLayoutEffect, useRef, useState } from 'react'
-import Checkbox from '@/shared/ui/Checkbox'
-import Button from '@/shared/ui/Button'
-import Tooltip from '@/shared/ui/Tooltip'
+import Checkbox from '@/shared/ui/form/Checkbox'
+import Button from '@/shared/ui/buttons/Button'
+import TextButton from '@/shared/ui/buttons/TextButton'
+import Tooltip from '@/shared/ui/overlay/Tooltip'
 import { CloseIcon, ExternalLinkIcon } from '@/shared/ui/icons'
 
 // JSON helpers — Postgres JSONB columns arrive as parsed objects/arrays.
@@ -301,14 +302,15 @@ export default function DataGrid({
                           <div className="group/fk flex items-center gap-1">
                             <span className="min-w-0 flex-1 truncate">{cellText(val)}</span>
                             <Tooltip label={`Open ${ref.table} where ${ref.column} = ${cellText(val)}`} placement="left">
-                              <button
+                              <TextButton
+                                tone="faint"
                                 onClick={(e) => { e.stopPropagation(); onOpenReference?.(ref.table, ref.column, val) }}
                                 onDoubleClick={(e) => e.stopPropagation()}
                                 aria-label={`Open ${ref.table}`}
-                                className="shrink-0 text-ink-faint opacity-0 transition-opacity hover:text-green group-hover/fk:opacity-100"
+                                className="shrink-0 opacity-0 hover:!text-green group-hover/fk:opacity-100"
                               >
                                 <ExternalLinkIcon width={13} height={13} />
-                              </button>
+                              </TextButton>
                             </Tooltip>
                           </div>
                         ) : (
@@ -363,9 +365,9 @@ export default function DataGrid({
                   Edit <span className="font-mono text-ink-dim">{editing.col}</span>
                   {kindLabel && <span className="ml-1.5 rounded bg-green/15 px-1.5 text-[10px] font-bold text-green-bright">{kindLabel}</span>}
                 </span>
-                <button onClick={cancelEdit} aria-label="Close" className="text-ink-faint transition-colors hover:text-ink">
+                <TextButton tone="faint" onClick={cancelEdit} aria-label="Close">
                   <CloseIcon width={16} height={16} />
-                </button>
+                </TextButton>
               </div>
 
               {isTextArea ? (
@@ -450,12 +452,9 @@ export default function DataGrid({
                   )}
 
                   {(kind === 'date' || kind === 'time' || kind === 'datetime' || kind === 'number') && (
-                    <button
-                      onClick={() => setDraft('')}
-                      className="self-start text-[11px] text-ink-faint hover:text-ink"
-                    >
+                    <TextButton tone="faint" className="self-start !text-[11px] hover:!text-ink" onClick={() => setDraft('')}>
                       Set NULL
-                    </button>
+                    </TextButton>
                   )}
                 </div>
               )}
