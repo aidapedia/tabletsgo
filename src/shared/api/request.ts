@@ -37,7 +37,12 @@ export async function request<T = any>(path: string, { method = 'GET', body, sig
     body: body !== undefined ? JSON.stringify(body) : undefined,
   })
   const data = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error((data as any)?.error || `${method} ${path} failed (${res.status})`)
+  if (!res.ok) {
+    // A 401 on a call that carried a session token means that token is
+    // expired/invalid — tell the auth store to sign out and bounce to login.
+    if (res.status === 401 && token) window.dispatchEvent(new Event('auth:unauthorized'))
+    throw new Error((data as any)?.error || `${method} ${path} failed (${res.status})`)
+  }
   return data as T
 }
 

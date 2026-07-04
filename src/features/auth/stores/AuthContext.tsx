@@ -1,5 +1,6 @@
-import { createContext, useContext, useState } from 'react'
+import { createContext, useContext, useEffect, useState } from 'react'
 import { request, TOKEN_KEY } from '@/shared/api/request'
+import { useToast } from '@/shared/ui/feedback/Toast'
 
 const AuthContext = createContext(null)
 
@@ -24,6 +25,20 @@ export function AuthProvider({ children }) {
       return null
     }
   })
+  const toast = useToast()
+
+  // Raised by the request wrapper when a call comes back 401 with a token
+  // attached — the session has expired or been revoked server-side. Sign out
+  // locally so RequireAuth redirects to /login.
+  useEffect(() => {
+    const onUnauthorized = () => {
+      clear()
+      setUser(null)
+      toast?.info('Your session has expired. Please log in again.')
+    }
+    window.addEventListener('auth:unauthorized', onUnauthorized)
+    return () => window.removeEventListener('auth:unauthorized', onUnauthorized)
+  }, [toast])
 
   const login = async (email, password) => {
     const { user: u, token } = await request('/auth/login', { method: 'POST', body: { username: email, password } })
