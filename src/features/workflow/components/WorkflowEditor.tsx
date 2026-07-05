@@ -13,7 +13,7 @@ import IconButton from '@/shared/ui/buttons/IconButton'
 import TextButton from '@/shared/ui/buttons/TextButton'
 import Popover from '@/shared/ui/overlay/Popover'
 import { useToast } from '@/shared/ui/feedback/Toast'
-import { PlayIcon, PlusIcon } from '@/shared/ui/icons'
+import { ClockIcon, PlayIcon, PlusIcon } from '@/shared/ui/icons'
 import { getSchema } from '@/shared/api/database'
 import type { SqlSchema } from '@/shared/ui/SqlEditor'
 import { getWorkflow, updateWorkflow, runWorkflow } from '@/features/workflow/lib/api'
@@ -47,6 +47,8 @@ export default function WorkflowEditor({ conn, workflowId }: any) {
   const [running, setRunning] = useState(false)
   const [result, setResult] = useState<RunResult | null>(null)
   const [logOpen, setLogOpen] = useState(false)
+  const [isProtected, setIsProtected] = useState(false)
+  const [scheduleEnabled, setScheduleEnabled] = useState(false)
   // Right-click "add node" menu: screen coords for placement + flow coords for the node.
   const [menu, setMenu] = useState<{ x: number; y: number; flow: { x: number; y: number } } | null>(null)
   // Table→columns map for the query node's SQL autocomplete (same source as the query tab).
@@ -66,6 +68,8 @@ export default function WorkflowEditor({ conn, workflowId }: any) {
         if (!alive) return
         setNodes(wf.graph?.nodes || [])
         setEdges(wf.graph?.edges || [])
+        setIsProtected(!!wf.protected)
+        setScheduleEnabled(!!wf.scheduleEnabled)
         loadedFor.current = workflowId
         setLoading(false)
       })
@@ -234,6 +238,22 @@ export default function WorkflowEditor({ conn, workflowId }: any) {
 
   useShortcut('workflow.run', run)
 
+  // Active toggle requires exactly one Schedule trigger node configured with a
+  // real frequency (hourly/daily) — otherwise there's nothing for the cron
+  // scheduler to fire on.
+  const scheduleNode = useMemo(() => nodes.find((n) => n.type === 'schedule'), [nodes])
+  const canSchedule = !!scheduleNode && scheduleNode.data?.frequency && scheduleNode.data.frequency !== 'manual'
+  const toggleSchedule = async () => {
+    const next = !scheduleEnabled
+    setScheduleEnabled(next)
+    try {
+      await updateWorkflow(conn.id, workflowId, { scheduleEnabled: next })
+    } catch (e: any) {
+      setScheduleEnabled(!next)
+      toast.error(`Couldn't update schedule: ${e.message}`)
+    }
+  }
+
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <div className="flex items-center gap-2 border-b border-edge px-3 py-2">
@@ -246,6 +266,19 @@ export default function WorkflowEditor({ conn, workflowId }: any) {
         <span className="ml-1 text-[11px] text-ink-faint">
           {conn.name} · {nodes.length} node{nodes.length === 1 ? '' : 's'}
         </span>
+        {canSchedule && (
+          <Button
+            variant="ghost"
+            size="sm"
+            icon={ClockIcon}
+            active={scheduleEnabled}
+            className={scheduleEnabled ? '!text-green-bright' : ''}
+            onClick={toggleSchedule}
+          >
+            {scheduleEnabled ? 'Active' : 'Paused'}
+          </Button>
+        )}
+        {isProtected && <span className="text-[10px] uppercase tracking-wide text-ink-faint">Protected</span>}
         {result && !logOpen && (
           <TextButton
             className="ml-auto !text-[11px] underline-offset-2 hover:underline"
@@ -362,6 +395,7 @@ export default function WorkflowEditor({ conn, workflowId }: any) {
           allowType={(t: NodeType) => canChangeTo(selectedNode.id, t)}
           schema={schema}
           dialect={conn.type}
+          workspaceId={conn.workspaceId}
           onDelete={deleteNode}
           onClose={deselect}
         />

@@ -491,7 +491,7 @@ export default function Workspace() {
   const newWorkflow = async () => {
     try {
       const wf = await createWorkflow(id, `Workflow ${workflows.length + 1}`)
-      setWorkflows((prev) => [{ id: wf.id, name: wf.name, ts: Date.now() }, ...prev])
+      setWorkflows((prev) => [{ id: wf.id, name: wf.name, ts: Date.now(), protected: false, scheduleEnabled: false }, ...prev])
       openWorkflow(wf)
     } catch (e) {
       toast.error(`Couldn't create workflow: ${e.message}`)

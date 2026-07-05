@@ -11,10 +11,17 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import { randomUUID, createHash, randomBytes, createCipheriv, createDecipheriv, scryptSync } from 'crypto'
 import vm from 'node:vm'
+import { execFile } from 'child_process'
+import { promisify } from 'util'
+import { pipeline } from 'stream/promises'
 import Database from 'better-sqlite3'
 import nodemailer from 'nodemailer'
+import cron from 'node-cron'
+import { S3Client, PutObjectCommand, GetObjectCommand, HeadBucketCommand } from '@aws-sdk/client-s3'
 import pkg from 'pg'
 const { Client, Pool } = pkg
+
+const execFileAsync = promisify(execFile)
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const app = express()
@@ -51,16 +58,20 @@ const sha256 = (s) => createHash('sha256').update(String(s)).digest('hex')
 
 // ---- Connection credential encryption (AES-256-GCM) ----
 const CRED_KEY = scryptSync(process.env.CONNECTION_ENCRYPTION_KEY, 'tabletsgo-connections', 32)
-function encryptSecret(plaintext) {
+// Storage destination credentials (S3 access/secret keys) use a distinct
+// derived key — same passphrase, different scrypt salt — for namespace
+// separation from connection credentials.
+const STORAGE_CRED_KEY = scryptSync(process.env.CONNECTION_ENCRYPTION_KEY, 'tabletsgo-storage', 32)
+function encryptSecret(plaintext, key = CRED_KEY) {
   const iv = randomBytes(12)
-  const cipher = createCipheriv('aes-256-gcm', CRED_KEY, iv)
+  const cipher = createCipheriv('aes-256-gcm', key, iv)
   const ciphertext = Buffer.concat([cipher.update(String(plaintext), 'utf8'), cipher.final()])
   return `${iv.toString('hex')}:${cipher.getAuthTag().toString('hex')}:${ciphertext.toString('hex')}`
 }
-function decryptSecret(payload) {
+function decryptSecret(payload, key = CRED_KEY) {
   if (!payload) return ''
   const [ivHex, tagHex, dataHex] = payload.split(':')
-  const decipher = createDecipheriv('aes-256-gcm', CRED_KEY, Buffer.from(ivHex, 'hex'))
+  const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(ivHex, 'hex'))
   decipher.setAuthTag(Buffer.from(tagHex, 'hex'))
   return Buffer.concat([decipher.update(Buffer.from(dataHex, 'hex')), decipher.final()]).toString('utf8')
 }
@@ -111,6 +122,32 @@ function initMetaDb() {
       graph TEXT,                  -- JSON { nodes, edges }
       ts INTEGER
     );
+    CREATE TABLE IF NOT EXISTS storage_destinations (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      endpoint TEXT,              -- custom endpoint (MinIO/R2/B2/…); null = AWS default
+      region TEXT,
+      bucket TEXT NOT NULL,
+      path_prefix TEXT,
+      force_path_style INTEGER,   -- 0/1 — required by most non-AWS S3-compatible services
+      credentials TEXT,           -- AES-256-GCM: JSON {accessKeyId, secretAccessKey, sessionToken?}
+      created_at INTEGER,
+      updated_at INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS workflow_runs (
+      id TEXT PRIMARY KEY,
+      workflow_id TEXT NOT NULL,
+      connection_id TEXT NOT NULL,  -- denormalized for the calendar aggregate query
+      trigger_kind TEXT NOT NULL,   -- 'manual' | 'schedule'
+      status TEXT NOT NULL,         -- 'success' | 'failed'
+      log TEXT,                     -- JSON: the per-node log[] runWorkflow() produces
+      error TEXT,
+      started_at INTEGER NOT NULL,
+      finished_at INTEGER,
+      ts INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_workflow_runs_conn_day ON workflow_runs(connection_id, started_at);
     CREATE TABLE IF NOT EXISTS query_history (
       id TEXT PRIMARY KEY,
       connection_id TEXT NOT NULL,
@@ -174,6 +211,11 @@ function initMetaDb() {
   addColumn('connections', 'credentials TEXT')
   addColumn('connections', 'schema_version INTEGER')
   addColumn('connections', 'updated_at INTEGER')
+  // Workflows: protected = undeletable (e.g. the auto-created backup workflow);
+  // schedule_enabled/next_run_at drive the cron scheduler (see runDueWorkflows).
+  addColumn('workflows', 'protected INTEGER DEFAULT 0')
+  addColumn('workflows', 'schedule_enabled INTEGER DEFAULT 0')
+  addColumn('workflows', 'next_run_at INTEGER')
 
   const hasUsers = !!meta.prepare('SELECT 1 FROM users LIMIT 1').get()
 
@@ -449,6 +491,59 @@ const deleteConnectionRow = (id) => meta.prepare('DELETE FROM connections WHERE 
 const bumpSchemaVersion = (id) => {
   meta.prepare('UPDATE connections SET schema_version = schema_version + 1, updated_at = ? WHERE id = ?').run(Date.now(), id)
   return meta.prepare('SELECT schema_version FROM connections WHERE id = ?').get(id)?.schema_version
+}
+
+// ---- Storage destination helpers (S3-compatible: AWS S3, MinIO, R2, B2, …) ----
+// Same split as connections: dialect-agnostic fields as plain columns, the
+// access/secret key pair encrypted into `credentials` (with a distinct key).
+function rowToStorage(row) {
+  if (!row) return null
+  let credentials = {}
+  if (row.credentials) {
+    try {
+      credentials = JSON.parse(decryptSecret(row.credentials, STORAGE_CRED_KEY))
+    } catch {
+      credentials = {}
+    }
+  }
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    name: row.name,
+    endpoint: row.endpoint || '',
+    region: row.region || '',
+    bucket: row.bucket,
+    pathPrefix: row.path_prefix || '',
+    forcePathStyle: !!row.force_path_style,
+    accessKeyId: credentials.accessKeyId || '',
+    secretAccessKey: credentials.secretAccessKey || '',
+    sessionToken: credentials.sessionToken || undefined,
+  }
+}
+const getStorage = (id) => rowToStorage(meta.prepare('SELECT * FROM storage_destinations WHERE id = ?').get(id))
+const listStorageRows = (workspaceId) =>
+  meta.prepare('SELECT * FROM storage_destinations WHERE workspace_id = ? ORDER BY created_at').all(workspaceId).map(rowToStorage)
+
+// Build an S3 client for a storage destination. Cached per destination id so
+// repeated uploads (e.g. within one backup run) reuse the same client.
+const s3Clients = new Map()
+function getS3Client(dest) {
+  if (!s3Clients.has(dest.id)) {
+    s3Clients.set(
+      dest.id,
+      new S3Client({
+        endpoint: dest.endpoint || undefined,
+        region: dest.region || 'us-east-1',
+        forcePathStyle: !!dest.forcePathStyle,
+        credentials: {
+          accessKeyId: dest.accessKeyId,
+          secretAccessKey: dest.secretAccessKey,
+          sessionToken: dest.sessionToken,
+        },
+      })
+    )
+  }
+  return s3Clients.get(dest.id)
 }
 
 // ============================================================================
@@ -830,6 +925,62 @@ async function execWorkflowQuery(conn, sql) {
   return { error: `Unsupported connection type: ${conn.type}` }
 }
 
+// ---- "Export SQL" / "Store to Storage" node execution ----
+const BACKUP_TMP_DIR = path.join(__dirname, 'data', 'tmp-backups')
+fs.mkdirSync(BACKUP_TMP_DIR, { recursive: true })
+const sanitizeForKey = (s) => String(s || 'connection').replace(/[^a-zA-Z0-9._-]+/g, '-')
+// The AWS SDK's undici-based HTTP handler throws an AggregateError with an
+// empty `.message` for connection failures (ECONNREFUSED, DNS, TLS, …) — fall
+// back to `.code` or the first aggregated error so callers see something useful.
+const describeError = (err) => err.message || err.code || err.errors?.[0]?.message || String(err)
+
+// Dumps the connection's full database to a local file, dialect-dispatched
+// like execWorkflowQuery. Output: { filePath, sizeBytes, dialect }.
+async function execExportSql(conn) {
+  const tmpPath = path.join(BACKUP_TMP_DIR, `${randomUUID()}.dump`)
+  if (conn.type === 'sqlite') {
+    // better-sqlite3's online backup API — safe against a half-written page,
+    // unlike a raw fs.copyFile of the live database file.
+    await getSqliteDb(conn.filepath).backup(tmpPath)
+  } else if (conn.type === 'postgresql') {
+    await execFileAsync(
+      'pg_dump',
+      ['-Fc', '--no-owner', '-f', tmpPath, '-h', conn.host, '-p', String(conn.port || 5432), '-U', conn.username, '-d', conn.database],
+      { env: { ...process.env, PGPASSWORD: conn.password || '' } } // password via env, never argv
+    )
+  } else {
+    throw new Error(`Export not supported for connection type: ${conn.type}`)
+  }
+  const sizeBytes = fs.statSync(tmpPath).size
+  return { filePath: tmpPath, sizeBytes, dialect: conn.type }
+}
+
+// Uploads a file (from an upstream node's { filePath } output) to one or more
+// storage destinations, streaming so the file is never buffered in memory.
+async function execStoreToStorage(conn, input, destinationIds) {
+  if (!destinationIds?.length) throw new Error('No storage destinations selected')
+  const dateStr = new Date().toISOString().slice(0, 10)
+  const uploaded = []
+  for (const destId of destinationIds) {
+    const dest = getStorage(destId)
+    if (!dest) {
+      uploaded.push({ destinationId: destId, ok: false, error: 'Storage destination not found' })
+      continue
+    }
+    try {
+      const prefix = dest.pathPrefix ? `${dest.pathPrefix.replace(/^\/+|\/+$/g, '')}/` : ''
+      const key = `${prefix}${sanitizeForKey(conn.name)}/${dateStr}/${path.basename(input.filePath)}`
+      await getS3Client(dest).send(
+        new PutObjectCommand({ Bucket: dest.bucket, Key: key, Body: fs.createReadStream(input.filePath) })
+      )
+      uploaded.push({ destinationId: destId, ok: true, key, sizeBytes: input.sizeBytes })
+    } catch (err) {
+      uploaded.push({ destinationId: destId, ok: false, error: describeError(err) })
+    }
+  }
+  return { uploaded }
+}
+
 // Execute a workflow graph. Threads each node's output to its successor(s).
 // Returns { ok, log, output, error? }.
 async function runWorkflow(conn, graph) {
@@ -838,7 +989,11 @@ async function runWorkflow(conn, graph) {
   const outgoing = (id, handle = 'out') => edges.filter((e) => e.source === id && (e.sourceHandle || 'out') === handle)
   const log = []
   const started = Date.now()
-  const OVERALL_MS = 20000
+  // Export/Store nodes dump+upload a whole database, which can take well past
+  // 20s for a large one — give graphs using them a much longer budget than the
+  // ordinary query/http/js automation graphs this guard is meant to bound.
+  const isLongRunning = (graph?.nodes || []).some((n) => n.type === 'export' || n.type === 'storage')
+  const OVERALL_MS = isLongRunning ? 30 * 60 * 1000 : 20000
   const STEP_BUDGET = 5000
   const MAX_ITER = 1000
   let steps = 0
@@ -879,6 +1034,12 @@ async function runWorkflow(conn, graph) {
         const { out, logs } = runUserJs(d.code || 'return input', input)
         if (logs.length) entry.logs = logs
         output = out
+      } else if (node.type === 'export') {
+        output = await execExportSql(conn)
+      } else if (node.type === 'storage') {
+        if (!input?.filePath) throw new Error('No file to store — connect this after a node that outputs a file (e.g. Export SQL)')
+        output = await execStoreToStorage(conn, input, d.destinationIds || [])
+        fs.rm(input.filePath, { force: true }, () => {}) // best-effort cleanup, now that storage has read it
       } else {
         output = input
       }
@@ -976,6 +1137,46 @@ async function runWorkflow(conn, graph) {
   } catch (err) {
     return { ok: false, log, error: err.message }
   }
+}
+
+// Run a workflow and persist the outcome to workflow_runs — shared by the
+// manual "Run" route and the scheduler tick, so both count toward a workflow's
+// run history (and, for the backup workflow, its monitoring calendar).
+async function executeAndRecord(workflowId, connectionId, conn, graph, triggerKind) {
+  const startedAt = Date.now()
+  const result = await runWorkflow(conn, graph)
+  meta
+    .prepare(
+      `INSERT INTO workflow_runs (id, workflow_id, connection_id, trigger_kind, status, log, error, started_at, finished_at, ts)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(
+      randomUUID(),
+      workflowId,
+      connectionId,
+      triggerKind,
+      result.ok ? 'success' : 'failed',
+      JSON.stringify(result.log || []),
+      result.error || null,
+      startedAt,
+      Date.now(),
+      startedAt
+    )
+  return result
+}
+
+// Next epoch-ms this frequency should fire, in UTC. Hourly: top of the next
+// hour. Daily: the next occurrence of hourOfDay (today if not yet passed).
+function computeNextRun(frequency, hourOfDay, from = Date.now()) {
+  const d = new Date(from)
+  if (frequency === 'hourly') {
+    d.setUTCMinutes(0, 0, 0)
+    d.setUTCHours(d.getUTCHours() + 1)
+    return d.getTime()
+  }
+  d.setUTCHours(hourOfDay || 0, 0, 0, 0)
+  if (d.getTime() <= from) d.setUTCDate(d.getUTCDate() + 1)
+  return d.getTime()
 }
 
 // ============================================================================
@@ -1116,12 +1317,14 @@ app.get('/api/workspaces', (req, res) => {
   if (!user) return
   const rows = meta
     .prepare(
-      `SELECT w.id, w.name, w.created_at, m.role
+      `SELECT w.id, w.name, w.created_at, w.settings, m.role
        FROM workspace_members m JOIN workspaces w ON w.id = m.workspace_id
        WHERE m.user_id = ? ORDER BY w.created_at`
     )
     .all(user.id)
-  res.json(rows.map((r) => ({ id: r.id, name: r.name, role: r.role, createdAt: r.created_at })))
+  // Beta experiment flags ship in the list response (not just the detail route)
+  // so nav-level gating (e.g. the S3/Backup item) doesn't need a second fetch.
+  res.json(rows.map((r) => ({ id: r.id, name: r.name, role: r.role, createdAt: r.created_at, experiments: safeJson(r.settings).experiments || {} })))
 })
 
 // Create a workspace — caller becomes its admin.
@@ -1144,15 +1347,15 @@ app.get('/api/workspaces/:id', (req, res) => {
   if (!user) return
   const ws = workspaceForUser(req.params.id, user.id)
   if (!ws) return res.status(404).json({ error: 'Workspace not found' })
+  const row = meta.prepare('SELECT settings FROM workspaces WHERE id = ?').get(req.params.id)
+  const settings = safeJson(row?.settings)
+  // Beta experiment flags — visible to every member (they gate what the whole
+  // workspace sees, e.g. the S3/Backup nav item), toggleable by admins only
+  // (enforced in the PUT route below).
+  ws.experiments = settings.experiments || {}
   // Admins also get the (password-masked) SMTP config for the settings form.
   if (ws.role === 'admin') {
-    const row = meta.prepare('SELECT settings FROM workspaces WHERE id = ?').get(req.params.id)
-    let smtp = {}
-    try {
-      smtp = JSON.parse(row?.settings || '{}').smtp || {}
-    } catch {
-      smtp = {}
-    }
+    const smtp = settings.smtp || {}
     ws.smtp = { host: smtp.host || '', port: smtp.port || '', secure: !!smtp.secure, user: smtp.user || '', from: smtp.from || '', hasPassword: !!smtp.pass }
     ws.smtpEnvFallback = !!process.env.SMTP_HOST
     // Non-secret env values, so the settings form can show what's actually in effect
@@ -1170,33 +1373,30 @@ app.get('/api/workspaces/:id', (req, res) => {
   res.json(ws)
 })
 
-// Rename + SMTP settings (admin).
+// Rename + SMTP settings + beta experiment flags (admin).
 app.put('/api/workspaces/:id', (req, res) => {
   const user = requireAuth(req, res)
   if (!user) return
   if (memberRole(req.params.id, user.id) !== 'admin') return res.status(403).json({ error: 'Admin only' })
   const row = meta.prepare('SELECT settings FROM workspaces WHERE id = ?').get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Workspace not found' })
-  const { name, smtp } = req.body || {}
+  const { name, smtp, experiments } = req.body || {}
   if (name?.trim()) meta.prepare('UPDATE workspaces SET name = ? WHERE id = ?').run(name.trim(), req.params.id)
-  if (smtp) {
-    const settings = (() => {
-      try {
-        return JSON.parse(row.settings || '{}')
-      } catch {
-        return {}
+  if (smtp || experiments) {
+    const settings = safeJson(row.settings)
+    if (smtp) {
+      const prev = settings.smtp || {}
+      settings.smtp = {
+        host: smtp.host ?? prev.host,
+        port: smtp.port ?? prev.port,
+        secure: smtp.secure ?? prev.secure,
+        user: smtp.user ?? prev.user,
+        from: smtp.from ?? prev.from,
+        // Keep the stored password unless a new one is supplied (never wiped by a save).
+        pass: smtp.pass ? smtp.pass : prev.pass,
       }
-    })()
-    const prev = settings.smtp || {}
-    settings.smtp = {
-      host: smtp.host ?? prev.host,
-      port: smtp.port ?? prev.port,
-      secure: smtp.secure ?? prev.secure,
-      user: smtp.user ?? prev.user,
-      from: smtp.from ?? prev.from,
-      // Keep the stored password unless a new one is supplied (never wiped by a save).
-      pass: smtp.pass ? smtp.pass : prev.pass,
     }
+    if (experiments) settings.experiments = { ...(settings.experiments || {}), ...experiments }
     meta.prepare('UPDATE workspaces SET settings = ? WHERE id = ?').run(JSON.stringify(settings), req.params.id)
   }
   res.json({ ok: true })
@@ -1420,6 +1620,110 @@ app.post('/api/connections', (req, res) => {
   res.json(conn)
 })
 
+// ---- Storage destinations (S3-compatible, workspace-scoped) ----
+app.get('/api/storages', (req, res) => {
+  const user = requireAuth(req, res)
+  if (!user) return
+  const workspaceId = req.query.workspace
+  if (!workspaceId) return res.json([])
+  if (!memberRole(workspaceId, user.id)) return res.status(403).json({ error: 'Forbidden' })
+  res.json(listStorageRows(workspaceId))
+})
+
+app.post('/api/storages', (req, res) => {
+  const user = requireAuth(req, res)
+  if (!user) return
+  const { workspaceId, name, endpoint, region, bucket, pathPrefix, forcePathStyle, accessKeyId, secretAccessKey, sessionToken } = req.body || {}
+  if (!workspaceId || !memberRole(workspaceId, user.id)) return res.status(403).json({ error: 'Forbidden' })
+  if (!name?.trim() || !bucket?.trim()) return res.status(400).json({ error: 'A name and bucket are required' })
+  const now = Date.now()
+  const entry = {
+    id: randomUUID(),
+    workspace_id: workspaceId,
+    name: name.trim(),
+    endpoint: endpoint?.trim() || null,
+    region: region?.trim() || null,
+    bucket: bucket.trim(),
+    path_prefix: pathPrefix?.trim() || null,
+    force_path_style: forcePathStyle ? 1 : 0,
+    credentials: encryptSecret(JSON.stringify({ accessKeyId, secretAccessKey, sessionToken }), STORAGE_CRED_KEY),
+  }
+  meta
+    .prepare(
+      `INSERT INTO storage_destinations
+       (id, workspace_id, name, endpoint, region, bucket, path_prefix, force_path_style, credentials, created_at, updated_at)
+       VALUES (@id, @workspace_id, @name, @endpoint, @region, @bucket, @path_prefix, @force_path_style, @credentials, @now, @now)`
+    )
+    .run({ ...entry, now })
+  res.json(getStorage(entry.id))
+})
+
+// Guard every per-storage route: caller must be a member of the destination's workspace.
+app.use('/api/storages/:sid', (req, res, next) => {
+  const user = requireAuth(req, res)
+  if (!user) return
+  const dest = getStorage(req.params.sid)
+  if (!dest) return res.status(404).json({ error: 'Storage destination not found' })
+  if (!memberRole(dest.workspaceId, user.id)) return res.status(403).json({ error: 'Forbidden' })
+  next()
+})
+
+app.put('/api/storages/:sid', (req, res) => {
+  const existing = getStorage(req.params.sid)
+  const body = req.body || {}
+  const merged = { ...existing, ...body }
+  if (!merged.name?.trim() || !merged.bucket?.trim()) return res.status(400).json({ error: 'A name and bucket are required' })
+  meta
+    .prepare(
+      `UPDATE storage_destinations
+       SET name = ?, endpoint = ?, region = ?, bucket = ?, path_prefix = ?, force_path_style = ?, credentials = ?, updated_at = ?
+       WHERE id = ?`
+    )
+    .run(
+      merged.name.trim(),
+      merged.endpoint?.trim() || null,
+      merged.region?.trim() || null,
+      merged.bucket.trim(),
+      merged.pathPrefix?.trim() || null,
+      merged.forcePathStyle ? 1 : 0,
+      encryptSecret(
+        JSON.stringify({ accessKeyId: merged.accessKeyId, secretAccessKey: merged.secretAccessKey, sessionToken: merged.sessionToken }),
+        STORAGE_CRED_KEY
+      ),
+      Date.now(),
+      req.params.sid
+    )
+  s3Clients.delete(req.params.sid) // credentials/endpoint may have changed
+  res.json(getStorage(req.params.sid))
+})
+
+app.delete('/api/storages/:sid', (req, res) => {
+  // Refuse if any workflow's graph still references this destination from a
+  // `storage` node — deleting it out from under a scheduled backup would fail
+  // silently at run time otherwise.
+  const inUse = meta
+    .prepare(`SELECT graph FROM workflows`)
+    .all()
+    .some((w) => {
+      const graph = safeJson(w.graph)
+      return (graph?.nodes || []).some((n) => n.type === 'storage' && (n.data?.destinationIds || []).includes(req.params.sid))
+    })
+  if (inUse) return res.status(409).json({ error: 'This storage destination is used by a workflow and cannot be deleted.' })
+  meta.prepare('DELETE FROM storage_destinations WHERE id = ?').run(req.params.sid)
+  s3Clients.delete(req.params.sid)
+  res.json({ ok: true })
+})
+
+app.post('/api/storages/:sid/test', async (req, res) => {
+  const dest = getStorage(req.params.sid)
+  try {
+    await getS3Client(dest).send(new HeadBucketCommand({ Bucket: dest.bucket }))
+    res.json({ ok: true, message: `Connected! Bucket "${dest.bucket}" is reachable.` })
+  } catch (error) {
+    res.json({ ok: false, message: describeError(error) })
+  }
+})
+
 // Guard every per-connection route: caller must be a member of the connection's
 // workspace. One mount covers PUT/DELETE /:id and all /:id/* data routes.
 app.use('/api/connections/:id', (req, res, next) => {
@@ -1462,6 +1766,7 @@ app.delete('/api/connections/:id', (req, res) => {
   meta.prepare('DELETE FROM saved_queries WHERE connection_id = ?').run(req.params.id)
   meta.prepare('DELETE FROM saved_folders WHERE connection_id = ?').run(req.params.id)
   meta.prepare('DELETE FROM workflows WHERE connection_id = ?').run(req.params.id)
+  meta.prepare('DELETE FROM workflow_runs WHERE connection_id = ?').run(req.params.id)
   meta.prepare('DELETE FROM query_history WHERE connection_id = ?').run(req.params.id)
   res.json({ ok: true })
 })
@@ -1555,11 +1860,15 @@ app.delete('/api/connections/:id/saved/:sid', (req, res) => {
 })
 
 // ---- Workflows (per connection) ----
+// A workflow is "protected" once a backup schedule owns it (see POST
+// /api/connections/:id/backup-workflow) — shown here like any other workflow
+// (WorkflowsPanel badges it and hides its Delete action) so it stays
+// inspectable/editable in the normal editor; only actual deletion is blocked.
 app.get('/api/connections/:id/workflows', (req, res) => {
   const rows = meta
-    .prepare('SELECT id, name, ts FROM workflows WHERE connection_id = ? ORDER BY ts DESC')
+    .prepare('SELECT id, name, ts, protected, schedule_enabled FROM workflows WHERE connection_id = ? ORDER BY ts DESC')
     .all(req.params.id)
-  res.json(rows)
+  res.json(rows.map((r) => ({ id: r.id, name: r.name, ts: r.ts, protected: !!r.protected, scheduleEnabled: !!r.schedule_enabled })))
 })
 
 app.post('/api/connections/:id/workflows', (req, res) => {
@@ -1569,19 +1878,27 @@ app.post('/api/connections/:id/workflows', (req, res) => {
   meta
     .prepare('INSERT INTO workflows (id, connection_id, name, graph, ts) VALUES (?, ?, ?, ?, ?)')
     .run(entry.id, req.params.id, entry.name, JSON.stringify(entry.graph), entry.ts)
-  res.json(entry)
+  res.json({ ...entry, protected: false, scheduleEnabled: false })
 })
 
 app.get('/api/connections/:id/workflows/:wid', (req, res) => {
   const row = meta
-    .prepare('SELECT id, name, graph FROM workflows WHERE id = ? AND connection_id = ?')
+    .prepare('SELECT id, name, graph, protected, schedule_enabled FROM workflows WHERE id = ? AND connection_id = ?')
     .get(req.params.wid, req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
-  res.json({ id: row.id, name: row.name, graph: safeJson(row.graph) })
+  res.json({
+    id: row.id,
+    name: row.name,
+    graph: safeJson(row.graph),
+    protected: !!row.protected,
+    scheduleEnabled: !!row.schedule_enabled,
+  })
 })
 
 app.put('/api/connections/:id/workflows/:wid', (req, res) => {
   const body = req.body || {}
+  const existing = meta.prepare('SELECT graph, schedule_enabled FROM workflows WHERE id = ? AND connection_id = ?').get(req.params.wid, req.params.id)
+  if (!existing) return res.status(404).json({ error: 'Not found' })
   const sets = []
   const vals = []
   if (body.name != null) {
@@ -1593,7 +1910,24 @@ app.put('/api/connections/:id/workflows/:wid', (req, res) => {
     sets.push('graph = ?')
     vals.push(JSON.stringify(body.graph))
   }
+  if (body.scheduleEnabled != null) {
+    sets.push('schedule_enabled = ?')
+    vals.push(body.scheduleEnabled ? 1 : 0)
+  }
   if (!sets.length) return res.status(400).json({ error: 'Nothing to update' })
+  // Recompute next_run_at whenever the graph or the enabled flag changes —
+  // whichever the request just posted wins over what's already stored.
+  if (body.graph != null || body.scheduleEnabled != null) {
+    const graph = body.graph != null ? body.graph : safeJson(existing.graph)
+    const enabled = body.scheduleEnabled != null ? !!body.scheduleEnabled : !!existing.schedule_enabled
+    const schedNode = (graph?.nodes || []).find((n) => n.type === 'schedule')
+    const nextRun =
+      enabled && schedNode?.data?.frequency && schedNode.data.frequency !== 'manual'
+        ? computeNextRun(schedNode.data.frequency, schedNode.data.hourOfDay)
+        : null
+    sets.push('next_run_at = ?')
+    vals.push(nextRun)
+  }
   const r = meta
     .prepare(`UPDATE workflows SET ${sets.join(', ')} WHERE id = ? AND connection_id = ?`)
     .run(...vals, req.params.wid, req.params.id)
@@ -1602,11 +1936,15 @@ app.put('/api/connections/:id/workflows/:wid', (req, res) => {
 })
 
 app.delete('/api/connections/:id/workflows/:wid', (req, res) => {
+  const row = meta.prepare('SELECT protected FROM workflows WHERE id = ? AND connection_id = ?').get(req.params.wid, req.params.id)
+  if (!row) return res.status(404).json({ error: 'Not found' })
+  if (row.protected) return res.status(409).json({ error: 'This workflow is protected and cannot be deleted.' })
   meta.prepare('DELETE FROM workflows WHERE id = ? AND connection_id = ?').run(req.params.wid, req.params.id)
   res.json({ ok: true })
 })
 
-// Run a workflow — executes the posted graph (unsaved edits) or the stored one.
+// Run a workflow — executes the posted graph (unsaved edits) or the stored
+// one, and records the outcome in workflow_runs (feeds the backup calendar).
 app.post('/api/connections/:id/workflows/:wid/run', async (req, res) => {
   const conn = getConnection(req.params.id)
   if (!conn) return res.status(404).json({ error: 'Connection not found' })
@@ -1616,11 +1954,156 @@ app.post('/api/connections/:id/workflows/:wid/run', async (req, res) => {
     if (!row) return res.status(404).json({ error: 'Not found' })
     graph = safeJson(row.graph)
   }
+  const result = await executeAndRecord(req.params.wid, req.params.id, conn, graph, 'manual')
+  res.json(result)
+})
+
+// ---- Backup (bootstraps a protected, scheduled workflow: Schedule → Export SQL → Store to Storage) ----
+const getBackupWorkflowRow = (connectionId) =>
+  meta.prepare('SELECT * FROM workflows WHERE connection_id = ? AND protected = 1').get(connectionId)
+
+app.post('/api/connections/:id/backup-workflow', (req, res) => {
+  const conn = getConnection(req.params.id)
+  if (!conn) return res.status(404).json({ error: 'Connection not found' })
+  if (!['sqlite', 'postgresql'].includes(conn.type)) {
+    return res.status(400).json({ error: `Backups are not supported for connection type: ${conn.type}` })
+  }
+  if (getBackupWorkflowRow(req.params.id)) return res.status(409).json({ error: 'This connection already has a backup schedule.' })
+  const { frequency, hourOfDay, destinationIds } = req.body || {}
+  if (!['hourly', 'daily'].includes(frequency)) return res.status(400).json({ error: 'Frequency must be hourly or daily' })
+  if (!Array.isArray(destinationIds) || !destinationIds.length) {
+    return res.status(400).json({ error: 'At least one storage destination is required' })
+  }
+  const invalid = destinationIds.some((did) => getStorage(did)?.workspaceId !== conn.workspaceId)
+  if (invalid) return res.status(400).json({ error: 'One or more storage destinations are invalid' })
+
+  const graph = {
+    nodes: [
+      { id: 'trigger', type: 'schedule', position: { x: 60, y: 140 }, data: { frequency, hourOfDay: hourOfDay ?? 0 } },
+      { id: 'export', type: 'export', position: { x: 340, y: 140 }, data: {} },
+      { id: 'store', type: 'storage', position: { x: 620, y: 140 }, data: { destinationIds } },
+    ],
+    edges: [
+      { id: 'e-trigger-export', source: 'trigger', target: 'export' },
+      { id: 'e-export-store', source: 'export', target: 'store' },
+    ],
+  }
+  const id = randomUUID()
+  const now = Date.now()
+  meta
+    .prepare(
+      `INSERT INTO workflows (id, connection_id, name, graph, ts, protected, schedule_enabled, next_run_at)
+       VALUES (?, ?, 'Backup', ?, ?, 1, 1, ?)`
+    )
+    .run(id, req.params.id, JSON.stringify(graph), now, computeNextRun(frequency, hourOfDay ?? 0))
+  res.json({ id, name: 'Backup', protected: true, scheduleEnabled: true, ts: now })
+})
+
+// Current backup schedule for this connection (null if none has been created yet).
+app.get('/api/connections/:id/backup', (req, res) => {
+  const row = getBackupWorkflowRow(req.params.id)
+  if (!row) return res.json({ workflow: null })
+  const graph = safeJson(row.graph)
+  const schedNode = (graph?.nodes || []).find((n) => n.type === 'schedule')
+  const storeNode = (graph?.nodes || []).find((n) => n.type === 'storage')
+  res.json({
+    workflow: {
+      id: row.id,
+      name: row.name,
+      scheduleEnabled: !!row.schedule_enabled,
+      frequency: schedNode?.data?.frequency || 'manual',
+      hourOfDay: schedNode?.data?.hourOfDay ?? 0,
+      destinationIds: storeNode?.data?.destinationIds || [],
+    },
+  })
+})
+
+// Per-day run counts for the backup workflow — feeds the GitHub-style calendar.
+app.get('/api/connections/:id/backup/calendar', (req, res) => {
+  const backupWf = getBackupWorkflowRow(req.params.id)
+  if (!backupWf) return res.json({ days: [] })
+  const days = Math.min(parseInt(req.query.days) || 365, 366)
+  const from = Date.now() - days * 86400000
+  const rows = meta
+    .prepare(
+      `SELECT date(started_at / 1000, 'unixepoch') AS day, COUNT(*) AS runs,
+              SUM(status = 'success') AS success, SUM(status = 'failed') AS failed
+       FROM workflow_runs WHERE workflow_id = ? AND started_at >= ? GROUP BY day ORDER BY day`
+    )
+    .all(backupWf.id, from)
+  res.json({ days: rows })
+})
+
+// Recent backup runs, with the uploaded-artifact info Restore needs.
+app.get('/api/connections/:id/backup/runs', (req, res) => {
+  const backupWf = getBackupWorkflowRow(req.params.id)
+  if (!backupWf) return res.json([])
+  const limit = Math.min(parseInt(req.query.limit) || 50, 500)
+  const rows = meta
+    .prepare(
+      `SELECT id, trigger_kind, status, error, started_at, finished_at, log
+       FROM workflow_runs WHERE workflow_id = ? ORDER BY started_at DESC LIMIT ?`
+    )
+    .all(backupWf.id, limit)
+  res.json(
+    rows.map((r) => {
+      const log = safeJson(r.log) || []
+      const storeEntry = log.find((e) => e.nodeType === 'storage')
+      return {
+        id: r.id,
+        trigger: r.trigger_kind,
+        status: r.status,
+        error: r.error,
+        startedAt: r.started_at,
+        finishedAt: r.finished_at,
+        uploads: storeEntry?.output?.uploaded || [],
+      }
+    })
+  )
+})
+
+// Restore: download a past backup artifact and overwrite the connection's
+// live data in place. Gated by typing the connection's name to confirm.
+app.post('/api/connections/:id/backup/restore', async (req, res) => {
+  const conn = getConnection(req.params.id)
+  if (!conn) return res.status(404).json({ error: 'Connection not found' })
+  const { runId, destinationId, confirmName } = req.body || {}
+  if (confirmName !== conn.name) return res.status(400).json({ error: "Confirmation text doesn't match the connection name." })
+
+  const run = meta.prepare('SELECT * FROM workflow_runs WHERE id = ? AND connection_id = ?').get(runId, req.params.id)
+  if (!run) return res.status(404).json({ error: 'Backup run not found' })
+  const log = safeJson(run.log) || []
+  const storeEntry = log.find((e) => e.nodeType === 'storage')
+  const upload = storeEntry?.output?.uploaded?.find((u) => u.destinationId === destinationId && u.ok)
+  if (!upload?.key) return res.status(400).json({ error: 'No successful upload found for this destination' })
+  const dest = getStorage(destinationId)
+  if (!dest) return res.status(404).json({ error: 'Storage destination not found' })
+
+  const tmpPath = path.join(BACKUP_TMP_DIR, `${randomUUID()}-restore`)
   try {
-    const result = await runWorkflow(conn, graph)
-    res.json(result)
+    const obj = await getS3Client(dest).send(new GetObjectCommand({ Bucket: dest.bucket, Key: upload.key }))
+    await pipeline(obj.Body, fs.createWriteStream(tmpPath))
+
+    if (conn.type === 'sqlite') {
+      sqliteConnections.delete(conn.filepath)
+      const swap = `${conn.filepath}.tmp`
+      fs.copyFileSync(tmpPath, swap)
+      fs.renameSync(swap, conn.filepath) // atomic replace of the live file
+    } else if (conn.type === 'postgresql') {
+      closePostgresPools(conn.id)
+      await execFileAsync(
+        'pg_restore',
+        ['--clean', '--if-exists', '--no-owner', '-h', conn.host, '-p', String(conn.port || 5432), '-U', conn.username, '-d', conn.database, tmpPath],
+        { env: { ...process.env, PGPASSWORD: conn.password || '' } }
+      )
+    } else {
+      return res.status(400).json({ error: `Restore not supported for connection type: ${conn.type}` })
+    }
+    res.json({ ok: true })
   } catch (err) {
-    res.status(500).json({ ok: false, log: [], error: err.message })
+    res.status(500).json({ ok: false, error: describeError(err) })
+  } finally {
+    fs.rm(tmpPath, { force: true }, () => {})
   }
 })
 
@@ -2096,6 +2579,32 @@ app.use((error, req, res, next) => {
   console.error(error)
   res.status(500).json({ error: error.message })
 })
+
+// Find workflows due to run (schedule_enabled + next_run_at reached), execute
+// each, and roll their next_run_at forward. Claiming next_run_at before the
+// run starts means a slow run can't get double-fired by the next tick.
+async function runDueWorkflows() {
+  const due = meta.prepare('SELECT * FROM workflows WHERE schedule_enabled = 1 AND next_run_at <= ?').all(Date.now())
+  for (const wf of due) {
+    const graph = safeJson(wf.graph)
+    const schedNode = (graph?.nodes || []).find((n) => n.type === 'schedule')
+    if (!schedNode?.data?.frequency || schedNode.data.frequency === 'manual') {
+      // Schedule node was edited away from hourly/daily — stop trying to fire it.
+      meta.prepare('UPDATE workflows SET schedule_enabled = 0, next_run_at = NULL WHERE id = ?').run(wf.id)
+      continue
+    }
+    meta.prepare('UPDATE workflows SET next_run_at = ? WHERE id = ?').run(computeNextRun(schedNode.data.frequency, schedNode.data.hourOfDay), wf.id)
+    const conn = getConnection(wf.connection_id)
+    if (!conn) continue
+    executeAndRecord(wf.id, wf.connection_id, conn, graph, 'schedule').catch((e) =>
+      console.error(`Scheduled run failed for workflow ${wf.id}:`, e.message)
+    )
+  }
+}
+
+if (process.env.WORKFLOW_SCHEDULER_ENABLED !== 'false') {
+  cron.schedule('* * * * *', () => runDueWorkflows().catch((e) => console.error('Scheduler tick error:', e.message)))
+}
 
 // Start server
 app.listen(PORT, () => {

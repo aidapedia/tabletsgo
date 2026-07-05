@@ -3,10 +3,10 @@
 // canvas. Drives the palette, the node cards, and the config panel.
 
 import type { ComponentType } from 'react'
-import { BranchIcon, ClockIcon, CodeIcon, DatabaseIcon, GlobeIcon, LoopIcon, PlayIcon } from '@/shared/ui/icons'
+import { BranchIcon, ClockIcon, CloudIcon, CodeIcon, DatabaseIcon, DownloadIcon, GlobeIcon, LoopIcon, PlayIcon } from '@/shared/ui/icons'
 
-export type NodeType = 'manual' | 'schedule' | 'query' | 'http' | 'js' | 'switch' | 'loop'
-export type NodeCategory = 'Trigger' | 'Source' | 'Script' | 'Control'
+export type NodeType = 'manual' | 'schedule' | 'query' | 'http' | 'js' | 'switch' | 'loop' | 'export' | 'storage'
+export type NodeCategory = 'Trigger' | 'Source' | 'Script' | 'Control' | 'Destination'
 
 type IconType = ComponentType<{ width?: number; height?: number; className?: string }>
 
@@ -40,12 +40,13 @@ export const NODE_SPECS: Record<NodeType, NodeSpec> = {
     type: 'schedule',
     category: 'Trigger',
     label: 'Schedule Run',
-    description: 'Manual trigger; stores a cron expression for future scheduling.',
+    description: 'Runs the workflow automatically. Set a frequency here, then flip the workflow to Active.',
     icon: ClockIcon,
     accent: 'text-amber',
     hasInput: false,
-    defaultData: () => ({ cron: '' }),
-    summary: (d) => (d.cron?.trim() ? `cron: ${d.cron.trim()}` : 'Runs manually'),
+    defaultData: () => ({ frequency: 'manual', hourOfDay: 0 }),
+    summary: (d) =>
+      d.frequency === 'hourly' ? 'Every hour' : d.frequency === 'daily' ? `Daily at ${String(d.hourOfDay ?? 0).padStart(2, '0')}:00 UTC` : 'Manual only',
   },
   query: {
     type: 'query',
@@ -102,9 +103,31 @@ export const NODE_SPECS: Record<NodeType, NodeSpec> = {
     defaultData: () => ({ itemsExpr: '' }),
     summary: (d) => (d.itemsExpr?.trim() ? `items: ${d.itemsExpr.trim()}` : 'Loops the input array'),
   },
+  export: {
+    type: 'export',
+    category: 'Source',
+    label: 'Export SQL',
+    description: "Dumps this connection's full database to a SQL file. Output: { filePath, sizeBytes, dialect }.",
+    icon: DownloadIcon,
+    accent: 'text-green-bright',
+    hasInput: true,
+    defaultData: () => ({}),
+    summary: () => 'Exports the full database as SQL',
+  },
+  storage: {
+    type: 'storage',
+    category: 'Destination',
+    label: 'Store to Storage',
+    description: 'Uploads the file produced by the previous node to one or more storage destinations.',
+    icon: CloudIcon,
+    accent: 'text-sky-400',
+    hasInput: true,
+    defaultData: () => ({ destinationIds: [] }),
+    summary: (d) => `${d.destinationIds?.length || 0} destination${(d.destinationIds?.length || 0) === 1 ? '' : 's'}`,
+  },
 }
 
-export const CATEGORIES: NodeCategory[] = ['Trigger', 'Source', 'Script', 'Control']
+export const CATEGORIES: NodeCategory[] = ['Trigger', 'Source', 'Script', 'Control', 'Destination']
 
 export const specsByCategory = (cat: NodeCategory) =>
   Object.values(NODE_SPECS).filter((s) => s.category === cat)

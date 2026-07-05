@@ -3,8 +3,9 @@
 FROM node:20-bookworm-slim
 
 # better-sqlite3 compiles native bindings on install.
+# postgresql-client provides pg_dump/pg_restore, used for Postgres backup/restore.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends python3 make g++ \
+  && apt-get install -y --no-install-recommends python3 make g++ postgresql-client \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

@@ -4,8 +4,20 @@
 import { request, safeRequest } from '@/shared/api/request'
 
 export type WorkflowGraph = { nodes: any[]; edges: any[] }
-export type WorkflowSummary = { id: string; name: string; ts: number }
-export type Workflow = { id: string; name: string; graph: WorkflowGraph }
+export type WorkflowSummary = {
+  id: string
+  name: string
+  ts: number
+  protected: boolean
+  scheduleEnabled: boolean
+}
+export type Workflow = {
+  id: string
+  name: string
+  graph: WorkflowGraph
+  protected: boolean
+  scheduleEnabled: boolean
+}
 
 // One entry per executed node, in execution order.
 export type RunLogEntry = {
@@ -35,7 +47,7 @@ export async function createWorkflow(connectionId: string, name: string): Promis
 export async function updateWorkflow(
   connectionId: string,
   wid: string,
-  fields: { name?: string; graph?: WorkflowGraph }
+  fields: { name?: string; graph?: WorkflowGraph; scheduleEnabled?: boolean }
 ): Promise<void> {
   await request(`/connections/${connectionId}/workflows/${wid}`, { method: 'PUT', body: fields })
 }
