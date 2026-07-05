@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useConnections } from '@/features/connections'
+import { useWorkspaces } from '@/features/workspaces'
+import { BackupPanel } from '@/features/backup'
 import { listTables, pingConnection } from '@/shared/api/database'
 import ConnectionModal from '@/features/connections/components/ConnectionModal'
 import Button from '@/shared/ui/buttons/Button'
@@ -26,7 +28,7 @@ import {
   TableIcon,
   TrashIcon,
 } from '@/shared/ui/icons'
-import { ComingSoon, PageHeader } from './ui'
+import { PageHeader } from './ui'
 
 // Database types offered when creating a connection.
 const DB_CATALOG = [
@@ -87,6 +89,8 @@ function DetailRow({ label, value }: { label: string; value?: string }) {
 }
 
 function ConnectionDetail({ conn, onBack, onOpen, onEdit }) {
+  const { current } = useWorkspaces()
+  const backupEnabled = !!current?.experiments?.s3Backup
   const [tab, setTab] = useState<'data' | 'backup'>('data')
   const [status, setStatus] = useState<'checking' | 'connected' | 'offline'>('checking')
   const [tableCount, setTableCount] = useState<number | null>(null)
@@ -106,7 +110,7 @@ function ConnectionDetail({ conn, onBack, onOpen, onEdit }) {
     }
   }, [conn.id])
 
-  const tabBtn = (id: 'data' | 'backup', label: string, soon?: boolean) => (
+  const tabBtn = (id: 'data' | 'backup', label: string, soon = false) => (
     <Tab active={tab === id} onClick={() => setTab(id)}>
       {label}
       {soon && (
@@ -148,11 +152,11 @@ function ConnectionDetail({ conn, onBack, onOpen, onEdit }) {
       {/* Tabs */}
       <div className="mt-7 flex items-center gap-5 border-b border-edge">
         {tabBtn('data', 'Data Connection')}
-        {tabBtn('backup', 'Backup', true)}
+        {backupEnabled && tabBtn('backup', 'Backup')}
       </div>
 
       <div className="mt-6">
-        {tab === 'data' ? (
+        {tab === 'data' || !backupEnabled ? (
           <div className="flex flex-col gap-5">
             {/* Stats */}
             <div className="grid grid-cols-3 gap-3 max-[560px]:grid-cols-1">
@@ -196,10 +200,7 @@ function ConnectionDetail({ conn, onBack, onOpen, onEdit }) {
             </div>
           </div>
         ) : (
-          <ComingSoon
-            title="Backup & restore"
-            desc="Schedule automated backups and restore your database to any point in time. This is on the way."
-          />
+          <BackupPanel connectionId={conn.id} connectionName={conn.name} connectionType={conn.type} workspaceId={conn.workspaceId} />
         )}
       </div>
     </div>

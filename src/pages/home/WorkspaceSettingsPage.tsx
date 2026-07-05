@@ -1,8 +1,8 @@
 import { useNavigate, useParams } from 'react-router-dom'
-import { useWorkspaces, MembersPanel, SmtpSettings, WorkspaceGeneral } from '@/features/workspaces'
+import { useWorkspaces, MembersPanel, SmtpSettings, WorkspaceGeneral, ExperimentsSettings } from '@/features/workspaces'
 import { SubHead, TabbedSection } from './ui'
 
-// Workspace section — General / Member / SMTP as tabs (a second path segment).
+// Workspace section — General / Member / SMTP / Beta as tabs (a second path segment).
 export default function WorkspaceSettingsPage() {
   const navigate = useNavigate()
   const { sub } = useParams()
@@ -49,6 +49,16 @@ export default function WorkspaceSettingsPage() {
           ) : (
             <p className="text-[12px] text-ink-faint">Only workspace admins can change email settings.</p>
           )}
+        </div>
+      ),
+    },
+    {
+      id: 'beta',
+      label: 'Beta',
+      body: (
+        <div>
+          <SubHead title="Beta experiments" desc="Turn early-access features on or off for this workspace." />
+          <ExperimentsSettings />
         </div>
       ),
     },

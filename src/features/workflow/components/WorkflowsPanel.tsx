@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { EditIcon, MoreVerticalIcon, PlusIcon, RefreshIcon, SearchIcon, TrashIcon, WorkflowIcon } from '@/shared/ui/icons'
+import { EditIcon, MoreVerticalIcon, PlusIcon, RefreshIcon, SearchIcon, ShieldIcon, TrashIcon, WorkflowIcon } from '@/shared/ui/icons'
 import { controlClass } from '@/shared/ui/form/Input'
 import IconButton from '@/shared/ui/buttons/IconButton'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
@@ -97,6 +97,11 @@ export default function WorkflowsPanel({ workflows = [], activeId, onOpen, onNew
                 >
                   <WorkflowIcon className="shrink-0 text-ink-faint" width={14} height={14} />
                   <RowLabel onClick={() => onOpen?.(w)}>{w.name}</RowLabel>
+                  {w.protected && (
+                    <Tooltip label="Protected — created from a Backup schedule, can't be deleted" placement="top">
+                      <ShieldIcon className="shrink-0 text-ink-faint" width={12} height={12} />
+                    </Tooltip>
+                  )}
                   <div className="shrink-0" onClick={(e) => e.stopPropagation()}>
                     <Popover
                       align="right"
@@ -118,10 +123,14 @@ export default function WorkflowsPanel({ workflows = [], activeId, onOpen, onNew
                           <MenuItem onClick={() => { setRenaming({ id: w.id, value: w.name }); close() }}>
                             <EditIcon width={14} height={14} /> Rename
                           </MenuItem>
-                          <div className="my-1 h-px bg-edge" />
-                          <MenuItem danger onClick={() => { onDelete?.(w.id); close() }}>
-                            <TrashIcon width={14} height={14} /> Delete
-                          </MenuItem>
+                          {!w.protected && (
+                            <>
+                              <div className="my-1 h-px bg-edge" />
+                              <MenuItem danger onClick={() => { onDelete?.(w.id); close() }}>
+                                <TrashIcon width={14} height={14} /> Delete
+                              </MenuItem>
+                            </>
+                          )}
                         </div>
                       )}
                     </Popover>

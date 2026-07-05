@@ -1,7 +1,13 @@
 import { request, safeRequest } from '@/shared/api/request'
 
 // Org/tenant "workspaces" (distinct from the DB-console `features/workspace`).
-export type Workspace = { id: string; name: string; role: 'admin' | 'member'; createdAt?: number }
+export type Workspace = {
+  id: string
+  name: string
+  role: 'admin' | 'member'
+  createdAt?: number
+  experiments?: Record<string, boolean>
+}
 
 export async function listWorkspaces() {
   return safeRequest<Workspace[]>('/workspaces', [])
@@ -12,7 +18,7 @@ export async function getWorkspace(id: string) {
 export async function createWorkspace(name: string) {
   return request<Workspace>('/workspaces', { method: 'POST', body: { name } })
 }
-export async function updateWorkspace(id: string, patch: { name?: string; smtp?: any }) {
+export async function updateWorkspace(id: string, patch: { name?: string; smtp?: any; experiments?: Record<string, boolean> }) {
   return request(`/workspaces/${id}`, { method: 'PUT', body: patch })
 }
 export async function testSmtp(id: string, body: { to?: string; smtp?: any }) {
