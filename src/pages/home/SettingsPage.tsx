@@ -1,5 +1,6 @@
 import { useNavigate, useParams } from 'react-router-dom'
 import { AppearanceSetting, DataSetting } from '@/features/settings'
+import { KeymapSetting } from '@/features/keymap'
 import { SubHead, TabbedSection } from './ui'
 
 // Personal settings — Theme / Data as tabs (a second path segment).
@@ -25,6 +26,16 @@ export default function SettingsPage() {
         <div>
           <SubHead title="Data" desc="Control how much data Tabletsgo loads." />
           <DataSetting />
+        </div>
+      ),
+    },
+    {
+      id: 'keymap',
+      label: 'Keymap',
+      body: (
+        <div>
+          <SubHead title="Keymap" desc="Customize keyboard shortcuts for the workspace and its tools." />
+          <KeymapSetting />
         </div>
       ),
     },

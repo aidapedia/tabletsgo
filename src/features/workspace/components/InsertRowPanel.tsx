@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { getColumns } from '@/shared/api/database'
+import { formatCombo, useKeymap, useShortcut } from '@/features/keymap'
 import Button from '@/shared/ui/buttons/Button'
 import IconButton from '@/shared/ui/buttons/IconButton'
 import TextButton from '@/shared/ui/buttons/TextButton'
@@ -27,6 +28,7 @@ const coerce = (col, v) => {
 
 export default function InsertRowPanel({ conn, table, onClose, onStage }) {
   const { show, close } = useSlideOver(onClose)
+  const { bindings } = useKeymap()
   const [columns, setColumns] = useState([])
   const [loading, setLoading] = useState(true)
   const [values, setValues] = useState({})
@@ -110,18 +112,10 @@ export default function InsertRowPanel({ conn, table, onClose, onStage }) {
     close(() => onStage(data))
   }
 
-  // ⌘S / Ctrl+S to save
-  const saveRef = useRef(handleSave)
-  saveRef.current = handleSave
+  useShortcut('general.save', handleSave)
+
   useEffect(() => {
-    const onKey = (e) => {
-      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
-        e.preventDefault()
-        saveRef.current()
-      } else if (e.key === 'Escape') {
-        close()
-      }
-    }
+    const onKey = (e) => e.key === 'Escape' && close()
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [close])
@@ -219,7 +213,9 @@ export default function InsertRowPanel({ conn, table, onClose, onStage }) {
           <Button variant="subtle" onClick={() => close()}>Cancel</Button>
           <Button variant="primary" onClick={handleSave} disabled={loading}>
             Add to changes
-            <kbd className="rounded bg-black/20 px-1.5 py-px text-[10px] font-semibold">⌘S</kbd>
+            <kbd className="rounded bg-black/20 px-1.5 py-px text-[10px] font-semibold">
+              {formatCombo(bindings['general.save'])}
+            </kbd>
           </Button>
         </div>
       </div>

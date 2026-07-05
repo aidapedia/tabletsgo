@@ -35,6 +35,7 @@ const SchemaEditor = lazy(() => import('@/features/schema-designer/components/Sc
 // Lazy — React Flow again; only load when a workflow tab opens.
 const WorkflowEditor = lazy(() => import('@/features/workflow/components/WorkflowEditor'))
 import IconRail from '@/features/workspace/components/IconRail'
+import { formatCombo, useKeymap, useShortcut } from '@/features/keymap'
 import SavedQueriesPanel from '@/features/workspace/components/SavedQueriesPanel'
 import { WorkflowsPanel, listWorkflows, createWorkflow, deleteWorkflow, updateWorkflow } from '@/features/workflow'
 import QueryHistoryView from '@/features/workspace/components/QueryHistoryView'
@@ -84,6 +85,7 @@ export default function Workspace() {
   const toast = useToast()
   const { connections, patchLocalConnection } = useConnections()
   const conn = connections.find((c) => c.id === id)
+  const { bindings } = useKeymap()
 
   // Selected database/schema namespace (for browsing other DBs/schemas).
   const [ns, setNs] = useState({ database: undefined, schema: undefined })
@@ -160,6 +162,13 @@ export default function Workspace() {
       setPanel(p)
       setTablesVisible(true)
     }
+  }
+
+  // Toggles the left sidebar — the desktop collapse and the mobile slide-over
+  // drawer both represent "is the sidebar open", so keep them in sync.
+  const toggleSidebar = () => {
+    setTablesVisible((v) => !v)
+    setSidebarOpen((v) => !v)
   }
 
   const loadTables = async () => {
@@ -248,24 +257,13 @@ export default function Workspace() {
     }
   }, [id])
 
+  // Esc closes the mobile slide-over sidebar drawer while it's open.
   useEffect(() => {
-    const onKey = (e) => {
-      if (!(e.metaKey || e.ctrlKey)) return
-      if (e.key === 'k') {
-        e.preventDefault()
-        setPanel('browser')
-        setTablesVisible(true)
-        setSearchOpen(true)
-        setTimeout(() => searchRef.current?.focus(), 0)
-      } else if (e.key === 'n') {
-        e.preventDefault()
-        openQuery()
-      }
-    }
+    if (!sidebarOpen) return
+    const onKey = (e) => e.key === 'Escape' && setSidebarOpen(false)
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [sidebarOpen])
 
   useEffect(() => {
     if (!tabMenu) return
@@ -755,6 +753,20 @@ export default function Workspace() {
 
   const current = tabs.find((t) => t.key === activeTab)
 
+  useShortcut('general.search', () => {
+    setPanel('browser')
+    setTablesVisible(true)
+    setSearchOpen(true)
+    setTimeout(() => searchRef.current?.focus(), 0)
+  })
+  useShortcut('general.newTab', () => openQuery())
+  useShortcut('workspace.panelBrowser', () => selectPanel('browser'))
+  useShortcut('workspace.panelQueries', () => selectPanel('queries'))
+  useShortcut('workspace.panelWorkflows', () => selectPanel('workflows'))
+  useShortcut('workspace.panelSchema', () => selectPanel('schema'))
+  useShortcut('workspace.toggleSidebar', toggleSidebar)
+  useShortcut('workspace.commitChanges', commitChanges)
+
   return (
     <div className="flex h-screen bg-bg">
       {/* Mobile backdrop */}
@@ -1220,9 +1232,9 @@ export default function Workspace() {
                 </div>
 
                 <div className="mt-10 flex flex-wrap items-center justify-center gap-6 text-[11px] text-ink-faint">
-                  <span className="flex items-center gap-1.5"><kbd className={kbd}>⌘K</kbd> Search tables</span>
-                  <span className="flex items-center gap-1.5"><kbd className={kbd}>⌘↵</kbd> Run query</span>
-                  <span className="flex items-center gap-1.5"><kbd className={kbd}>⌘N</kbd> New query</span>
+                  <span className="flex items-center gap-1.5"><kbd className={kbd}>{formatCombo(bindings['general.search'])}</kbd> Search tables</span>
+                  <span className="flex items-center gap-1.5"><kbd className={kbd}>{formatCombo(bindings['workspace.runQuery'])}</kbd> Run query</span>
+                  <span className="flex items-center gap-1.5"><kbd className={kbd}>{formatCombo(bindings['general.newTab'])}</kbd> New query</span>
                 </div>
               </div>
             </div>

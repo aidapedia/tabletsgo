@@ -7,6 +7,7 @@ import Tooltip from '@/shared/ui/overlay/Tooltip'
 import SqlEditor from '@/shared/ui/SqlEditor'
 import { useToast } from '@/shared/ui/feedback/Toast'
 import { SaveIcon, WandIcon } from '@/shared/ui/icons'
+import { formatCombo, useKeymap, useShortcut } from '@/features/keymap'
 
 // Best-effort: pull the primary table name out of a SQL statement so the
 // history can show which table a query touched. Returns null when unknown.
@@ -17,6 +18,7 @@ function primaryTable(sql) {
 
 export default function QueryEditor({ conn, dialect, initialSql, tabKey, persisted, onPersist, onRan, onSave }) {
   const toast = useToast()
+  const { bindings } = useKeymap()
   // Seed from the persisted snapshot (restored on tab switch) when present,
   // otherwise from initialSql for a fresh tab.
   const [sql, setSql] = useState(persisted?.sql ?? initialSql ?? '')
@@ -94,12 +96,17 @@ export default function QueryEditor({ conn, dialect, initialSql, tabKey, persist
     }
   }
 
+  useShortcut('workspace.runQuery', run)
+  useShortcut('general.save', () => onSave?.(sql))
+
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <div className="flex flex-wrap items-center gap-2 border-b border-edge px-3 py-2">
         <Button variant="primary" size="sm" onClick={run} disabled={loading}>
           {loading ? 'Running…' : '▶ Run Query'}
-          <kbd className="rounded bg-black/20 px-1.5 py-px text-[10px] font-semibold">⌘↵</kbd>
+          <kbd className="rounded bg-black/20 px-1.5 py-px text-[10px] font-semibold">
+            {formatCombo(bindings['workspace.runQuery'])}
+          </kbd>
         </Button>
 
         <div className="mx-0.5 h-5 w-px bg-edge" />
@@ -132,9 +139,8 @@ export default function QueryEditor({ conn, dialect, initialSql, tabKey, persist
           onChange={setSql}
           dialect={conn.type}
           schema={schema}
-          onRun={run}
           editable={!loading}
-          placeholder="Write SQL and press ⌘↵ to run…"
+          placeholder={`Write SQL and press ${formatCombo(bindings['workspace.runQuery'])} to run…`}
         />
       </div>
 

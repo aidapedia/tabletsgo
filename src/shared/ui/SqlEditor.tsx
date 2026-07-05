@@ -1,7 +1,7 @@
-import { useMemo, useRef } from 'react'
+import { useMemo } from 'react'
 import CodeMirror from '@uiw/react-codemirror'
 import { sql as sqlExtension, SQLite, PostgreSQL } from '@codemirror/lang-sql'
-import { EditorView, keymap, tooltips } from '@codemirror/view'
+import { EditorView, tooltips } from '@codemirror/view'
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language'
 import { Prec } from '@codemirror/state'
 import { tags as t } from '@lezer/highlight'
@@ -174,8 +174,6 @@ type SqlEditorProps = {
   dialect?: string
   /** Table → columns map used to power autocomplete. */
   schema?: SqlSchema
-  /** Called on ⌘/Ctrl+Enter, when provided. */
-  onRun?: () => void
   editable?: boolean
   placeholder?: string
   minHeight?: string
@@ -189,16 +187,11 @@ export default function SqlEditor({
   onChange,
   dialect,
   schema = {},
-  onRun,
   editable = true,
   placeholder = 'Write SQL…',
   minHeight = '',
   maxHeight = '460px',
 }: SqlEditorProps) {
-  // Keep the keymap stable while always calling the latest onRun().
-  const runRef = useRef(onRun)
-  runRef.current = onRun
-
   const extensions = useMemo(() => {
     // Note: schema is intentionally NOT handed to lang-sql — our own source owns
     // tables/columns (correct icons + context), lang-sql owns keywords/types/fns.
@@ -222,17 +215,8 @@ export default function SqlEditor({
       // so styling is preserved.
       tooltips({ position: 'fixed', parent: document.body }),
     ]
-    if (onRun) {
-      exts.push(
-        Prec.highest(
-          keymap.of([{ key: 'Mod-Enter', preventDefault: true, run: () => (runRef.current?.(), true) }])
-        )
-      )
-    }
     return exts
-    // onRun is read through runRef, so only its presence needs to re-init the keymap.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [schema, dialect, !!onRun])
+  }, [schema, dialect])
 
   return (
     <CodeMirror

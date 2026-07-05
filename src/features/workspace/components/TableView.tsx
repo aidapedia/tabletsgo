@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { getColumns, getTableData } from '@/shared/api/database'
 import { useSettings } from '@/features/settings'
+import { useShortcut } from '@/features/keymap'
 import DataGrid from '@/features/workspace/components/DataGrid'
 import InsertRowPanel from '@/features/workspace/components/InsertRowPanel'
 import Button from '@/shared/ui/buttons/Button'
@@ -263,6 +264,14 @@ export default function TableView({ conn, table, onChange, onOpenReference, init
     toast.info(`Added ${entries.length} update(s) to changes — commit to apply.`)
   }
   const discardEdits = () => setEdits({})
+
+  useShortcut('workspace.newRow', () => setShowInsert(true))
+  useShortcut('workspace.deleteSelected', deleteSelected)
+  useShortcut('workspace.duplicateSelected', duplicateSelected)
+  useShortcut('workspace.discardEdits', discardEdits)
+  useShortcut('general.save', saveEdits)
+  useShortcut('workspace.exportCsv', exportCsv)
+  useShortcut('workspace.refresh', load)
 
   const selCount = selected.size
 

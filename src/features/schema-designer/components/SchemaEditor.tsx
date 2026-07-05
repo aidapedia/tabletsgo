@@ -24,6 +24,7 @@ import CreateTablePanel from '@/features/schema-designer/components/CreateTableP
 import SaveQueryPanel from '@/shared/ui/SaveQueryPanel'
 import { newItemId } from '@/shared/lib/schemaDraft'
 import { useColumnTypes } from '@/features/schema-designer/components/columnFields'
+import { useShortcut } from '@/features/keymap'
 import { ChevronRight, ColumnsIcon, DownloadIcon, EditIcon, PlusIcon, SaveIcon, TableIcon, TrashIcon, WandIcon } from '@/shared/ui/icons'
 
 // Fixed metrics so per-column handles line up with their rows.
@@ -453,6 +454,9 @@ export default function SchemaEditor({ conn, changes, pending = [], onPendingCha
     setNodes(layoutNodes())
     setTimeout(() => rf.current?.fitView({ duration: 300, padding: 0.2 }), 0)
   }
+
+  useShortcut('schema.createTable', () => setCreating(true))
+  useShortcut('schema.autoLayout', autoLayout)
 
   // Export the whole diagram (all nodes) as a PNG/JPG image.
   const exportImage = async (fmt) => {

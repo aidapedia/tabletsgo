@@ -24,6 +24,7 @@ import WorkflowNode from '@/features/workflow/components/nodes/WorkflowNode'
 import NodePalette from '@/features/workflow/components/NodePalette'
 import NodeConfigPanel from '@/features/workflow/components/NodeConfigPanel'
 import RunLogPanel from '@/features/workflow/components/RunLogPanel'
+import { formatCombo, useKeymap, useShortcut } from '@/features/keymap'
 
 let nodeSeq = 0
 const newNodeId = () => `n${Date.now().toString(36)}${(nodeSeq++).toString(36)}`
@@ -38,6 +39,7 @@ const nodeTypes = Object.fromEntries(
 
 export default function WorkflowEditor({ conn, workflowId }: any) {
   const toast = useToast()
+  const { bindings } = useKeymap()
   const [nodes, setNodes, onNodesChange] = useNodesState([])
   const [edges, setEdges, onEdgesChange] = useEdgesState([])
   const [loading, setLoading] = useState(true)
@@ -230,11 +232,16 @@ export default function WorkflowEditor({ conn, workflowId }: any) {
     }
   }
 
+  useShortcut('workflow.run', run)
+
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <div className="flex items-center gap-2 border-b border-edge px-3 py-2">
         <Button variant="primary" size="sm" icon={PlayIcon} onClick={run} disabled={running || loading}>
           {running ? 'Running…' : 'Run Workflow'}
+          <kbd className="rounded bg-black/20 px-1.5 py-px text-[10px] font-semibold">
+            {formatCombo(bindings['workflow.run'])}
+          </kbd>
         </Button>
         <span className="ml-1 text-[11px] text-ink-faint">
           {conn.name} · {nodes.length} node{nodes.length === 1 ? '' : 's'}
