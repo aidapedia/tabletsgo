@@ -129,8 +129,8 @@ export default function BackupPanel({ connectionId, connectionName, connectionTy
             {storages.length === 0 ? (
               <p className="text-[12px] text-ink-faint">
                 No storage destinations yet —{' '}
-                <button className="text-green-bright underline-offset-2 hover:underline" onClick={() => navigate('/s3')}>
-                  add one on the S3 Storage page
+                <button className="text-green-bright underline-offset-2 hover:underline" onClick={() => navigate('/workspace/integrations')}>
+                  add one in Workspace → Integrations
                 </button>{' '}
                 first.
               </p>

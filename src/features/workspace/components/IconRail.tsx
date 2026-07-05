@@ -1,4 +1,4 @@
-import { CodeIcon, DatabaseIcon, DbLogo, DiagramIcon, HomeIcon, SettingsIcon, WorkflowIcon } from '@/shared/ui/icons'
+import { CodeIcon, DatabaseIcon, DbLogo, DiagramIcon, HomeIcon, LogoutIcon, WorkflowIcon } from '@/shared/ui/icons'
 import Popover from '@/shared/ui/overlay/Popover'
 import Tooltip from '@/shared/ui/overlay/Tooltip'
 import IconButton from '@/shared/ui/buttons/IconButton'
@@ -25,8 +25,7 @@ export default function IconRail({
   onWorkflows,
   onSchema,
   onHome,
-  onSettings,
-  onProfile,
+  onLogout,
 }) {
   const current = connections.find((c) => c.id === currentId)
   const initial = user?.name?.[0]?.toUpperCase() || 'A'
@@ -77,17 +76,48 @@ export default function IconRail({
 
       <div className="mt-auto flex flex-col items-center gap-1.5">
         <RailButton icon={HomeIcon} label="Home" onClick={onHome} />
-        <RailButton icon={SettingsIcon} label="Settings" onClick={onSettings} />
-        <Tooltip label={user?.name ? `${user.name} — sign out` : 'Profile'} placement="right">
-          <button
-            aria-label="User profile"
-            onClick={onProfile}
-            className="relative mt-1 flex h-9 w-9 items-center justify-center rounded-[11px] bg-green text-xs font-bold text-white hover:bg-green-bright"
-          >
-            {initial}
-            <span className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-bg bg-green" />
-          </button>
-        </Tooltip>
+        <Popover
+          align="left"
+          placement="top"
+          width={220}
+          trigger={({ toggle }) => (
+            <Tooltip label={user?.name || 'Profile'} placement="right">
+              <button
+                aria-label="User profile"
+                onClick={toggle}
+                className="relative mt-1 flex h-9 w-9 items-center justify-center rounded-[11px] bg-green text-xs font-bold text-white hover:bg-green-bright"
+              >
+                {initial}
+                <span className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-bg bg-green" />
+              </button>
+            </Tooltip>
+          )}
+        >
+          {({ close }) => (
+            <div className="p-1">
+              <div className="flex items-center gap-2.5 px-2.5 py-2">
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[11px] bg-green text-[13px] font-bold text-white">
+                  {initial}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-[12px] font-semibold text-ink">{user?.name || 'Account'}</div>
+                  <div className="truncate text-[11px] text-ink-faint">{user?.email}</div>
+                </div>
+              </div>
+              <div className="my-1 h-px bg-edge" />
+              <MenuItem
+                danger
+                onClick={() => {
+                  close()
+                  onLogout?.()
+                }}
+              >
+                <LogoutIcon width={15} height={15} />
+                <span className="flex-1">Sign out</span>
+              </MenuItem>
+            </div>
+          )}
+        </Popover>
       </div>
     </div>
   )

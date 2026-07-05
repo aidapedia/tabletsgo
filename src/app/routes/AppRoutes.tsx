@@ -9,8 +9,6 @@ import ResetPasswordPage from '@/pages/auth/ResetPasswordPage'
 import HomeLayout from '@/pages/home/HomeLayout'
 import DashboardPage from '@/pages/home/DashboardPage'
 import ConnectionsPage from '@/pages/home/ConnectionsPage'
-import S3Page from '@/pages/home/S3Page'
-import NotificationPage from '@/pages/home/NotificationPage'
 import WorkspaceSettingsPage from '@/pages/home/WorkspaceSettingsPage'
 import SettingsPage from '@/pages/home/SettingsPage'
 import WorkspacePage from '@/pages/console/WorkspacePage'
@@ -57,8 +55,6 @@ export function AppRoutes() {
       >
         <Route path="/" element={<DashboardPage />} />
         <Route path="/connections" element={<ConnectionsPage />} />
-        <Route path="/s3" element={<S3Page />} />
-        <Route path="/notification" element={<NotificationPage />} />
         <Route path="/workspace" element={<WorkspaceSettingsPage />} />
         <Route path="/workspace/:sub" element={<WorkspaceSettingsPage />} />
         <Route path="/settings" element={<SettingsPage />} />
