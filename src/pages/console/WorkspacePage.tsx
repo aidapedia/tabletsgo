@@ -794,8 +794,7 @@ export default function Workspace() {
           onWorkflows={() => selectPanel('workflows')}
           onSchema={() => selectPanel('schema')}
           onHome={() => navigate('/')}
-          onSettings={() => navigate('/settings')}
-          onProfile={logout}
+          onLogout={logout}
         />
         <div
           className={`shrink-0 overflow-hidden transition-[width] duration-200 ease-out ${

@@ -1,8 +1,10 @@
 import { useNavigate, useParams } from 'react-router-dom'
-import { useWorkspaces, MembersPanel, SmtpSettings, WorkspaceGeneral, ExperimentsSettings } from '@/features/workspaces'
-import { SubHead, TabbedSection } from './ui'
+import { useWorkspaces, MembersPanel, WorkspaceGeneral, IntegrationsSettings, ExperimentsSettings } from '@/features/workspaces'
+import { ComingSoon, SubHead, TabbedSection } from './ui'
 
-// Workspace section — General / Member / SMTP / Beta as tabs (a second path segment).
+// Workspace section — General / Member / Integrations / Notification / Beta as
+// tabs (a second path segment). SMTP + S3 Storage live together under
+// Integrations; Notification and Beta are no longer separate sidebar items.
 export default function WorkspaceSettingsPage() {
   const navigate = useNavigate()
   const { sub } = useParams()
@@ -35,20 +37,25 @@ export default function WorkspaceSettingsPage() {
       ),
     },
     {
-      id: 'smtp',
-      label: 'SMTP',
+      id: 'integrations',
+      label: 'Integrations',
       body: (
         <div>
-          <SubHead title="SMTP" desc="Configure the mail server used to send member-invite emails." />
-          {isAdmin ? (
-            current ? (
-              <SmtpSettings workspaceId={current.id} />
-            ) : (
-              <div className="text-xs text-ink-faint">Loading…</div>
-            )
-          ) : (
-            <p className="text-[12px] text-ink-faint">Only workspace admins can change email settings.</p>
-          )}
+          <SubHead title="Integrations" desc="External services this workspace connects to." />
+          <IntegrationsSettings />
+        </div>
+      ),
+    },
+    {
+      id: 'notification',
+      label: 'Notification',
+      body: (
+        <div>
+          <SubHead title="Notification" desc="Manage the notifications Tabletsgo sends to your team." />
+          <ComingSoon
+            title="Notification manager"
+            desc="Configure channels and rules for the notifications Tabletsgo sends — landing soon."
+          />
         </div>
       ),
     },

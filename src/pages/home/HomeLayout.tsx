@@ -1,33 +1,22 @@
 import { useState } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/features/auth'
-import { WorkspaceSwitcher, useWorkspaces } from '@/features/workspaces'
+import { WorkspaceSwitcher } from '@/features/workspaces'
 import NavItem from '@/shared/ui/navigation/NavItem'
 import IconButton from '@/shared/ui/buttons/IconButton'
-import {
-  BellIcon,
-  BuildingIcon,
-  CloudIcon,
-  DatabaseIcon,
-  GridIcon,
-  Logo,
-  LogoutIcon,
-  MenuIcon,
-  SettingsIcon,
-} from '@/shared/ui/icons'
+import { BuildingIcon, DatabaseIcon, GridIcon, Logo, LogoutIcon, MenuIcon, SettingsIcon } from '@/shared/ui/icons'
 
 // Sidebar navigation model — one clickable item per section. Each section is its
-// own route; the id doubles as the path segment (`dashboard` → `/`). `soon` marks placeholders.
+// own route; the id doubles as the path segment (`dashboard` → `/`). S3 Storage,
+// SMTP and Notification live as tabs under Workspace instead of top-level items.
 const NAV = [
   { id: 'dashboard', label: 'Dashboard', Icon: GridIcon, path: '/' },
   { id: 'connections', label: 'Connection', Icon: DatabaseIcon, path: '/connections' },
-  { id: 's3', label: 'S3 Storage', Icon: CloudIcon, path: '/s3', experiment: 's3Backup' },
-  { id: 'notification', label: 'Notification', Icon: BellIcon, path: '/notification', soon: true },
   { id: 'workspace', label: 'Workspace', Icon: BuildingIcon, path: '/workspace' },
   { id: 'settings', label: 'Setting', Icon: SettingsIcon, path: '/settings' },
 ] as const
 
-function Sidebar({ activeTab, onNavigate, user, onLogout, open, onClose, nav }: any) {
+function Sidebar({ activeTab, onNavigate, user, onLogout, open, onClose }: any) {
   const NavLeaf = ({ id, label, Icon, path, soon }: any) => (
     <NavItem active={activeTab === id} icon={Icon} badge={soon && 'Soon'} onClick={() => onNavigate(path)}>
       {label}
@@ -63,7 +52,7 @@ function Sidebar({ activeTab, onNavigate, user, onLogout, open, onClose, nav }: 
         {/* Nav */}
         <nav className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
           <div className="flex flex-col gap-0.5">
-            {nav.map((entry) => (
+            {NAV.map((entry) => (
               <NavLeaf key={entry.id} {...entry} />
             ))}
           </div>
@@ -71,7 +60,7 @@ function Sidebar({ activeTab, onNavigate, user, onLogout, open, onClose, nav }: 
 
         {/* User profile + logout */}
         <div className="flex items-center gap-2.5 border-t border-edge px-3 py-3">
-          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-green text-[13px] font-bold text-white">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[11px] bg-green text-[13px] font-bold text-white">
             {user?.name?.[0]?.toUpperCase() || 'A'}
           </span>
           <div className="min-w-0 flex-1">
@@ -90,15 +79,12 @@ function Sidebar({ activeTab, onNavigate, user, onLogout, open, onClose, nav }: 
 // Home shell: sidebar + the active section page (rendered via <Outlet/>).
 export default function HomeLayout() {
   const { user, logout } = useAuth()
-  const { current } = useWorkspaces()
   const navigate = useNavigate()
   const location = useLocation()
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
   // Active section = first path segment (`/workspace/member` → `workspace`, `/` → `dashboard`).
   const activeTab = location.pathname.split('/').filter(Boolean)[0] || 'dashboard'
-  // Hide nav entries gated behind a beta experiment that isn't enabled for this workspace.
-  const nav = NAV.filter((entry: any) => !entry.experiment || current?.experiments?.[entry.experiment])
 
   const go = (path: string) => {
     setSidebarOpen(false)
@@ -114,7 +100,6 @@ export default function HomeLayout() {
         onLogout={logout}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
-        nav={nav}
       />
 
       <div className="flex min-w-0 flex-1 flex-col">

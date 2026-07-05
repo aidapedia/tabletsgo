@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react'
  * Anchored popover. `trigger` is a render-prop receiving { open, toggle }.
  * `children` can be a node or a render-prop receiving { close }.
  */
-export default function Popover({ trigger, children, align = 'left', width = 300, panelClassName = '' }) {
+export default function Popover({ trigger, children, align = 'left', placement = 'bottom', width = 300, panelClassName = '' }) {
   const [open, setOpen] = useState(false)
   const ref = useRef(null)
 
@@ -31,9 +31,9 @@ export default function Popover({ trigger, children, align = 'left', width = 300
       {trigger({ open, toggle: () => setOpen((o) => !o) })}
       {open && (
         <div
-          className={`absolute z-50 mt-1.5 rounded-soft border border-edge-strong bg-elevated shadow-[0_16px_40px_-12px_rgba(0,0,0,0.8)] ${
+          className={`absolute z-50 rounded-soft border border-edge-strong bg-elevated shadow-[0_16px_40px_-12px_rgba(0,0,0,0.8)] ${
             align === 'right' ? 'right-0' : 'left-0'
-          } ${panelClassName}`}
+          } ${placement === 'top' ? 'bottom-full mb-1.5' : 'top-full mt-1.5'} ${panelClassName}`}
           style={{ width }}
         >
           {typeof children === 'function' ? children({ close }) : children}

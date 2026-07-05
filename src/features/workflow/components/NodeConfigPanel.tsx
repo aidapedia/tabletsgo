@@ -245,7 +245,7 @@ export default function NodeConfigPanel({ node, onChange, onChangeType, allowTyp
               <p className="-mt-1 mb-3 text-[11px] text-ink-faint">Upload the previous node's file output to these storage destinations.</p>
               {storages.length === 0 ? (
                 <p className="text-[11px] text-ink-faint">
-                  No storage destinations yet — add one on the S3 Storage page first.
+                  No storage destinations yet — add one in Workspace → Integrations first.
                 </p>
               ) : (
                 <div className="flex flex-col gap-2">
