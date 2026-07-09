@@ -210,7 +210,7 @@ CREATE TABLE workflows (
   name TEXT NOT NULL,
   graph TEXT,                  -- JSON { nodes, edges } (React Flow shape)
   ts INTEGER,
-  protected INTEGER DEFAULT 0,        -- 1 = undeletable (the backup workflow)
+  protected INTEGER DEFAULT 0,        -- 1 = undeletable; nothing sets this automatically today
   schedule_enabled INTEGER DEFAULT 0, -- "Active" toggle for the graph's Schedule node
   next_run_at INTEGER                 -- epoch ms; scheduler's due-check cursor
 );
@@ -230,11 +230,38 @@ CREATE TABLE storage_destinations (
 CREATE TABLE workflow_runs (
   id TEXT PRIMARY KEY,
   workflow_id TEXT NOT NULL,
-  connection_id TEXT NOT NULL,  -- denormalized for the backup calendar's per-day aggregate
+  connection_id TEXT NOT NULL,  -- denormalized for per-day aggregate queries
   trigger_kind TEXT NOT NULL,   -- "manual" | "schedule"
   status TEXT NOT NULL,         -- "success" | "failed"
   log TEXT,                     -- JSON: the per-node log[] runWorkflow() produces
   error TEXT,
+  started_at INTEGER NOT NULL,
+  finished_at INTEGER,
+  ts INTEGER NOT NULL
+);
+CREATE TABLE backup_schedules (
+  id TEXT PRIMARY KEY,
+  connection_id TEXT NOT NULL UNIQUE,
+  frequency TEXT NOT NULL,        -- "hourly" | "daily"
+  hour_of_day INTEGER,
+  destination_ids TEXT,           -- JSON array of storage_destinations.id
+  retry_limit INTEGER DEFAULT 0,        -- extra attempts after a scheduled failure (0-5)
+  retry_delay_sec INTEGER DEFAULT 60,   -- delay between attempts
+  retention_days INTEGER DEFAULT 0,     -- prune uploads older than this after each run (0 = never)
+  encrypt INTEGER DEFAULT 0,      -- encrypt the dump (AES-256-GCM, server-derived key) before upload
+  enabled INTEGER DEFAULT 1,      -- "Active" toggle
+  next_run_at INTEGER,            -- epoch ms; scheduler's due-check cursor
+  created_at INTEGER,
+  updated_at INTEGER
+);
+CREATE TABLE backup_runs (
+  id TEXT PRIMARY KEY,
+  connection_id TEXT NOT NULL,
+  schedule_id TEXT NOT NULL,
+  trigger_kind TEXT NOT NULL,     -- "manual" | "schedule" | "retry"
+  status TEXT NOT NULL,           -- "success" | "failed"
+  error TEXT,
+  uploads TEXT,                   -- JSON: [{destinationId, ok, key?, sizeBytes?, encrypted?, error?, prunedCount?, deleted?}]
   started_at INTEGER NOT NULL,
   finished_at INTEGER,
   ts INTEGER NOT NULL
@@ -297,19 +324,27 @@ Set password, activate, log in. **Body:** `{ "name", "password" }` → **200:** 
   below) — included for every member, not just admins, since it gates what the
   whole workspace sees.
 - `POST /api/workspaces` `{ name }` → creates one; caller becomes `admin`.
-- `GET /api/workspaces/:id` → `{ id, name, role, createdAt, experiments }`;
+- `GET /api/workspaces/:id` → `{ id, name, role, createdAt, experiments, notifications }`;
   admins also get `smtp` (password-masked) + `smtpEnvFallback` + `smtpEnvDefaults`
   (non-secret env values — `host`, `port`, `secure`, `user`, `from` — present
   only when `smtpEnvFallback` is true).
-- `PUT /api/workspaces/:id` (admin) `{ name?, smtp?, experiments? }` → `{ ok: true }`.
+- `PUT /api/workspaces/:id` (admin) `{ name?, smtp?, experiments?, notifications? }` → `{ ok: true }`.
   `smtp` is `{ host, port, secure, user, from, pass? }`; omit `pass` to keep the
   stored one. `experiments` is a partial `{ [key]: boolean }`, merged onto the
-  existing flags (so toggling one doesn't clear the others).
+  existing flags (so toggling one doesn't clear the others). `notifications` is
+  `{ backupFailure?: { enabled, memberIds } }` — `backupFailure`, if present, fully
+  replaces the stored value (send the complete object, not a partial patch).
 - **Beta experiments:** a per-workspace `{ [key]: boolean }` map stored in
   `workspaces.settings.experiments`, surfaced via the two routes above and
   toggled from the frontend's Workspace → Beta tab. Current keys: `s3Backup`
   (gates the S3 Storage nav item and each connection's Backup tab — see the
   Storage destinations / Backup sections below).
+- **Notifications:** `workspaces.settings.notifications.backupFailure` is
+  `{ enabled: boolean, memberIds: string[] }`, surfaced via the two routes above
+  and edited from the frontend's Workspace → Notification tab. When enabled, a
+  scheduled backup that ends up failed (after any configured retries — see the
+  Backup section) emails every listed member via the workspace's SMTP config
+  (see `smtpConfig`). Manual "Run now" failures never trigger this.
 - `POST /api/workspaces/:id/smtp/test` (admin) `{ to?, smtp? }` → `{ ok: true }`
   or `400 { error }`. Sends a one-off test email. `to` defaults to the caller's
   own email. `smtp` (same shape as `PUT`, minus `pass` falling back to the
@@ -484,9 +519,13 @@ Node-graph automations (React Flow) run against the connection. A workflow's
   **Breaking change:** this replaces the old freeform `{ cron }` field, which is now inert.
 - `export` ("Export SQL"): no config — dumps the workflow's own connection to a SQL
   file. Output: `{ filePath, sizeBytes, dialect }`. sqlite/postgresql only.
-- `storage` ("Store to Storage"): `{ destinationIds: string[] }` — uploads the
-  upstream node's `{ filePath }` output to each listed storage destination (see
-  below). Output: `{ uploaded: [{ destinationId, ok, key?, sizeBytes?, error? }] }`.
+- `storage` ("Store to Storage"): `{ destinationIds: string[], retentionDays?: number, encrypt?: boolean }`
+  — uploads the upstream node's `{ filePath }` output to each listed storage
+  destination (see below). `encrypt` (default off) encrypts the file with a
+  server-derived key (AES-256-GCM, scrypt off `CONNECTION_ENCRYPTION_KEY`) before
+  upload; `retentionDays` (default `0` = never) deletes objects older than that
+  under the same connection's key prefix after a successful upload. Output:
+  `{ uploaded: [{ destinationId, ok, key?, sizeBytes?, error?, encrypted?, prunedCount?, pruneError? }] }`.
 
 Edges thread a single `input` (a node's output) to the next node; `sourceHandle`
 selects a branch (`out` default; `case-N`/`default` for switch; `body`/`done` for loop).
@@ -498,9 +537,10 @@ computes `next_run_at` and a minutely cron tick (`WORKFLOW_SCHEDULER_ENABLED`)
 fires it automatically, same execution path as a manual run. Every execution
 (manual or scheduled) is persisted to `workflow_runs` (see below).
 
-A workflow is **protected** (`protected: 1`) once a backup schedule owns it (see
-`POST /api/connections/:id/backup-workflow`) — it behaves like any other workflow
-(listed, editable, runnable) except `DELETE` on it always 409s.
+A workflow can be marked `protected` (`protected: 1`) — it then behaves like any
+other workflow (listed, editable, runnable) except `DELETE` on it always 409s.
+Nothing sets this automatically today; backups (below) are a separate system,
+not a workflow.
 
 > ⚠️ **Security:** the `/run` executor runs arbitrary SQL, makes server-side HTTP
 > requests (internal URLs reachable — SSRF), and evaluates user JavaScript in a
@@ -551,7 +591,7 @@ Delete a workflow.
 
 - **200:** `{ "ok": true }`
 - **404:** `{ "error": "Not found" }`
-- **409:** `{ "error": "This workflow is protected and cannot be deleted." }` (backup workflows)
+- **409:** `{ "error": "This workflow is protected and cannot be deleted." }`
 - **Example:** `DELETE http://localhost:3000/api/connections/demo-sqlite/workflows/wf-1`
 
 ### POST `/api/connections/:id/workflows/:wid/run`
@@ -570,9 +610,10 @@ the stored graph when `graph` is omitted. Always records the outcome in `workflo
 ## Storage destinations (workspace-scoped)
 
 S3-compatible object storage (AWS S3, MinIO, R2, Backblaze B2, …) that backup
-workflows upload dumps to. Same split as connections: plain columns for
-dialect-agnostic fields, `accessKeyId`/`secretAccessKey`/`sessionToken` encrypted
-into `credentials` (AES-256-GCM, key namespaced separately from connection credentials).
+schedules upload dumps to (and that user-built workflows can also target via a
+`storage` node). Same split as connections: plain columns for dialect-agnostic
+fields, `accessKeyId`/`secretAccessKey`/`sessionToken` encrypted into
+`credentials` (AES-256-GCM, key namespaced separately from connection credentials).
 
 ### GET `/api/storages?workspace=<id>`
 List storage destinations in a workspace.
@@ -613,45 +654,98 @@ Check the bucket is reachable with the stored credentials (`HeadBucketCommand`).
 
 ## Backup (per connection)
 
-A thin, guided layer over workflows: creating a backup schedule builds a
-protected workflow (`Schedule → Export SQL → Store to Storage`) rather than
-introducing a parallel system. One backup schedule per connection.
+A standalone system — its own tables (`backup_schedules`, `backup_runs`) and
+scheduler tick, **not** a workflow. It reuses the same export/upload/encrypt/
+retention primitives a `storage` workflow node uses, but orchestrates them
+directly (`runBackupOnce` → `execExportSql` → `execStoreToStorage`). One
+schedule per connection. All schedule config (create + edit) is driven from
+the frontend's Edit Connection → Backup tab; the connection's own Backup tab
+is a read-only viewer (status, calendar, version list).
 
-### POST `/api/connections/:id/backup-workflow`
-Create the connection's backup workflow. 409s if one already exists.
+### GET `/api/connections/:id/backup/schedule`
+Current backup schedule for this connection (`null` if none exists yet).
 
-- **Body:** `{ "frequency": "hourly"|"daily", "hourOfDay"?: 0-23, "destinationIds": string[] }`
-- **200:** `{ "id", "name": "Backup", "protected": true, "scheduleEnabled": true, "ts" }`
+- **200:** `{ "schedule": { "connectionId", "enabled", "frequency": "hourly"|"daily", "hourOfDay", "destinationIds", "retryLimit", "retryDelaySec", "retentionDays", "encrypt" } | null }`
+- **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/backup/schedule`
+
+### POST `/api/connections/:id/backup/schedule`
+Create the connection's backup schedule. 409s if one already exists.
+
+- **Body:** `{ "frequency": "hourly"|"daily", "hourOfDay"?: 0-23, "destinationIds": string[], "retryLimit"?: 0-5, "retryDelaySec"?: number, "retentionDays"?: number, "encrypt"?: boolean, "enabled"?: boolean }`
+- **200:** `{ "schedule": {...} }` (same shape as GET)
 - **400:** invalid frequency/destinations, or connection type isn't sqlite/postgresql
 - **409:** `{ "error": "This connection already has a backup schedule." }`
-- **Example:** `POST http://localhost:3000/api/connections/demo-sqlite/backup-workflow`
+- **Example:** `POST http://localhost:3000/api/connections/demo-sqlite/backup/schedule`
 
-### GET `/api/connections/:id/backup`
-Current backup schedule, read back out of the protected workflow's graph.
+### PUT `/api/connections/:id/backup/schedule`
+Update any subset of the schedule's fields — same body shape as POST, all
+fields optional (unset ones keep their stored value). This is also how
+Active/Paused toggles, via a lightweight `{ "enabled": false }` body.
 
-- **200:** `{ "workflow": { "id", "name", "scheduleEnabled", "frequency", "hourOfDay", "destinationIds" } | null }`
-- **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/backup`
+- **200:** `{ "schedule": {...} }`
+- **400:** invalid frequency/destinations
+- **404:** `{ "error": "No backup schedule exists for this connection." }`
+- **Example:** `PUT http://localhost:3000/api/connections/demo-sqlite/backup/schedule`
+
+### POST `/api/connections/:id/backup/run`
+Run the schedule immediately ("Run now") — a single attempt, no retry.
+
+- **200:** `{ "ok": true|false, "error"?, "uploads": [...] }`
+- **404:** connection or schedule not found
+- **Example:** `POST http://localhost:3000/api/connections/demo-sqlite/backup/run`
+
+Scheduled runs (the minutely cron tick, `WORKFLOW_SCHEDULER_ENABLED`) retry on
+failure up to `retryLimit` times with `retryDelaySec` between attempts, each
+attempt its own `backup_runs` row (`trigger: "retry"`). If the schedule still
+ends up failed after retries, the workspace's backup-failure notification
+fires (see Workspaces → Notifications above).
 
 ### GET `/api/connections/:id/backup/calendar?days=365`
-Per-day run counts for the backup workflow (feeds the GitHub-style calendar).
+Per-day run counts (feeds the GitHub-style calendar — one color for "backed up
+that day"; failures get their own reserved color).
 
 - **200:** `{ "days": [{ "day": "2026-07-05", "runs": 2, "success": 2, "failed": 0 }, ...] }`
 - **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/backup/calendar?days=90`
 
-### GET `/api/connections/:id/backup/runs?limit=50`
-Recent backup runs, including per-destination upload results (used by Restore).
+### GET `/api/connections/:id/backup/runs?limit=20&offset=0&date=`
+Paginated backup runs, including per-destination upload results (size,
+encrypted, pruned count) the version list needs. Optional `date=YYYY-MM-DD`
+filters to one UTC day (what clicking a calendar cell does in the UI).
 
-- **200:** `[{ "id", "trigger": "manual"|"schedule", "status", "error"?, "startedAt", "finishedAt", "uploads": [{ "destinationId", "ok", "key"?, "sizeBytes"?, "error"? }] }]`
-- **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/backup/runs?limit=20`
+- **200:** `{ "total": number, "runs": [{ "id", "trigger": "manual"|"schedule"|"retry", "status", "error"?, "startedAt", "finishedAt", "uploads": [{ "destinationId", "ok", "key"?, "sizeBytes"?, "error"?, "encrypted"?, "prunedCount"?, "pruneError"?, "deleted"? }] }] }`
+- **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/backup/runs?limit=20&offset=20`
+
+### DELETE `/api/connections/:id/backup/runs/:runId/uploads/:destinationId`
+Permanently deletes that uploaded artifact from storage. The `backup_runs` row
+and other uploads in it are untouched — this upload is marked `deleted: true`
+(history stays visible; Restore/Download disappear for it). Irreversible.
+
+- **200:** `{ "ok": true }`
+- **404:** run or deletable upload not found
+- **500:** `{ "error": "<message>" }` (storage delete failure)
+- **Example:** `DELETE http://localhost:3000/api/connections/demo-sqlite/backup/runs/run-1/uploads/storage-1`
+
+### GET `/api/connections/:id/backup/runs/:runId/uploads/:destinationId/download`
+Downloads that uploaded artifact (decrypted server-side first if `encrypted`)
+as a file attachment (`Content-Disposition`).
+
+- **200:** binary file stream
+- **404:** run or downloadable upload not found
+- **500:** `{ "error": "<message>" }`
+- **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/backup/runs/run-1/uploads/storage-1/download`
 
 ### POST `/api/connections/:id/backup/restore`
-Download a past backup artifact and overwrite the connection's live data in
+Download a past backup artifact and overwrite a connection's live data in
 place (sqlite: atomic file replace; postgresql: `pg_restore --clean --if-exists`).
+Defaults to overwriting the source connection (`:id`); pass
+`targetConnectionId` to restore into any **other** connection instead, as long
+as it's in the same workspace and the same database type. If the matched
+upload was `encrypted`, it's decrypted automatically first.
 
-- **Body:** `{ "runId", "destinationId", "confirmName": "<must equal the connection's name>" }`
+- **Body:** `{ "runId", "destinationId", "confirmName": "<must equal the TARGET connection's name>", "targetConnectionId"?: string }`
 - **200:** `{ "ok": true }`
-- **400:** confirmation mismatch, or no successful upload found for that destination
-- **404:** run/destination not found
+- **400:** confirmation mismatch, target in a different workspace/type, or no successful upload found for that destination
+- **404:** connection/run/destination not found
 - **500:** `{ "ok": false, "error": "<message>" }` (download/dialect-restore failure)
 - **Example:** `POST http://localhost:3000/api/connections/demo-sqlite/backup/restore`
 
@@ -887,9 +981,13 @@ Liveness probe.
 | PUT    | `/api/storages/:sid`                      | Update storage destination      |
 | DELETE | `/api/storages/:sid`                      | Delete storage destination      |
 | POST   | `/api/storages/:sid/test`                 | Test bucket reachability        |
-| POST   | `/api/connections/:id/backup-workflow`    | Create the backup workflow      |
-| GET    | `/api/connections/:id/backup`             | Current backup schedule         |
+| GET    | `/api/connections/:id/backup/schedule`    | Current backup schedule         |
+| POST   | `/api/connections/:id/backup/schedule`    | Create the backup schedule      |
+| PUT    | `/api/connections/:id/backup/schedule`    | Update the backup schedule      |
+| POST   | `/api/connections/:id/backup/run`         | Run the backup schedule now     |
 | GET    | `/api/connections/:id/backup/calendar`    | Per-day backup run counts       |
-| GET    | `/api/connections/:id/backup/runs`        | Recent backup runs              |
-| POST   | `/api/connections/:id/backup/restore`     | Restore from a backup run       |
+| GET    | `/api/connections/:id/backup/runs`        | Paginated backup runs           |
+| DELETE | `/api/connections/:id/backup/runs/:runId/uploads/:destinationId` | Delete a backup version |
+| GET    | `/api/connections/:id/backup/runs/:runId/uploads/:destinationId/download` | Download a backup version |
+| POST   | `/api/connections/:id/backup/restore`     | Restore a backup version        |
 | GET    | `/api/health`                             | Health check                    |

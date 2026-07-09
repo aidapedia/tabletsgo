@@ -1,6 +1,6 @@
 import { useNavigate, useParams } from 'react-router-dom'
-import { useWorkspaces, MembersPanel, WorkspaceGeneral, IntegrationsSettings, ExperimentsSettings } from '@/features/workspaces'
-import { ComingSoon, SubHead, TabbedSection } from './ui'
+import { useWorkspaces, MembersPanel, WorkspaceGeneral, IntegrationsSettings, ExperimentsSettings, NotificationSettings } from '@/features/workspaces'
+import { SubHead, TabbedSection } from './ui'
 
 // Workspace section — General / Member / Integrations / Notification / Beta as
 // tabs (a second path segment). SMTP + S3 Storage live together under
@@ -52,10 +52,7 @@ export default function WorkspaceSettingsPage() {
       body: (
         <div>
           <SubHead title="Notification" desc="Manage the notifications Tabletsgo sends to your team." />
-          <ComingSoon
-            title="Notification manager"
-            desc="Configure channels and rules for the notifications Tabletsgo sends — landing soon."
-          />
+          {current ? <NotificationSettings workspaceId={current.id} /> : <div className="text-xs text-ink-faint">Loading…</div>}
         </div>
       ),
     },

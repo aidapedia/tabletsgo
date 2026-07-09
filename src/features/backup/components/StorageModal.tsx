@@ -21,8 +21,8 @@ const blank = {
   secretAccessKey: '',
 }
 
-// Create/edit slide-over for a storage destination — same chrome as
-// ConnectionModal, minus the dialect picker (there's only one "type": S3-compatible).
+// Create/edit slide-over for a storage destination — minus the dialect
+// picker (there's only one "type": S3-compatible).
 export default function StorageModal({
   workspaceId,
   initial,
