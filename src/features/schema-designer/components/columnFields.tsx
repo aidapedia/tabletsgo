@@ -69,6 +69,42 @@ export function useColumnTypes(conn) {
 // spelling "character varying").
 const isVarchar = (type) => /^(varchar|character varying)$/i.test((type || '').trim())
 
+// Collapse a SQL type to a comparable base family: strip length/precision
+// parens, fold serial types to their integer equivalent, and lowercase.
+// Used to decide whether two columns are FK-compatible in the diagram's
+// drag-to-connect mode.
+export function normalizeFkType(type) {
+  // Drop length/precision parens, a trailing statement `;`, and any inline
+  // column modifiers (NOT NULL, DEFAULT …) that can ride along when the type
+  // comes from a staged ADD COLUMN statement rather than the live schema.
+  const t = (type || '')
+    .toLowerCase()
+    .replace(/\(.*\)/, '')
+    .replace(/\s+(not\s+null|primary\s+key|default|references)\b.*$/, '')
+    .replace(/;.*$/, '')
+    .trim()
+  const map = {
+    serial: 'integer', bigserial: 'bigint', smallserial: 'smallint',
+    int: 'integer', int4: 'integer', int8: 'bigint', int2: 'smallint',
+    varchar: 'character varying', 'character varying': 'character varying',
+  }
+  return map[t] || t
+}
+
+// Treat the SQL default (NO ACTION) as "unspecified" so a FK's ON DELETE / ON
+// UPDATE round-trips cleanly through an empty-string form field.
+export const normFkAction = (a) => (a && a !== 'NO ACTION' ? a : '')
+
+// Whether a foreign key can be drawn from `srcCol` to `tgtCol`: the target
+// must be a primary key (the only uniqueness the diagram exposes) and the two
+// columns' base types must match, and it can't be to the same column.
+export function fkEligible(srcTable, srcCol, tgtTable, tgtCol) {
+  if (!srcCol || !tgtCol) return false
+  if (srcTable === tgtTable && srcCol.name === tgtCol.name) return false
+  if (!tgtCol.pk) return false
+  return normalizeFkType(srcCol.type) === normalizeFkType(tgtCol.type)
+}
+
 // Resolve the SQL type string, applying the custom length to a variable-length
 // character type while preserving whichever spelling the user picked.
 export const columnTypeSql = (c) =>

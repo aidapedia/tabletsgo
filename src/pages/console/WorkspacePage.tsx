@@ -623,21 +623,30 @@ export default function Workspace() {
     setCreatingTable(false)
   }
 
+  // Label + Changes-panel "kind" for a staged schema-editor item, by mode.
+  const schemaItemMeta = (mode, table) => {
+    switch (mode) {
+      case 'edit': return { kind: 'update', label: `Alter table ${table}` }
+      case 'delete': return { kind: 'delete', label: `Drop table ${table}` }
+      case 'fk-add': return { kind: 'update', label: `Add foreign key on ${table}` }
+      case 'fk-drop': return { kind: 'update', label: `Drop foreign key on ${table}` }
+      case 'fk-edit': return { kind: 'update', label: `Update foreign key on ${table}` }
+      default: return { kind: 'create', label: `Create table ${table}` }
+    }
+  }
+
   // Schema editor "Stage commit" — push its collected pending items into Changes.
-  // `delete` (drop table from the canvas) needs a live column snapshot to build
-  // its rollback, so this staging step is async.
+  // FK-mode edits (fk-add/fk-drop/fk-edit) carry their own rollback SQL from
+  // SchemaEditor, since they're diagram-driven constraint statements the
+  // generic column-add/create-table rollback builders can't parse. `delete`
+  // (drop table from the canvas) needs a live column snapshot to build its
+  // rollback when one isn't already provided, so this staging step is async.
   const stageSchemaItems = async (items) => {
     for (const i of items) {
-      const { rollbackSql, reversible } = await rollbackFor(i.sql, i.table, i.mode)
-      addChange({
-        kind: i.mode === 'edit' ? 'update' : i.mode === 'delete' ? 'delete' : 'create',
-        label: i.mode === 'edit' ? `Alter table ${i.table}` : i.mode === 'delete' ? `Drop table ${i.table}` : `Create table ${i.table}`,
-        sql: i.sql,
-        table: i.table,
-        ddl: true,
-        reversible,
-        rollbackSql,
-      })
+      const { rollbackSql, reversible } =
+        i.rollbackSql !== undefined ? { rollbackSql: i.rollbackSql, reversible: i.rollbackSql != null } : await rollbackFor(i.sql, i.table, i.mode)
+      const { kind, label } = schemaItemMeta(i.mode, i.table)
+      addChange({ kind, label, sql: i.sql, table: i.table, ddl: true, reversible, rollbackSql })
     }
   }
 

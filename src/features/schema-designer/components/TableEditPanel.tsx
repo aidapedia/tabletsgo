@@ -9,10 +9,7 @@ import { useSlideOver } from '@/shared/hooks/useSlideOver'
 import { ChevronRight, PlusIcon, TrashIcon } from '@/shared/ui/icons'
 import { controlClass } from '@/shared/ui/form/Input'
 import { Label } from '@/shared/ui/form/Form'
-import { ColumnField, FK_ACTIONS, colDef, newColumn } from '@/features/schema-designer/components/columnFields'
-
-// Treat the SQL default (NO ACTION) as "unspecified" so it round-trips cleanly.
-const normAction = (a) => (a && a !== 'NO ACTION' ? a : '')
+import { ColumnField, FK_ACTIONS, colDef, newColumn, normFkAction as normAction } from '@/features/schema-designer/components/columnFields'
 
 export default function TableEditPanel({ table, dialect, types, tableNames = [], schema = {}, foreignKeys = [], onStage, onClose }) {
   const isPg = dialect === 'postgresql'
