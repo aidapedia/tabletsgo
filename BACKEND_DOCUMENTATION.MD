@@ -319,10 +319,12 @@ Set password, activate, log in. **Body:** `{ "name", "password" }` → **200:** 
 
 ## Workspaces (auth required)
 
-- `GET /api/workspaces` → `[{ id, name, role, createdAt, experiments }]` the
-  caller belongs to. `experiments` is `{ [key]: boolean }` (see Beta experiments
+- `GET /api/workspaces` → `[{ id, name, role, createdAt, experiments, notifications }]`
+  the caller belongs to. `experiments` is `{ [key]: boolean }` (see Beta experiments
   below) — included for every member, not just admins, since it gates what the
-  whole workspace sees.
+  whole workspace sees. `notifications` ships here too (not just the detail route)
+  so a settings panel that only calls `refresh()`/`listWorkspaces()` after saving
+  sees the persisted value instead of it reverting to empty.
 - `POST /api/workspaces` `{ name }` → creates one; caller becomes `admin`.
 - `GET /api/workspaces/:id` → `{ id, name, role, createdAt, experiments, notifications }`;
   admins also get `smtp` (password-masked) + `smtpEnvFallback` + `smtpEnvDefaults`

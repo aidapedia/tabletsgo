@@ -178,7 +178,7 @@ export default function QueryEditor({ conn, dialect, initialSql, tabKey, persist
       <div ref={paneRef} className="flex min-h-0 min-w-0 flex-1 flex-col">
         <div
           ref={editorWrapRef}
-          className={`min-h-0 border-b border-edge bg-bg ${resultsCollapsed ? 'flex-1' : 'flex-none'}`}
+          className={`min-h-0 bg-bg ${resultsCollapsed ? 'flex-1' : 'flex-none'}`}
           style={resultsCollapsed ? undefined : { height: editorHeight }}
         >
           <SqlEditor
@@ -194,21 +194,23 @@ export default function QueryEditor({ conn, dialect, initialSql, tabKey, persist
         </div>
 
         <div
-          className={`group relative h-[7px] shrink-0 border-b border-edge ${resultsCollapsed ? '' : 'cursor-row-resize'}`}
+          className={`group relative h-px shrink-0 bg-edge ${resultsCollapsed ? '' : 'cursor-row-resize'}`}
           onMouseDown={resultsCollapsed ? undefined : startResize}
         >
-          <div className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-transparent group-hover:bg-green-dim" />
+          {/* wider invisible hit area so the 1px line is still easy to grab */}
+          <div className="absolute inset-x-0 -top-1.5 -bottom-1.5" />
+          <div className="absolute inset-0 group-hover:bg-green-dim" />
           <Tooltip
             label={resultsCollapsed ? 'Expand results' : 'Collapse results'}
-            placement="bottom"
-            wrapperClassName="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2"
+            placement={resultsCollapsed ? 'top' : 'bottom'}
+            wrapperClassName={`absolute left-1/2 top-1/2 -translate-x-1/2 ${resultsCollapsed ? '-translate-y-[calc(100%+8px)]' : '-translate-y-1/2'}`}
           >
             <button
               type="button"
               onClick={(e) => { e.stopPropagation(); setResultsCollapsed((c) => !c) }}
               onMouseDown={(e) => e.stopPropagation()}
               aria-label={resultsCollapsed ? 'Expand results' : 'Collapse results'}
-              className="flex h-5 w-8 items-center justify-center rounded-full border border-edge bg-panel text-ink-dim transition-colors hover:border-edge-strong hover:text-ink"
+              className="flex h-5 w-9 items-center justify-center rounded-full border border-edge bg-panel text-ink-dim shadow-[0_6px_16px_-6px_rgba(0,0,0,0.6)] transition-colors hover:border-edge-strong hover:text-ink"
             >
               <ChevronDown width={13} height={13} className={`transition-transform ${resultsCollapsed ? 'rotate-180' : ''}`} />
             </button>

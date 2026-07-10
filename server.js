@@ -1441,9 +1441,15 @@ app.get('/api/workspaces', (req, res) => {
        WHERE m.user_id = ? ORDER BY w.created_at`
     )
     .all(user.id)
-  // Beta experiment flags ship in the list response (not just the detail route)
-  // so nav-level gating (e.g. the S3/Backup item) doesn't need a second fetch.
-  res.json(rows.map((r) => ({ id: r.id, name: r.name, role: r.role, createdAt: r.created_at, experiments: safeJson(r.settings).experiments || {} })))
+  // Beta experiment flags + notification prefs ship in the list response (not
+  // just the detail route) so nav-level gating and this settings panel don't
+  // go stale after a save that only refreshes via listWorkspaces().
+  res.json(
+    rows.map((r) => {
+      const settings = safeJson(r.settings)
+      return { id: r.id, name: r.name, role: r.role, createdAt: r.created_at, experiments: settings.experiments || {}, notifications: settings.notifications || {} }
+    })
+  )
 })
 
 // Create a workspace — caller becomes its admin.
