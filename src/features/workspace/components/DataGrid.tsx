@@ -16,7 +16,7 @@ const safeStringify = (v, pretty = false) => {
   }
 }
 // Single-line text for a cell; objects/arrays become JSON, not "[object Object]".
-const cellText = (v) => {
+export const cellText = (v) => {
   if (v == null) return ''
   if (v instanceof Date) return isoDateTime(v)
   return isJsonValue(v) ? safeStringify(v) : String(v)
@@ -124,6 +124,7 @@ export default function DataGrid({
   editable = false,
   edits,
   onEdit,
+  onCellContextMenu,
 }: any) {
   const [editing, setEditing] = useState(null) // { rowIndex, col, kind, origText }
   const [draft, setDraft] = useState('')
@@ -294,6 +295,12 @@ export default function DataGrid({
                         } ${isSel ? '!bg-green/15 outline outline-1 -outline-offset-1 outline-green' : ''}`}
                         onClick={() => setSel({ r: i, c })}
                         onDoubleClick={() => editable && !Array.isArray(row) && startEdit(i, c, val)}
+                        onContextMenu={(e) => {
+                          if (!onCellContextMenu || Array.isArray(row)) return
+                          e.preventDefault()
+                          setSel({ r: i, c })
+                          onCellContextMenu(e, { row, rowIndex: i, col: c, value: val })
+                        }}
                         title={editable ? 'Double-click to edit' : undefined}
                       >
                         {val === null || val === undefined ? (

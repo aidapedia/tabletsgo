@@ -45,7 +45,9 @@ export default function NumberStepper({
   }
 
   return (
-    <div className={`flex h-10 items-stretch overflow-hidden rounded-soft border border-edge bg-bg focus-within:border-green-dim ${className}`}>
+    <div
+      className={`flex items-stretch overflow-hidden rounded-soft border border-edge bg-elevated transition-[border-color,box-shadow] duration-150 focus-within:border-green-dim focus-within:shadow-[0_0_0_3px_rgba(111,207,106,0.22)] ${className}`}
+    >
       <input
         type="number"
         min={min}
@@ -64,7 +66,7 @@ export default function NumberStepper({
             bump(-step)
           }
         }}
-        className="min-w-0 flex-1 bg-transparent px-3 text-right text-[13px] text-ink outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+        className="min-w-0 flex-1 bg-transparent px-3 py-2 text-[11px] text-ink outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
       />
       <div className="flex w-7 shrink-0 flex-col border-l border-edge">
         <button
