@@ -8,8 +8,11 @@ const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'S
 
 // One color for "backed up that day" — a failure is a status, not a
 // magnitude, so it gets its own reserved color and always wins over a count.
+// A day with both a success and a failure gets its own mixed color rather
+// than being folded into either bucket.
 const HAS_BACKUP_CLASS = 'bg-green-bright'
 const FAILED_CLASS = 'bg-red/70'
+const MIXED_CLASS = 'bg-amber'
 
 // GitHub-contributions-style calendar: 53 weeks x 7 days, day-index arithmetic
 // throughout (never local-timezone Date math) so grid keys line up exactly
@@ -62,7 +65,15 @@ export default function BackupCalendarHeatmap({
               {col.map((cell) => {
                 const future = cell.idx > cell.todayIdx
                 const entry = byDay.get(cell.key)
-                const cls = future ? 'bg-transparent' : entry?.failed ? FAILED_CLASS : entry?.success ? HAS_BACKUP_CLASS : 'bg-elevated'
+                const cls = future
+                  ? 'bg-transparent'
+                  : entry?.success && entry?.failed
+                    ? MIXED_CLASS
+                    : entry?.failed
+                      ? FAILED_CLASS
+                      : entry?.success
+                        ? HAS_BACKUP_CLASS
+                        : 'bg-elevated'
                 const title = future ? undefined : entry ? `${cell.key} — ${entry.runs} run${entry.runs === 1 ? '' : 's'} (${entry.success} success, ${entry.failed} failed)` : `${cell.key} — no backup`
                 const selected = selectedDay === cell.key
                 return (
@@ -88,6 +99,9 @@ export default function BackupCalendarHeatmap({
         </span>
         <span className="flex items-center gap-1.5">
           <span className={`h-3 w-3 rounded-[2px] ${HAS_BACKUP_CLASS}`} /> Backed up
+        </span>
+        <span className="flex items-center gap-1.5">
+          <span className={`h-3 w-3 rounded-[2px] ${MIXED_CLASS}`} /> Success &amp; failed
         </span>
         <span className="flex items-center gap-1.5">
           <span className={`h-3 w-3 rounded-[2px] ${FAILED_CLASS}`} /> Had a failure
