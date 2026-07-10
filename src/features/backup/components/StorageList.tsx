@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useState } from 'react'
 import Button from '@/shared/ui/buttons/Button'
 import IconButton from '@/shared/ui/buttons/IconButton'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
@@ -10,8 +10,11 @@ import { listStorages, deleteStorage } from '@/features/backup/lib/api'
 import type { StorageDestination } from '@/features/backup/lib/types'
 import StorageModal from './StorageModal'
 
+export type StorageListHandle = { openCreate: () => void }
+
 // List + create/edit/delete for a workspace's S3-compatible storage destinations.
-export default function StorageList({ workspaceId }: { workspaceId: string }) {
+// Exposes `openCreate` via ref so a page header can drive the "new" action.
+const StorageList = forwardRef<StorageListHandle, { workspaceId: string }>(function StorageList({ workspaceId }, ref) {
   const toast = useToast()
   const [storages, setStorages] = useState<StorageDestination[]>([])
   const [loading, setLoading] = useState(true)
@@ -28,6 +31,8 @@ export default function StorageList({ workspaceId }: { workspaceId: string }) {
   }
 
   useEffect(reload, [workspaceId])
+
+  useImperativeHandle(ref, () => ({ openCreate: () => setModal({ mode: 'new' }) }), [])
 
   const handleSaved = (s: StorageDestination) => {
     setStorages((prev) => (prev.some((x) => x.id === s.id) ? prev.map((x) => (x.id === s.id ? s : x)) : [...prev, s]))
@@ -48,19 +53,10 @@ export default function StorageList({ workspaceId }: { workspaceId: string }) {
 
   return (
     <>
-      <div className="flex items-center justify-between">
-        <p className="max-w-[560px] text-[12px] text-ink-dim">
-          S3-compatible storage destinations (AWS S3, MinIO, R2, B2, …) that connections can back up to.
-        </p>
-        <Button variant="primary" size="sm" icon={PlusIcon} onClick={() => setModal({ mode: 'new' })}>
-          Add destination
-        </Button>
-      </div>
-
       {loading ? (
         <div className="py-16 text-center text-xs text-ink-faint">Loading…</div>
       ) : storages.length === 0 ? (
-        <div className="mt-6 flex flex-col items-center gap-3 rounded-card border border-dashed border-edge-strong py-16">
+        <div className="flex flex-col items-center gap-3 rounded-card border border-dashed border-edge-strong py-16">
           <CloudIcon width={28} height={28} className="text-ink-faint" />
           <div className="text-[13px] text-ink-dim">No storage destinations yet.</div>
           <Button variant="ghost" size="sm" icon={PlusIcon} onClick={() => setModal({ mode: 'new' })}>
@@ -68,7 +64,7 @@ export default function StorageList({ workspaceId }: { workspaceId: string }) {
           </Button>
         </div>
       ) : (
-        <div className="mt-6 grid grid-cols-2 gap-4 max-[720px]:grid-cols-1">
+        <div className="grid grid-cols-3 gap-4 max-[1080px]:grid-cols-2 max-[720px]:grid-cols-1">
           {storages.map((s) => (
             <div key={s.id} className="group relative flex flex-col rounded-card border border-edge bg-card p-5">
               <div className="flex items-start justify-between">
@@ -130,4 +126,6 @@ export default function StorageList({ workspaceId }: { workspaceId: string }) {
       )}
     </>
   )
-}
+})
+
+export default StorageList
