@@ -1,10 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useConnections } from '@/features/connections'
-import { useWorkspaces } from '@/features/workspaces'
+import { useConnections, ConnectionForm } from '@/features/connections'
 import { BackupPanel } from '@/features/backup'
 import { listTables, pingConnection } from '@/shared/api/database'
-import ConnectionModal from '@/features/connections/components/ConnectionModal'
 import Button from '@/shared/ui/buttons/Button'
 import IconButton from '@/shared/ui/buttons/IconButton'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
@@ -89,8 +87,6 @@ function DetailRow({ label, value }: { label: string; value?: string }) {
 }
 
 function ConnectionDetail({ conn, onBack, onOpen, onEdit }) {
-  const { current } = useWorkspaces()
-  const backupEnabled = !!current?.experiments?.s3Backup
   const [tab, setTab] = useState<'data' | 'backup'>('data')
   const [status, setStatus] = useState<'checking' | 'connected' | 'offline'>('checking')
   const [tableCount, setTableCount] = useState<number | null>(null)
@@ -152,11 +148,11 @@ function ConnectionDetail({ conn, onBack, onOpen, onEdit }) {
       {/* Tabs */}
       <div className="mt-7 flex items-center gap-5 border-b border-edge">
         {tabBtn('data', 'Data Connection')}
-        {backupEnabled && tabBtn('backup', 'Backup')}
+        {tabBtn('backup', 'Backup')}
       </div>
 
       <div className="mt-6">
-        {tab === 'data' || !backupEnabled ? (
+        {tab === 'data' ? (
           <div className="flex flex-col gap-5">
             {/* Stats */}
             <div className="grid grid-cols-3 gap-3 max-[560px]:grid-cols-1">
@@ -200,7 +196,7 @@ function ConnectionDetail({ conn, onBack, onOpen, onEdit }) {
             </div>
           </div>
         ) : (
-          <BackupPanel connectionId={conn.id} connectionName={conn.name} connectionType={conn.type} workspaceId={conn.workspaceId} />
+          <BackupPanel connectionId={conn.id} connectionType={conn.type} workspaceId={conn.workspaceId} />
         )}
       </div>
     </div>
@@ -217,7 +213,7 @@ export default function ConnectionsPage() {
   const [query, setQuery] = useState('')
   const [activeFolder, setActiveFolder] = useState('All')
   const [activeType, setActiveType] = useState('all')
-  const [modal, setModal] = useState<any>(null) // { mode, conn?, type? }
+  const [formConn, setFormConn] = useState<any>(null) // { mode, conn?, type? } — full-page create/edit form
   const [picker, setPicker] = useState(false) // db-type picker open
   const [statuses, setStatuses] = useState<Record<string, string>>({})
 
@@ -267,9 +263,9 @@ export default function ConnectionsPage() {
   }, [connections, activeFolder, activeType, query])
 
   const handleSave = (data) => {
-    if (modal?.mode === 'edit') updateConnection(modal.conn.id, data)
+    if (formConn?.mode === 'edit') updateConnection(formConn.conn.id, data)
     else addConnection(data)
-    setModal(null)
+    setFormConn(null)
   }
 
   const handleDelete = (conn) => {
@@ -287,13 +283,24 @@ export default function ConnectionsPage() {
   const openConsole = (conn) => navigate(`/connection/${conn.id}`)
   const subtitle = (c) => (c.type === 'sqlite' ? c.filepath : c.host)
 
+  if (formConn) {
+    return (
+      <ConnectionForm
+        initial={formConn.mode === 'edit' ? formConn.conn : null}
+        initialType={formConn.type}
+        onClose={() => setFormConn(null)}
+        onSave={handleSave}
+      />
+    )
+  }
+
   if (detailConn) {
     return (
       <ConnectionDetail
         conn={detailConn}
         onBack={() => setDetailConn(null)}
         onOpen={openConsole}
-        onEdit={(c) => setModal({ mode: 'edit', conn: c })}
+        onEdit={(c) => setFormConn({ mode: 'edit', conn: c })}
       />
     )
   }
@@ -349,7 +356,7 @@ export default function ConnectionsPage() {
         {loading ? (
           <div className="py-20 text-center text-xs text-ink-faint">Loading…</div>
         ) : (
-          <div className="mt-6 grid grid-cols-2 gap-4 max-[720px]:grid-cols-1">
+          <div className="mt-6 grid grid-cols-3 gap-4 max-[1080px]:grid-cols-2 max-[720px]:grid-cols-1">
             {filtered.map((conn) => (
               <div
                 key={conn.id}
@@ -392,7 +399,7 @@ export default function ConnectionsPage() {
                           <DatabaseIcon width={14} height={14} /> Open details
                         </MenuItem>
                         <div className="my-1 h-px bg-edge" />
-                        <MenuItem onClick={() => { setModal({ mode: 'edit', conn }); close() }}>
+                        <MenuItem onClick={() => { setFormConn({ mode: 'edit', conn }); close() }}>
                           <EditIcon width={14} height={14} /> Edit
                         </MenuItem>
                         <MenuItem onClick={() => { copyUrl(conn); close() }}>
@@ -454,7 +461,7 @@ export default function ConnectionsPage() {
                   disabled={!db.available}
                   onClick={() => {
                     if (!db.available) return
-                    setModal({ mode: 'new', type: db.id })
+                    setFormConn({ mode: 'new', type: db.id })
                     setPicker(false)
                   }}
                   className={`group relative flex flex-col items-start gap-3 rounded-card border p-4 text-left transition-all ${
@@ -486,14 +493,6 @@ export default function ConnectionsPage() {
         </div>
       )}
 
-      {modal && (
-        <ConnectionModal
-          initial={modal.mode === 'edit' ? modal.conn : null}
-          initialType={modal.type}
-          onClose={() => setModal(null)}
-          onSave={handleSave}
-        />
-      )}
     </>
   )
 }

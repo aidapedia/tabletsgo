@@ -4,14 +4,15 @@ import { useAuth } from '@/features/auth'
 import { WorkspaceSwitcher } from '@/features/workspaces'
 import NavItem from '@/shared/ui/navigation/NavItem'
 import IconButton from '@/shared/ui/buttons/IconButton'
-import { BuildingIcon, DatabaseIcon, GridIcon, Logo, LogoutIcon, MenuIcon, SettingsIcon } from '@/shared/ui/icons'
+import { BuildingIcon, CloudIcon, DatabaseIcon, GridIcon, Logo, LogoutIcon, MenuIcon, SettingsIcon } from '@/shared/ui/icons'
 
 // Sidebar navigation model — one clickable item per section. Each section is its
-// own route; the id doubles as the path segment (`dashboard` → `/`). S3 Storage,
-// SMTP and Notification live as tabs under Workspace instead of top-level items.
+// own route; the id doubles as the path segment (`dashboard` → `/`). SMTP and
+// Notification live as tabs under Workspace instead of top-level items.
 const NAV = [
   { id: 'dashboard', label: 'Dashboard', Icon: GridIcon, path: '/' },
   { id: 'connections', label: 'Connection', Icon: DatabaseIcon, path: '/connections' },
+  { id: 'storage', label: 'S3 Storage', Icon: CloudIcon, path: '/storage' },
   { id: 'workspace', label: 'Workspace', Icon: BuildingIcon, path: '/workspace' },
   { id: 'settings', label: 'Setting', Icon: SettingsIcon, path: '/settings' },
 ] as const

@@ -1,5 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 
+// Shared panel shell — every dropdown/action menu in the app (this Popover's
+// panel, and the mouse-anchored ContextMenu) renders on this same surface.
+export const MENU_PANEL_CLASS =
+  'rounded-soft border border-edge-strong bg-elevated shadow-[0_16px_40px_-12px_rgba(0,0,0,0.8)]'
+
 /**
  * Anchored popover. `trigger` is a render-prop receiving { open, toggle }.
  * `children` can be a node or a render-prop receiving { close }.
@@ -31,7 +36,7 @@ export default function Popover({ trigger, children, align = 'left', placement =
       {trigger({ open, toggle: () => setOpen((o) => !o) })}
       {open && (
         <div
-          className={`absolute z-50 rounded-soft border border-edge-strong bg-elevated shadow-[0_16px_40px_-12px_rgba(0,0,0,0.8)] ${
+          className={`absolute z-50 ${MENU_PANEL_CLASS} ${
             align === 'right' ? 'right-0' : 'left-0'
           } ${placement === 'top' ? 'bottom-full mb-1.5' : 'top-full mt-1.5'} ${panelClassName}`}
           style={{ width }}

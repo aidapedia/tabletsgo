@@ -3,6 +3,8 @@ import Checkbox from '@/shared/ui/form/Checkbox'
 import Button from '@/shared/ui/buttons/Button'
 import TextButton from '@/shared/ui/buttons/TextButton'
 import Tooltip from '@/shared/ui/overlay/Tooltip'
+import JsonEditor from '@/shared/ui/JsonEditor'
+import NumberStepper from '@/shared/ui/form/NumberStepper'
 import { CloseIcon, ExternalLinkIcon } from '@/shared/ui/icons'
 
 // JSON helpers — Postgres JSONB columns arrive as parsed objects/arrays.
@@ -16,7 +18,7 @@ const safeStringify = (v, pretty = false) => {
   }
 }
 // Single-line text for a cell; objects/arrays become JSON, not "[object Object]".
-const cellText = (v) => {
+export const cellText = (v) => {
   if (v == null) return ''
   if (v instanceof Date) return isoDateTime(v)
   return isJsonValue(v) ? safeStringify(v) : String(v)
@@ -124,9 +126,18 @@ export default function DataGrid({
   editable = false,
   edits,
   onEdit,
+  onCellContextMenu,
 }: any) {
   const [editing, setEditing] = useState(null) // { rowIndex, col, kind, origText }
-  const [draft, setDraft] = useState('')
+  const [draft, setDraftState] = useState('')
+  // NumberStepper commits on blur, and pressing Enter in it blurs+bubbles to
+  // this modal's own Enter handler in the same tick — React state wouldn't be
+  // flushed yet, so commitEdit reads this ref (always in sync) instead.
+  const draftRef = useRef('')
+  const setDraft = (v: string) => {
+    draftRef.current = v
+    setDraftState(v)
+  }
   const [sel, setSel] = useState(null) // selected cell { r, c }
   const scrollRef = useRef(null)
   const [fill, setFill] = useState({ rowH: 24, remaining: 0 }) // empty grid fill
@@ -184,7 +195,7 @@ export default function DataGrid({
   const commitEdit = () => {
     if (!editing) return
     const row = rows[editing.rowIndex]
-    if (draft !== editing.origText) onEdit?.(row, editing.col, draft)
+    if (draftRef.current !== editing.origText) onEdit?.(row, editing.col, draftRef.current)
     setEditing(null)
   }
   const cancelEdit = () => setEditing(null)
@@ -294,6 +305,12 @@ export default function DataGrid({
                         } ${isSel ? '!bg-green/15 outline outline-1 -outline-offset-1 outline-green' : ''}`}
                         onClick={() => setSel({ r: i, c })}
                         onDoubleClick={() => editable && !Array.isArray(row) && startEdit(i, c, val)}
+                        onContextMenu={(e) => {
+                          if (!onCellContextMenu || Array.isArray(row)) return
+                          e.preventDefault()
+                          setSel({ r: i, c })
+                          onCellContextMenu(e, { row, rowIndex: i, col: c, value: val })
+                        }}
                         title={editable ? 'Double-click to edit' : undefined}
                       >
                         {val === null || val === undefined ? (
@@ -370,7 +387,15 @@ export default function DataGrid({
                 </TextButton>
               </div>
 
-              {isTextArea ? (
+              {kind === 'json' ? (
+                <JsonEditor
+                  autoFocus
+                  value={draft}
+                  onChange={setDraft}
+                  placeholder="NULL"
+                  wrapperClassName="min-h-[260px] flex-1 bg-bg"
+                />
+              ) : isTextArea ? (
                 <textarea
                   autoFocus
                   value={draft}
@@ -382,13 +407,16 @@ export default function DataGrid({
               ) : (
                 <div className="flex flex-col gap-3 px-4 py-5">
                   {kind === 'number' && (
-                    <input
-                      type="number"
+                    <NumberStepper
                       autoFocus
-                      value={draft}
-                      onChange={(e) => setDraft(e.target.value)}
+                      allowNull
+                      value={draft === '' ? null : Number(draft)}
+                      onChange={(n) => setDraft(n === null ? '' : String(n))}
+                      min={-Infinity}
+                      max={Infinity}
+                      ariaLabel={editing.col}
                       placeholder="NULL"
-                      className={`${inputCls} w-full`}
+                      className="w-full"
                     />
                   )}
 

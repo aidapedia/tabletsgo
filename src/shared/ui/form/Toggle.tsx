@@ -12,7 +12,7 @@ export default function Toggle({ checked, onChange, disabled = false, className 
       disabled={disabled}
       onClick={() => onChange?.(!checked)}
       className={`relative h-6 w-11 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
-        checked ? 'bg-green' : 'bg-elevated border border-edge-strong'
+        checked ? 'bg-green' : 'bg-elevated ring-1 ring-inset ring-edge-strong'
       } ${className}`}
     >
       <span

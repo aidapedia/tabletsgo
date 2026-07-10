@@ -2,13 +2,15 @@ import { useEffect, useMemo, useState } from 'react'
 import { getColumns, getTableData } from '@/shared/api/database'
 import { useSettings } from '@/features/settings'
 import { useShortcut } from '@/features/keymap'
-import DataGrid from '@/features/workspace/components/DataGrid'
+import DataGrid, { cellText } from '@/features/workspace/components/DataGrid'
 import InsertRowPanel from '@/features/workspace/components/InsertRowPanel'
+import InspectorPanel from '@/features/workspace/components/InspectorPanel'
 import Button from '@/shared/ui/buttons/Button'
 import TextButton from '@/shared/ui/buttons/TextButton'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
 import Checkbox from '@/shared/ui/form/Checkbox'
 import Popover from '@/shared/ui/overlay/Popover'
+import ContextMenu, { ContextMenuSub } from '@/shared/ui/overlay/ContextMenu'
 import Select from '@/shared/ui/form/Select'
 import { useToast } from '@/shared/ui/feedback/Toast'
 import {
@@ -18,6 +20,8 @@ import {
   ColumnsIcon,
   CopyIcon,
   DownloadIcon,
+  EditIcon,
+  EyeIcon,
   FilterIcon,
   PlusSmall,
   RefreshIcon,
@@ -25,6 +29,8 @@ import {
   SortIcon,
   TrashIcon,
 } from '@/shared/ui/icons'
+
+const NUMERIC_TYPE = /(int|serial|numeric|decimal|real|double|float)/i
 
 // Quote a JS value for inline SQL (dev tool — table is trusted, values escaped).
 const sqlValue = (v) => {
@@ -42,6 +48,8 @@ const OPERATORS = [
   { value: '<', label: '<' },
   { value: '>=', label: '≥' },
   { value: '<=', label: '≤' },
+  { value: 'isnull', label: 'is null' },
+  { value: 'notnull', label: 'is not null' },
 ]
 export const PAGE_SIZES = [25, 50, 100, 200]
 
@@ -52,7 +60,8 @@ let filterId = 0
 const blankFilter = () => ({ id: `f${++filterId}`, col: '', op: 'contains', value: '', enabled: true })
 
 export function matchFilter(row, f) {
-  if (!f.enabled || !f.col || f.value === '') return true
+  if (!f.enabled || !f.col) return true
+  if (f.op !== 'isnull' && f.op !== 'notnull' && f.value === '') return true
   const raw = row[f.col]
   const v = raw == null ? '' : String(raw)
   switch (f.op) {
@@ -63,6 +72,8 @@ export function matchFilter(row, f) {
     case '<': return Number(raw) < Number(f.value)
     case '>=': return Number(raw) >= Number(f.value)
     case '<=': return Number(raw) <= Number(f.value)
+    case 'isnull': return raw == null
+    case 'notnull': return raw != null
     default: return true
   }
 }
@@ -75,10 +86,14 @@ export default function TableView({ conn, table, onChange, onOpenReference, init
   const [pkCols, setPkCols] = useState([])
   const [colTypes, setColTypes] = useState({}) // { colName: sqlType } for the editor
   const [colRefs, setColRefs] = useState({}) // { colName: { table, column } } FK targets
+  const [colDefaults, setColDefaults] = useState({}) // { colName: rawDefaultSql | null }
+  const [colMeta, setColMeta] = useState([]) // full getColumns() rows — for the Inspector
   const [loading, setLoading] = useState(true)
   const [showInsert, setShowInsert] = useState(false)
   const [selected, setSelected] = useState(() => new Set()) // row keys
   const [edits, setEdits] = useState<Record<string, { where: string; values: Record<string, any> }>>({}) // unsaved inline edits: { rowKey: { where, values } }
+  const [cellMenu, setCellMenu] = useState(null) // right-click cell menu: { x, y, row, col, value }
+  const [inspecting, setInspecting] = useState(null) // row object shown in the Inspector slide-over
 
   const [filters, setFilters] = useState([])
   const [sort, setSort] = useState(null) // { col, dir }
@@ -94,6 +109,8 @@ export default function TableView({ conn, table, onChange, onOpenReference, init
     setPkCols((meta || []).filter((c) => c.pk).map((c) => c.name))
     setColTypes(Object.fromEntries((meta || []).map((c) => [c.name, c.type])))
     setColRefs(Object.fromEntries((meta || []).filter((c) => c.references).map((c) => [c.name, c.references])))
+    setColDefaults(Object.fromEntries((meta || []).map((c) => [c.name, c.default ?? null])))
+    setColMeta(meta || [])
     setSelected(new Set())
     setEdits({})
     setLoading(false)
@@ -197,17 +214,18 @@ export default function TableView({ conn, table, onChange, onOpenReference, init
   }
 
   // Actions stage SQL into Changes; nothing executes until the user commits.
-  const deleteSelected = () => {
-    const targets = selectedRows()
+  // `clear` skips clearSelection() for single-row actions fired from the cell
+  // context menu, so right-clicking a row never disturbs an unrelated bulk selection.
+  const stageDelete = (targets, { clear = true } = {}) => {
     if (!targets.length) return
     const sql = `DELETE FROM "${table}" WHERE ${targets.map((r) => `(${rowWhere(r)})`).join(' OR ')}`
     onChange?.({ kind: 'delete', label: `Delete ${targets.length} row(s)`, sql, table })
     toast.info(`Added delete to changes — commit to apply.`)
-    clearSelection()
+    if (clear) clearSelection()
   }
+  const deleteSelected = () => stageDelete(selectedRows())
 
-  const duplicateSelected = () => {
-    const targets = selectedRows()
+  const stageDuplicate = (targets, { clear = true } = {}) => {
     if (!targets.length) return
     for (const row of targets) {
       const values = {}
@@ -215,12 +233,44 @@ export default function TableView({ conn, table, onChange, onOpenReference, init
       onChange?.({ kind: 'duplicate', label: 'Duplicate row', sql: insertSql(values), table })
     }
     toast.info(`Added ${targets.length} insert(s) to changes — commit to apply.`)
-    clearSelection()
+    if (clear) clearSelection()
   }
+  const duplicateSelected = () => stageDuplicate(selectedRows())
 
   const stageInsert = (values) => {
     onChange?.({ kind: 'insert', label: 'Insert row', sql: insertSql(values), table })
     toast.info('Added insert to changes — commit to apply.')
+  }
+
+  // Cell context-menu actions
+  const setCellAs = (row, col, mode) => {
+    const expr = mode === 'default' ? colDefaults[col] : mode === 'null' ? 'NULL' : sqlValue('')
+    if (expr == null) return
+    const sql = `UPDATE "${table}" SET "${col}" = ${expr} WHERE ${rowWhere(row)}`
+    onChange?.({ kind: 'update', label: `Set ${col} to ${mode.toUpperCase()}`, sql, table })
+    toast.info('Added update to changes — commit to apply.')
+  }
+
+  const copyText = async (text, label = 'Copied to clipboard') => {
+    try {
+      await navigator.clipboard.writeText(text)
+      toast.success(label)
+    } catch {
+      toast.error('Could not copy to clipboard')
+    }
+  }
+  const rowToCsv = (row) => {
+    const esc = (v) => {
+      if (v == null) return ''
+      const s = String(v)
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+    }
+    return [columns.join(','), columns.map((c) => esc(row[c])).join(',')].join('\n')
+  }
+
+  const addQuickFilter = (col, op, value) => {
+    setFilters((f) => [...f, { id: `f${++filterId}`, col, op, value: op === 'isnull' || op === 'notnull' ? '' : cellText(value), enabled: true }])
+    setPage(1)
   }
 
   // Inline cell edit → held locally as an unsaved edit (not staged yet).
@@ -264,6 +314,10 @@ export default function TableView({ conn, table, onChange, onOpenReference, init
     toast.info(`Added ${entries.length} update(s) to changes — commit to apply.`)
   }
   const discardEdits = () => setEdits({})
+
+  const handleCellContextMenu = (e, { row, col, value }) => {
+    setCellMenu({ x: e.clientX, y: e.clientY, row, col, value })
+  }
 
   useShortcut('workspace.newRow', () => setShowInsert(true))
   useShortcut('workspace.deleteSelected', deleteSelected)
@@ -462,6 +516,7 @@ export default function TableView({ conn, table, onChange, onOpenReference, init
           editable={selectable}
           edits={editOverlay}
           onEdit={editCell}
+          onCellContextMenu={handleCellContextMenu}
         />
       )}
 
@@ -476,6 +531,85 @@ export default function TableView({ conn, table, onChange, onOpenReference, init
           }}
         />
       )}
+
+      {inspecting && (
+        <InspectorPanel
+          row={inspecting}
+          columns={colMeta}
+          onClose={() => setInspecting(null)}
+          onStage={(diff) => {
+            if (!Object.keys(diff).length) return
+            const setClause = Object.entries(diff).map(([c, v]) => `"${c}" = ${sqlValue(v)}`).join(', ')
+            onChange?.({
+              kind: 'update',
+              label: `Update row in ${table}`,
+              sql: `UPDATE "${table}" SET ${setClause} WHERE ${rowWhere(inspecting)}`,
+              table,
+            })
+            toast.info('Added update to changes — commit to apply.')
+          }}
+        />
+      )}
+
+      {cellMenu &&
+        (() => {
+          const { row, col, value } = cellMenu
+          const isNum = NUMERIC_TYPE.test(colTypes[col] || '')
+          return (
+            <ContextMenu x={cellMenu.x} y={cellMenu.y} onClose={() => setCellMenu(null)}>
+              <MenuItem onClick={() => { copyText(cellText(value)); setCellMenu(null) }}>
+                <CopyIcon width={14} height={14} /> Copy cell value
+              </MenuItem>
+
+              <ContextMenuSub label="Filter by this column" icon={FilterIcon}>
+                <MenuItem onClick={() => { addQuickFilter(col, '=', value); setCellMenu(null) }}>equals</MenuItem>
+                <MenuItem onClick={() => { addQuickFilter(col, '!=', value); setCellMenu(null) }}>not equals</MenuItem>
+                {isNum ? (
+                  <>
+                    <MenuItem onClick={() => { addQuickFilter(col, '>', value); setCellMenu(null) }}>greater than</MenuItem>
+                    <MenuItem onClick={() => { addQuickFilter(col, '<', value); setCellMenu(null) }}>less than</MenuItem>
+                  </>
+                ) : (
+                  <MenuItem onClick={() => { addQuickFilter(col, 'contains', value); setCellMenu(null) }}>contains</MenuItem>
+                )}
+                <div className="my-1 h-px bg-edge" />
+                <MenuItem onClick={() => { addQuickFilter(col, 'isnull', ''); setCellMenu(null) }}>is null</MenuItem>
+                <MenuItem onClick={() => { addQuickFilter(col, 'notnull', ''); setCellMenu(null) }}>is not null</MenuItem>
+              </ContextMenuSub>
+
+              <ContextMenuSub label="Set as" icon={EditIcon}>
+                <MenuItem onClick={() => { setCellAs(row, col, 'null'); setCellMenu(null) }}>NULL</MenuItem>
+                <MenuItem onClick={() => { setCellAs(row, col, 'empty'); setCellMenu(null) }}>EMPTY</MenuItem>
+                <MenuItem disabled={colDefaults[col] == null} onClick={() => { setCellAs(row, col, 'default'); setCellMenu(null) }}>
+                  DEFAULT
+                </MenuItem>
+              </ContextMenuSub>
+
+              <div className="my-1 h-px bg-edge" />
+
+              <MenuItem onClick={() => { setShowInsert(true); setCellMenu(null) }}>
+                <PlusSmall width={14} height={14} /> Insert row
+              </MenuItem>
+              <MenuItem onClick={() => { stageDuplicate([row], { clear: false }); setCellMenu(null) }}>
+                <CopyIcon width={14} height={14} /> Duplicate row
+              </MenuItem>
+              <MenuItem danger onClick={() => { stageDelete([row], { clear: false }); setCellMenu(null) }}>
+                <TrashIcon width={14} height={14} /> Delete row
+              </MenuItem>
+
+              <div className="my-1 h-px bg-edge" />
+
+              <MenuItem onClick={() => { setInspecting(row); setCellMenu(null) }}>
+                <EyeIcon width={14} height={14} /> Open Inspector
+              </MenuItem>
+              <ContextMenuSub label="Copy row as" icon={CopyIcon}>
+                <MenuItem onClick={() => { copyText(insertSql(row), 'Copied SQL'); setCellMenu(null) }}>SQL</MenuItem>
+                <MenuItem onClick={() => { copyText(rowToCsv(row), 'Copied CSV'); setCellMenu(null) }}>CSV</MenuItem>
+                <MenuItem onClick={() => { copyText(JSON.stringify(row, null, 2), 'Copied JSON'); setCellMenu(null) }}>JSON</MenuItem>
+              </ContextMenuSub>
+            </ContextMenu>
+          )
+        })()}
     </div>
   )
 }

@@ -208,7 +208,7 @@ export default function SqlEditor({
       // below copies the editor's root theme class onto a <body>-level host; a
       // min-/max-height on `&` would leak there and render as a stray blank band
       // in normal flow. `.cm-scroller` is editor-only, so it can't leak.
-      EditorView.theme({ '.cm-scroller': { minHeight, maxHeight, overflowY: 'auto' } }),
+      EditorView.theme({ '.cm-scroller': { minHeight, maxHeight, overflowY: 'auto', overflowX: 'hidden' } }),
       // Render the autocomplete popup on document.body so it isn't clipped or
       // mis-positioned by scroll/overflow/transform ancestors (e.g. the node
       // config slide-over). CodeMirror copies the theme onto the body container,
@@ -216,7 +216,7 @@ export default function SqlEditor({
       tooltips({ position: 'fixed', parent: document.body }),
     ]
     return exts
-  }, [schema, dialect])
+  }, [schema, dialect, minHeight, maxHeight])
 
   return (
     <CodeMirror
@@ -226,8 +226,6 @@ export default function SqlEditor({
       extensions={extensions}
       editable={editable}
       placeholder={placeholder}
-      minHeight={minHeight}
-      maxHeight={maxHeight}
       basicSetup={{
         foldGutter: false,
         highlightActiveLine: true,

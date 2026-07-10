@@ -1,11 +1,10 @@
 import { useState } from 'react'
 import { useConnections } from '../stores/ConnectionsContext'
+import { BackupConfigForm } from '@/features/backup'
 import { useToast } from '@/shared/ui/feedback/Toast'
-import { CloseIcon, DbLogo, EyeIcon, EyeOffIcon, PlusSmall, ShieldIcon } from '@/shared/ui/icons'
+import { ChevronLeft, CloseIcon, DbLogo, EyeIcon, EyeOffIcon, PlusSmall, ShieldIcon } from '@/shared/ui/icons'
 import Select from '@/shared/ui/form/Select'
-import { useSlideOver } from '@/shared/hooks/useSlideOver'
 import Button from '@/shared/ui/buttons/Button'
-import IconButton from '@/shared/ui/buttons/IconButton'
 import TextButton from '@/shared/ui/buttons/TextButton'
 import Tab from '@/shared/ui/navigation/Tab'
 import { controlClass } from '@/shared/ui/form/Input'
@@ -74,17 +73,19 @@ function parseUri(uri) {
   }
 }
 
-export default function ConnectionModal({ initial, initialType, onClose, onSave }) {
+// Full-page create/edit connection form (General / SSH·SSL / Backup tabs —
+// Backup only once the connection exists). Replaces the old slide-over modal;
+// rendered inline by ConnectionsPage the same way ConnectionDetail is.
+export default function ConnectionForm({ initial, initialType, onClose, onSave }) {
   const { testConnection } = useConnections()
   const toast = useToast()
-  const { show, close } = useSlideOver(onClose)
   const isEdit = !!initial
 
   const [form, setForm] = useState(() => {
     if (initial) return { ...(initial.type === 'sqlite' ? blankSqlite : blankPostgres), ...initial }
     return initialType === 'postgresql' ? blankPostgres : blankSqlite
   })
-  const [tab, setTab] = useState('general') // general | ssh
+  const [tab, setTab] = useState('general') // general | ssh | backup
   const [showPassword, setShowPassword] = useState(false)
   const [tagDraft, setTagDraft] = useState('')
   const [addingTag, setAddingTag] = useState(false)
@@ -92,6 +93,12 @@ export default function ConnectionModal({ initial, initialType, onClose, onSave 
   const [saving, setSaving] = useState(false)
 
   const isSqlite = form.type === 'sqlite'
+  const backupSupported = isEdit && (form.type === 'sqlite' || form.type === 'postgresql')
+  const tabs = [
+    { id: 'general', label: 'General' },
+    ...(isSqlite ? [] : [{ id: 'ssh', label: 'SSH / SSL' }]),
+    ...(backupSupported ? [{ id: 'backup', label: 'Backup' }] : []),
+  ]
 
   const set = (key) => (e) => {
     setForm((f) => ({ ...f, [key]: e.target.value }))
@@ -133,8 +140,7 @@ export default function ConnectionModal({ initial, initialType, onClose, onSave 
     else toast.error(result?.message || 'Connection failed')
   }
 
-  const handleSave = async (e) => {
-    e.preventDefault()
+  const handleSave = async () => {
     if (!valid || saving) return
     const payload = {
       ...form,
@@ -155,34 +161,35 @@ export default function ConnectionModal({ initial, initialType, onClose, onSave 
       return
     }
     setTest(result)
-    toast.success(`Connected — saving “${payload.name}”.`)
-    close(() => onSave(payload))
+    toast.success(`Connected — saving "${payload.name}".`)
+    onSave(payload)
   }
 
   const tags = form.tags || []
 
   return (
-    <div
-      className={`fixed inset-0 z-50 flex justify-end bg-black/50 transition-opacity duration-200 ${
-        show ? 'opacity-100' : 'opacity-0'
-      }`}
-      onMouseDown={() => close()}
-    >
-      <div
-        className={`flex h-full w-full max-w-[520px] flex-col border-l border-edge-strong bg-panel shadow-[-20px_0_60px_-20px_rgba(0,0,0,0.8)] transition-transform duration-200 ease-out ${
-          show ? 'translate-x-0' : 'translate-x-full'
-        }`}
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        <form onSubmit={handleSave} className="flex h-full flex-col">
-          <div className="flex shrink-0 items-center justify-between border-b border-edge px-6 py-[18px]">
-            <h3 className="text-sm font-bold">{isEdit ? 'Edit Connection' : 'New Connection'}</h3>
-            <IconButton size="toolbar" className="!rounded-[9px]" onClick={() => close()} aria-label="Close">
-              <CloseIcon />
-            </IconButton>
-          </div>
+    <div className="w-full">
+      <TextButton onClick={onClose} className="mb-5">
+        <ChevronLeft width={16} height={16} /> All connections
+      </TextButton>
 
-          <div className="min-h-0 flex-1 overflow-y-auto p-6">
+      <h1 className="text-[22px] font-bold tracking-[-0.4px]">{isEdit ? 'Edit Connection' : 'New Connection'}</h1>
+
+      {tabs.length > 1 && (
+        <div className="mt-6 flex items-center gap-5 border-b border-edge">
+          {tabs.map((t) => (
+            <Tab key={t.id} active={tab === t.id} onClick={() => setTab(t.id)}>
+              {t.label}
+            </Tab>
+          ))}
+        </div>
+      )}
+
+      <div className="mt-6 max-w-[640px]">
+        {tab === 'backup' ? (
+          <BackupConfigForm connectionId={initial.id} connectionType={form.type} workspaceId={initial.workspaceId} />
+        ) : (
+          <>
             <div className="mb-[22px] grid grid-cols-2 gap-3">
               {DB_TYPES.map((t) => (
                 <button
@@ -270,145 +277,100 @@ export default function ConnectionModal({ initial, initialType, onClose, onSave 
                   required
                 />
               </div>
-            ) : (
+            ) : tab === 'general' ? (
               <>
-                {/* General / SSH·SSL tabs */}
-                <div className="mb-5 flex gap-5 border-b border-edge">
-                  {[
-                    { id: 'general', label: 'General' },
-                    { id: 'ssh', label: 'SSH / SSL' },
-                  ].map((t) => (
-                    <Tab key={t.id} active={tab === t.id} accent="ink" onClick={() => setTab(t.id)}>
-                      {t.label}
-                    </Tab>
-                  ))}
+                <div className="mb-[18px]">
+                  <Label>Connection URI</Label>
+                  <input
+                    className={`${controlClass} font-mono`}
+                    type="text"
+                    placeholder="postgresql://user:password@host:5432/database"
+                    value={form.uri || ''}
+                    onChange={onUriChange}
+                  />
                 </div>
 
-                {tab === 'general' ? (
+                <div className="my-4 flex items-center gap-3 text-[11px] text-ink-faint">
+                  <span className="h-px flex-1 bg-edge" /> or <span className="h-px flex-1 bg-edge" />
+                </div>
+
+                <div className={fieldRow}>
+                  <div className="mb-[18px]">
+                    <Label>Host</Label>
+                    <input className={controlClass} type="text" placeholder="localhost" value={form.host} onChange={set('host')} required />
+                  </div>
+                  <div className="mb-[18px]">
+                    <Label>Port</Label>
+                    <input className={controlClass} type="text" placeholder="5432" value={form.port} onChange={set('port')} required />
+                  </div>
+                </div>
+
+                <div className="mb-[18px]">
+                  <Label>Authentication</Label>
+                  <Select className={controlClass} value={form.auth || 'password'} onChange={(v) => setVal('auth', v)} options={AUTH_MODES} />
+                </div>
+
+                {(form.auth || 'password') === 'password' && (
                   <>
                     <div className="mb-[18px]">
-                      <Label>Connection URI</Label>
-                      <input
-                        className={`${controlClass} font-mono`}
-                        type="text"
-                        placeholder="postgresql://user:password@host:5432/database"
-                        value={form.uri || ''}
-                        onChange={onUriChange}
-                      />
+                      <Label>User</Label>
+                      <input className={controlClass} type="text" placeholder="postgres" value={form.username} onChange={set('username')} />
                     </div>
 
-                    <div className="my-4 flex items-center gap-3 text-[11px] text-ink-faint">
-                      <span className="h-px flex-1 bg-edge" /> or <span className="h-px flex-1 bg-edge" />
-                    </div>
-
-                    <div className={fieldRow}>
-                      <div className="mb-[18px]">
-                        <Label>Host</Label>
+                    <div className="mb-2">
+                      <Label>Password</Label>
+                      <div className="relative">
                         <input
-                          className={controlClass}
-                          type="text"
-                          placeholder="localhost"
-                          value={form.host}
-                          onChange={set('host')}
-                          required
+                          className={`${controlClass} pr-10`}
+                          type={showPassword ? 'text' : 'password'}
+                          placeholder="••••••••"
+                          value={form.password}
+                          onChange={set('password')}
                         />
-                      </div>
-                      <div className="mb-[18px]">
-                        <Label>Port</Label>
-                        <input
-                          className={controlClass}
-                          type="text"
-                          placeholder="5432"
-                          value={form.port}
-                          onChange={set('port')}
-                          required
-                        />
-                      </div>
-                    </div>
-
-                    <div className="mb-[18px]">
-                      <Label>Authentication</Label>
-                      <Select
-                        className={controlClass}
-                        value={form.auth || 'password'}
-                        onChange={(v) => setVal('auth', v)}
-                        options={AUTH_MODES}
-                      />
-                    </div>
-
-                    {(form.auth || 'password') === 'password' && (
-                      <>
-                        <div className="mb-[18px]">
-                          <Label>User</Label>
-                          <input
-                            className={controlClass}
-                            type="text"
-                            placeholder="postgres"
-                            value={form.username}
-                            onChange={set('username')}
-                          />
-                        </div>
-
-                        <div className="mb-2">
-                          <Label>Password</Label>
-                          <div className="relative">
-                            <input
-                              className={`${controlClass} pr-10`}
-                              type={showPassword ? 'text' : 'password'}
-                              placeholder="••••••••"
-                              value={form.password}
-                              onChange={set('password')}
-                            />
-                            <TextButton
-                              tone="faint"
-                              className="absolute right-3 top-1/2 -translate-y-1/2"
-                              onClick={() => setShowPassword((s) => !s)}
-                              aria-label={showPassword ? 'Hide password' : 'Show password'}
-                            >
-                              {showPassword ? <EyeOffIcon /> : <EyeIcon />}
-                            </TextButton>
-                          </div>
-                        </div>
-
                         <TextButton
-                          tone={form.keychain ? 'green' : 'faint'}
-                          className="mb-[18px] !text-[11px]"
-                          onClick={() => setVal('keychain', !form.keychain)}
+                          tone="faint"
+                          className="absolute right-3 top-1/2 -translate-y-1/2"
+                          onClick={() => setShowPassword((s) => !s)}
+                          aria-label={showPassword ? 'Hide password' : 'Show password'}
                         >
-                          <ShieldIcon width={14} height={14} /> Enable keychain
+                          {showPassword ? <EyeOffIcon /> : <EyeIcon />}
                         </TextButton>
-                      </>
-                    )}
-
-                    <div className="mb-[18px]">
-                      <Label>
-                        Database <span className="text-ink-faint">(optional)</span>
-                      </Label>
-                      <input
-                        className={controlClass}
-                        type="text"
-                        placeholder="Leave empty to select database after connecting"
-                        value={form.database}
-                        onChange={set('database')}
-                      />
+                      </div>
                     </div>
+
+                    <TextButton tone={form.keychain ? 'green' : 'faint'} className="mb-[18px] !text-[11px]" onClick={() => setVal('keychain', !form.keychain)}>
+                      <ShieldIcon width={14} height={14} /> Enable keychain
+                    </TextButton>
                   </>
-                ) : (
-                  <div className="mb-[18px]">
-                    <Label>SSL Mode</Label>
-                    <Select
-                      className={controlClass}
-                      value={form.sslmode || 'disable'}
-                      onChange={(v) => setVal('sslmode', v)}
-                      options={SSL_MODES.map((m) => ({ value: m, label: m }))}
-                    />
-                    <p className="mt-2 text-[11px] text-ink-faint">
-                      Choose how the client negotiates SSL with the server. Use <span className="text-ink-dim">require</span>{' '}
-                      or <span className="text-ink-dim">verify-full</span> for production databases.
-                    </p>
-                  </div>
                 )}
+
+                <div className="mb-[18px]">
+                  <Label>
+                    Database <span className="text-ink-faint">(optional)</span>
+                  </Label>
+                  <input
+                    className={controlClass}
+                    type="text"
+                    placeholder="Leave empty to select database after connecting"
+                    value={form.database}
+                    onChange={set('database')}
+                  />
+                </div>
               </>
+            ) : (
+              <div className="mb-[18px]">
+                <Label>SSL Mode</Label>
+                <Select
+                  className={controlClass}
+                  value={form.sslmode || 'disable'}
+                  onChange={(v) => setVal('sslmode', v)}
+                  options={SSL_MODES.map((m) => ({ value: m, label: m }))}
+                />
+                <p className="mt-2 text-[11px] text-ink-faint">
+                  Choose how the client negotiates SSL with the server. Use <span className="text-ink-dim">require</span> or{' '}
+                  <span className="text-ink-dim">verify-full</span> for production databases.
+                </p>
+              </div>
             )}
 
             <div className={fieldRow}>
@@ -418,49 +380,38 @@ export default function ConnectionModal({ initial, initialType, onClose, onSave 
                   className={controlClass}
                   value={form.environment}
                   onChange={(v) => setVal('environment', v)}
-                  options={ENVIRONMENTS.map((env) => ({
-                    value: env,
-                    label: env[0].toUpperCase() + env.slice(1),
-                  }))}
+                  options={ENVIRONMENTS.map((env) => ({ value: env, label: env[0].toUpperCase() + env.slice(1) }))}
                 />
               </div>
               <div className="mb-[18px]">
                 <Label>
                   Folder <span className="text-ink-faint">(optional)</span>
                 </Label>
-                <input
-                  className={controlClass}
-                  type="text"
-                  placeholder="e.g. Demo"
-                  value={form.folder}
-                  onChange={set('folder')}
-                />
+                <input className={controlClass} type="text" placeholder="e.g. Demo" value={form.folder} onChange={set('folder')} />
               </div>
             </div>
 
             {test && test !== 'loading' && (
               <div
                 className={`mt-1 mb-[18px] rounded-soft px-3.5 py-2.5 text-[11px] font-medium ${
-                  test.ok
-                    ? 'border border-green-dim bg-green/10 text-green-bright'
-                    : 'border border-red/25 bg-red/10 text-[#ff9b9b]'
+                  test.ok ? 'border border-green-dim bg-green/10 text-green-bright' : 'border border-red/25 bg-red/10 text-[#ff9b9b]'
                 }`}
               >
                 {test.ok ? '✓ ' : '✕ '}
                 {test.message}
               </div>
             )}
-          </div>
 
-          <div className="flex shrink-0 justify-end gap-3 border-t border-edge px-6 py-[18px]">
-            <Button type="button" variant="ghost" size="lg" onClick={runTest} disabled={!valid || test === 'loading' || saving}>
-              {test === 'loading' ? 'Testing…' : 'Test Connection'}
-            </Button>
-            <Button type="submit" variant="primary" size="lg" disabled={!valid || saving}>
-              {saving ? 'Connecting…' : `${isEdit ? 'Update' : 'Create'} Connection`}
-            </Button>
-          </div>
-        </form>
+            <div className="flex justify-end gap-3 pb-8 pt-2">
+              <Button type="button" variant="ghost" size="lg" onClick={runTest} disabled={!valid || test === 'loading' || saving}>
+                {test === 'loading' ? 'Testing…' : 'Test Connection'}
+              </Button>
+              <Button type="button" variant="primary" size="lg" onClick={handleSave} disabled={!valid || saving}>
+                {saving ? 'Connecting…' : `${isEdit ? 'Update' : 'Create'} Connection`}
+              </Button>
+            </div>
+          </>
+        )}
       </div>
     </div>
   )
