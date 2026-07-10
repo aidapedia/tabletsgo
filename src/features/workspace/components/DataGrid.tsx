@@ -100,9 +100,9 @@ function initialDraft(kind, value) {
   }
 }
 
-// Columns share one consistent default width and can be dragged to resize,
-// regardless of how many columns the table has.
-const DEFAULT_W = 180
+// Columns start at a capped default width (so long content doesn't blow a
+// column out) and can be dragged wider/narrower by the divider between headers.
+const DEFAULT_W = 180 // max default width a column opens at
 const MIN_W = 70
 const INDEX_W = 44
 const ACTIONS_W = 110
@@ -146,6 +146,7 @@ export default function DataGrid({
   const [fill, setFill] = useState({ rowH: 24, remaining: 0 }) // empty grid fill
   const [clientW, setClientW] = useState(0) // container width (to fill horizontally)
   const [widths, setWidths] = useState({}) // per-column override widths
+  const [resizing, setResizing] = useState(null) // column currently being dragged
   const colW = (c) => widths[c] ?? DEFAULT_W
 
   const startResize = (e, c) => {
@@ -153,8 +154,10 @@ export default function DataGrid({
     e.stopPropagation()
     const startX = e.clientX
     const startW = colW(c)
+    setResizing(c)
     const onMove = (ev) => setWidths((p) => ({ ...p, [c]: Math.max(MIN_W, startW + ev.clientX - startX) }))
     const onUp = () => {
+      setResizing(null)
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
     }
@@ -217,6 +220,10 @@ export default function DataGrid({
   // even for tables with only a few columns.
   const usedW = INDEX_W + columns.reduce((a, c) => a + colW(c), 0) + (renderRowActions ? ACTIONS_W : 0)
   const spacerW = Math.max(0, clientW - usedW)
+  // Explicit table width so `table-fixed` keeps every column at its own width:
+  // when the columns outgrow the container the table overflows (horizontal
+  // scroll) instead of the browser squeezing neighbouring columns to fit.
+  const tableW = usedW + spacerW
 
   // Empty rows that pad the grid so the lines reach the bottom of the viewport.
   const fillerRow = (key, h) => (
@@ -238,7 +245,7 @@ export default function DataGrid({
   return (
     <>
     <div ref={scrollRef} className="relative min-h-0 w-full min-w-0 flex-1 overflow-auto">
-      <table className="table-fixed border-collapse text-[11px]">
+      <table className="table-fixed border-collapse text-[11px]" style={{ width: tableW }}>
         <colgroup>
           <col style={{ width: INDEX_W }} />
           {columns.map((c) => (
@@ -268,8 +275,16 @@ export default function DataGrid({
                 <span className="block truncate">{c}</span>
                 <div
                   onMouseDown={(e) => startResize(e, c)}
-                  className="absolute right-0 top-0 z-10 h-full w-1.5 cursor-col-resize hover:bg-green/40"
-                />
+                  className={`absolute right-0 top-0 z-10 h-full cursor-col-resize transition-colors ${
+                    resizing === c ? 'w-0.5 bg-green' : 'w-1.5'
+                  }`}
+                >
+                  {/* Full-height guide, anchored to the handle so it sits exactly
+                      on the column boundary (no width math to drift out of sync). */}
+                  {resizing === c && (
+                    <div className="pointer-events-none absolute right-0 top-0 h-[100vh] w-0.5 bg-green" />
+                  )}
+                </div>
               </th>
             ))}
             {renderRowActions && <th className={thBase}>{actionsLabel}</th>}
