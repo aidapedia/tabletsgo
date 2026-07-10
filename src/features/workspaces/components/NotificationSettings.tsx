@@ -6,7 +6,7 @@ import Button from '@/shared/ui/buttons/Button'
 import { useWorkspaces, updateWorkspace, listMembers, type Member } from '@/features/workspaces'
 
 // Backup-failure email notifications for this workspace. Any member sees the
-// current state; only admins can change it (mirrors ExperimentsSettings).
+// current state; only admins can change it.
 export default function NotificationSettings({ workspaceId }: { workspaceId: string }) {
   const toast = useToast()
   const { current, refresh } = useWorkspaces()

@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useConnections, ConnectionForm } from '@/features/connections'
-import { useWorkspaces } from '@/features/workspaces'
 import { BackupPanel } from '@/features/backup'
 import { listTables, pingConnection } from '@/shared/api/database'
 import Button from '@/shared/ui/buttons/Button'
@@ -88,8 +87,6 @@ function DetailRow({ label, value }: { label: string; value?: string }) {
 }
 
 function ConnectionDetail({ conn, onBack, onOpen, onEdit }) {
-  const { current } = useWorkspaces()
-  const backupEnabled = !!current?.experiments?.s3Backup
   const [tab, setTab] = useState<'data' | 'backup'>('data')
   const [status, setStatus] = useState<'checking' | 'connected' | 'offline'>('checking')
   const [tableCount, setTableCount] = useState<number | null>(null)
@@ -151,11 +148,11 @@ function ConnectionDetail({ conn, onBack, onOpen, onEdit }) {
       {/* Tabs */}
       <div className="mt-7 flex items-center gap-5 border-b border-edge">
         {tabBtn('data', 'Data Connection')}
-        {backupEnabled && tabBtn('backup', 'Backup')}
+        {tabBtn('backup', 'Backup')}
       </div>
 
       <div className="mt-6">
-        {tab === 'data' || !backupEnabled ? (
+        {tab === 'data' ? (
           <div className="flex flex-col gap-5">
             {/* Stats */}
             <div className="grid grid-cols-3 gap-3 max-[560px]:grid-cols-1">

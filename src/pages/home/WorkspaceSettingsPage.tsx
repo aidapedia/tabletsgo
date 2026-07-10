@@ -1,10 +1,10 @@
 import { useNavigate, useParams } from 'react-router-dom'
-import { useWorkspaces, MembersPanel, WorkspaceGeneral, IntegrationsSettings, ExperimentsSettings, NotificationSettings } from '@/features/workspaces'
+import { useWorkspaces, MembersPanel, WorkspaceGeneral, IntegrationsSettings, NotificationSettings } from '@/features/workspaces'
 import { SubHead, TabbedSection } from './ui'
 
-// Workspace section — General / Member / Integrations / Notification / Beta as
-// tabs (a second path segment). SMTP + S3 Storage live together under
-// Integrations; Notification and Beta are no longer separate sidebar items.
+// Workspace section — General / Member / Integrations / Notification as tabs
+// (a second path segment). SMTP + S3 Storage live together under
+// Integrations; Notification is not a separate sidebar item.
 export default function WorkspaceSettingsPage() {
   const navigate = useNavigate()
   const { sub } = useParams()
@@ -53,16 +53,6 @@ export default function WorkspaceSettingsPage() {
         <div>
           <SubHead title="Notification" desc="Manage the notifications Tabletsgo sends to your team." />
           {current ? <NotificationSettings workspaceId={current.id} /> : <div className="text-xs text-ink-faint">Loading…</div>}
-        </div>
-      ),
-    },
-    {
-      id: 'beta',
-      label: 'Beta',
-      body: (
-        <div>
-          <SubHead title="Beta experiments" desc="Turn early-access features on or off for this workspace." />
-          <ExperimentsSettings />
         </div>
       ),
     },
