@@ -720,6 +720,19 @@ function pgConfig(config) {
   }
 }
 
+// Connection args + libpq env for the pg_dump/pg_restore CLIs, mirroring
+// pgConfig so the tools honour the same host/port/db, no-auth mode, and SSL
+// mode as the pooled client. Password and sslmode go through libpq env vars
+// (PGPASSWORD/PGSSLMODE) — never argv — so they don't leak into the process list.
+function pgToolConn(conn) {
+  const noAuth = conn.auth === 'none'
+  const args = ['-h', conn.host, '-p', String(conn.port || 5432), '-d', conn.database]
+  if (!noAuth && conn.username) args.push('-U', conn.username)
+  const env = { ...process.env, PGPASSWORD: noAuth ? '' : conn.password || '' }
+  if (conn.sslmode) env.PGSSLMODE = conn.sslmode
+  return { args, env }
+}
+
 // A pool per (connection, database) so we can browse other databases on the
 // same server using the same credentials.
 function getPostgresPool(conn, database) {
@@ -998,11 +1011,8 @@ async function execExportSql(conn) {
     // unlike a raw fs.copyFile of the live database file.
     await getSqliteDb(conn.filepath).backup(tmpPath)
   } else if (conn.type === 'postgresql') {
-    await execFileAsync(
-      'pg_dump',
-      ['-Fc', '--no-owner', '-f', tmpPath, '-h', conn.host, '-p', String(conn.port || 5432), '-U', conn.username, '-d', conn.database],
-      { env: { ...process.env, PGPASSWORD: conn.password || '' } } // password via env, never argv
-    )
+    const { args, env } = pgToolConn(conn)
+    await execFileAsync('pg_dump', ['-Fc', '--no-owner', '-f', tmpPath, ...args], { env })
   } else {
     throw new Error(`Export not supported for connection type: ${conn.type}`)
   }
@@ -2422,24 +2432,8 @@ app.post('/api/connections/:id/backup/restore', async (req, res) => {
       fs.renameSync(swap, targetConn.filepath) // atomic replace of the live file
     } else if (targetConn.type === 'postgresql') {
       closePostgresPools(targetConn.id)
-      await execFileAsync(
-        'pg_restore',
-        [
-          '--clean',
-          '--if-exists',
-          '--no-owner',
-          '-h',
-          targetConn.host,
-          '-p',
-          String(targetConn.port || 5432),
-          '-U',
-          targetConn.username,
-          '-d',
-          targetConn.database,
-          dumpPath,
-        ],
-        { env: { ...process.env, PGPASSWORD: targetConn.password || '' } }
-      )
+      const { args, env } = pgToolConn(targetConn)
+      await execFileAsync('pg_restore', ['--clean', '--if-exists', '--no-owner', ...args, dumpPath], { env })
     } else {
       return res.status(400).json({ error: `Restore not supported for connection type: ${targetConn.type}` })
     }

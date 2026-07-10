@@ -1126,7 +1126,7 @@ export default function Workspace() {
             <kbd className="absolute right-3 rounded-[5px] border border-edge bg-card px-1.5 py-px text-[11px] text-ink-faint">⌘K</kbd>
           </div>
           <div className="ml-auto flex items-center gap-2">
-            <Tooltip label="Schema history — bumps on every committed DDL change" placement="bottom">
+            <Tooltip label="Schema version history" placement="bottom">
               <button
                 type="button"
                 onClick={openSchemaHistory}
