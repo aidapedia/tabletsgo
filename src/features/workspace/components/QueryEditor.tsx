@@ -6,8 +6,10 @@ import Button from '@/shared/ui/buttons/Button'
 import Tooltip from '@/shared/ui/overlay/Tooltip'
 import SqlEditor from '@/shared/ui/SqlEditor'
 import { useToast } from '@/shared/ui/feedback/Toast'
-import { SaveIcon, WandIcon } from '@/shared/ui/icons'
+import { ChevronDown, SaveIcon, WandIcon } from '@/shared/ui/icons'
 import { formatCombo, useKeymap, useShortcut } from '@/features/keymap'
+
+const MIN_PANE = 100 // px — floor for both the editor and results panes while dragging
 
 // Best-effort: pull the primary table name out of a SQL statement so the
 // history can show which table a query touched. Returns null when unknown.
@@ -27,6 +29,46 @@ export default function QueryEditor({ conn, dialect, initialSql, tabKey, persist
   const [error, setError] = useState(persisted?.error ?? null)
   const [loading, setLoading] = useState(false)
   const [elapsedMs, setElapsedMs] = useState(persisted?.elapsedMs ?? null) // latency of last run
+
+  // Editor/results split — drag the divider to resize, or collapse the results pane.
+  const [editorHeight, setEditorHeight] = useState(320)
+  const [resultsCollapsed, setResultsCollapsed] = useState(false)
+  const paneRef = useRef(null)
+  const draggingRef = useRef(false)
+
+  // CodeMirror needs a concrete pixel height, not a percentage — a percentage
+  // resolves against the wrapper's height at mount time, which can still be 0
+  // (flex layout not yet settled), and CodeMirror doesn't recover from that.
+  // Measure the wrapper directly instead.
+  const editorWrapRef = useRef(null)
+  const [editorBoxHeight, setEditorBoxHeight] = useState(0)
+  useEffect(() => {
+    const el = editorWrapRef.current
+    if (!el) return
+    const ro = new ResizeObserver(([entry]) => setEditorBoxHeight(Math.round(entry.contentRect.height)))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+
+  const startResize = (e) => {
+    e.preventDefault()
+    draggingRef.current = true
+    document.body.style.cursor = 'row-resize'
+    const onMove = (ev) => {
+      if (!draggingRef.current || !paneRef.current) return
+      const rect = paneRef.current.getBoundingClientRect()
+      const max = Math.max(rect.height - MIN_PANE, MIN_PANE)
+      setEditorHeight(Math.min(Math.max(ev.clientY - rect.top, MIN_PANE), max))
+    }
+    const onUp = () => {
+      draggingRef.current = false
+      document.body.style.cursor = ''
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }
 
   useEffect(() => {
     let alive = true
@@ -133,39 +175,71 @@ export default function QueryEditor({ conn, dialect, initialSql, tabKey, persist
         </span>
       </div>
 
-      <div className="border-b border-edge bg-bg">
-        <SqlEditor
-          value={sql}
-          onChange={setSql}
-          dialect={conn.type}
-          schema={schema}
-          editable={!loading}
-          placeholder={`Write SQL and press ${formatCombo(bindings['workspace.runQuery'])} to run…`}
-        />
-      </div>
+      <div ref={paneRef} className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <div
+          ref={editorWrapRef}
+          className={`min-h-0 border-b border-edge bg-bg ${resultsCollapsed ? 'flex-1' : 'flex-none'}`}
+          style={resultsCollapsed ? undefined : { height: editorHeight }}
+        >
+          <SqlEditor
+            value={sql}
+            onChange={setSql}
+            dialect={conn.type}
+            schema={schema}
+            editable={!loading}
+            placeholder={`Write SQL and press ${formatCombo(bindings['workspace.runQuery'])} to run…`}
+            minHeight={editorBoxHeight ? `${editorBoxHeight}px` : undefined}
+            maxHeight={editorBoxHeight ? `${editorBoxHeight}px` : undefined}
+          />
+        </div>
 
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        {error && (
-          <div className="mx-[18px] my-4 rounded-[9px] border border-red/25 bg-red/10 px-3.5 py-3 font-mono text-[11px] text-[#ff9b9b]">
-            {error}
+        <div
+          className={`group relative h-[7px] shrink-0 border-b border-edge ${resultsCollapsed ? '' : 'cursor-row-resize'}`}
+          onMouseDown={resultsCollapsed ? undefined : startResize}
+        >
+          <div className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-transparent group-hover:bg-green-dim" />
+          <Tooltip
+            label={resultsCollapsed ? 'Expand results' : 'Collapse results'}
+            placement="bottom"
+            wrapperClassName="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2"
+          >
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); setResultsCollapsed((c) => !c) }}
+              onMouseDown={(e) => e.stopPropagation()}
+              aria-label={resultsCollapsed ? 'Expand results' : 'Collapse results'}
+              className="flex h-5 w-8 items-center justify-center rounded-full border border-edge bg-panel text-ink-dim transition-colors hover:border-edge-strong hover:text-ink"
+            >
+              <ChevronDown width={13} height={13} className={`transition-transform ${resultsCollapsed ? 'rotate-180' : ''}`} />
+            </button>
+          </Tooltip>
+        </div>
+
+        {!resultsCollapsed && (
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+            {error && (
+              <div className="mx-[18px] my-4 rounded-[9px] border border-red/25 bg-red/10 px-3.5 py-3 font-mono text-[11px] text-[#ff9b9b]">
+                {error}
+              </div>
+            )}
+            {!error && result?.type === 'rows' && (
+              <>
+                <div className="border-b border-edge px-[18px] py-2 text-xs text-ink-dim">
+                  {result.rows.length} row(s)
+                  {elapsedMs != null && <span className="text-ink-faint"> · {elapsedMs} ms</span>}
+                </div>
+                <DataGrid columns={result.columns} rows={result.rows} />
+              </>
+            )}
+            {!error && result?.type === 'message' && (
+              <div className="mx-[18px] my-4 rounded-[9px] border border-green-dim bg-green/10 px-3.5 py-3 text-[11px] text-green-bright">
+                {result.message}
+              </div>
+            )}
+            {!error && !result && (
+              <div className="p-[30px] text-center text-ink-faint">Run a query to see results here.</div>
+            )}
           </div>
-        )}
-        {!error && result?.type === 'rows' && (
-          <>
-            <div className="border-b border-edge px-[18px] py-2 text-xs text-ink-dim">
-              {result.rows.length} row(s)
-              {elapsedMs != null && <span className="text-ink-faint"> · {elapsedMs} ms</span>}
-            </div>
-            <DataGrid columns={result.columns} rows={result.rows} />
-          </>
-        )}
-        {!error && result?.type === 'message' && (
-          <div className="mx-[18px] my-4 rounded-[9px] border border-green-dim bg-green/10 px-3.5 py-3 text-[11px] text-green-bright">
-            {result.message}
-          </div>
-        )}
-        {!error && !result && (
-          <div className="p-[30px] text-center text-ink-faint">Run a query to see results here.</div>
         )}
       </div>
     </div>
