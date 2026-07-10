@@ -7,17 +7,12 @@ import Segmented from '@/shared/ui/navigation/Segmented'
 import { useSlideOver } from '@/shared/hooks/useSlideOver'
 import { ChevronRight } from '@/shared/ui/icons'
 import { Input, Textarea } from '@/shared/ui/form/Input'
+import NumberStepper from '@/shared/ui/form/NumberStepper'
 import JsonEditor from '@/shared/ui/JsonEditor'
 
 const NUMERIC = /int|real|numeric|decimal|float|double|serial/i
 const isJsonType = (t) => /json/i.test(t || '')
 const isTextArea = (t) => /text|clob/i.test(t || '')
-
-const prettify = (name) =>
-  name
-    .split('_')
-    .map((w) => (w ? w[0].toUpperCase() + w.slice(1) : w))
-    .join(' ')
 
 const coerce = (col, v) => {
   if (NUMERIC.test(col.type)) {
@@ -161,7 +156,7 @@ export default function InspectorPanel({ row, columns, onClose, onStage }) {
                 <div key={col.name} className="mb-5">
                   <div className="mb-2 flex items-center justify-between gap-2">
                     <div className="flex items-center gap-2">
-                      <label htmlFor={fid} className="text-sm text-ink">{prettify(col.name)}</label>
+                      <label htmlFor={fid} className="font-mono text-sm text-ink">{col.name}</label>
                       <span className="text-[10px] font-semibold tracking-wide text-ink-faint">{typeLabel}</span>
                       {col.pk && (
                         <span className="rounded bg-green/15 px-1.5 py-0.5 text-[9px] font-bold tracking-wide text-green-bright">PK</span>
@@ -187,6 +182,18 @@ export default function InspectorPanel({ row, columns, onClose, onStage }) {
                       placeholder="NULL"
                       value={val}
                       onChange={(e) => setVal(col.name, e.target.value)}
+                    />
+                  ) : NUMERIC.test(col.type) ? (
+                    <NumberStepper
+                      id={fid}
+                      allowNull
+                      value={val === '' ? null : Number(val)}
+                      onChange={(n) => setVal(col.name, n === null ? '' : String(n))}
+                      min={-Infinity}
+                      max={Infinity}
+                      ariaLabel={col.name}
+                      placeholder="NULL"
+                      className="w-full"
                     />
                   ) : (
                     <Input

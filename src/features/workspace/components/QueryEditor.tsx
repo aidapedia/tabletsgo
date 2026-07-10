@@ -33,8 +33,20 @@ export default function QueryEditor({ conn, dialect, initialSql, tabKey, persist
   // Editor/results split — drag the divider to resize, or collapse the results pane.
   const [editorHeight, setEditorHeight] = useState(320)
   const [resultsCollapsed, setResultsCollapsed] = useState(false)
+  const [dragging, setDragging] = useState(false)
   const paneRef = useRef(null)
   const draggingRef = useRef(false)
+
+  // Total height of the editor+results pane, used to grow the editor to fill
+  // the space vacated by the results pane when it's collapsed (animated below).
+  const [paneHeight, setPaneHeight] = useState(0)
+  useEffect(() => {
+    const el = paneRef.current
+    if (!el) return
+    const ro = new ResizeObserver(([entry]) => setPaneHeight(Math.round(entry.contentRect.height)))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
 
   // CodeMirror needs a concrete pixel height, not a percentage — a percentage
   // resolves against the wrapper's height at mount time, which can still be 0
@@ -53,6 +65,7 @@ export default function QueryEditor({ conn, dialect, initialSql, tabKey, persist
   const startResize = (e) => {
     e.preventDefault()
     draggingRef.current = true
+    setDragging(true)
     document.body.style.cursor = 'row-resize'
     const onMove = (ev) => {
       if (!draggingRef.current || !paneRef.current) return
@@ -62,6 +75,7 @@ export default function QueryEditor({ conn, dialect, initialSql, tabKey, persist
     }
     const onUp = () => {
       draggingRef.current = false
+      setDragging(false)
       document.body.style.cursor = ''
       document.removeEventListener('mousemove', onMove)
       document.removeEventListener('mouseup', onUp)
@@ -178,8 +192,8 @@ export default function QueryEditor({ conn, dialect, initialSql, tabKey, persist
       <div ref={paneRef} className="flex min-h-0 min-w-0 flex-1 flex-col">
         <div
           ref={editorWrapRef}
-          className={`min-h-0 bg-bg ${resultsCollapsed ? 'flex-1' : 'flex-none'}`}
-          style={resultsCollapsed ? undefined : { height: editorHeight }}
+          className={`min-h-0 shrink-0 bg-bg ${dragging ? '' : 'transition-[height] duration-300 ease-in-out'}`}
+          style={{ height: resultsCollapsed ? Math.max(paneHeight - 1, editorHeight) : editorHeight }}
         >
           <SqlEditor
             value={sql}
@@ -217,32 +231,35 @@ export default function QueryEditor({ conn, dialect, initialSql, tabKey, persist
           </Tooltip>
         </div>
 
-        {!resultsCollapsed && (
-          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-            {error && (
-              <div className="mx-[18px] my-4 rounded-[9px] border border-red/25 bg-red/10 px-3.5 py-3 font-mono text-[11px] text-[#ff9b9b]">
-                {error}
+        <div
+          className={`flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden transition-opacity duration-300 ease-in-out ${
+            resultsCollapsed ? 'pointer-events-none opacity-0' : 'opacity-100'
+          }`}
+          aria-hidden={resultsCollapsed}
+        >
+          {error && (
+            <div className="mx-[18px] my-4 rounded-[9px] border border-red/25 bg-red/10 px-3.5 py-3 font-mono text-[11px] text-[#ff9b9b]">
+              {error}
+            </div>
+          )}
+          {!error && result?.type === 'rows' && (
+            <>
+              <div className="border-b border-edge px-[18px] py-2 text-xs text-ink-dim">
+                {result.rows.length} row(s)
+                {elapsedMs != null && <span className="text-ink-faint"> · {elapsedMs} ms</span>}
               </div>
-            )}
-            {!error && result?.type === 'rows' && (
-              <>
-                <div className="border-b border-edge px-[18px] py-2 text-xs text-ink-dim">
-                  {result.rows.length} row(s)
-                  {elapsedMs != null && <span className="text-ink-faint"> · {elapsedMs} ms</span>}
-                </div>
-                <DataGrid columns={result.columns} rows={result.rows} />
-              </>
-            )}
-            {!error && result?.type === 'message' && (
-              <div className="mx-[18px] my-4 rounded-[9px] border border-green-dim bg-green/10 px-3.5 py-3 text-[11px] text-green-bright">
-                {result.message}
-              </div>
-            )}
-            {!error && !result && (
-              <div className="p-[30px] text-center text-ink-faint">Run a query to see results here.</div>
-            )}
-          </div>
-        )}
+              <DataGrid columns={result.columns} rows={result.rows} />
+            </>
+          )}
+          {!error && result?.type === 'message' && (
+            <div className="mx-[18px] my-4 rounded-[9px] border border-green-dim bg-green/10 px-3.5 py-3 text-[11px] text-green-bright">
+              {result.message}
+            </div>
+          )}
+          {!error && !result && (
+            <div className="p-[30px] text-center text-ink-faint">Run a query to see results here.</div>
+          )}
+        </div>
       </div>
     </div>
   )

@@ -4,6 +4,7 @@ import Button from '@/shared/ui/buttons/Button'
 import TextButton from '@/shared/ui/buttons/TextButton'
 import Tooltip from '@/shared/ui/overlay/Tooltip'
 import JsonEditor from '@/shared/ui/JsonEditor'
+import NumberStepper from '@/shared/ui/form/NumberStepper'
 import { CloseIcon, ExternalLinkIcon } from '@/shared/ui/icons'
 
 // JSON helpers — Postgres JSONB columns arrive as parsed objects/arrays.
@@ -128,7 +129,15 @@ export default function DataGrid({
   onCellContextMenu,
 }: any) {
   const [editing, setEditing] = useState(null) // { rowIndex, col, kind, origText }
-  const [draft, setDraft] = useState('')
+  const [draft, setDraftState] = useState('')
+  // NumberStepper commits on blur, and pressing Enter in it blurs+bubbles to
+  // this modal's own Enter handler in the same tick — React state wouldn't be
+  // flushed yet, so commitEdit reads this ref (always in sync) instead.
+  const draftRef = useRef('')
+  const setDraft = (v: string) => {
+    draftRef.current = v
+    setDraftState(v)
+  }
   const [sel, setSel] = useState(null) // selected cell { r, c }
   const scrollRef = useRef(null)
   const [fill, setFill] = useState({ rowH: 24, remaining: 0 }) // empty grid fill
@@ -186,7 +195,7 @@ export default function DataGrid({
   const commitEdit = () => {
     if (!editing) return
     const row = rows[editing.rowIndex]
-    if (draft !== editing.origText) onEdit?.(row, editing.col, draft)
+    if (draftRef.current !== editing.origText) onEdit?.(row, editing.col, draftRef.current)
     setEditing(null)
   }
   const cancelEdit = () => setEditing(null)
@@ -398,13 +407,16 @@ export default function DataGrid({
               ) : (
                 <div className="flex flex-col gap-3 px-4 py-5">
                   {kind === 'number' && (
-                    <input
-                      type="number"
+                    <NumberStepper
                       autoFocus
-                      value={draft}
-                      onChange={(e) => setDraft(e.target.value)}
+                      allowNull
+                      value={draft === '' ? null : Number(draft)}
+                      onChange={(n) => setDraft(n === null ? '' : String(n))}
+                      min={-Infinity}
+                      max={Infinity}
+                      ariaLabel={editing.col}
                       placeholder="NULL"
-                      className={`${inputCls} w-full`}
+                      className="w-full"
                     />
                   )}
 
