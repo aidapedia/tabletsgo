@@ -1260,6 +1260,7 @@ export default function Workspace() {
             <SchemaHistoryView
               migrations={schemaMigrations}
               loading={schemaHistoryLoading}
+              dialect={DIALECT[conn.type]}
               onRefresh={loadSchemaHistory}
               onRollback={setRollbackTarget}
             />
