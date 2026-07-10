@@ -111,3 +111,13 @@ export async function recordSchemaMigration(conn, statements) {
 export async function listSchemaMigrations(conn) {
   return safeRequest(`/connections/${conn.id}/schema/migrations`, [])
 }
+
+// Roll the schema back to `toVersion` — runs the down SQL for every active
+// migration newer than it, marks them 'rollbacked', and resets the connection's
+// schema version. Returns { version, rolledBack }.
+export async function rollbackSchema(conn, toVersion) {
+  return request<any>(`/connections/${conn.id}/schema/rollback`, {
+    method: 'POST',
+    body: { toVersion, ...nsBody(conn) },
+  })
+}

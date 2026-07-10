@@ -6,7 +6,15 @@ import { useToast } from '@/shared/ui/feedback/Toast'
 import Select from '@/shared/ui/form/Select'
 import Button from '@/shared/ui/buttons/Button'
 import ConfirmDialog from '@/shared/ui/feedback/ConfirmDialog'
-import { getNamespaces, listObjects, pingConnection, recordSchemaMigration, runQuery } from '@/shared/api/database'
+import {
+  getNamespaces,
+  listObjects,
+  listSchemaMigrations,
+  pingConnection,
+  recordSchemaMigration,
+  rollbackSchema,
+  runQuery,
+} from '@/shared/api/database'
 import {
   buildDropTableRollback,
   rollbackForAddColumn,
@@ -39,6 +47,7 @@ import { formatCombo, useKeymap, useShortcut } from '@/features/keymap'
 import SavedQueriesPanel from '@/features/workspace/components/SavedQueriesPanel'
 import { WorkflowsPanel, listWorkflows, createWorkflow, deleteWorkflow, updateWorkflow } from '@/features/workflow'
 import QueryHistoryView from '@/features/workspace/components/QueryHistoryView'
+import SchemaHistoryView from '@/features/schema-designer/components/SchemaHistoryView'
 import { fetchHistory, recordHistory, clearHistory, deleteHistory } from '@/features/workspace/lib/queryHistory'
 import SaveQueryPanel from '@/shared/ui/SaveQueryPanel'
 import ChangesPanel from '@/features/workspace/components/ChangesPanel'
@@ -106,6 +115,10 @@ export default function Workspace() {
   const [creatingTable, setCreatingTable] = useState<any>(false)
   const [history, setHistory] = useState([])
   const [historyLoading, setHistoryLoading] = useState(false)
+  const [schemaMigrations, setSchemaMigrations] = useState([])
+  const [schemaHistoryLoading, setSchemaHistoryLoading] = useState(false)
+  const [rollbackTarget, setRollbackTarget] = useState(null) // migration awaiting rollback confirmation
+  const [rollingBack, setRollingBack] = useState(false)
   const [saved, setSaved] = useState([])
   const [folders, setFolders] = useState([])
   const [workflows, setWorkflows] = useState([])
@@ -424,6 +437,7 @@ export default function Workspace() {
           label: ch.label,
         })))
         patchLocalConnection(id, { schemaVersion: version })
+        if (tabs.some((t) => t.kind === 'schemaHistory')) loadSchemaHistory()
       } catch (e) {
         toast.error(`Couldn't record schema migration: ${e.message}`)
       }
@@ -475,6 +489,42 @@ export default function Workspace() {
     setTabs((prev) => (prev.some((t) => t.key === key) ? prev : [...prev, { key, kind: 'history', title: 'Query history' }]))
     setActiveTab(key)
     setSidebarOpen(false)
+  }
+
+  // ---- Schema history (migration audit trail; opened from the version badge) ----
+  const loadSchemaHistory = async () => {
+    setSchemaHistoryLoading(true)
+    try {
+      setSchemaMigrations(await listSchemaMigrations(nsConn))
+    } finally {
+      setSchemaHistoryLoading(false)
+    }
+  }
+  const openSchemaHistory = () => {
+    const key = 'schema-history'
+    setTabs((prev) =>
+      prev.some((t) => t.key === key) ? prev : [...prev, { key, kind: 'schemaHistory', title: 'Schema history' }]
+    )
+    setActiveTab(key)
+    setSidebarOpen(false)
+  }
+  // Restore the schema to migration `m`'s version: the server runs the down SQL
+  // for every active version newer than it, marks them rolled back, and resets
+  // the connection's schema version to m.version (rather than bumping it).
+  const rollbackMigration = async (m) => {
+    setRollingBack(true)
+    try {
+      const { version } = await rollbackSchema(nsConn, m.version)
+      patchLocalConnection(id, { schemaVersion: version })
+      toast.success(`Rolled back to v${version}.`)
+      setDataVersion((v) => v + 1)
+      loadTables()
+      loadSchemaHistory()
+    } catch (e) {
+      toast.error(`Rollback failed: ${e.message}`)
+    }
+    setRollingBack(false)
+    setRollbackTarget(null)
   }
 
   // ---- Workflows (per connection) ----
@@ -1025,8 +1075,6 @@ export default function Workspace() {
           />
         ) : panel === 'schema' ? (
           <SchemaPanel
-            conn={nsConn}
-            refreshKey={dataVersion}
             drafts={saved.filter((s) => s.kind === 'schema')}
             onOpenDraft={openSchemaDraft}
             onNewSchema={openSchemaEditor}
@@ -1078,10 +1126,14 @@ export default function Workspace() {
             <kbd className="absolute right-3 rounded-[5px] border border-edge bg-card px-1.5 py-px text-[11px] text-ink-faint">⌘K</kbd>
           </div>
           <div className="ml-auto flex items-center gap-2">
-            <Tooltip label="Schema version — bumps on every committed DDL change" placement="bottom">
-              <span className="rounded-[20px] border border-edge bg-elevated px-[9px] py-1 text-[11px] font-medium text-ink-faint">
+            <Tooltip label="Schema history — bumps on every committed DDL change" placement="bottom">
+              <button
+                type="button"
+                onClick={openSchemaHistory}
+                className="rounded-[20px] border border-edge bg-elevated px-[9px] py-1 text-[11px] font-medium text-ink-faint transition-colors hover:border-edge-strong hover:text-ink"
+              >
                 v{conn.schemaVersion ?? 1}
-              </span>
+              </button>
             </Tooltip>
             <Tooltip label="Query history" placement="bottom">
               <IconButton size="toolbar" onClick={openHistory} aria-label="Query history">
@@ -1123,6 +1175,8 @@ export default function Workspace() {
                 ) : t.kind === 'schemaEditor' ? (
                   <DiagramIcon className={active ? 'text-ink' : 'text-ink-faint'} />
                 ) : t.kind === 'history' ? (
+                  <HistoryIcon className={active ? 'text-ink' : 'text-ink-faint'} />
+                ) : t.kind === 'schemaHistory' ? (
                   <HistoryIcon className={active ? 'text-ink' : 'text-ink-faint'} />
                 ) : t.kind === 'function' ? (
                   <CodeIcon className={active ? 'text-ink' : 'text-ink-faint'} />
@@ -1200,6 +1254,14 @@ export default function Workspace() {
               onRefresh={loadHistory}
               onClear={clearHistoryAll}
               onDelete={deleteHistoryEntries}
+            />
+          )}
+          {conn && current?.kind === 'schemaHistory' && (
+            <SchemaHistoryView
+              migrations={schemaMigrations}
+              loading={schemaHistoryLoading}
+              onRefresh={loadSchemaHistory}
+              onRollback={setRollbackTarget}
             />
           )}
           {conn && current?.kind === 'workflow' && (
@@ -1344,6 +1406,18 @@ export default function Workspace() {
             setPendingConn(null)
           }}
           onCancel={() => setPendingConn(null)}
+        />
+      )}
+
+      {rollbackTarget && (
+        <ConfirmDialog
+          title={`Roll back to v${rollbackTarget.version}?`}
+          message={`This runs the down SQL for every version newer than v${rollbackTarget.version} against your database, marks them rolled back, and resets the schema version to v${rollbackTarget.version}. This cannot be undone automatically.`}
+          confirmLabel={rollingBack ? 'Rolling back…' : 'Roll back'}
+          cancelLabel="Cancel"
+          danger
+          onConfirm={() => !rollingBack && rollbackMigration(rollbackTarget)}
+          onCancel={() => !rollingBack && setRollbackTarget(null)}
         />
       )}
 

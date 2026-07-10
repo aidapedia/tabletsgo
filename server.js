@@ -107,6 +107,7 @@ function initMetaDb() {
       forward_sql TEXT NOT NULL,   -- JSON array of executed statements
       rollback_sql TEXT,           -- JSON array, same length, null entries where not reversible
       reversible INTEGER NOT NULL, -- 0/1 — false if any statement lacks a rollback
+      status TEXT,                 -- 'active' | 'rollbacked' (NULL on legacy rows = active)
       executor_id TEXT,
       executor_name TEXT,
       ts INTEGER
@@ -249,6 +250,11 @@ function initMetaDb() {
   addColumn('connections', 'credentials TEXT')
   addColumn('connections', 'schema_version INTEGER')
   addColumn('connections', 'updated_at INTEGER')
+  // Schema migrations: status tracks whether a version is still applied
+  // ('active') or has been undone via rollback ('rollbacked'). Old rows predate
+  // this column — treat NULL as active.
+  addColumn('schema_migrations', "status TEXT")
+  meta.exec(`UPDATE schema_migrations SET status = 'active' WHERE status IS NULL`)
   // Workflows: protected = undeletable (e.g. the auto-created backup workflow);
   // schedule_enabled/next_run_at drive the cron scheduler (see runDueWorkflows).
   addColumn('workflows', 'protected INTEGER DEFAULT 0')
@@ -529,6 +535,17 @@ const deleteConnectionRow = (id) => meta.prepare('DELETE FROM connections WHERE 
 const bumpSchemaVersion = (id) => {
   meta.prepare('UPDATE connections SET schema_version = schema_version + 1, updated_at = ? WHERE id = ?').run(Date.now(), id)
   return meta.prepare('SELECT schema_version FROM connections WHERE id = ?').get(id)?.schema_version
+}
+
+// Execute one SQL statement against a connection's target database, dispatching
+// on dialect. Shared by the /query endpoint and schema rollback. Throws on error.
+async function execSqlOnConnection(conn, sql, database, schema) {
+  if (conn.type === 'sqlite') {
+    return runSqliteQuery(getSqliteDb(conn.filepath), sql)
+  } else if (conn.type === 'postgresql') {
+    return runPostgresQuery(getPostgresPool(conn, database), sql, schema)
+  }
+  throw new Error(`Unsupported connection type: ${conn.type}`)
 }
 
 // ---- Storage destination helpers (S3-compatible: AWS S3, MinIO, R2, B2, …) ----
@@ -2531,8 +2548,8 @@ app.post('/api/connections/:id/schema/migrations', (req, res) => {
   meta
     .prepare(
       `INSERT INTO schema_migrations
-       (id, connection_id, version, forward_sql, rollback_sql, reversible, executor_id, executor_name, ts)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       (id, connection_id, version, forward_sql, rollback_sql, reversible, status, executor_id, executor_name, ts)
+       VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`
     )
     .run(
       entry.id,
@@ -2545,15 +2562,17 @@ app.post('/api/connections/:id/schema/migrations', (req, res) => {
       entry.executorName,
       entry.ts
     )
-  res.json({ version, migration: entry })
+  res.json({ version, migration: { ...entry, status: 'active' } })
 })
 
-// List a connection's schema migration history, newest first.
+// List a connection's schema migration history, newest first. `ORDER BY ts`
+// (not version) so rolled-back rows that share a reused version number keep
+// their real chronological order.
 app.get('/api/connections/:id/schema/migrations', (req, res) => {
   const rows = meta
     .prepare(
-      `SELECT id, version, forward_sql, rollback_sql, reversible, executor_id, executor_name, ts
-       FROM schema_migrations WHERE connection_id = ? ORDER BY version DESC`
+      `SELECT id, version, forward_sql, rollback_sql, reversible, status, executor_id, executor_name, ts
+       FROM schema_migrations WHERE connection_id = ? ORDER BY ts DESC`
     )
     .all(req.params.id)
   res.json(
@@ -2563,11 +2582,66 @@ app.get('/api/connections/:id/schema/migrations', (req, res) => {
       forwardSql: safeJson(r.forward_sql) || [],
       rollbackSql: safeJson(r.rollback_sql) || [],
       reversible: !!r.reversible,
+      status: r.status || 'active',
       executorId: r.executor_id || null,
       executorName: r.executor_name || r.executor_id || null,
       ts: r.ts,
     }))
   )
+})
+
+// Roll the schema back to a target version. Runs the down (rollback) SQL for
+// every still-active migration newer than `toVersion` — newest first — then
+// marks those migrations 'rollbacked' and resets the connection's schema
+// version to `toVersion`. The target version itself stays active. A later
+// commit reuses the next number (e.g. rolling 3→1 then committing yields a new
+// v2), so version numbers are not globally unique — status distinguishes them.
+app.post('/api/connections/:id/schema/rollback', async (req, res) => {
+  const user = requireAuth(req, res)
+  if (!user) return
+  const conn = getConnection(req.params.id)
+  if (!conn) return res.status(404).json({ error: 'Connection not found' })
+
+  const toVersion = Number(req.body?.toVersion)
+  if (!Number.isInteger(toVersion) || toVersion < 0) {
+    return res.status(400).json({ error: 'A valid target version is required' })
+  }
+  const { database, schema } = req.body || {}
+
+  // Still-active migrations newer than the target, newest first — these get undone.
+  const rows = meta
+    .prepare(
+      `SELECT id, version, forward_sql, rollback_sql, reversible
+       FROM schema_migrations
+       WHERE connection_id = ? AND version > ? AND COALESCE(status, 'active') = 'active'
+       ORDER BY version DESC`
+    )
+    .all(req.params.id, toVersion)
+
+  if (!rows.length) return res.status(400).json({ error: 'Nothing to roll back for that version' })
+  const irreversible = rows.find((r) => !r.reversible)
+  if (irreversible) {
+    return res.status(400).json({ error: `v${irreversible.version} is not reversible — can't roll back past it` })
+  }
+
+  // Undo each migration's statements in reverse order (last applied, first undone).
+  try {
+    for (const r of rows) {
+      const downs = (safeJson(r.rollback_sql) || []).filter(Boolean).reverse()
+      for (const sql of downs) {
+        await execSqlOnConnection(conn, sql, database, schema)
+      }
+    }
+  } catch (error) {
+    return res.status(500).json({ error: `Rollback failed: ${error.message}` })
+  }
+
+  const markRolledBack = meta.prepare(`UPDATE schema_migrations SET status = 'rollbacked' WHERE id = ?`)
+  const tx = meta.transaction((list) => list.forEach((r) => markRolledBack.run(r.id)))
+  tx(rows)
+  meta.prepare('UPDATE connections SET schema_version = ?, updated_at = ? WHERE id = ?').run(toVersion, Date.now(), req.params.id)
+
+  res.json({ version: toVersion, rolledBack: rows.map((r) => r.version) })
 })
 
 // Get tables for a connection
@@ -2871,14 +2945,7 @@ app.post('/api/connections/:id/query', async (req, res) => {
   }
 
   try {
-    let result
-    if (conn.type === 'sqlite') {
-      const db = getSqliteDb(conn.filepath)
-      result = runSqliteQuery(db, sql)
-    } else if (conn.type === 'postgresql') {
-      const pool = getPostgresPool(conn, database)
-      result = await runPostgresQuery(pool, sql, schema)
-    }
+    const result = await execSqlOnConnection(conn, sql, database, schema)
     res.json(result)
   } catch (error) {
     res.status(500).json({ error: error.message })

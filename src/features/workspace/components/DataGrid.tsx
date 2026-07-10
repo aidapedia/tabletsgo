@@ -105,6 +105,7 @@ function initialDraft(kind, value) {
 const DEFAULT_W = 180
 const MIN_W = 70
 const INDEX_W = 44
+const ACTIONS_W = 110
 const thBase =
   'sticky top-0 z-[1] whitespace-nowrap border-b border-r border-edge bg-elevated px-3 py-1.5 text-left font-semibold text-ink-dim relative'
 const tdBase =
@@ -127,6 +128,8 @@ export default function DataGrid({
   edits,
   onEdit,
   onCellContextMenu,
+  actionsLabel = 'Actions', // header text for the trailing per-row actions column
+  renderRowActions, // (row, i) => ReactNode — adds a trailing actions column when set
 }: any) {
   const [editing, setEditing] = useState(null) // { rowIndex, col, kind, origText }
   const [draft, setDraftState] = useState('')
@@ -212,7 +215,7 @@ export default function DataGrid({
 
   // Spacer column fills leftover width so the grid spans the whole viewport
   // even for tables with only a few columns.
-  const usedW = INDEX_W + columns.reduce((a, c) => a + colW(c), 0)
+  const usedW = INDEX_W + columns.reduce((a, c) => a + colW(c), 0) + (renderRowActions ? ACTIONS_W : 0)
   const spacerW = Math.max(0, clientW - usedW)
 
   // Empty rows that pad the grid so the lines reach the bottom of the viewport.
@@ -222,6 +225,7 @@ export default function DataGrid({
       {columns.map((c, j) => (
         <td key={j} className={tdBase} style={{ height: h }} />
       ))}
+      {renderRowActions && <td className={tdBase} style={{ height: h }} />}
       {spacerW > 0 && <td className={tdBase} style={{ height: h }} />}
     </tr>
   )
@@ -240,6 +244,7 @@ export default function DataGrid({
           {columns.map((c) => (
             <col key={c} style={{ width: colW(c) }} />
           ))}
+          {renderRowActions && <col style={{ width: ACTIONS_W }} />}
           {spacerW > 0 && <col style={{ width: spacerW }} />}
         </colgroup>
         <thead>
@@ -267,6 +272,7 @@ export default function DataGrid({
                 />
               </th>
             ))}
+            {renderRowActions && <th className={thBase}>{actionsLabel}</th>}
             {spacerW > 0 && <th className={thBase} />}
           </tr>
         </thead>
@@ -336,6 +342,14 @@ export default function DataGrid({
                       </td>
                     )
                   })}
+                  {renderRowActions && (
+                    <td
+                      className={`${tdBase} whitespace-normal ${selected ? '!bg-green/10' : ''}`}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      {renderRowActions(row, i)}
+                    </td>
+                  )}
                   {spacerW > 0 && <td className={`${tdBase} ${selected ? '!bg-green/10' : ''}`} />}
                 </tr>
               )

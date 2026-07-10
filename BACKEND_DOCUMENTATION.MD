@@ -173,6 +173,7 @@ CREATE TABLE schema_migrations (
   forward_sql TEXT NOT NULL,    -- JSON array of executed statements
   rollback_sql TEXT,            -- JSON array, same length, null entries where not reversible
   reversible INTEGER NOT NULL,  -- 0/1 — false if any statement lacks a rollback
+  status TEXT,                  -- 'active' | 'rollbacked' (NULL on legacy rows = active)
   executor_id TEXT,
   executor_name TEXT,
   ts INTEGER
@@ -759,22 +760,41 @@ Audit trail of DDL commits. The frontend executes staged DDL via the existing
 `/query` endpoint (below) as before; once a batch commits successfully, it
 calls `POST .../schema/migrations` once to record what ran (and its best-effort
 rollback SQL) and bump the connection's `schemaVersion`. One version per
-successful commit batch, not per statement. There is no revert/execute-rollback
-endpoint — this is read/record only.
+successful commit batch, not per statement.
+
+Each migration carries a `status` (`active` | `rollbacked`). `POST
+.../schema/rollback` restores the schema to a target version by running the
+down SQL of every still-active version newer than it and marking those
+`rollbacked`, then resets `schemaVersion` back to the target (it does **not**
+bump forward). Version numbers are therefore not globally unique — a rolled-back
+`v2` and a later fresh `v2` can coexist; `status` distinguishes them.
 
 ### POST `/api/connections/:id/schema/migrations`
 Record a successfully-executed DDL batch and bump `schema_version`.
 
 - **Body:** `{ "statements": [{ "sql": "CREATE TABLE \"orders\" (...)", "rollbackSql": "DROP TABLE \"orders\";", "reversible": true, "label": "Create table orders" }, ...] }`
-- **200:** `{ "version": 2, "migration": { "id", "connectionId", "version", "forwardSql": [...], "rollbackSql": [...], "reversible": true, "executorId", "executorName", "ts" } }`
+- **200:** `{ "version": 2, "migration": { "id", "connectionId", "version", "forwardSql": [...], "rollbackSql": [...], "reversible": true, "status": "active", "executorId", "executorName", "ts" } }`
 - **400:** `{ "error": "At least one statement is required" }`
 - **Example:** `POST http://localhost:3000/api/connections/demo-sqlite/schema/migrations`
 
 ### GET `/api/connections/:id/schema/migrations`
-List a connection's migration history, newest version first.
+List a connection's migration history, newest first (ordered by timestamp).
 
-- **200:** `[{ "id", "version", "forwardSql": [...], "rollbackSql": [...], "reversible", "executorId", "executorName", "ts" }]`
+- **200:** `[{ "id", "version", "forwardSql": [...], "rollbackSql": [...], "reversible", "status": "active" | "rollbacked", "executorId", "executorName", "ts" }]`
 - **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/schema/migrations`
+
+### POST `/api/connections/:id/schema/rollback`
+Roll the schema back to `toVersion`. Runs the down SQL for every still-active
+version newer than `toVersion` (newest first), marks those `rollbacked`, and
+resets the connection's `schemaVersion` to `toVersion`. Requires every affected
+version to be reversible. The target version itself stays active.
+
+- **Body:** `{ "toVersion": 1, "database": "…"?, "schema": "…"? }` (`database`/`schema` optional, PG only)
+- **200:** `{ "version": 1, "rolledBack": [3, 2] }`
+- **400:** `{ "error": "Nothing to roll back for that version" }` / `{ "error": "v3 is not reversible — can't roll back past it" }`
+- **404:** `{ "error": "Connection not found" }`
+- **500:** `{ "error": "Rollback failed: <db message>" }`
+- **Example:** `POST http://localhost:3000/api/connections/demo-sqlite/schema/rollback`
 
 ---
 
@@ -965,6 +985,7 @@ Liveness probe.
 | DELETE | `/api/connections/:id/history`            | Clear query history             |
 | POST   | `/api/connections/:id/schema/migrations`  | Record a DDL commit, bump version |
 | GET    | `/api/connections/:id/schema/migrations`  | List schema migration history   |
+| POST   | `/api/connections/:id/schema/rollback`    | Roll schema back to a version   |
 | GET    | `/api/connections/:id/ping`               | Connectivity check `{ ok }`     |
 | GET    | `/api/connections/:id/tables`             | List tables                     |
 | GET    | `/api/connections/:id/objects`            | List objects (tables/views/fns) |
