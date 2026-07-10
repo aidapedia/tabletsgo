@@ -3,6 +3,7 @@ import Checkbox from '@/shared/ui/form/Checkbox'
 import Button from '@/shared/ui/buttons/Button'
 import TextButton from '@/shared/ui/buttons/TextButton'
 import Tooltip from '@/shared/ui/overlay/Tooltip'
+import JsonEditor from '@/shared/ui/JsonEditor'
 import { CloseIcon, ExternalLinkIcon } from '@/shared/ui/icons'
 
 // JSON helpers — Postgres JSONB columns arrive as parsed objects/arrays.
@@ -377,7 +378,15 @@ export default function DataGrid({
                 </TextButton>
               </div>
 
-              {isTextArea ? (
+              {kind === 'json' ? (
+                <JsonEditor
+                  autoFocus
+                  value={draft}
+                  onChange={setDraft}
+                  placeholder="NULL"
+                  wrapperClassName="min-h-[260px] flex-1 bg-bg"
+                />
+              ) : isTextArea ? (
                 <textarea
                   autoFocus
                   value={draft}

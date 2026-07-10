@@ -7,9 +7,11 @@ import Segmented from '@/shared/ui/navigation/Segmented'
 import { useSlideOver } from '@/shared/hooks/useSlideOver'
 import { ChevronRight } from '@/shared/ui/icons'
 import { Input, Textarea } from '@/shared/ui/form/Input'
+import JsonEditor from '@/shared/ui/JsonEditor'
 
 const NUMERIC = /int|real|numeric|decimal|float|double|serial/i
-const isTextArea = (t) => /text|clob|json/i.test(t || '')
+const isJsonType = (t) => /json/i.test(t || '')
+const isTextArea = (t) => /text|clob/i.test(t || '')
 
 const prettify = (name) =>
   name
@@ -143,11 +145,11 @@ export default function InspectorPanel({ row, columns, onClose, onStage }) {
         {/* Body */}
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
           {tab === 'json' ? (
-            <Textarea
-              className="min-h-[420px] resize-y font-mono leading-relaxed"
-              spellCheck={false}
+            <JsonEditor
+              wrapperClassName="min-h-[420px] bg-elevated border border-edge rounded-soft focus-within:border-green-dim focus-within:shadow-[0_0_0_3px_rgba(111,207,106,0.22)]"
+              className="font-mono text-[11px] leading-relaxed px-3 py-2"
               value={jsonText}
-              onChange={(e) => setJsonText(e.target.value)}
+              onChange={setJsonText}
             />
           ) : (
             columns.map((col) => {
@@ -169,7 +171,16 @@ export default function InspectorPanel({ row, columns, onClose, onStage }) {
                       )}
                     </div>
                   </div>
-                  {isTextArea(col.type) ? (
+                  {isJsonType(col.type) ? (
+                    <JsonEditor
+                      id={fid}
+                      wrapperClassName="min-h-[90px] bg-elevated border border-edge rounded-soft focus-within:border-green-dim focus-within:shadow-[0_0_0_3px_rgba(111,207,106,0.22)]"
+                      className="font-mono text-[11px] leading-relaxed px-3 py-2"
+                      placeholder="NULL"
+                      value={val}
+                      onChange={(v) => setVal(col.name, v)}
+                    />
+                  ) : isTextArea(col.type) ? (
                     <Textarea
                       id={fid}
                       className="min-h-[90px] resize-y"
