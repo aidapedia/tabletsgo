@@ -15,10 +15,11 @@ export function PageHeader({ title, desc, action }: { title: string; desc?: stri
   )
 }
 
-// A titled content section with heading + description.
-export function Section({ title, desc, children, max = 720 }: any) {
+// A titled content section with heading + description. Full width by default;
+// pass `max` to cap it.
+export function Section({ title, desc, children, max }: any) {
   return (
-    <div className="w-full" style={{ maxWidth: max }}>
+    <div className="w-full" style={max ? { maxWidth: max } : undefined}>
       <PageHeader title={title} desc={desc} />
       <div className="mt-7">{children}</div>
     </div>
@@ -44,7 +45,7 @@ export function TabbedSection({
   tabs,
   active,
   onTab,
-  max = 760,
+  max,
 }: {
   title: string
   desc?: string
@@ -55,7 +56,7 @@ export function TabbedSection({
 }) {
   const current = tabs.find((t) => t.id === active) || tabs[0]
   return (
-    <div className="w-full" style={{ maxWidth: max }}>
+    <div className="w-full" style={max ? { maxWidth: max } : undefined}>
       <PageHeader title={title} desc={desc} />
 
       <div className="mt-6 flex items-center gap-5 border-b border-edge">

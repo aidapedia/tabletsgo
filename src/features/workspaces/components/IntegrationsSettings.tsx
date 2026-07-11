@@ -9,15 +9,9 @@ export default function IntegrationsSettings() {
 
   const isAdmin = current.role === 'admin'
 
-  return (
-    <div>
-      <div className="mb-1 text-[14px] font-bold">SMTP</div>
-      <p className="mb-3 text-[12px] text-ink-dim">Configure the mail server used to send member-invite emails.</p>
-      {isAdmin ? (
-        <SmtpSettings workspaceId={current.id} />
-      ) : (
-        <p className="text-[12px] text-ink-faint">Only workspace admins can change email settings.</p>
-      )}
-    </div>
+  return isAdmin ? (
+    <SmtpSettings workspaceId={current.id} />
+  ) : (
+    <p className="text-[12px] text-ink-faint">Only workspace admins can change email settings.</p>
   )
 }

@@ -62,7 +62,10 @@ reassembles this same shape on every read, so API consumers see no difference:
   "environment": "local",
   "filepath": "./demo.db",
   "folder": "Demo",
-  "schemaVersion": 1           // bumped by POST .../schema/migrations
+  "schemaVersion": 1,          // bumped by POST .../schema/migrations
+  "ownerId": "user_1",         // creator by default; see POST /api/connections
+  "ownerName": "Alice",        // resolved read-only (owner's display name)
+  "ownerEmail": "alice@x.com"  // resolved read-only (owner's email)
 }
 
 // PostgreSQL
@@ -162,6 +165,7 @@ CREATE TABLE connections (
   credentials TEXT,             -- AES-256-GCM ciphertext: JSON of host/port/username/password/
                                  -- filepath/database/uri/sslmode/auth/keychain (dialect-specific + secret)
   schema_version INTEGER DEFAULT 1,
+  owner_id TEXT,                -- users.id of the creator/owner (defaults on create)
   data TEXT,                    -- legacy pre-encryption blob; NULL once migrated, kept for backfill
   created_at INTEGER,
   updated_at INTEGER
@@ -267,6 +271,27 @@ CREATE TABLE backup_runs (
   finished_at INTEGER,
   ts INTEGER NOT NULL
 );
+CREATE TABLE teams (
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  created_at INTEGER
+);
+CREATE TABLE team_members (
+  id TEXT PRIMARY KEY,
+  team_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  created_at INTEGER,
+  UNIQUE(team_id, user_id)
+);
+CREATE TABLE connection_access (
+  id TEXT PRIMARY KEY,
+  connection_id TEXT NOT NULL,
+  principal_type TEXT NOT NULL,   -- "team" | "user"
+  principal_id TEXT NOT NULL,     -- teams.id or users.id
+  created_at INTEGER,
+  UNIQUE(connection_id, principal_type, principal_id)
+);
 ```
 
 **Seeds on first run:** user `admin` / `admin123` (role `admin`), and a
@@ -344,10 +369,10 @@ Set password, activate, log in. **Body:** `{ "name", "password" }` → **200:** 
   Storage destinations / Backup sections below).
 - **Notifications:** `workspaces.settings.notifications.backupFailure` is
   `{ enabled: boolean, memberIds: string[] }`, surfaced via the two routes above
-  and edited from the frontend's Workspace → Notification tab. When enabled, a
-  scheduled backup that ends up failed (after any configured retries — see the
-  Backup section) emails every listed member via the workspace's SMTP config
-  (see `smtpConfig`). Manual "Run now" failures never trigger this.
+  and edited from the frontend's Notification tab. When enabled, a scheduled backup
+  that ends up failed (after any configured retries — see the Backup section) emails
+  every listed member via the workspace's SMTP config (see `smtpConfig`). Manual
+  "Run now" failures never trigger this.
 - `POST /api/workspaces/:id/smtp/test` (admin) `{ to?, smtp? }` → `{ ok: true }`
   or `400 { error }`. Sends a one-off test email. `to` defaults to the caller's
   own email. `smtp` (same shape as `PUT`, minus `pass` falling back to the
@@ -362,14 +387,33 @@ Set password, activate, log in. **Body:** `{ "name", "password" }` → **200:** 
   Existing accounts are added directly; otherwise a pending user + invite link is
   created (and emailed when SMTP is configured; `inviteLink` returned regardless).
 - `DELETE /api/workspaces/:id/members/:userId` (admin) → `{ ok: true }`. Can't
-  remove yourself or the last admin.
+  remove yourself or the last admin. Also drops the removed user from every team
+  in this workspace.
+
+### Teams
+Workspace-scoped groups of members. A team can be assigned as an access principal
+to a connection (see Connection access) and as a notification recipient. Managed
+from the frontend's Workspace → Teams tab. Any member can read; only admins mutate.
+- `GET /api/workspaces/:id/teams` → `[{ id, name, memberCount, createdAt }]`.
+- `POST /api/workspaces/:id/teams` (admin) `{ name }` → `{ id, name, memberCount: 0, createdAt }`.
+- `PUT /api/workspaces/:id/teams/:teamId` (admin) `{ name }` → `{ ok: true }`.
+- `DELETE /api/workspaces/:id/teams/:teamId` (admin) → `{ ok: true }`. Cascades:
+  removes the team's members and any `connection_access` rows assigning it.
+- `GET /api/workspaces/:id/teams/:teamId/members` → `[{ userId, email, name }]`.
+- `POST /api/workspaces/:id/teams/:teamId/members` (admin) `{ userId }` → `{ ok: true }`.
+  `400` if the user isn't a member of the workspace.
+- `DELETE /api/workspaces/:id/teams/:teamId/members/:userId` (admin) → `{ ok: true }`.
+- **Example:** `POST http://localhost:3000/api/workspaces/ws_123/teams` body `{ "name": "Backend" }`.
 
 ---
 
 ## Connections
 
 ### GET `/api/connections`
-List connections in a workspace the caller belongs to.
+List connections in a workspace the caller belongs to. Results are further filtered
+by **connection access** (see below): a connection with no access rows is visible to
+every workspace member; one with access rows is visible only to workspace admins, its
+assigned individual members, and members of its assigned teams.
 - **Query:** `workspace` (required — the workspace id). Missing → `[]`.
 
 - **200:** `Connection[]` (array of connection objects)
@@ -385,10 +429,12 @@ Test connectivity without saving. Body is a connection-shaped object.
 - **Example:** `POST http://localhost:3000/api/test-connection`
 
 ### POST `/api/connections`
-Create a connection. Server assigns the `id` (UUID).
+Create a connection. Server assigns the `id` (UUID). The `ownerId` defaults to the
+authenticated caller unless one is supplied in the body. The response includes the
+resolved `ownerName` / `ownerEmail`.
 
-- **Body:** connection object **without** `id` (see Data models)
-- **200:** the created connection (with `id`)
+- **Body:** connection object **without** `id` (see Data models); `ownerId` optional
+- **200:** the created connection (with `id`, `ownerId`, `ownerName`, `ownerEmail`)
 - **Example:** `POST http://localhost:3000/api/connections`
 
 ### PUT `/api/connections/:id`
@@ -407,6 +453,25 @@ closes any open pool/handle.
 - **200:** `{ "ok": true }`
 - **404:** `{ "error": "Connection not found" }`
 - **Example:** `DELETE http://localhost:3000/api/connections/demo-sqlite`
+
+### Connection access
+Controls which teams / individual members may see and open a connection. An empty
+set means the connection is open to every workspace member (backward compatible).
+Any set restricts visibility to workspace admins + the listed users + members of the
+listed teams. Enforced by the `GET /api/connections` list filter and the
+`/api/connections/:id/*` access guard.
+
+#### GET `/api/connections/:id/access`
+Read the current assignment (any caller who already has access).
+- **200:** `{ "teams": ["team_1"], "users": ["user_1"] }` (id arrays; empty = open)
+- **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/access`
+
+#### PUT `/api/connections/:id/access`
+Replace the assignment (workspace **admin** only). Send the full desired set.
+- **Body:** `{ "teams": ["team_1"], "users": ["user_1"] }` (either may be omitted → treated as `[]`)
+- **200:** the stored `{ teams, users }`
+- **403:** `{ "error": "Admin only" }`
+- **Example:** `PUT http://localhost:3000/api/connections/demo-sqlite/access`
 
 ---
 
@@ -972,6 +1037,15 @@ Liveness probe.
 | POST   | `/api/connections`                        | Create connection               |
 | PUT    | `/api/connections/:id`                    | Update connection               |
 | DELETE | `/api/connections/:id`                    | Delete connection (+ cascade)   |
+| GET    | `/api/connections/:id/access`             | Read connection access (teams/users) |
+| PUT    | `/api/connections/:id/access`             | Set connection access (admin)   |
+| GET    | `/api/workspaces/:id/teams`               | List teams (+ member counts)    |
+| POST   | `/api/workspaces/:id/teams`               | Create team (admin)             |
+| PUT    | `/api/workspaces/:id/teams/:teamId`       | Rename team (admin)             |
+| DELETE | `/api/workspaces/:id/teams/:teamId`       | Delete team (admin, cascade)    |
+| GET    | `/api/workspaces/:id/teams/:teamId/members` | List team members             |
+| POST   | `/api/workspaces/:id/teams/:teamId/members` | Add team member (admin)       |
+| DELETE | `/api/workspaces/:id/teams/:teamId/members/:userId` | Remove team member (admin) |
 | GET    | `/api/connections/:id/saved`              | List saved queries              |
 | POST   | `/api/connections/:id/saved`              | Create saved query              |
 | PUT    | `/api/connections/:id/saved/:sid`         | Update saved query / move       |

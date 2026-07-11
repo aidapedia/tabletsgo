@@ -50,3 +50,39 @@ export async function inviteMember(workspaceId: string, email: string) {
 export async function removeMember(workspaceId: string, userId: string) {
   return request(`/workspaces/${workspaceId}/members/${userId}`, { method: 'DELETE' })
 }
+
+// ---- Teams (workspace-scoped groups of members) ----
+export type Team = { id: string; name: string; memberCount: number; createdAt?: number }
+export type TeamMember = { userId: string; email: string; name: string }
+
+export async function listTeams(workspaceId: string) {
+  return safeRequest<Team[]>(`/workspaces/${workspaceId}/teams`, [])
+}
+export async function createTeam(workspaceId: string, name: string) {
+  return request<Team>(`/workspaces/${workspaceId}/teams`, { method: 'POST', body: { name } })
+}
+export async function renameTeam(workspaceId: string, teamId: string, name: string) {
+  return request(`/workspaces/${workspaceId}/teams/${teamId}`, { method: 'PUT', body: { name } })
+}
+export async function deleteTeam(workspaceId: string, teamId: string) {
+  return request(`/workspaces/${workspaceId}/teams/${teamId}`, { method: 'DELETE' })
+}
+export async function listTeamMembers(workspaceId: string, teamId: string) {
+  return safeRequest<TeamMember[]>(`/workspaces/${workspaceId}/teams/${teamId}/members`, [])
+}
+export async function addTeamMember(workspaceId: string, teamId: string, userId: string) {
+  return request(`/workspaces/${workspaceId}/teams/${teamId}/members`, { method: 'POST', body: { userId } })
+}
+export async function removeTeamMember(workspaceId: string, teamId: string, userId: string) {
+  return request(`/workspaces/${workspaceId}/teams/${teamId}/members/${userId}`, { method: 'DELETE' })
+}
+
+// ---- Connection access (which teams/members may see a connection) ----
+export type ConnectionAccess = { teams: string[]; users: string[] }
+
+export async function getConnectionAccess(connectionId: string) {
+  return safeRequest<ConnectionAccess>(`/connections/${connectionId}/access`, { teams: [], users: [] })
+}
+export async function setConnectionAccess(connectionId: string, access: ConnectionAccess) {
+  return request<ConnectionAccess>(`/connections/${connectionId}/access`, { method: 'PUT', body: access })
+}

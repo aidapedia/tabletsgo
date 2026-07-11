@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useConnections, ConnectionForm } from '@/features/connections'
+import { useConnections, ConnectionForm, ConnectionAccessPanel } from '@/features/connections'
 import { BackupPanel } from '@/features/backup'
 import { listTables, pingConnection } from '@/shared/api/database'
 import Button from '@/shared/ui/buttons/Button'
@@ -87,7 +87,7 @@ function DetailRow({ label, value }: { label: string; value?: string }) {
 }
 
 function ConnectionDetail({ conn, onBack, onOpen, onEdit }) {
-  const [tab, setTab] = useState<'data' | 'backup'>('data')
+  const [tab, setTab] = useState<'data' | 'access' | 'backup'>('data')
   const [status, setStatus] = useState<'checking' | 'connected' | 'offline'>('checking')
   const [tableCount, setTableCount] = useState<number | null>(null)
 
@@ -106,7 +106,7 @@ function ConnectionDetail({ conn, onBack, onOpen, onEdit }) {
     }
   }, [conn.id])
 
-  const tabBtn = (id: 'data' | 'backup', label: string, soon = false) => (
+  const tabBtn = (id: 'data' | 'access' | 'backup', label: string, soon = false) => (
     <Tab active={tab === id} onClick={() => setTab(id)}>
       {label}
       {soon && (
@@ -148,6 +148,7 @@ function ConnectionDetail({ conn, onBack, onOpen, onEdit }) {
       {/* Tabs */}
       <div className="mt-7 flex items-center gap-5 border-b border-edge">
         {tabBtn('data', 'Data Connection')}
+        {tabBtn('access', 'Access')}
         {tabBtn('backup', 'Backup')}
       </div>
 
@@ -192,9 +193,12 @@ function ConnectionDetail({ conn, onBack, onOpen, onEdit }) {
                   </>
                 )}
                 {conn.folder && <DetailRow label="Folder" value={conn.folder} />}
+                <DetailRow label="Owner" value={conn.ownerName || conn.ownerEmail} />
               </div>
             </div>
           </div>
+        ) : tab === 'access' ? (
+          <ConnectionAccessPanel conn={conn} />
         ) : (
           <BackupPanel connectionId={conn.id} connectionType={conn.type} workspaceId={conn.workspaceId} />
         )}

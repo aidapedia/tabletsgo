@@ -10,6 +10,7 @@ import HomeLayout from '@/pages/home/HomeLayout'
 import DashboardPage from '@/pages/home/DashboardPage'
 import ConnectionsPage from '@/pages/home/ConnectionsPage'
 import WorkspaceSettingsPage from '@/pages/home/WorkspaceSettingsPage'
+import NotificationsPage from '@/pages/home/NotificationsPage'
 import StoragePage from '@/pages/home/StoragePage'
 import SettingsPage from '@/pages/home/SettingsPage'
 import WorkspacePage from '@/pages/console/WorkspacePage'
@@ -58,6 +59,8 @@ export function AppRoutes() {
         <Route path="/connections" element={<ConnectionsPage />} />
         <Route path="/workspace" element={<WorkspaceSettingsPage />} />
         <Route path="/workspace/:sub" element={<WorkspaceSettingsPage />} />
+        <Route path="/notifications" element={<NotificationsPage />} />
+        <Route path="/notifications/:sub" element={<NotificationsPage />} />
         <Route path="/storage" element={<StoragePage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/settings/:sub" element={<SettingsPage />} />
