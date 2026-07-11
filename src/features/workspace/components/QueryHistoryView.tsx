@@ -15,6 +15,7 @@ import {
   SortIcon,
   TrashIcon,
 } from '@/shared/ui/icons'
+import LoadingState from '@/shared/ui/feedback/LoadingState'
 
 const COLUMNS = ['Status', 'Query', 'Table', 'Latency', 'Executed at', 'Executor', 'Error']
 
@@ -298,7 +299,7 @@ export default function QueryHistoryView({ history = [], loading = false, onRefr
       </div>
 
       {loading ? (
-        <div className="p-5 text-center text-xs text-ink-faint">Loading…</div>
+        <LoadingState className="p-5 text-center" />
       ) : history.length === 0 ? (
         <div className="p-[30px] text-center text-ink-faint">No query history yet. Run a query to see it here.</div>
       ) : (

@@ -6,6 +6,7 @@ import { useToast } from '@/shared/ui/feedback/Toast'
 import { Input } from '@/shared/ui/form/Input'
 import { Label } from '@/shared/ui/form/Form'
 import { useWorkspaces, updateWorkspace, deleteWorkspace } from '@/features/workspaces'
+import LoadingState from '@/shared/ui/feedback/LoadingState'
 
 // General workspace settings: rename the workspace and (admin) delete it.
 export default function WorkspaceGeneral() {
@@ -20,7 +21,7 @@ export default function WorkspaceGeneral() {
     if (current) setName(current.name)
   }, [current?.id, current?.name])
 
-  if (!current) return <div className="text-xs text-ink-faint">Loading…</div>
+  if (!current) return <LoadingState className="" />
 
   const isAdmin = current.role === 'admin'
 

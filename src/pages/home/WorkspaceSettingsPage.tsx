@@ -1,6 +1,7 @@
 import { useNavigate, useParams } from 'react-router-dom'
 import { useWorkspaces, MembersPanel, WorkspaceGeneral, TeamsPanel } from '@/features/workspaces'
 import { SubHead, TabbedSection } from './ui'
+import LoadingState from '@/shared/ui/feedback/LoadingState'
 
 // Workspace section — General / Member as tabs (a second path segment).
 // Integration + Notification moved to their own /integrations sidebar section.
@@ -30,7 +31,7 @@ export default function WorkspaceSettingsPage() {
           {current ? (
             <MembersPanel workspaceId={current.id} canManage={isAdmin} />
           ) : (
-            <div className="text-xs text-ink-faint">Loading…</div>
+            <LoadingState className="" />
           )}
         </div>
       ),
@@ -44,7 +45,7 @@ export default function WorkspaceSettingsPage() {
           {current ? (
             <TeamsPanel workspaceId={current.id} canManage={isAdmin} />
           ) : (
-            <div className="text-xs text-ink-faint">Loading…</div>
+            <LoadingState className="" />
           )}
         </div>
       ),

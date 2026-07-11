@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import Button from '@/shared/ui/buttons/Button'
 import Select from '@/shared/ui/form/Select'
-import Checkbox from '@/shared/ui/form/Checkbox'
+import CheckboxRow from '@/shared/ui/form/CheckboxRow'
+import { toggleId } from '@/shared/lib/toggleId'
 import IconButton from '@/shared/ui/buttons/IconButton'
 import SqlEditor from '@/shared/ui/SqlEditor'
 import { Input, Textarea, controlClass } from '@/shared/ui/form/Input'
@@ -37,10 +38,7 @@ export default function NodeConfigPanel({ node, onChange, onChangeType, allowTyp
       alive = false
     }
   }, [node.type, workspaceId])
-  const toggleDestination = (id: string) => {
-    const cur: string[] = d.destinationIds || []
-    set({ destinationIds: cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id] })
-  }
+  const toggleDestination = (id: string) => set({ destinationIds: toggleId(d.destinationIds || [], id) })
 
   const isAllowedType = allowType || (() => true)
   const typeOptions = Object.values(NODE_SPECS)
@@ -250,15 +248,10 @@ export default function NodeConfigPanel({ node, onChange, onChangeType, allowTyp
               ) : (
                 <div className="flex flex-col gap-2">
                   {storages.map((s) => (
-                    <label key={s.id} className="flex cursor-pointer items-center gap-2.5 rounded-soft border border-edge bg-elevated/40 px-2.5 py-2">
-                      <Checkbox
-                        checked={(d.destinationIds || []).includes(s.id)}
-                        onChange={() => toggleDestination(s.id)}
-                        ariaLabel={s.name}
-                      />
+                    <CheckboxRow key={s.id} checked={(d.destinationIds || []).includes(s.id)} onChange={() => toggleDestination(s.id)} ariaLabel={s.name}>
                       <span className="min-w-0 flex-1 truncate text-[12px]">{s.name}</span>
                       <span className="shrink-0 text-[10px] text-ink-faint">{s.bucket}</span>
-                    </label>
+                    </CheckboxRow>
                   ))}
                 </div>
               )}

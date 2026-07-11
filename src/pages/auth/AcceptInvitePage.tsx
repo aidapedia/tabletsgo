@@ -5,6 +5,7 @@ import { Logo } from '@/shared/ui/icons'
 import Button from '@/shared/ui/buttons/Button'
 import { Input } from '@/shared/ui/form/Input'
 import { Form, FormField } from '@/shared/ui/form/Form'
+import LoadingState from '@/shared/ui/feedback/LoadingState'
 
 // Invite acceptance: the invited email sets their name + password, then is
 // logged in and dropped onto the homepage (their new workspace).
@@ -62,7 +63,7 @@ export default function AcceptInvitePage() {
       </>
     )
   }
-  if (!invite) return shell(<div className="py-4 text-center text-xs text-ink-faint">Loading…</div>)
+  if (!invite) return shell(<LoadingState className="py-4 text-center" />)
 
   return shell(
     <Form onSubmit={handleSubmit}>

@@ -4,9 +4,12 @@ import TextButton from '@/shared/ui/buttons/TextButton'
 import ConfirmDialog from '@/shared/ui/feedback/ConfirmDialog'
 import { useToast } from '@/shared/ui/feedback/Toast'
 import { CopyIcon, TrashIcon } from '@/shared/ui/icons'
+import Avatar from '@/shared/ui/Avatar'
+import Badge from '@/shared/ui/Badge'
 import { Input } from '@/shared/ui/form/Input'
 import { Label } from '@/shared/ui/form/Form'
 import { listMembers, inviteMember, removeMember, Member } from '@/features/workspaces/api'
+import LoadingState from '@/shared/ui/feedback/LoadingState'
 
 // Member management for a workspace: invite by email (with copyable link) and
 // remove members. `canManage` gates the admin-only controls.
@@ -102,24 +105,18 @@ export default function MembersPanel({ workspaceId, canManage }: { workspaceId: 
 
       <Label>Members ({members.length})</Label>
       {loading ? (
-        <div className="py-6 text-center text-xs text-ink-faint">Loading…</div>
+        <LoadingState />
       ) : (
         <div className="flex flex-col divide-y divide-edge overflow-hidden rounded-soft border border-edge">
           {members.map((m) => (
             <div key={m.userId} className="flex items-center gap-3 bg-elevated/30 px-3 py-2.5">
-              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-green/15 text-[11px] font-bold text-green-bright">
-                {(m.name || m.email)[0]?.toUpperCase()}
-              </span>
+              <Avatar label={m.name || m.email} />
               <div className="min-w-0 flex-1">
                 <div className="truncate text-[12px] font-medium text-ink">{m.name || m.email}</div>
                 <div className="truncate text-[11px] text-ink-faint">{m.email}</div>
               </div>
-              <span className={`shrink-0 rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide ${m.role === 'admin' ? 'bg-green/15 text-green-bright' : 'bg-edge text-ink-dim'}`}>
-                {m.role}
-              </span>
-              {m.status === 'pending' && (
-                <span className="shrink-0 rounded bg-amber/15 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-amber">pending</span>
-              )}
+              <Badge tone={m.role === 'admin' ? 'green' : 'neutral'} className="shrink-0">{m.role}</Badge>
+              {m.status === 'pending' && <Badge tone="amber" className="shrink-0">pending</Badge>}
               {canManage && !(m.role === 'admin' && adminCount <= 1) && (
                 <TextButton
                   tone="faint"

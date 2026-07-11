@@ -1,6 +1,7 @@
 import { useNavigate, useParams } from 'react-router-dom'
 import { useWorkspaces, IntegrationsSettings, NotificationSettings } from '@/features/workspaces'
 import { SubHead, TabbedSection } from './ui'
+import LoadingState from '@/shared/ui/feedback/LoadingState'
 
 // Notification section — Integration / Notification as tabs (a second path
 // segment). Holds external-service settings and the notifications Tabletsgo
@@ -27,7 +28,7 @@ export default function NotificationsPage() {
       body: (
         <div>
           <SubHead title="Notification" desc="Manage the notifications Tabletsgo sends to your team." />
-          {current ? <NotificationSettings workspaceId={current.id} /> : <div className="text-xs text-ink-faint">Loading…</div>}
+          {current ? <NotificationSettings workspaceId={current.id} /> : <LoadingState className="" />}
         </div>
       ),
     },

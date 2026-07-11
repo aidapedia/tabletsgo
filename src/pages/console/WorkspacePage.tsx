@@ -32,6 +32,7 @@ import {
   deleteFolder,
 } from '@/features/workspace/lib/savedQueries'
 import { draftToItems } from '@/shared/lib/schemaDraft'
+import SearchInput from '@/shared/ui/form/SearchInput'
 import TableView from '@/features/workspace/components/TableView'
 import CreateTablePanel from '@/features/schema-designer/components/CreateTablePanel'
 import SchemaPanel from '@/features/schema-designer/components/SchemaPanel'
@@ -920,23 +921,21 @@ export default function Workspace() {
         </div>
 
         {searchOpen && (
-          <div className="relative mx-3.5 mb-2.5">
-            <SearchIcon width={15} height={15} className="absolute left-[11px] top-1/2 -translate-y-1/2 text-ink-faint" />
-            <input
-              ref={searchRef}
-              autoFocus
-              placeholder="Search tables…"
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Escape') {
-                  setFilter('')
-                  setSearchOpen(false)
-                }
-              }}
-              className="w-full rounded-[9px] border border-edge bg-elevated py-2 pl-[34px] pr-3 text-xs text-ink outline-none focus:border-green-dim"
-            />
-          </div>
+          <SearchInput
+            ref={searchRef}
+            autoFocus
+            className="mx-3.5 mb-2.5"
+            placeholder="Search tables…"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                setFilter('')
+                setSearchOpen(false)
+              }
+            }}
+            inputClassName="!rounded-[9px] !text-xs"
+          />
         )}
 
         <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-hidden px-2 pb-2 pt-1">

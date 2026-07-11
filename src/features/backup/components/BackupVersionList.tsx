@@ -12,6 +12,7 @@ import { useToast } from '@/shared/ui/feedback/Toast'
 import { ChevronLeft, ChevronRight, CloseIcon, DownloadIcon, HistoryIcon, RestoreIcon, ShieldIcon, TrashIcon } from '@/shared/ui/icons'
 import { deleteBackupUpload, downloadBackupUpload, listBackupRuns, listStorages, restoreBackup } from '@/features/backup/lib/api'
 import type { BackupRun, BackupUpload, StorageDestination } from '@/features/backup/lib/types'
+import LoadingState from '@/shared/ui/feedback/LoadingState'
 
 const PAGE_SIZE = 20
 
@@ -144,7 +145,7 @@ export default function BackupVersionList({
         </div>
 
         {loading ? (
-          <div className="py-10 text-center text-xs text-ink-faint">Loading…</div>
+          <LoadingState className="py-10 text-center" />
         ) : rows.length === 0 ? (
           <div className="py-10 text-center text-[12px] text-ink-faint">No backup versions{dateFilter ? ' on this day' : ' yet'}.</div>
         ) : (

@@ -4,14 +4,18 @@ import TextButton from '@/shared/ui/buttons/TextButton'
 import IconButton from '@/shared/ui/buttons/IconButton'
 import ConfirmDialog from '@/shared/ui/feedback/ConfirmDialog'
 import { useToast } from '@/shared/ui/feedback/Toast'
-import { TrashIcon, ChevronDown, SearchIcon, PlusSmall } from '@/shared/ui/icons'
+import { TrashIcon, ChevronDown, PlusSmall } from '@/shared/ui/icons'
 import { Input } from '@/shared/ui/form/Input'
+import SearchInput from '@/shared/ui/form/SearchInput'
 import { Label } from '@/shared/ui/form/Form'
+import PersonRow from '@/shared/ui/PersonRow'
 import {
   listTeams, createTeam, renameTeam, deleteTeam,
   listTeamMembers, addTeamMember, removeTeamMember,
   listMembers, type Team, type TeamMember, type Member,
 } from '@/features/workspaces/api'
+import LoadingState from '@/shared/ui/feedback/LoadingState'
+import EmptyState from '@/shared/ui/feedback/EmptyState'
 
 // Team management for a workspace: create/rename/delete teams and manage each
 // team's members. `canManage` gates the admin-only controls.
@@ -80,11 +84,9 @@ export default function TeamsPanel({ workspaceId, canManage }: { workspaceId: st
 
       <Label>Teams ({teams.length})</Label>
       {loading ? (
-        <div className="py-6 text-center text-xs text-ink-faint">Loading…</div>
+        <LoadingState />
       ) : teams.length === 0 ? (
-        <div className="rounded-soft border border-edge bg-elevated/30 py-6 text-center text-xs text-ink-faint">
-          No teams yet.
-        </div>
+        <EmptyState bordered>No teams yet.</EmptyState>
       ) : (
         <div className="flex flex-col gap-2">
           {teams.map((t) => (
@@ -223,15 +225,7 @@ function TeamRow({
                 </div>
               ) : (
                 <>
-                  <div className="relative">
-                    <SearchIcon width={14} height={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-ink-faint" />
-                    <Input
-                      value={query}
-                      onChange={(e) => setQuery(e.target.value)}
-                      placeholder="Search members to add…"
-                      className="!pl-8"
-                    />
-                  </div>
+                  <SearchInput value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search members to add…" />
                   {q && (
                     matches.length === 0 ? (
                       <p className="mt-1 px-1 py-2 text-[11px] text-ink-faint">No members match “{query}”.</p>
@@ -244,11 +238,7 @@ function TeamRow({
                             onClick={() => add(m.userId)}
                             className="flex items-center gap-2.5 bg-elevated/30 px-3 py-2 text-left hover:bg-card-hover"
                           >
-                            <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-green/15 text-[10px] font-bold text-green-bright">
-                              {(m.name || m.email)[0]?.toUpperCase()}
-                            </span>
-                            <span className="min-w-0 flex-1 truncate text-[12px]">{m.name || m.email}</span>
-                            <span className="hidden shrink-0 text-[10px] text-ink-faint sm:block">{m.email}</span>
+                            <PersonRow name={m.name} email={m.email} emailClassName="hidden sm:block" />
                             <PlusSmall width={13} height={13} className="shrink-0 text-ink-faint" />
                           </button>
                         ))}
@@ -260,18 +250,14 @@ function TeamRow({
             </div>
           )}
           {!loaded ? (
-            <div className="py-3 text-center text-xs text-ink-faint">Loading…</div>
+            <LoadingState className="py-3 text-center" />
           ) : teamMembers.length === 0 ? (
             <p className="py-2 text-center text-[12px] text-ink-faint">No members in this team yet.</p>
           ) : (
             <div className="flex flex-col divide-y divide-edge overflow-hidden rounded-soft border border-edge">
               {teamMembers.map((m) => (
                 <div key={m.userId} className="flex items-center gap-2.5 bg-elevated/30 px-3 py-2">
-                  <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-green/15 text-[10px] font-bold text-green-bright">
-                    {(m.name || m.email)[0]?.toUpperCase()}
-                  </span>
-                  <span className="min-w-0 flex-1 truncate text-[12px]">{m.name || m.email}</span>
-                  <span className="shrink-0 text-[10px] text-ink-faint">{m.email}</span>
+                  <PersonRow name={m.name} email={m.email} />
                   {canManage && (
                     <TextButton tone="faint" className="shrink-0 hover:!text-red" onClick={() => remove(m.userId)} aria-label={`Remove ${m.email}`}>
                       <TrashIcon width={14} height={14} />

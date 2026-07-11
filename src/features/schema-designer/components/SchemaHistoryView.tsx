@@ -22,6 +22,7 @@ import {
   RefreshIcon,
   SortIcon,
 } from '@/shared/ui/icons'
+import LoadingState from '@/shared/ui/feedback/LoadingState'
 
 const COLUMNS = ['Version', 'Status', 'Up SQL', 'Down SQL', 'Reversible', 'Executor', 'Committed at']
 
@@ -302,7 +303,7 @@ export default function SchemaHistoryView({ migrations = [], loading = false, di
       </div>
 
       {loading ? (
-        <div className="p-5 text-center text-xs text-ink-faint">Loading…</div>
+        <LoadingState className="p-5 text-center" />
       ) : migrations.length === 0 ? (
         <div className="p-[30px] text-center text-ink-faint">
           No schema changes committed yet — DDL commits show up here with their version.

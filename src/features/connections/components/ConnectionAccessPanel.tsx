@@ -1,21 +1,15 @@
 import { useEffect, useState } from 'react'
 import { useToast } from '@/shared/ui/feedback/Toast'
-import Checkbox from '@/shared/ui/form/Checkbox'
+import CheckboxRow from '@/shared/ui/form/CheckboxRow'
 import Button from '@/shared/ui/buttons/Button'
 import { EditIcon } from '@/shared/ui/icons'
-import {
-  useWorkspaces, listTeams, listMembers, getConnectionAccess, setConnectionAccess,
-  type Team, type Member,
-} from '@/features/workspaces'
-
-// Avatar bubble from a name/email initial.
-function Avatar({ label }: { label: string }) {
-  return (
-    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-green/15 text-[11px] font-bold text-green-bright">
-      {label[0]?.toUpperCase()}
-    </span>
-  )
-}
+import Avatar from '@/shared/ui/Avatar'
+import Badge from '@/shared/ui/Badge'
+import PersonRow from '@/shared/ui/PersonRow'
+import { useWorkspaces, listTeams, listMembers, type Team, type Member } from '@/features/workspaces'
+import { getConnectionAccess, setConnectionAccess } from '../api'
+import LoadingState from '@/shared/ui/feedback/LoadingState'
+import { toggleId } from '@/shared/lib/toggleId'
 
 // Access management for a single connection, shown as the detail's "Access" tab.
 // Read-only overview (owner + who can access) with an admin-only inline editor.
@@ -54,8 +48,8 @@ export default function ConnectionAccessPanel({ conn }: { conn: any }) {
     setDraftUsers(userIds)
     setEditing(true)
   }
-  const toggleTeam = (id: string) => setDraftTeams((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]))
-  const toggleUser = (id: string) => setDraftUsers((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]))
+  const toggleTeam = (id: string) => setDraftTeams((p) => toggleId(p, id))
+  const toggleUser = (id: string) => setDraftUsers((p) => toggleId(p, id))
 
   const save = async () => {
     setSaving(true)
@@ -72,7 +66,7 @@ export default function ConnectionAccessPanel({ conn }: { conn: any }) {
     }
   }
 
-  if (loading) return <div className="py-10 text-center text-xs text-ink-faint">Loading…</div>
+  if (loading) return <LoadingState className="py-10 text-center" />
 
   const open = teamIds.length === 0 && userIds.length === 0
   const assignedTeams = teams.filter((t) => teamIds.includes(t.id))
@@ -95,7 +89,7 @@ export default function ConnectionAccessPanel({ conn }: { conn: any }) {
               <div className="truncate text-[12px] font-medium text-ink">{ownerName}</div>
               {conn.ownerEmail && <div className="truncate text-[11px] text-ink-faint">{conn.ownerEmail}</div>}
             </div>
-            <span className="ml-auto shrink-0 rounded bg-green/15 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-green-bright">Owner</span>
+            <Badge tone="green" className="ml-auto shrink-0">Owner</Badge>
           </div>
         ) : (
           <p className="text-[12px] text-ink-faint">No owner recorded.</p>
@@ -139,9 +133,7 @@ export default function ConnectionAccessPanel({ conn }: { conn: any }) {
                     <div className="flex flex-col divide-y divide-edge overflow-hidden rounded-soft border border-edge">
                       {assignedMembers.map((m) => (
                         <div key={m.userId} className="flex items-center gap-2.5 bg-elevated/30 px-3 py-2">
-                          <Avatar label={m.name || m.email} />
-                          <span className="min-w-0 flex-1 truncate text-[12px]">{m.name || m.email}</span>
-                          <span className="shrink-0 text-[10px] text-ink-faint">{m.email}</span>
+                          <PersonRow size="md" name={m.name} email={m.email} />
                         </div>
                       ))}
                     </div>
@@ -158,11 +150,10 @@ export default function ConnectionAccessPanel({ conn }: { conn: any }) {
                 <div className="mb-2 text-[11px] font-medium text-ink-dim">Teams</div>
                 <div className="flex flex-col gap-2">
                   {teams.map((t) => (
-                    <label key={t.id} className="flex cursor-pointer items-center gap-2.5 rounded-soft border border-edge bg-elevated/40 px-3 py-2">
-                      <Checkbox checked={draftTeams.includes(t.id)} onChange={() => toggleTeam(t.id)} ariaLabel={t.name} />
+                    <CheckboxRow key={t.id} checked={draftTeams.includes(t.id)} onChange={() => toggleTeam(t.id)} ariaLabel={t.name}>
                       <span className="min-w-0 flex-1 truncate text-[12px]">{t.name}</span>
                       <span className="shrink-0 text-[10px] text-ink-faint">{t.memberCount} member{t.memberCount === 1 ? '' : 's'}</span>
-                    </label>
+                    </CheckboxRow>
                   ))}
                 </div>
               </div>
@@ -174,12 +165,14 @@ export default function ConnectionAccessPanel({ conn }: { conn: any }) {
               ) : (
                 <div className="flex flex-col gap-2">
                   {selectableMembers.map((m) => (
-                    <label key={m.userId} className="flex cursor-pointer items-center gap-2.5 rounded-soft border border-edge bg-elevated/40 px-3 py-2">
-                      <Checkbox checked={draftUsers.includes(m.userId)} onChange={() => toggleUser(m.userId)} ariaLabel={m.email} />
-                      <Avatar label={m.name || m.email} />
-                      <span className="min-w-0 flex-1 truncate text-[12px]">{m.name || m.email}{m.userId === ownerId && <span className="ml-1.5 text-[10px] text-ink-faint">(owner)</span>}</span>
-                      <span className="shrink-0 text-[10px] text-ink-faint">{m.email}</span>
-                    </label>
+                    <CheckboxRow key={m.userId} checked={draftUsers.includes(m.userId)} onChange={() => toggleUser(m.userId)} ariaLabel={m.email}>
+                      <PersonRow
+                        size="md"
+                        name={m.name}
+                        email={m.email}
+                        suffix={m.userId === ownerId && <span className="ml-1.5 text-[10px] text-ink-faint">(owner)</span>}
+                      />
+                    </CheckboxRow>
                   ))}
                 </div>
               )}

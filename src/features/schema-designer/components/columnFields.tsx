@@ -4,7 +4,7 @@ import Select from '@/shared/ui/form/Select'
 import Tooltip from '@/shared/ui/overlay/Tooltip'
 import TextButton from '@/shared/ui/buttons/TextButton'
 import { TrashIcon } from '@/shared/ui/icons'
-import { controlClass } from '@/shared/ui/form/Input'
+import { controlClass, Input } from '@/shared/ui/form/Input'
 import { getTypes } from '@/shared/api/database'
 
 // Fallback type lists per dialect, used until the backend `/types` list loads.
@@ -132,8 +132,8 @@ export function ColumnField({ col, types, tableNames = [], schema = {}, allowPk 
   return (
     <div className="rounded-soft border border-edge bg-elevated/40 p-2.5">
       <div className="flex flex-wrap items-center gap-2">
-        <input
-          className={`${controlClass} !w-auto min-w-[120px] flex-1`}
+        <Input
+          className="!w-auto min-w-[120px] flex-1"
           type="text"
           placeholder="column_name"
           value={col.name}
@@ -146,8 +146,8 @@ export function ColumnField({ col, types, tableNames = [], schema = {}, allowPk 
           options={types.map((t) => ({ value: t, label: t }))}
         />
         {isVarchar(col.type) && (
-          <input
-            className={`${controlClass} !w-[72px] shrink-0`}
+          <Input
+            className="!w-[72px] shrink-0"
             type="number"
             min="1"
             placeholder="255"
@@ -189,8 +189,8 @@ export function ColumnField({ col, types, tableNames = [], schema = {}, allowPk 
 
       <div className="mt-2 flex items-center gap-2 px-0.5">
         <span className="shrink-0 text-[11px] text-ink-faint">Default</span>
-        <input
-          className={`${controlClass} !w-auto min-w-0 flex-1`}
+        <Input
+          className="!w-auto min-w-0 flex-1"
           type="text"
           placeholder="e.g. 0, 'active', now()"
           value={col.default}

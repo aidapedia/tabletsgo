@@ -1,11 +1,12 @@
 import { useWorkspaces } from '@/features/workspaces/stores/WorkspaceContext'
 import SmtpSettings from './SmtpSettings'
+import LoadingState from '@/shared/ui/feedback/LoadingState'
 
 // Workspace → Integrations: external services the workspace connects to
 // (currently just SMTP, the mail server for member invites).
 export default function IntegrationsSettings() {
   const { current } = useWorkspaces()
-  if (!current) return <div className="text-xs text-ink-faint">Loading…</div>
+  if (!current) return <LoadingState className="" />
 
   const isAdmin = current.role === 'admin'
 

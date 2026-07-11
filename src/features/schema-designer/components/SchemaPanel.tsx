@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { DiagramIcon, EditIcon, MoreVerticalIcon, PlusIcon, RefreshIcon, TrashIcon } from '@/shared/ui/icons'
-import { controlClass } from '@/shared/ui/form/Input'
+import { Input } from '@/shared/ui/form/Input'
 import IconButton from '@/shared/ui/buttons/IconButton'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
 import RowLabel from '@/shared/ui/RowLabel'
@@ -56,9 +56,9 @@ export default function SchemaPanel({
             renaming?.id === d.id ? (
               <div key={d.id} className="flex items-center gap-2 px-2.5 py-1">
                 <DiagramIcon className="shrink-0 text-ink-faint" width={14} height={14} />
-                <input
+                <Input
                   autoFocus
-                  className={`${controlClass} !py-1`}
+                  className="!py-1"
                   value={renaming.value}
                   onChange={(e) => setRenaming({ id: d.id, value: e.target.value })}
                   onBlur={commitRename}

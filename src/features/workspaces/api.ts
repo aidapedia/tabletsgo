@@ -76,13 +76,3 @@ export async function addTeamMember(workspaceId: string, teamId: string, userId:
 export async function removeTeamMember(workspaceId: string, teamId: string, userId: string) {
   return request(`/workspaces/${workspaceId}/teams/${teamId}/members/${userId}`, { method: 'DELETE' })
 }
-
-// ---- Connection access (which teams/members may see a connection) ----
-export type ConnectionAccess = { teams: string[]; users: string[] }
-
-export async function getConnectionAccess(connectionId: string) {
-  return safeRequest<ConnectionAccess>(`/connections/${connectionId}/access`, { teams: [], users: [] })
-}
-export async function setConnectionAccess(connectionId: string, access: ConnectionAccess) {
-  return request<ConnectionAccess>(`/connections/${connectionId}/access`, { method: 'PUT', body: access })
-}

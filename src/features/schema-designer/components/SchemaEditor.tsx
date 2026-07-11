@@ -20,8 +20,9 @@ import MenuItem from '@/shared/ui/navigation/MenuItem'
 import TextButton from '@/shared/ui/buttons/TextButton'
 import Popover from '@/shared/ui/overlay/Popover'
 import Checkbox from '@/shared/ui/form/Checkbox'
+import Badge from '@/shared/ui/Badge'
 import Select from '@/shared/ui/form/Select'
-import { controlClass } from '@/shared/ui/form/Input'
+import { controlClass, Input } from '@/shared/ui/form/Input'
 import { useToast } from '@/shared/ui/feedback/Toast'
 import TableEditPanel from '@/features/schema-designer/components/TableEditPanel'
 import CreateTablePanel from '@/features/schema-designer/components/CreateTablePanel'
@@ -57,7 +58,7 @@ function TableNode({ data, selected }) {
           style={{ height: HEADER_H }}
         >
           <span className="truncate">{data.name}</span>
-          {data.pending && <span className="rounded bg-amber/20 px-1 text-[9px] font-bold uppercase tracking-wide text-amber">staged</span>}
+          {data.pending && <Badge tone="amber" dense>staged</Badge>}
         </div>
         <div style={{ paddingTop: PAD_T, paddingBottom: PAD_T }}>
           {data.columns.map((c, i) => {
@@ -1257,12 +1258,8 @@ export default function SchemaEditor({ conn, changes, pending = [], onPendingCha
         >
           <div className="mb-1 flex items-center justify-between gap-2">
             <span className="text-[10px] font-semibold uppercase tracking-wide text-ink-faint">Foreign key</span>
-            {edgePopup.fk.pendingFk && (
-              <span className="rounded bg-amber/20 px-1 text-[9px] font-bold uppercase tracking-wide text-amber">staged add</span>
-            )}
-            {edgePopup.fk.removed && (
-              <span className="rounded bg-ink-faint/20 px-1 text-[9px] font-bold uppercase tracking-wide text-ink-faint">staged drop</span>
-            )}
+            {edgePopup.fk.pendingFk && <Badge tone="amber" dense>staged add</Badge>}
+            {edgePopup.fk.removed && <Badge tone="faint" dense>staged drop</Badge>}
           </div>
           <div className="font-mono text-[12px] text-ink">
             {edgePopup.fk.table}.{edgePopup.fk.column}
@@ -1376,8 +1373,8 @@ export default function SchemaEditor({ conn, changes, pending = [], onPendingCha
           <div className="mt-2 flex flex-col gap-1.5 border-t border-edge pt-2">
             <div className="flex items-center gap-2">
               <span className="w-[70px] shrink-0 text-[11px] text-ink-faint">Name</span>
-              <input
-                className={`${controlClass} !w-auto min-w-0 flex-1`}
+              <Input
+                className="!w-auto min-w-0 flex-1"
                 value={fkConfirm.name}
                 onChange={(e) => setFkConfirm((s) => ({ ...s, name: e.target.value }))}
                 autoFocus

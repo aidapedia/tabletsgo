@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { getFunction } from '@/shared/api/database'
+import LoadingState from '@/shared/ui/feedback/LoadingState'
 
 // Shows a function's identity signature and its full source definition. A name
 // can resolve to several overloads, so each is rendered as its own block.
@@ -28,7 +29,7 @@ export default function FunctionView({ conn, name }) {
       </div>
 
       {loading ? (
-        <div className="p-5 text-center text-xs text-ink-faint">Loading…</div>
+        <LoadingState className="p-5 text-center" />
       ) : defs.length === 0 ? (
         <div className="p-5 text-center text-xs text-ink-faint">No definition available.</div>
       ) : (

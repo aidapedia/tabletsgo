@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { getColumns, getIndexes } from '@/shared/api/database'
+import LoadingState from '@/shared/ui/feedback/LoadingState'
 
 const ROW_H = 25 // fixed row height so we can compute how many filler rows fit
 const headCell =
@@ -148,7 +149,7 @@ export default function SchemaView({ conn, table }) {
       </div>
 
       {loading ? (
-        <div className="p-5 text-center text-xs text-ink-faint">Loading…</div>
+        <LoadingState className="p-5 text-center" />
       ) : (
         <div className="flex min-h-0 flex-1 flex-col">
           {/* Structure grid */}

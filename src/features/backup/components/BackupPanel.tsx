@@ -6,6 +6,7 @@ import { getBackupSchedule, runBackupNow, updateBackupSchedule } from '@/feature
 import type { BackupSchedule } from '@/features/backup/lib/types'
 import BackupCalendarHeatmap from './BackupCalendarHeatmap'
 import BackupVersionList from './BackupVersionList'
+import LoadingState from '@/shared/ui/feedback/LoadingState'
 
 // Backup tab: a read-only viewer (status + calendar + version list). All
 // configuration (create/edit the schedule) happens on the connection's Edit
@@ -59,7 +60,7 @@ export default function BackupPanel({ connectionId, connectionType, workspaceId 
     }
   }
 
-  if (loading) return <div className="text-xs text-ink-faint">Loading…</div>
+  if (loading) return <LoadingState className="" />
 
   if (!supported) {
     return (

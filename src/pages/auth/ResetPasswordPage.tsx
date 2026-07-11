@@ -5,6 +5,7 @@ import { Logo } from '@/shared/ui/icons'
 import Button from '@/shared/ui/buttons/Button'
 import { Input } from '@/shared/ui/form/Input'
 import { Form, FormField } from '@/shared/ui/form/Form'
+import LoadingState from '@/shared/ui/feedback/LoadingState'
 
 // Complete a password reset: validate the token, set a new password, then the
 // user is signed in and sent to the homepage.
@@ -64,7 +65,7 @@ export default function ResetPasswordPage() {
       </>
     )
   }
-  if (!info) return shell(<div className="py-4 text-center text-xs text-ink-faint">Loading…</div>)
+  if (!info) return shell(<LoadingState className="py-4 text-center" />)
 
   return shell(
     <Form onSubmit={handleSubmit}>
