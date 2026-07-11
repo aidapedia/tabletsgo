@@ -7,7 +7,7 @@ import Select from '@/shared/ui/form/Select'
 import Button from '@/shared/ui/buttons/Button'
 import TextButton from '@/shared/ui/buttons/TextButton'
 import Tab from '@/shared/ui/navigation/Tab'
-import { controlClass } from '@/shared/ui/form/Input'
+import { controlClass, Input } from '@/shared/ui/form/Input'
 import { Label } from '@/shared/ui/form/Form'
 
 const DB_TYPES = [
@@ -210,8 +210,7 @@ export default function ConnectionForm({ initial, initialType, onClose, onSave }
 
             <div className="mb-[18px]">
               <Label>Connection Name</Label>
-              <input
-                className={controlClass}
+              <Input
                 type="text"
                 placeholder={isSqlite ? 'e.g. Demo DB' : 'My Production Database'}
                 value={form.name}
@@ -268,8 +267,7 @@ export default function ConnectionForm({ initial, initialType, onClose, onSave }
             {isSqlite ? (
               <div className="mb-[18px]">
                 <Label>Database File Path</Label>
-                <input
-                  className={controlClass}
+                <Input
                   type="text"
                   placeholder="./demo.db"
                   value={form.filepath}
@@ -281,8 +279,8 @@ export default function ConnectionForm({ initial, initialType, onClose, onSave }
               <>
                 <div className="mb-[18px]">
                   <Label>Connection URI</Label>
-                  <input
-                    className={`${controlClass} font-mono`}
+                  <Input
+                    className="font-mono"
                     type="text"
                     placeholder="postgresql://user:password@host:5432/database"
                     value={form.uri || ''}
@@ -297,11 +295,11 @@ export default function ConnectionForm({ initial, initialType, onClose, onSave }
                 <div className={fieldRow}>
                   <div className="mb-[18px]">
                     <Label>Host</Label>
-                    <input className={controlClass} type="text" placeholder="localhost" value={form.host} onChange={set('host')} required />
+                    <Input type="text" placeholder="localhost" value={form.host} onChange={set('host')} required />
                   </div>
                   <div className="mb-[18px]">
                     <Label>Port</Label>
-                    <input className={controlClass} type="text" placeholder="5432" value={form.port} onChange={set('port')} required />
+                    <Input type="text" placeholder="5432" value={form.port} onChange={set('port')} required />
                   </div>
                 </div>
 
@@ -314,14 +312,14 @@ export default function ConnectionForm({ initial, initialType, onClose, onSave }
                   <>
                     <div className="mb-[18px]">
                       <Label>User</Label>
-                      <input className={controlClass} type="text" placeholder="postgres" value={form.username} onChange={set('username')} />
+                      <Input type="text" placeholder="postgres" value={form.username} onChange={set('username')} />
                     </div>
 
                     <div className="mb-2">
                       <Label>Password</Label>
                       <div className="relative">
-                        <input
-                          className={`${controlClass} pr-10`}
+                        <Input
+                          className="pr-10"
                           type={showPassword ? 'text' : 'password'}
                           placeholder="••••••••"
                           value={form.password}
@@ -348,8 +346,7 @@ export default function ConnectionForm({ initial, initialType, onClose, onSave }
                   <Label>
                     Database <span className="text-ink-faint">(optional)</span>
                   </Label>
-                  <input
-                    className={controlClass}
+                  <Input
                     type="text"
                     placeholder="Leave empty to select database after connecting"
                     value={form.database}
@@ -387,7 +384,7 @@ export default function ConnectionForm({ initial, initialType, onClose, onSave }
                 <Label>
                   Folder <span className="text-ink-faint">(optional)</span>
                 </Label>
-                <input className={controlClass} type="text" placeholder="e.g. Demo" value={form.folder} onChange={set('folder')} />
+                <Input type="text" placeholder="e.g. Demo" value={form.folder} onChange={set('folder')} />
               </div>
             </div>
 

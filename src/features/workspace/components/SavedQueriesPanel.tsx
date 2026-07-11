@@ -10,7 +10,7 @@ import {
   SearchIcon,
   TrashIcon,
 } from '@/shared/ui/icons'
-import { controlClass } from '@/shared/ui/form/Input'
+import { Input } from '@/shared/ui/form/Input'
 import IconButton from '@/shared/ui/buttons/IconButton'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
 import RowLabel from '@/shared/ui/RowLabel'
@@ -108,9 +108,9 @@ export default function SavedQueriesPanel({
       return (
         <div key={s.id} className="flex items-center gap-2 px-2.5 py-1">
           <CodeIcon className="shrink-0 text-ink-faint" width={14} height={14} />
-          <input
+          <Input
             autoFocus
-            className={`${controlClass} !py-1`}
+            className="!py-1"
             value={renaming.value}
             onChange={(e) => setRenaming({ id: s.id, value: e.target.value })}
             onBlur={commitRename}
@@ -173,9 +173,9 @@ export default function SavedQueriesPanel({
       return (
         <div key={f.id} className="flex items-center gap-2 px-2.5 py-1">
           <FolderIcon className="shrink-0 text-ink-faint" width={15} height={15} />
-          <input
+          <Input
             autoFocus
-            className={`${controlClass} !py-1`}
+            className="!py-1"
             value={renamingFolder.value}
             onChange={(e) => setRenamingFolder({ id: f.id, value: e.target.value })}
             onBlur={commitFolderRename}
@@ -273,12 +273,11 @@ export default function SavedQueriesPanel({
 
       {searchOpen && (
         <div className="px-3.5 pb-2">
-          <input
+          <Input
             autoFocus
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
             placeholder="Search saved queries…"
-            className={controlClass}
           />
         </div>
       )}
@@ -287,9 +286,9 @@ export default function SavedQueriesPanel({
         {creatingFolder && (
           <div className="flex items-center gap-2 px-2.5 py-1">
             <FolderIcon className="shrink-0 text-ink-faint" width={15} height={15} />
-            <input
+            <Input
               autoFocus
-              className={`${controlClass} !py-1`}
+              className="!py-1"
               placeholder="Folder name…"
               value={newFolderName}
               onChange={(e) => setNewFolderName(e.target.value)}

@@ -1,16 +1,18 @@
 import { useEffect, useState } from 'react'
 import Button from '@/shared/ui/buttons/Button'
 import Select from '@/shared/ui/form/Select'
-import Checkbox from '@/shared/ui/form/Checkbox'
+import CheckboxRow from '@/shared/ui/form/CheckboxRow'
 import Toggle from '@/shared/ui/form/Toggle'
 import NumberStepper from '@/shared/ui/form/NumberStepper'
 import { controlClass } from '@/shared/ui/form/Input'
 import { FormField } from '@/shared/ui/form/Form'
 import { useToast } from '@/shared/ui/feedback/Toast'
 import { CloudIcon } from '@/shared/ui/icons'
+import { toggleId } from '@/shared/lib/toggleId'
 import { createBackupSchedule, getBackupSchedule, listStorages, updateBackupSchedule } from '@/features/backup/lib/api'
 import type { BackupSchedulePayload } from '@/features/backup/lib/api'
 import type { StorageDestination } from '@/features/backup/lib/types'
+import LoadingState from '@/shared/ui/feedback/LoadingState'
 
 const FREQUENCIES = [
   { value: 'hourly', label: 'Hourly' },
@@ -101,8 +103,7 @@ export default function BackupConfigForm({
 
   const supported = connectionType === 'sqlite' || connectionType === 'postgresql'
   const patch = (p: Partial<ConfigState>) => setConfig((c) => ({ ...c, ...p }))
-  const toggleDest = (id: string) =>
-    patch({ destinationIds: config.destinationIds.includes(id) ? config.destinationIds.filter((x) => x !== id) : [...config.destinationIds, id] })
+  const toggleDest = (id: string) => patch({ destinationIds: toggleId(config.destinationIds, id) })
 
   const save = async () => {
     if (!config.destinationIds.length) return
@@ -129,7 +130,7 @@ export default function BackupConfigForm({
       </div>
     )
   }
-  if (loading) return <div className="text-xs text-ink-faint">Loading…</div>
+  if (loading) return <LoadingState className="" />
 
   return (
     <div className="flex flex-col gap-4">
@@ -159,12 +160,11 @@ export default function BackupConfigForm({
         ) : (
           <div className="flex flex-col gap-2">
             {storages.map((s) => (
-              <label key={s.id} className="flex cursor-pointer items-center gap-2.5 rounded-soft border border-edge bg-elevated/40 px-3 py-2">
-                <Checkbox checked={config.destinationIds.includes(s.id)} onChange={() => toggleDest(s.id)} ariaLabel={s.name} />
+              <CheckboxRow key={s.id} checked={config.destinationIds.includes(s.id)} onChange={() => toggleDest(s.id)} ariaLabel={s.name}>
                 <CloudIcon width={14} height={14} className="shrink-0 text-sky-400" />
                 <span className="min-w-0 flex-1 truncate text-[12px]">{s.name}</span>
                 <span className="shrink-0 text-[10px] text-ink-faint">{s.bucket}</span>
-              </label>
+              </CheckboxRow>
             ))}
           </div>
         )}

@@ -107,6 +107,7 @@ function initMetaDb() {
       forward_sql TEXT NOT NULL,   -- JSON array of executed statements
       rollback_sql TEXT,           -- JSON array, same length, null entries where not reversible
       reversible INTEGER NOT NULL, -- 0/1 — false if any statement lacks a rollback
+      status TEXT,                 -- 'active' | 'rollbacked' (NULL on legacy rows = active)
       executor_id TEXT,
       executor_name TEXT,
       ts INTEGER
@@ -212,6 +213,32 @@ function initMetaDb() {
       created_at INTEGER,
       UNIQUE(workspace_id, user_id)
     );
+    CREATE TABLE IF NOT EXISTS teams (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      created_at INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS team_members (
+      id TEXT PRIMARY KEY,
+      team_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      created_at INTEGER,
+      UNIQUE(team_id, user_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_team_members_team ON team_members(team_id);
+    -- Generic principal assignment for a connection. Empty set = open to all
+    -- workspace members (backward compatible); any row restricts access to the
+    -- listed teams' members + listed users (+ workspace admins, always).
+    CREATE TABLE IF NOT EXISTS connection_access (
+      id TEXT PRIMARY KEY,
+      connection_id TEXT NOT NULL,
+      principal_type TEXT NOT NULL,   -- 'team' | 'user'
+      principal_id TEXT NOT NULL,
+      created_at INTEGER,
+      UNIQUE(connection_id, principal_type, principal_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_connection_access_conn ON connection_access(connection_id);
     CREATE TABLE IF NOT EXISTS sessions (
       token TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
@@ -249,6 +276,13 @@ function initMetaDb() {
   addColumn('connections', 'credentials TEXT')
   addColumn('connections', 'schema_version INTEGER')
   addColumn('connections', 'updated_at INTEGER')
+  // Owner = the user who created the connection (defaults on create).
+  addColumn('connections', 'owner_id TEXT')
+  // Schema migrations: status tracks whether a version is still applied
+  // ('active') or has been undone via rollback ('rollbacked'). Old rows predate
+  // this column — treat NULL as active.
+  addColumn('schema_migrations', "status TEXT")
+  meta.exec(`UPDATE schema_migrations SET status = 'active' WHERE status IS NULL`)
   // Workflows: protected = undeletable (e.g. the auto-created backup workflow);
   // schedule_enabled/next_run_at drive the cron scheduler (see runDueWorkflows).
   addColumn('workflows', 'protected INTEGER DEFAULT 0')
@@ -379,6 +413,55 @@ const workspaceForUser = (id, userId) => {
 }
 const getUserByEmail = (email) =>
   meta.prepare('SELECT id, username, name, role, status FROM users WHERE username = ?').get(email)
+
+// ---- Team / connection-access helpers ----
+// Team ids the user belongs to within a given workspace.
+const teamIdsForUser = (workspaceId, userId) =>
+  meta
+    .prepare(
+      `SELECT tm.team_id AS id FROM team_members tm JOIN teams t ON t.id = tm.team_id
+       WHERE t.workspace_id = ? AND tm.user_id = ?`
+    )
+    .all(workspaceId, userId)
+    .map((r) => r.id)
+
+// Assigned principals for a connection, split into team/user id arrays.
+const connectionAccess = (connectionId) => {
+  const rows = meta.prepare('SELECT principal_type, principal_id FROM connection_access WHERE connection_id = ?').all(connectionId)
+  return {
+    teams: rows.filter((r) => r.principal_type === 'team').map((r) => r.principal_id),
+    users: rows.filter((r) => r.principal_type === 'user').map((r) => r.principal_id),
+  }
+}
+
+// Replace a connection's access list atomically. Empty arrays => open to all members.
+const setConnectionAccess = (connectionId, { teams = [], users = [] }) => {
+  const now = Date.now()
+  const tx = meta.transaction(() => {
+    meta.prepare('DELETE FROM connection_access WHERE connection_id = ?').run(connectionId)
+    const ins = meta.prepare('INSERT OR IGNORE INTO connection_access (id, connection_id, principal_type, principal_id, created_at) VALUES (?, ?, ?, ?, ?)')
+    for (const t of teams) ins.run(randomUUID(), connectionId, 'team', t, now)
+    for (const u of users) ins.run(randomUUID(), connectionId, 'user', u, now)
+  })
+  tx()
+}
+
+// Can this user see/open the connection? Admins always can; an unassigned
+// connection is open to every workspace member; otherwise the user must be a
+// listed individual or belong to a listed team.
+const userCanAccessConnection = (conn, userId) => {
+  if (!conn) return false
+  if (!conn.workspaceId) return true
+  const role = memberRole(conn.workspaceId, userId)
+  if (!role) return false
+  if (role === 'admin') return true
+  const { teams, users } = connectionAccess(conn.id)
+  if (teams.length === 0 && users.length === 0) return true
+  if (users.includes(userId)) return true
+  if (teams.length === 0) return false
+  const myTeams = new Set(teamIdsForUser(conn.workspaceId, userId))
+  return teams.some((t) => myTeams.has(t))
+}
 // Absolute base URL of the frontend, for building invite links.
 const baseUrl = (req) => req.headers.origin || `${req.protocol}://${req.get('host')}`
 
@@ -480,6 +563,16 @@ function rowToConnection(row) {
   } catch {
     tags = []
   }
+  // Resolve the owner's display fields (best-effort) so the detail view can show
+  // who owns the connection without a second round-trip.
+  let ownerName, ownerEmail
+  if (row.owner_id) {
+    const u = meta.prepare('SELECT name, username FROM users WHERE id = ?').get(row.owner_id)
+    if (u) {
+      ownerName = u.name || u.username
+      ownerEmail = u.username
+    }
+  }
   return {
     id: row.id,
     type: row.type,
@@ -490,11 +583,16 @@ function rowToConnection(row) {
     tags,
     schemaVersion: row.schema_version || 1,
     ...credentials,
+    ownerId: row.owner_id || undefined,
+    ownerName,
+    ownerEmail,
   }
 }
 // Split a flat connection object back into row columns + encrypted credentials.
+// Owner + resolved owner display fields are peeled off so they never end up in
+// the encrypted credentials blob.
 function connectionToRow(conn) {
-  const { id, type, name, workspaceId, environment, folder, tags, schemaVersion, ...credentials } = conn
+  const { id, type, name, workspaceId, environment, folder, tags, schemaVersion, ownerId, ownerName, ownerEmail, ...credentials } = conn
   return {
     id,
     type: type || null,
@@ -505,6 +603,7 @@ function connectionToRow(conn) {
     tags: JSON.stringify(tags || []),
     credentials: encryptSecret(JSON.stringify(credentials)),
     schema_version: schemaVersion || 1,
+    owner_id: ownerId || null,
   }
 }
 
@@ -518,10 +617,10 @@ const saveConnection = (conn) => {
       // `data` is a placeholder — installs predating this migration created it
       // as `data TEXT NOT NULL`, so every write must still supply *something*.
       `INSERT OR REPLACE INTO connections
-       (id, type, name, workspace_id, environment, folder, tags, credentials, schema_version, data, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', COALESCE((SELECT created_at FROM connections WHERE id = ?), ?), ?)`
+       (id, type, name, workspace_id, environment, folder, tags, credentials, schema_version, owner_id, data, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', COALESCE((SELECT created_at FROM connections WHERE id = ?), ?), ?)`
     )
-    .run(row.id, row.type, row.name, row.workspace_id, row.environment, row.folder, row.tags, row.credentials, row.schema_version, row.id, now, now)
+    .run(row.id, row.type, row.name, row.workspace_id, row.environment, row.folder, row.tags, row.credentials, row.schema_version, row.owner_id, row.id, now, now)
 }
 const deleteConnectionRow = (id) => meta.prepare('DELETE FROM connections WHERE id = ?').run(id)
 // Bump a connection's schema version after a successful DDL commit. Direct
@@ -529,6 +628,17 @@ const deleteConnectionRow = (id) => meta.prepare('DELETE FROM connections WHERE 
 const bumpSchemaVersion = (id) => {
   meta.prepare('UPDATE connections SET schema_version = schema_version + 1, updated_at = ? WHERE id = ?').run(Date.now(), id)
   return meta.prepare('SELECT schema_version FROM connections WHERE id = ?').get(id)?.schema_version
+}
+
+// Execute one SQL statement against a connection's target database, dispatching
+// on dialect. Shared by the /query endpoint and schema rollback. Throws on error.
+async function execSqlOnConnection(conn, sql, database, schema) {
+  if (conn.type === 'sqlite') {
+    return runSqliteQuery(getSqliteDb(conn.filepath), sql)
+  } else if (conn.type === 'postgresql') {
+    return runPostgresQuery(getPostgresPool(conn, database), sql, schema)
+  }
+  throw new Error(`Unsupported connection type: ${conn.type}`)
 }
 
 // ---- Storage destination helpers (S3-compatible: AWS S3, MinIO, R2, B2, …) ----
@@ -701,6 +811,19 @@ function pgConfig(config) {
     database: config.database || undefined,
     ssl,
   }
+}
+
+// Connection args + libpq env for the pg_dump/pg_restore CLIs, mirroring
+// pgConfig so the tools honour the same host/port/db, no-auth mode, and SSL
+// mode as the pooled client. Password and sslmode go through libpq env vars
+// (PGPASSWORD/PGSSLMODE) — never argv — so they don't leak into the process list.
+function pgToolConn(conn) {
+  const noAuth = conn.auth === 'none'
+  const args = ['-h', conn.host, '-p', String(conn.port || 5432), '-d', conn.database]
+  if (!noAuth && conn.username) args.push('-U', conn.username)
+  const env = { ...process.env, PGPASSWORD: noAuth ? '' : conn.password || '' }
+  if (conn.sslmode) env.PGSSLMODE = conn.sslmode
+  return { args, env }
 }
 
 // A pool per (connection, database) so we can browse other databases on the
@@ -981,11 +1104,8 @@ async function execExportSql(conn) {
     // unlike a raw fs.copyFile of the live database file.
     await getSqliteDb(conn.filepath).backup(tmpPath)
   } else if (conn.type === 'postgresql') {
-    await execFileAsync(
-      'pg_dump',
-      ['-Fc', '--no-owner', '-f', tmpPath, '-h', conn.host, '-p', String(conn.port || 5432), '-U', conn.username, '-d', conn.database],
-      { env: { ...process.env, PGPASSWORD: conn.password || '' } } // password via env, never argv
-    )
+    const { args, env } = pgToolConn(conn)
+    await execFileAsync('pg_dump', ['-Fc', '--no-owner', '-f', tmpPath, ...args], { env })
   } else {
     throw new Error(`Export not supported for connection type: ${conn.type}`)
   }
@@ -1606,9 +1726,13 @@ app.delete('/api/workspaces/:id', (req, res) => {
       meta.prepare('DELETE FROM saved_folders WHERE connection_id = ?').run(row.id)
       meta.prepare('DELETE FROM workflows WHERE connection_id = ?').run(row.id)
       meta.prepare('DELETE FROM query_history WHERE connection_id = ?').run(row.id)
+      meta.prepare('DELETE FROM connection_access WHERE connection_id = ?').run(row.id)
     }
   }
   meta.prepare('DELETE FROM workspace_members WHERE workspace_id = ?').run(req.params.id)
+  // Drop the workspace's teams (and their membership rows).
+  meta.prepare('DELETE FROM team_members WHERE team_id IN (SELECT id FROM teams WHERE workspace_id = ?)').run(req.params.id)
+  meta.prepare('DELETE FROM teams WHERE workspace_id = ?').run(req.params.id)
   meta.prepare('DELETE FROM workspaces WHERE id = ?').run(req.params.id)
   res.json({ ok: true })
 })
@@ -1703,10 +1827,119 @@ app.delete('/api/workspaces/:id/members/:userId', (req, res) => {
     if (admins <= 1) return res.status(400).json({ error: 'The workspace needs at least one admin.' })
   }
   meta.prepare('DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?').run(req.params.id, req.params.userId)
+  // Drop the removed user from this workspace's teams so they can't retain
+  // team-granted connection access.
+  meta
+    .prepare(
+      `DELETE FROM team_members WHERE user_id = ? AND team_id IN (SELECT id FROM teams WHERE workspace_id = ?)`
+    )
+    .run(req.params.userId, req.params.id)
   // Clean up a pending user that no longer belongs to any workspace.
   const left = meta.prepare('SELECT COUNT(*) c FROM workspace_members WHERE user_id = ?').get(req.params.userId).c
   const u = meta.prepare('SELECT status FROM users WHERE id = ?').get(req.params.userId)
   if (left === 0 && u?.status === 'pending') meta.prepare('DELETE FROM users WHERE id = ?').run(req.params.userId)
+  res.json({ ok: true })
+})
+
+// ============================================================================
+// Teams (workspace-scoped groups of members)
+// ============================================================================
+
+// List a workspace's teams with member counts (any member can view).
+app.get('/api/workspaces/:id/teams', (req, res) => {
+  const user = requireAuth(req, res)
+  if (!user) return
+  if (!memberRole(req.params.id, user.id)) return res.status(403).json({ error: 'Forbidden' })
+  const rows = meta
+    .prepare(
+      `SELECT t.id, t.name, t.created_at,
+              (SELECT COUNT(*) FROM team_members tm WHERE tm.team_id = t.id) AS memberCount
+       FROM teams t WHERE t.workspace_id = ? ORDER BY t.created_at`
+    )
+    .all(req.params.id)
+  res.json(rows.map((r) => ({ id: r.id, name: r.name, memberCount: r.memberCount, createdAt: r.created_at })))
+})
+
+// Create a team (admin).
+app.post('/api/workspaces/:id/teams', (req, res) => {
+  const user = requireAuth(req, res)
+  if (!user) return
+  if (memberRole(req.params.id, user.id) !== 'admin') return res.status(403).json({ error: 'Admin only' })
+  const name = (req.body?.name || '').trim()
+  if (!name) return res.status(400).json({ error: 'Team name is required.' })
+  const id = randomUUID()
+  const now = Date.now()
+  meta.prepare('INSERT INTO teams (id, workspace_id, name, created_at) VALUES (?, ?, ?, ?)').run(id, req.params.id, name, now)
+  res.json({ id, name, memberCount: 0, createdAt: now })
+})
+
+// Rename a team (admin).
+app.put('/api/workspaces/:id/teams/:teamId', (req, res) => {
+  const user = requireAuth(req, res)
+  if (!user) return
+  if (memberRole(req.params.id, user.id) !== 'admin') return res.status(403).json({ error: 'Admin only' })
+  const team = meta.prepare('SELECT id FROM teams WHERE id = ? AND workspace_id = ?').get(req.params.teamId, req.params.id)
+  if (!team) return res.status(404).json({ error: 'Team not found' })
+  const name = (req.body?.name || '').trim()
+  if (!name) return res.status(400).json({ error: 'Team name is required.' })
+  meta.prepare('UPDATE teams SET name = ? WHERE id = ?').run(name, req.params.teamId)
+  res.json({ ok: true })
+})
+
+// Delete a team (admin) — cascades its members and any connection assignments.
+app.delete('/api/workspaces/:id/teams/:teamId', (req, res) => {
+  const user = requireAuth(req, res)
+  if (!user) return
+  if (memberRole(req.params.id, user.id) !== 'admin') return res.status(403).json({ error: 'Admin only' })
+  const team = meta.prepare('SELECT id FROM teams WHERE id = ? AND workspace_id = ?').get(req.params.teamId, req.params.id)
+  if (!team) return res.status(404).json({ error: 'Team not found' })
+  meta.prepare('DELETE FROM team_members WHERE team_id = ?').run(req.params.teamId)
+  meta.prepare("DELETE FROM connection_access WHERE principal_type = 'team' AND principal_id = ?").run(req.params.teamId)
+  meta.prepare('DELETE FROM teams WHERE id = ?').run(req.params.teamId)
+  res.json({ ok: true })
+})
+
+// List a team's members (any workspace member can view).
+app.get('/api/workspaces/:id/teams/:teamId/members', (req, res) => {
+  const user = requireAuth(req, res)
+  if (!user) return
+  if (!memberRole(req.params.id, user.id)) return res.status(403).json({ error: 'Forbidden' })
+  const team = meta.prepare('SELECT id FROM teams WHERE id = ? AND workspace_id = ?').get(req.params.teamId, req.params.id)
+  if (!team) return res.status(404).json({ error: 'Team not found' })
+  const rows = meta
+    .prepare(
+      `SELECT u.id AS userId, u.username AS email, u.name
+       FROM team_members tm JOIN users u ON u.id = tm.user_id
+       WHERE tm.team_id = ? ORDER BY tm.created_at`
+    )
+    .all(req.params.teamId)
+  res.json(rows)
+})
+
+// Add a member to a team (admin). The user must belong to the workspace.
+app.post('/api/workspaces/:id/teams/:teamId/members', (req, res) => {
+  const user = requireAuth(req, res)
+  if (!user) return
+  if (memberRole(req.params.id, user.id) !== 'admin') return res.status(403).json({ error: 'Admin only' })
+  const team = meta.prepare('SELECT id FROM teams WHERE id = ? AND workspace_id = ?').get(req.params.teamId, req.params.id)
+  if (!team) return res.status(404).json({ error: 'Team not found' })
+  const userId = req.body?.userId
+  if (!userId) return res.status(400).json({ error: 'userId is required.' })
+  if (!memberRole(req.params.id, userId)) return res.status(400).json({ error: 'That person is not a workspace member.' })
+  meta
+    .prepare('INSERT OR IGNORE INTO team_members (id, team_id, user_id, created_at) VALUES (?, ?, ?, ?)')
+    .run(randomUUID(), req.params.teamId, userId, Date.now())
+  res.json({ ok: true })
+})
+
+// Remove a member from a team (admin).
+app.delete('/api/workspaces/:id/teams/:teamId/members/:userId', (req, res) => {
+  const user = requireAuth(req, res)
+  if (!user) return
+  if (memberRole(req.params.id, user.id) !== 'admin') return res.status(403).json({ error: 'Admin only' })
+  const team = meta.prepare('SELECT id FROM teams WHERE id = ? AND workspace_id = ?').get(req.params.teamId, req.params.id)
+  if (!team) return res.status(404).json({ error: 'Team not found' })
+  meta.prepare('DELETE FROM team_members WHERE team_id = ? AND user_id = ?').run(req.params.teamId, req.params.userId)
   res.json({ ok: true })
 })
 
@@ -1721,7 +1954,7 @@ app.get('/api/connections', (req, res) => {
   const workspaceId = req.query.workspace
   if (!workspaceId) return res.json([])
   if (!memberRole(workspaceId, user.id)) return res.status(403).json({ error: 'Forbidden' })
-  res.json(listConnections().filter((c) => c.workspaceId === workspaceId))
+  res.json(listConnections().filter((c) => c.workspaceId === workspaceId && userCanAccessConnection(c, user.id)))
 })
 
 // Test connection
@@ -1752,9 +1985,10 @@ app.post('/api/connections', (req, res) => {
   if (!user) return
   const workspaceId = req.body.workspaceId
   if (!workspaceId || !memberRole(workspaceId, user.id)) return res.status(403).json({ error: 'Forbidden' })
-  const conn = { ...req.body, id: randomUUID(), workspaceId }
+  // Default the owner to the creating user (unless one was explicitly provided).
+  const conn = { ...req.body, id: randomUUID(), workspaceId, ownerId: req.body.ownerId || user.id }
   saveConnection(conn)
-  res.json(conn)
+  res.json(getConnection(conn.id))
 })
 
 // ---- Storage destinations (S3-compatible, workspace-scoped) ----
@@ -1868,7 +2102,7 @@ app.use('/api/connections/:id', (req, res, next) => {
   if (!user) return
   const conn = getConnection(req.params.id)
   if (!conn) return res.status(404).json({ error: 'Connection not found' })
-  if (conn.workspaceId && !memberRole(conn.workspaceId, user.id)) return res.status(403).json({ error: 'Forbidden' })
+  if (conn.workspaceId && !userCanAccessConnection(conn, user.id)) return res.status(403).json({ error: 'Forbidden' })
   next()
 })
 
@@ -1905,7 +2139,26 @@ app.delete('/api/connections/:id', (req, res) => {
   meta.prepare('DELETE FROM workflows WHERE connection_id = ?').run(req.params.id)
   meta.prepare('DELETE FROM workflow_runs WHERE connection_id = ?').run(req.params.id)
   meta.prepare('DELETE FROM query_history WHERE connection_id = ?').run(req.params.id)
+  meta.prepare('DELETE FROM connection_access WHERE connection_id = ?').run(req.params.id)
   res.json({ ok: true })
+})
+
+// ---- Connection access (which teams/members may see this connection) ----
+// Any user who passes the access guard can read the assignment; only a
+// workspace admin can change it.
+app.get('/api/connections/:id/access', (req, res) => {
+  res.json(connectionAccess(req.params.id))
+})
+
+app.put('/api/connections/:id/access', (req, res) => {
+  const user = authUser(req)
+  const conn = getConnection(req.params.id)
+  if (!conn) return res.status(404).json({ error: 'Connection not found' })
+  if (conn.workspaceId && memberRole(conn.workspaceId, user.id) !== 'admin') return res.status(403).json({ error: 'Admin only' })
+  const teams = Array.isArray(req.body?.teams) ? req.body.teams : []
+  const users = Array.isArray(req.body?.users) ? req.body.users : []
+  setConnectionAccess(req.params.id, { teams, users })
+  res.json(connectionAccess(req.params.id))
 })
 
 // ---- Saved queries (per connection) ----
@@ -2405,24 +2658,8 @@ app.post('/api/connections/:id/backup/restore', async (req, res) => {
       fs.renameSync(swap, targetConn.filepath) // atomic replace of the live file
     } else if (targetConn.type === 'postgresql') {
       closePostgresPools(targetConn.id)
-      await execFileAsync(
-        'pg_restore',
-        [
-          '--clean',
-          '--if-exists',
-          '--no-owner',
-          '-h',
-          targetConn.host,
-          '-p',
-          String(targetConn.port || 5432),
-          '-U',
-          targetConn.username,
-          '-d',
-          targetConn.database,
-          dumpPath,
-        ],
-        { env: { ...process.env, PGPASSWORD: targetConn.password || '' } }
-      )
+      const { args, env } = pgToolConn(targetConn)
+      await execFileAsync('pg_restore', ['--clean', '--if-exists', '--no-owner', ...args, dumpPath], { env })
     } else {
       return res.status(400).json({ error: `Restore not supported for connection type: ${targetConn.type}` })
     }
@@ -2531,8 +2768,8 @@ app.post('/api/connections/:id/schema/migrations', (req, res) => {
   meta
     .prepare(
       `INSERT INTO schema_migrations
-       (id, connection_id, version, forward_sql, rollback_sql, reversible, executor_id, executor_name, ts)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       (id, connection_id, version, forward_sql, rollback_sql, reversible, status, executor_id, executor_name, ts)
+       VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`
     )
     .run(
       entry.id,
@@ -2545,15 +2782,17 @@ app.post('/api/connections/:id/schema/migrations', (req, res) => {
       entry.executorName,
       entry.ts
     )
-  res.json({ version, migration: entry })
+  res.json({ version, migration: { ...entry, status: 'active' } })
 })
 
-// List a connection's schema migration history, newest first.
+// List a connection's schema migration history, newest first. `ORDER BY ts`
+// (not version) so rolled-back rows that share a reused version number keep
+// their real chronological order.
 app.get('/api/connections/:id/schema/migrations', (req, res) => {
   const rows = meta
     .prepare(
-      `SELECT id, version, forward_sql, rollback_sql, reversible, executor_id, executor_name, ts
-       FROM schema_migrations WHERE connection_id = ? ORDER BY version DESC`
+      `SELECT id, version, forward_sql, rollback_sql, reversible, status, executor_id, executor_name, ts
+       FROM schema_migrations WHERE connection_id = ? ORDER BY ts DESC`
     )
     .all(req.params.id)
   res.json(
@@ -2563,11 +2802,66 @@ app.get('/api/connections/:id/schema/migrations', (req, res) => {
       forwardSql: safeJson(r.forward_sql) || [],
       rollbackSql: safeJson(r.rollback_sql) || [],
       reversible: !!r.reversible,
+      status: r.status || 'active',
       executorId: r.executor_id || null,
       executorName: r.executor_name || r.executor_id || null,
       ts: r.ts,
     }))
   )
+})
+
+// Roll the schema back to a target version. Runs the down (rollback) SQL for
+// every still-active migration newer than `toVersion` — newest first — then
+// marks those migrations 'rollbacked' and resets the connection's schema
+// version to `toVersion`. The target version itself stays active. A later
+// commit reuses the next number (e.g. rolling 3→1 then committing yields a new
+// v2), so version numbers are not globally unique — status distinguishes them.
+app.post('/api/connections/:id/schema/rollback', async (req, res) => {
+  const user = requireAuth(req, res)
+  if (!user) return
+  const conn = getConnection(req.params.id)
+  if (!conn) return res.status(404).json({ error: 'Connection not found' })
+
+  const toVersion = Number(req.body?.toVersion)
+  if (!Number.isInteger(toVersion) || toVersion < 0) {
+    return res.status(400).json({ error: 'A valid target version is required' })
+  }
+  const { database, schema } = req.body || {}
+
+  // Still-active migrations newer than the target, newest first — these get undone.
+  const rows = meta
+    .prepare(
+      `SELECT id, version, forward_sql, rollback_sql, reversible
+       FROM schema_migrations
+       WHERE connection_id = ? AND version > ? AND COALESCE(status, 'active') = 'active'
+       ORDER BY version DESC`
+    )
+    .all(req.params.id, toVersion)
+
+  if (!rows.length) return res.status(400).json({ error: 'Nothing to roll back for that version' })
+  const irreversible = rows.find((r) => !r.reversible)
+  if (irreversible) {
+    return res.status(400).json({ error: `v${irreversible.version} is not reversible — can't roll back past it` })
+  }
+
+  // Undo each migration's statements in reverse order (last applied, first undone).
+  try {
+    for (const r of rows) {
+      const downs = (safeJson(r.rollback_sql) || []).filter(Boolean).reverse()
+      for (const sql of downs) {
+        await execSqlOnConnection(conn, sql, database, schema)
+      }
+    }
+  } catch (error) {
+    return res.status(500).json({ error: `Rollback failed: ${error.message}` })
+  }
+
+  const markRolledBack = meta.prepare(`UPDATE schema_migrations SET status = 'rollbacked' WHERE id = ?`)
+  const tx = meta.transaction((list) => list.forEach((r) => markRolledBack.run(r.id)))
+  tx(rows)
+  meta.prepare('UPDATE connections SET schema_version = ?, updated_at = ? WHERE id = ?').run(toVersion, Date.now(), req.params.id)
+
+  res.json({ version: toVersion, rolledBack: rows.map((r) => r.version) })
 })
 
 // Get tables for a connection
@@ -2871,14 +3165,7 @@ app.post('/api/connections/:id/query', async (req, res) => {
   }
 
   try {
-    let result
-    if (conn.type === 'sqlite') {
-      const db = getSqliteDb(conn.filepath)
-      result = runSqliteQuery(db, sql)
-    } else if (conn.type === 'postgresql') {
-      const pool = getPostgresPool(conn, database)
-      result = await runPostgresQuery(pool, sql, schema)
-    }
+    const result = await execSqlOnConnection(conn, sql, database, schema)
     res.json(result)
   } catch (error) {
     res.status(500).json({ error: error.message })

@@ -4,6 +4,7 @@ import { StorageList, type StorageListHandle } from '@/features/backup'
 import Button from '@/shared/ui/buttons/Button'
 import { PlusIcon } from '@/shared/ui/icons'
 import { PageHeader } from './ui'
+import LoadingState from '@/shared/ui/feedback/LoadingState'
 
 // S3 Storage — workspace-scoped storage destinations connections back up to.
 export default function StoragePage() {
@@ -23,7 +24,7 @@ export default function StoragePage() {
       />
 
       <div className="mt-6">
-        {current ? <StorageList ref={listRef} workspaceId={current.id} /> : <div className="text-xs text-ink-faint">Loading…</div>}
+        {current ? <StorageList ref={listRef} workspaceId={current.id} /> : <LoadingState className="" />}
       </div>
     </div>
   )

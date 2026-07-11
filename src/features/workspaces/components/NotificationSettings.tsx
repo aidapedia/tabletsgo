@@ -1,9 +1,12 @@
 import { useEffect, useState } from 'react'
 import { useToast } from '@/shared/ui/feedback/Toast'
 import Toggle from '@/shared/ui/form/Toggle'
-import Checkbox from '@/shared/ui/form/Checkbox'
+import CheckboxRow from '@/shared/ui/form/CheckboxRow'
 import Button from '@/shared/ui/buttons/Button'
+import PersonRow from '@/shared/ui/PersonRow'
+import { toggleId } from '@/shared/lib/toggleId'
 import { useWorkspaces, updateWorkspace, listMembers, type Member } from '@/features/workspaces'
+import LoadingState from '@/shared/ui/feedback/LoadingState'
 
 // Backup-failure email notifications for this workspace. Any member sees the
 // current state; only admins can change it.
@@ -25,10 +28,10 @@ export default function NotificationSettings({ workspaceId }: { workspaceId: str
     setMemberIds(cfg?.memberIds || [])
   }, [current])
 
-  if (!current) return <div className="text-xs text-ink-faint">Loading…</div>
+  if (!current) return <LoadingState className="" />
   const isAdmin = current.role === 'admin'
 
-  const toggleMember = (userId: string) => setMemberIds((prev) => (prev.includes(userId) ? prev.filter((x) => x !== userId) : [...prev, userId]))
+  const toggleMember = (userId: string) => setMemberIds((prev) => toggleId(prev, userId))
 
   const save = async () => {
     setSaving(true)
@@ -64,14 +67,9 @@ export default function NotificationSettings({ workspaceId }: { workspaceId: str
           ) : (
             <div className="flex flex-col gap-2">
               {members.map((m) => (
-                <label key={m.userId} className="flex cursor-pointer items-center gap-2.5 rounded-soft border border-edge bg-elevated/40 px-3 py-2">
-                  <Checkbox checked={memberIds.includes(m.userId)} onChange={() => toggleMember(m.userId)} disabled={!isAdmin} ariaLabel={m.email} />
-                  <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-green/15 text-[10px] font-bold text-green-bright">
-                    {(m.name || m.email)[0]?.toUpperCase()}
-                  </span>
-                  <span className="min-w-0 flex-1 truncate text-[12px]">{m.name || m.email}</span>
-                  <span className="shrink-0 text-[10px] text-ink-faint">{m.email}</span>
-                </label>
+                <CheckboxRow key={m.userId} checked={memberIds.includes(m.userId)} onChange={() => toggleMember(m.userId)} disabled={!isAdmin} ariaLabel={m.email}>
+                  <PersonRow name={m.name} email={m.email} />
+                </CheckboxRow>
               ))}
             </div>
           )}

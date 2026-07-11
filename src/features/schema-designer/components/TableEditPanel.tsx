@@ -7,12 +7,9 @@ import Select from '@/shared/ui/form/Select'
 import Tooltip from '@/shared/ui/overlay/Tooltip'
 import { useSlideOver } from '@/shared/hooks/useSlideOver'
 import { ChevronRight, PlusIcon, TrashIcon } from '@/shared/ui/icons'
-import { controlClass } from '@/shared/ui/form/Input'
+import { controlClass, Input } from '@/shared/ui/form/Input'
 import { Label } from '@/shared/ui/form/Form'
-import { ColumnField, FK_ACTIONS, colDef, newColumn } from '@/features/schema-designer/components/columnFields'
-
-// Treat the SQL default (NO ACTION) as "unspecified" so it round-trips cleanly.
-const normAction = (a) => (a && a !== 'NO ACTION' ? a : '')
+import { ColumnField, FK_ACTIONS, colDef, newColumn, normFkAction as normAction } from '@/features/schema-designer/components/columnFields'
 
 export default function TableEditPanel({ table, dialect, types, tableNames = [], schema = {}, foreignKeys = [], onStage, onClose }) {
   const isPg = dialect === 'postgresql'
@@ -147,8 +144,8 @@ export default function TableEditPanel({ table, dialect, types, tableNames = [],
                 }`}
               >
                 <div className="flex items-center gap-2">
-                  <input
-                    className={`${controlClass} !w-auto min-w-0 flex-1 ${c.drop ? 'line-through opacity-60' : ''}`}
+                  <Input
+                    className="!w-auto min-w-0 flex-1 ${c.drop ? 'line-through opacity-60' : ''}"
                     value={c.name}
                     disabled={c.drop}
                     onChange={(e) => setEx(i, { name: e.target.value })}
@@ -197,8 +194,8 @@ export default function TableEditPanel({ table, dialect, types, tableNames = [],
                         <Checkbox checked={c.notNull} disabled={!isPg} onChange={(v) => setEx(i, { notNull: v })} ariaLabel="Not null" />
                         Not null
                       </div>
-                      <input
-                        className={`${controlClass} !w-auto min-w-0 flex-1`}
+                      <Input
+                        className="!w-auto min-w-0 flex-1"
                         placeholder="default…"
                         value={c.default}
                         disabled={!isPg}

@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { EditIcon, MoreVerticalIcon, PlusIcon, RefreshIcon, SearchIcon, ShieldIcon, TrashIcon, WorkflowIcon } from '@/shared/ui/icons'
-import { controlClass } from '@/shared/ui/form/Input'
+import { Input } from '@/shared/ui/form/Input'
 import IconButton from '@/shared/ui/buttons/IconButton'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
 import RowLabel from '@/shared/ui/RowLabel'
@@ -59,12 +59,11 @@ export default function WorkflowsPanel({ workflows = [], activeId, onOpen, onNew
 
       {searchOpen && (
         <div className="px-3.5 pb-2">
-          <input
+          <Input
             autoFocus
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
             placeholder="Search workflows…"
-            className={controlClass}
           />
         </div>
       )}
@@ -78,9 +77,9 @@ export default function WorkflowsPanel({ workflows = [], activeId, onOpen, onNew
               renaming?.id === w.id ? (
                 <div key={w.id} className="flex items-center gap-2 px-2.5 py-1">
                   <WorkflowIcon className="shrink-0 text-ink-faint" width={14} height={14} />
-                  <input
+                  <Input
                     autoFocus
-                    className={`${controlClass} !py-1`}
+                    className="!py-1"
                     value={renaming.value}
                     onChange={(e) => setRenaming({ id: w.id, value: e.target.value })}
                     onBlur={commitRename}

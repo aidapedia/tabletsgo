@@ -9,6 +9,7 @@ import { CloudIcon, EditIcon, MoreVerticalIcon, PlusIcon, TrashIcon } from '@/sh
 import { listStorages, deleteStorage } from '@/features/backup/lib/api'
 import type { StorageDestination } from '@/features/backup/lib/types'
 import StorageModal from './StorageModal'
+import LoadingState from '@/shared/ui/feedback/LoadingState'
 
 export type StorageListHandle = { openCreate: () => void }
 
@@ -54,7 +55,7 @@ const StorageList = forwardRef<StorageListHandle, { workspaceId: string }>(funct
   return (
     <>
       {loading ? (
-        <div className="py-16 text-center text-xs text-ink-faint">Loading…</div>
+        <LoadingState className="py-16 text-center" />
       ) : storages.length === 0 ? (
         <div className="flex flex-col items-center gap-3 rounded-card border border-dashed border-edge-strong py-16">
           <CloudIcon width={28} height={28} className="text-ink-faint" />

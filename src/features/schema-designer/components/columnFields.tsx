@@ -4,7 +4,7 @@ import Select from '@/shared/ui/form/Select'
 import Tooltip from '@/shared/ui/overlay/Tooltip'
 import TextButton from '@/shared/ui/buttons/TextButton'
 import { TrashIcon } from '@/shared/ui/icons'
-import { controlClass } from '@/shared/ui/form/Input'
+import { controlClass, Input } from '@/shared/ui/form/Input'
 import { getTypes } from '@/shared/api/database'
 
 // Fallback type lists per dialect, used until the backend `/types` list loads.
@@ -69,6 +69,42 @@ export function useColumnTypes(conn) {
 // spelling "character varying").
 const isVarchar = (type) => /^(varchar|character varying)$/i.test((type || '').trim())
 
+// Collapse a SQL type to a comparable base family: strip length/precision
+// parens, fold serial types to their integer equivalent, and lowercase.
+// Used to decide whether two columns are FK-compatible in the diagram's
+// drag-to-connect mode.
+export function normalizeFkType(type) {
+  // Drop length/precision parens, a trailing statement `;`, and any inline
+  // column modifiers (NOT NULL, DEFAULT …) that can ride along when the type
+  // comes from a staged ADD COLUMN statement rather than the live schema.
+  const t = (type || '')
+    .toLowerCase()
+    .replace(/\(.*\)/, '')
+    .replace(/\s+(not\s+null|primary\s+key|default|references)\b.*$/, '')
+    .replace(/;.*$/, '')
+    .trim()
+  const map = {
+    serial: 'integer', bigserial: 'bigint', smallserial: 'smallint',
+    int: 'integer', int4: 'integer', int8: 'bigint', int2: 'smallint',
+    varchar: 'character varying', 'character varying': 'character varying',
+  }
+  return map[t] || t
+}
+
+// Treat the SQL default (NO ACTION) as "unspecified" so a FK's ON DELETE / ON
+// UPDATE round-trips cleanly through an empty-string form field.
+export const normFkAction = (a) => (a && a !== 'NO ACTION' ? a : '')
+
+// Whether a foreign key can be drawn from `srcCol` to `tgtCol`: the target
+// must be a primary key (the only uniqueness the diagram exposes) and the two
+// columns' base types must match, and it can't be to the same column.
+export function fkEligible(srcTable, srcCol, tgtTable, tgtCol) {
+  if (!srcCol || !tgtCol) return false
+  if (srcTable === tgtTable && srcCol.name === tgtCol.name) return false
+  if (!tgtCol.pk) return false
+  return normalizeFkType(srcCol.type) === normalizeFkType(tgtCol.type)
+}
+
 // Resolve the SQL type string, applying the custom length to a variable-length
 // character type while preserving whichever spelling the user picked.
 export const columnTypeSql = (c) =>
@@ -96,8 +132,8 @@ export function ColumnField({ col, types, tableNames = [], schema = {}, allowPk 
   return (
     <div className="rounded-soft border border-edge bg-elevated/40 p-2.5">
       <div className="flex flex-wrap items-center gap-2">
-        <input
-          className={`${controlClass} !w-auto min-w-[120px] flex-1`}
+        <Input
+          className="!w-auto min-w-[120px] flex-1"
           type="text"
           placeholder="column_name"
           value={col.name}
@@ -110,8 +146,8 @@ export function ColumnField({ col, types, tableNames = [], schema = {}, allowPk 
           options={types.map((t) => ({ value: t, label: t }))}
         />
         {isVarchar(col.type) && (
-          <input
-            className={`${controlClass} !w-[72px] shrink-0`}
+          <Input
+            className="!w-[72px] shrink-0"
             type="number"
             min="1"
             placeholder="255"
@@ -153,8 +189,8 @@ export function ColumnField({ col, types, tableNames = [], schema = {}, allowPk 
 
       <div className="mt-2 flex items-center gap-2 px-0.5">
         <span className="shrink-0 text-[11px] text-ink-faint">Default</span>
-        <input
-          className={`${controlClass} !w-auto min-w-0 flex-1`}
+        <Input
+          className="!w-auto min-w-0 flex-1"
           type="text"
           placeholder="e.g. 0, 'active', now()"
           value={col.default}

@@ -6,6 +6,7 @@ import Select from '@/shared/ui/form/Select'
 import { useToast } from '@/shared/ui/feedback/Toast'
 import { useAuth } from '@/features/auth'
 import { getWorkspace, updateWorkspace, testSmtp } from '@/features/workspaces/api'
+import LoadingState from '@/shared/ui/feedback/LoadingState'
 
 type EnvDefaults = { host: string; port: string; secure: boolean; user: string; from: string }
 
@@ -104,7 +105,7 @@ export default function SmtpSettings({ workspaceId }: { workspaceId: string }) {
     }
   }
 
-  if (loading) return <div className="text-xs text-ink-faint">Loading…</div>
+  if (loading) return <LoadingState className="" />
 
   return (
     <div>
