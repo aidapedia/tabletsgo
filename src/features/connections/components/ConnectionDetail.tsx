@@ -160,7 +160,12 @@ export default function ConnectionDetail({ conn, onBack, onOpen, onEdit }) {
         ) : tab === 'access' ? (
           <ConnectionAccessPanel conn={conn} />
         ) : (
-          <BackupPanel connectionId={conn.id} connectionType={conn.type} workspaceId={conn.workspaceId} />
+          <BackupPanel
+            connectionId={conn.id}
+            connectionType={conn.type}
+            workspaceId={conn.workspaceId}
+            onConfigure={() => onEdit(conn, 'backup')}
+          />
         )}
       </div>
     </div>

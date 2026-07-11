@@ -76,7 +76,7 @@ function parseUri(uri) {
 // Full-page create/edit connection form (General / SSH·SSL / Backup tabs —
 // Backup only once the connection exists). Replaces the old slide-over modal;
 // rendered inline by ConnectionsPage the same way ConnectionDetail is.
-export default function ConnectionForm({ initial, initialType, onClose, onSave }) {
+export default function ConnectionForm({ initial, initialType, initialTab, onClose, onSave }) {
   const { testConnection } = useConnections()
   const toast = useToast()
   const isEdit = !!initial
@@ -85,7 +85,7 @@ export default function ConnectionForm({ initial, initialType, onClose, onSave }
     if (initial) return { ...(initial.type === 'sqlite' ? blankSqlite : blankPostgres), ...initial }
     return initialType === 'postgresql' ? blankPostgres : blankSqlite
   })
-  const [tab, setTab] = useState('general') // general | ssh | backup
+  const [tab, setTab] = useState(initialTab || 'general') // general | ssh | backup
   const [showPassword, setShowPassword] = useState(false)
   const [tagDraft, setTagDraft] = useState('')
   const [addingTag, setAddingTag] = useState(false)

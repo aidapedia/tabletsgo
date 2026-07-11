@@ -124,6 +124,7 @@ export default function ConnectionsPage() {
       <ConnectionForm
         initial={formConn.mode === 'edit' ? formConn.conn : null}
         initialType={formConn.type}
+        initialTab={formConn.tab}
         onClose={() => setFormConn(null)}
         onSave={handleSave}
       />
@@ -136,7 +137,7 @@ export default function ConnectionsPage() {
         conn={detailConn}
         onBack={() => setDetailConn(null)}
         onOpen={openConsole}
-        onEdit={(c) => setFormConn({ mode: 'edit', conn: c })}
+        onEdit={(c, tab) => setFormConn({ mode: 'edit', conn: c, tab })}
       />
     )
   }

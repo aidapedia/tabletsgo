@@ -12,7 +12,7 @@ import LoadingState from '@/shared/ui/feedback/LoadingState'
 // configuration (create/edit the schedule) happens on the connection's Edit
 // page → Backup tab (see BackupConfigForm) — this panel just shows what's
 // running and lets you run it now or pause it.
-export default function BackupPanel({ connectionId, connectionType, workspaceId }: { connectionId: string; connectionType: string; workspaceId: string }) {
+export default function BackupPanel({ connectionId, connectionType, workspaceId, onConfigure }: { connectionId: string; connectionType: string; workspaceId: string; onConfigure?: () => void }) {
   const toast = useToast()
   const [loading, setLoading] = useState(true)
   const [schedule, setSchedule] = useState<BackupSchedule | null>(null)
@@ -72,8 +72,18 @@ export default function BackupPanel({ connectionId, connectionType, workspaceId 
 
   if (!schedule) {
     return (
-      <div className="rounded-card border border-dashed border-edge-strong py-16 text-center text-[13px] text-ink-dim">
-        No backup schedule yet — set one up under <span className="text-ink">Edit Connection → Backup</span>.
+      <div className="flex flex-col items-center gap-4 rounded-card border border-dashed border-edge-strong py-16 text-center">
+        <span className="flex h-11 w-11 items-center justify-center rounded-[12px] bg-elevated text-amber">
+          <ClockIcon width={18} height={18} />
+        </span>
+        <div className="text-[13px] text-ink-dim">
+          No backup schedule yet — configure one to run automatic backups.
+        </div>
+        {onConfigure && (
+          <Button variant="primary" size="sm" onClick={onConfigure}>
+            Configure backup
+          </Button>
+        )}
       </div>
     )
   }
