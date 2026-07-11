@@ -5,6 +5,7 @@ import type { ReactNode } from 'react'
 const TONES = {
   green: 'bg-green/15 text-green-bright',
   amber: 'bg-amber/15 text-amber',
+  red: 'bg-red/15 text-red',
   neutral: 'bg-edge text-ink-dim',
   faint: 'bg-ink-faint/20 text-ink-faint',
 }

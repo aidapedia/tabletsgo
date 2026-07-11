@@ -1,7 +1,7 @@
 {
   "name": "tabletsgo",
   "private": true,
-  "version": "0.11.3",
+  "version": "0.13.0",
   "type": "module",
   "scripts": {
     "dev": "vite",

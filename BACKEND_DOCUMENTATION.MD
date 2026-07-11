@@ -102,6 +102,18 @@ reassembles this same shape on every read, so API consumers see no difference:
 { "id": "uuid", "name": "Reports", "ts": 1719600000000 }
 ```
 
+### Domain
+```jsonc
+{
+  "id": "uuid",
+  "name": "Orders",
+  "color": "#6366f1",           // hex color or null
+  "ts": 1719600000000,          // epoch ms
+  "tables": ["orders", "order_details"]  // tables grouped under this domain
+}
+```
+A table belongs to **at most one** domain (a domain is a grouping "by domain").
+
 ### Query history entry
 ```jsonc
 {
@@ -196,6 +208,21 @@ CREATE TABLE saved_folders (
   connection_id TEXT NOT NULL,
   name TEXT NOT NULL,
   ts INTEGER
+);
+CREATE TABLE domains (
+  id TEXT PRIMARY KEY,
+  connection_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  color TEXT,                   -- hex color string, e.g. "#6366f1"
+  ts INTEGER
+);
+CREATE TABLE table_domains (    -- one domain per table
+  id TEXT PRIMARY KEY,
+  connection_id TEXT NOT NULL,
+  table_name TEXT NOT NULL,
+  domain_id TEXT NOT NULL,
+  ts INTEGER,
+  UNIQUE(connection_id, table_name)
 );
 CREATE TABLE query_history (
   id TEXT PRIMARY KEY,
@@ -447,8 +474,8 @@ pools/handles so the next query reconnects with new settings.
 - **Example:** `PUT http://localhost:3000/api/connections/demo-sqlite`
 
 ### DELETE `/api/connections/:id`
-Delete a connection and cascade-delete its saved queries and folders. Also
-closes any open pool/handle.
+Delete a connection and cascade-delete its saved queries, folders and domains.
+Also closes any open pool/handle.
 
 - **200:** `{ "ok": true }`
 - **404:** `{ "error": "Connection not found" }`
@@ -544,6 +571,52 @@ not deleted.
 
 - **200:** `{ "ok": true }`
 - **Example:** `DELETE http://localhost:3000/api/connections/demo-sqlite/folders/fld-1`
+
+---
+
+## Domains (per connection)
+
+A domain is a named, colored entity that groups a connection's tables — each
+table belongs to **at most one** domain ("group tables by domain"). Table names
+are plain strings, so the contract is database-agnostic across every dialect.
+
+### GET `/api/connections/:id/domains`
+List domains (oldest first). Each domain embeds the table names it groups.
+
+- **200:** `Domain[]` → `[{ "id", "name", "color", "ts", "tables": ["orders", "order_details"] }]`
+- **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/domains`
+
+### POST `/api/connections/:id/domains`
+Create a domain.
+
+- **Body:** `{ "name": "Orders", "color": "#6366f1" }` (`color` optional)
+- **200:** `{ "id", "name", "color", "ts", "tables": [] }`
+- **400:** `{ "error": "A domain name is required" }`
+- **Example:** `POST http://localhost:3000/api/connections/demo-sqlite/domains`
+
+### PUT `/api/connections/:id/domains/:domainId`
+Update a domain. Any subset of `name`, `color`.
+
+- **Body examples:** `{ "name": "Renamed" }` · `{ "color": "#ef4444" }`
+- **200:** the updated `Domain` (with `tables`)
+- **400:** `{ "error": "Nothing to update" }` (or name validation)
+- **404:** `{ "error": "Not found" }`
+- **Example:** `PUT http://localhost:3000/api/connections/demo-sqlite/domains/dom-1`
+
+### DELETE `/api/connections/:id/domains/:domainId`
+Delete a domain and detach all of its tables.
+
+- **200:** `{ "ok": true }`
+- **Example:** `DELETE http://localhost:3000/api/connections/demo-sqlite/domains/dom-1`
+
+### PUT `/api/connections/:id/tables/:table/domain`
+Set (or clear) which domain a table belongs to. Reassigning replaces the
+table's previous domain (upsert); `domainId: null` removes it from any domain.
+
+- **Body:** `{ "domainId": "dom-1" }` (or `{ "domainId": null }` to clear)
+- **200:** `{ "ok": true }`
+- **404:** `{ "error": "Domain not found" }`
+- **Example:** `PUT http://localhost:3000/api/connections/demo-sqlite/tables/orders/domain`
 
 ---
 
@@ -1050,6 +1123,11 @@ Liveness probe.
 | POST   | `/api/connections/:id/saved`              | Create saved query              |
 | PUT    | `/api/connections/:id/saved/:sid`         | Update saved query / move       |
 | DELETE | `/api/connections/:id/saved/:sid`         | Delete saved query              |
+| GET    | `/api/connections/:id/domains`            | List domains (with tables)      |
+| POST   | `/api/connections/:id/domains`            | Create a domain                 |
+| PUT    | `/api/connections/:id/domains/:domainId`  | Update a domain (name/color)    |
+| DELETE | `/api/connections/:id/domains/:domainId`  | Delete a domain + detach tables |
+| PUT    | `/api/connections/:id/tables/:table/domain` | Set/clear a table's domain    |
 | GET    | `/api/connections/:id/folders`            | List folders                    |
 | POST   | `/api/connections/:id/folders`            | Create folder                   |
 | PUT    | `/api/connections/:id/folders/:fid`       | Rename folder                   |

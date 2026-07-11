@@ -75,9 +75,11 @@ import {
   RefreshIcon,
   SearchIcon,
   TableIcon,
+  TagIcon,
   TrashIcon,
   WorkflowIcon,
 } from '@/shared/ui/icons'
+import { DomainPickerModal, DomainDot, fetchDomains, updateDomain, deleteDomain } from '@/features/domains'
 
 const kbd =
   'inline-flex min-w-[20px] items-center justify-center rounded-[5px] border border-edge bg-elevated px-1.5 py-0.5 text-[11px] text-ink-dim'
@@ -139,6 +141,9 @@ export default function Workspace() {
   const [panel, setPanel] = useState('browser') // 'browser' | 'queries' | 'workflows'
   const [searchOpen, setSearchOpen] = useState(false) // table search toggle
   const [tableSort, setTableSort] = useState('az') // 'az' | 'za'
+  const [tableView, setTableView] = useState('flat') // 'flat' | 'domains' — Tables list grouping
+  const [domains, setDomains] = useState([]) // per-connection domains (with grouped table names)
+  const [domainTable, setDomainTable] = useState(null) // table whose domain picker is open | null
   const searchRef = useRef(null)
   const autoOpenedFor = useRef(null) // connection id we've already auto-opened a tab for
 
@@ -266,6 +271,7 @@ export default function Workspace() {
     fetchSaved(id).then((list) => alive && setSaved(list))
     fetchFolders(id).then((list) => alive && setFolders(list))
     listWorkflows(id).then((list) => alive && setWorkflows(list))
+    fetchDomains(id).then((list) => alive && setDomains(list))
     return () => {
       alive = false
     }
@@ -443,6 +449,14 @@ export default function Workspace() {
         toast.error(`Couldn't record schema migration: ${e.message}`)
       }
     }
+
+    // A schema version (opened draft) whose staged changes all committed
+    // successfully is now deployed — delete it from the Schema Versions list.
+    const remainingDraftIds = new Set(remaining.map((c) => c.draftId).filter(Boolean))
+    const deployedDraftIds = [...new Set(succeeded.map((c) => c.draftId).filter(Boolean))].filter(
+      (did) => !remainingDraftIds.has(did) && saved.some((s) => s.id === did)
+    )
+    for (const did of deployedDraftIds) removeSaved(did)
 
     if (failure) {
       toast.error(`Committed ${succeeded.length}, then failed: ${failure}`)
@@ -693,11 +707,18 @@ export default function Workspace() {
   // (drop table from the canvas) needs a live column snapshot to build its
   // rollback when one isn't already provided, so this staging step is async.
   const stageSchemaItems = async (items) => {
+    // If these items came from an opened schema version (a saved draft, tab key
+    // `schema:<id>`), tag them so a fully successful commit can delete that
+    // version — once committed it's deployed and no longer a pending version.
+    const draftId =
+      activeTab?.startsWith('schema:') && saved.some((s) => s.id === activeTab.slice(7) && s.kind === 'schema')
+        ? activeTab.slice(7)
+        : undefined
     for (const i of items) {
       const { rollbackSql, reversible } =
         i.rollbackSql !== undefined ? { rollbackSql: i.rollbackSql, reversible: i.rollbackSql != null } : await rollbackFor(i.sql, i.table, i.mode)
       const { kind, label } = schemaItemMeta(i.mode, i.table)
-      addChange({ kind, label, sql: i.sql, table: i.table, ddl: true, reversible, rollbackSql })
+      addChange({ kind, label, sql: i.sql, table: i.table, ddl: true, reversible, rollbackSql, draftId })
     }
   }
 
@@ -813,6 +834,141 @@ export default function Workspace() {
 
   const current = tabs.find((t) => t.key === activeTab)
 
+  // tableName -> its single domain (drives the inline dot + the grouped view).
+  const domainByTable = useMemo(() => {
+    const map = {}
+    for (const d of domains) for (const tn of d.tables || []) map[tn] = d
+    return map
+  }, [domains])
+
+  // Grouped-by-domain buckets for the Tables section (only built in 'domains'
+  // view). Tables with no domain fall into a trailing "Ungrouped" bucket.
+  const tableObjects = visibleObjects.filter((o) => o.type === 'table')
+  const domainBuckets = domains
+    .map((d) => ({ key: d.id, domain: d, items: tableObjects.filter((o) => d.tables?.includes(o.name)) }))
+    .filter((b) => b.items.length > 0)
+  const ungroupedTables = tableObjects.filter((o) => !domainByTable[o.name])
+
+  // Edit/delete a domain from the schema diagram (optimistic local update).
+  const updateDomainById = async (domainId, fields) => {
+    setDomains((prev) => prev.map((d) => (d.id === domainId ? { ...d, ...fields } : d)))
+    try {
+      await updateDomain(id, domainId, fields)
+    } catch (e) {
+      toast.error(`Couldn't update domain: ${e.message}`)
+    }
+  }
+  const removeDomain = async (domainId) => {
+    setDomains((prev) => prev.filter((d) => d.id !== domainId))
+    try {
+      await deleteDomain(id, domainId)
+    } catch (e) {
+      toast.error(`Delete failed: ${e.message}`)
+    }
+  }
+
+  // One table/view/function sidebar row (used flat and inside tag buckets).
+  const renderObject = (obj) => {
+    const active =
+      obj.type === 'function'
+        ? current?.kind === 'function' && current.name === obj.name
+        : current?.kind === 'table' && current.table === obj.name
+    const Icon = obj.type === 'view' ? EyeIcon : obj.type === 'function' ? CodeIcon : TableIcon
+    const onOpen = obj.type === 'function' ? () => openFunction(obj.name) : () => openTable(obj.name)
+    const rowDomain = obj.type === 'table' ? domainByTable[obj.name] : null
+    return (
+      <div
+        key={`${obj.type}:${obj.name}`}
+        onClick={onOpen}
+        className={`group flex w-full cursor-pointer items-center gap-2 rounded-[7px] px-2.5 py-1.5 text-left text-xs ${
+          active ? 'bg-card-hover text-ink' : 'text-ink-dim hover:bg-elevated hover:text-ink'
+        }`}
+      >
+        <Icon className={`flex-shrink-0 ${active ? 'text-ink' : 'text-ink-faint'}`} />
+        <span
+          className="flex-1 truncate"
+          title={obj.type === 'function' && obj.detail ? `${obj.name}(${obj.detail})` : obj.name}
+        >
+          {obj.name}
+        </span>
+        {rowDomain && (
+          <span className="shrink-0 group-hover:hidden" title={rowDomain.name}>
+            <DomainDot color={rowDomain.color} size={7} />
+          </span>
+        )}
+        <div className="shrink-0" onClick={(e) => e.stopPropagation()}>
+          <Popover
+            align="right"
+            width={210}
+            trigger={({ open, toggle }) => (
+              <IconButton
+                size="sm"
+                active={open}
+                onClick={toggle}
+                aria-label={`${obj.type} actions`}
+                className={open ? 'opacity-100' : '!text-ink-faint opacity-0 group-hover:opacity-100'}
+              >
+                <MoreVerticalIcon width={15} height={15} />
+              </IconButton>
+            )}
+          >
+            {({ close }) => (
+              <div className="p-1">
+                {obj.type === 'function' ? (
+                  <>
+                    <MenuItem onClick={() => { openFunction(obj.name); close() }}>
+                      <CodeIcon width={14} height={14} /> Open definition
+                    </MenuItem>
+                    <MenuItem onClick={() => { openQuery(`SELECT ${obj.name}();`); close() }}>
+                      <CodeIcon width={14} height={14} /> Open in SQL Editor
+                    </MenuItem>
+                  </>
+                ) : obj.type === 'view' ? (
+                  <>
+                    <MenuItem onClick={() => { openTable(obj.name); close() }}>
+                      <TableIcon width={14} height={14} /> Open in new tab
+                    </MenuItem>
+                    <MenuItem onClick={() => { openQuery(`SELECT * FROM "${obj.name}";`); close() }}>
+                      <CodeIcon width={14} height={14} /> Open in SQL Editor
+                    </MenuItem>
+                    <MenuItem onClick={() => { openSchema(obj.name); close() }}>
+                      <ColumnsIcon width={14} height={14} /> View schema
+                    </MenuItem>
+                  </>
+                ) : (
+                  <>
+                    <MenuItem onClick={() => { openTable(obj.name); close() }}>
+                      <TableIcon width={14} height={14} /> Open in new tab
+                    </MenuItem>
+                    <MenuItem onClick={() => { openQuery(`SELECT * FROM "${obj.name}";`); close() }}>
+                      <CodeIcon width={14} height={14} /> Open in SQL Editor
+                    </MenuItem>
+                    <MenuItem onClick={() => { openSchema(obj.name); close() }}>
+                      <ColumnsIcon width={14} height={14} /> View table schema
+                    </MenuItem>
+                    <MenuItem onClick={() => { setCreatingTable({ table: obj.name }); close() }}>
+                      <EditIcon width={14} height={14} /> Edit Table
+                    </MenuItem>
+                    <MenuItem onClick={() => { setDomainTable(obj.name); close() }}>
+                      <TagIcon width={14} height={14} /> Set domain
+                    </MenuItem>
+                    <div className="my-1 h-px bg-edge" />
+                    <MenuItem danger onClick={() => { emptyTable(obj.name); close() }}>
+                      <TrashIcon width={14} height={14} /> Empty Table
+                    </MenuItem>
+                    <MenuItem danger onClick={() => { deleteTable(obj.name); close() }}>
+                      <TrashIcon width={14} height={14} /> Delete Table
+                    </MenuItem>
+                  </>
+                )}
+              </div>
+            )}
+          </Popover>
+        </div>
+      </div>
+    )
+  }
+
   useShortcut('general.search', () => {
     setPanel('browser')
     setTablesVisible(true)
@@ -901,6 +1057,15 @@ export default function Workspace() {
                 <SearchIcon width={15} height={15} />
               </IconButton>
             </Tooltip>
+            <Tooltip label={tableView === 'domains' ? 'Ungroup' : 'Group by domain'} placement="bottom">
+              <IconButton
+                active={tableView === 'domains'}
+                onClick={() => setTableView((v) => (v === 'domains' ? 'flat' : 'domains'))}
+                aria-label="Group tables by domain"
+              >
+                <TagIcon width={15} height={15} />
+              </IconButton>
+            </Tooltip>
             <Tooltip label="Create table" placement="bottom">
               <IconButton onClick={() => setCreatingTable(true)}>
                 <PlusIcon width={14} height={14} />
@@ -962,97 +1127,31 @@ export default function Workspace() {
                 </TextButton>
                 {openGroup === group.type && (
                   <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto pr-0.5">
-                    {group.items.map((obj) => {
-                  const active =
-                    obj.type === 'function'
-                      ? current?.kind === 'function' && current.name === obj.name
-                      : current?.kind === 'table' && current.table === obj.name
-                  const Icon = obj.type === 'view' ? EyeIcon : obj.type === 'function' ? CodeIcon : TableIcon
-                  const onOpen = obj.type === 'function' ? () => openFunction(obj.name) : () => openTable(obj.name)
-                  return (
-                    <div
-                      key={`${obj.type}:${obj.name}`}
-                      onClick={onOpen}
-                      className={`group flex w-full cursor-pointer items-center gap-2 rounded-[7px] px-2.5 py-1.5 text-left text-xs ${
-                        active ? 'bg-card-hover text-ink' : 'text-ink-dim hover:bg-elevated hover:text-ink'
-                      }`}
-                    >
-                      <Icon className={`flex-shrink-0 ${active ? 'text-ink' : 'text-ink-faint'}`} />
-                      <span
-                        className="flex-1 truncate"
-                        title={obj.type === 'function' && obj.detail ? `${obj.name}(${obj.detail})` : obj.name}
-                      >
-                        {obj.name}
-                      </span>
-                      <div className="shrink-0" onClick={(e) => e.stopPropagation()}>
-                        <Popover
-                          align="right"
-                          width={210}
-                          trigger={({ open, toggle }) => (
-                            <IconButton
-                              size="sm"
-                              active={open}
-                              onClick={toggle}
-                              aria-label={`${group.label} actions`}
-                              className={open ? 'opacity-100' : '!text-ink-faint opacity-0 group-hover:opacity-100'}
-                            >
-                              <MoreVerticalIcon width={15} height={15} />
-                            </IconButton>
-                          )}
-                        >
-                          {({ close }) => (
-                            <div className="p-1">
-                              {obj.type === 'function' ? (
-                                <>
-                                  <MenuItem onClick={() => { openFunction(obj.name); close() }}>
-                                    <CodeIcon width={14} height={14} /> Open definition
-                                  </MenuItem>
-                                  <MenuItem onClick={() => { openQuery(`SELECT ${obj.name}();`); close() }}>
-                                    <CodeIcon width={14} height={14} /> Open in SQL Editor
-                                  </MenuItem>
-                                </>
-                              ) : obj.type === 'view' ? (
-                                <>
-                                  <MenuItem onClick={() => { openTable(obj.name); close() }}>
-                                    <TableIcon width={14} height={14} /> Open in new tab
-                                  </MenuItem>
-                                  <MenuItem onClick={() => { openQuery(`SELECT * FROM "${obj.name}";`); close() }}>
-                                    <CodeIcon width={14} height={14} /> Open in SQL Editor
-                                  </MenuItem>
-                                  <MenuItem onClick={() => { openSchema(obj.name); close() }}>
-                                    <ColumnsIcon width={14} height={14} /> View schema
-                                  </MenuItem>
-                                </>
-                              ) : (
-                                <>
-                                  <MenuItem onClick={() => { openTable(obj.name); close() }}>
-                                    <TableIcon width={14} height={14} /> Open in new tab
-                                  </MenuItem>
-                                  <MenuItem onClick={() => { openQuery(`SELECT * FROM "${obj.name}";`); close() }}>
-                                    <CodeIcon width={14} height={14} /> Open in SQL Editor
-                                  </MenuItem>
-                                  <MenuItem onClick={() => { openSchema(obj.name); close() }}>
-                                    <ColumnsIcon width={14} height={14} /> View table schema
-                                  </MenuItem>
-                                  <MenuItem onClick={() => { setCreatingTable({ table: obj.name }); close() }}>
-                                    <EditIcon width={14} height={14} /> Edit Table
-                                  </MenuItem>
-                                  <div className="my-1 h-px bg-edge" />
-                                  <MenuItem danger onClick={() => { emptyTable(obj.name); close() }}>
-                                    <TrashIcon width={14} height={14} /> Empty Table
-                                  </MenuItem>
-                                  <MenuItem danger onClick={() => { deleteTable(obj.name); close() }}>
-                                    <TrashIcon width={14} height={14} /> Delete Table
-                                  </MenuItem>
-                                </>
-                              )}
+                    {group.type === 'table' && tableView === 'domains' ? (
+                      <>
+                        {domainBuckets.map((b) => (
+                          <div key={b.key} className="flex flex-col gap-0.5">
+                            <div className="flex items-center gap-1.5 px-2.5 pb-0.5 pt-1.5 text-[10px] font-semibold uppercase tracking-wide text-ink-faint">
+                              <DomainDot color={b.domain.color} />
+                              <span className="truncate">{b.domain.name}</span>
+                              <span className="opacity-60">{b.items.length}</span>
                             </div>
-                          )}
-                        </Popover>
-                      </div>
-                    </div>
-                  )
-                    })}
+                            {b.items.map(renderObject)}
+                          </div>
+                        ))}
+                        {ungroupedTables.length > 0 && (
+                          <div className="flex flex-col gap-0.5">
+                            <div className="flex items-center gap-1.5 px-2.5 pb-0.5 pt-1.5 text-[10px] font-semibold uppercase tracking-wide text-ink-faint">
+                              <span className="truncate">Ungrouped</span>
+                              <span className="opacity-60">{ungroupedTables.length}</span>
+                            </div>
+                            {ungroupedTables.map(renderObject)}
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      group.items.map(renderObject)
+                    )}
                   </div>
                 )}
               </div>
@@ -1075,11 +1174,15 @@ export default function Workspace() {
         ) : panel === 'schema' ? (
           <SchemaPanel
             drafts={saved.filter((s) => s.kind === 'schema')}
+            migrations={schemaMigrations}
+            dialect={DIALECT[conn?.type]}
             onOpenDraft={openSchemaDraft}
             onNewSchema={openSchemaEditor}
             onRenameDraft={renameSavedQuery}
             onDeleteDraft={removeSaved}
             onRefreshDrafts={() => fetchSaved(id).then(setSaved)}
+            onRefreshMigrations={loadSchemaHistory}
+            onRollback={setRollbackTarget}
           />
         ) : (
           <SavedQueriesPanel
@@ -1222,6 +1325,9 @@ export default function Workspace() {
                 key={`${current.key}:${dataVersion}:${ns.database}:${ns.schema}`}
                 conn={nsConn}
                 changes={changes}
+                domains={domains}
+                onUpdateDomain={updateDomainById}
+                onDeleteDomain={removeDomain}
                 pending={schemaPending[current.key] || []}
                 onPendingChange={(items) => setSchemaPending((p) => ({ ...p, [current.key]: items }))}
                 onStageItems={stageSchemaItems}
@@ -1357,6 +1463,16 @@ export default function Workspace() {
           initialTable={creatingTable?.table}
           onClose={() => setCreatingTable(false)}
           onStage={stageTableChanges}
+        />
+      )}
+
+      {domainTable && (
+        <DomainPickerModal
+          connectionId={id}
+          table={domainTable}
+          domains={domains}
+          onChange={setDomains}
+          onClose={() => setDomainTable(null)}
         />
       )}
 
