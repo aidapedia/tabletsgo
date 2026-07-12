@@ -46,8 +46,15 @@ export default function Popover({ trigger, children, align = 'left', placement =
       if (!r) return
       const gap = 6
       const panelH = panelRef.current?.offsetHeight ?? 0
-      const below = window.innerHeight - r.bottom
-      const flip = placement === 'top' || (below < panelH + gap && r.top > below)
+      const spaceBelow = window.innerHeight - r.bottom
+      const spaceAbove = r.top
+      // Prefer the requested side, but flip when it can't fit and the other
+      // side has more room — so a trigger near either screen edge stays visible.
+      const preferTop = placement === 'top'
+      const fitsPreferred = (preferTop ? spaceAbove : spaceBelow) >= panelH + gap
+      const flip = preferTop
+        ? (fitsPreferred || spaceAbove >= spaceBelow)
+        : !(fitsPreferred || spaceBelow >= spaceAbove)
       setPos({
         left: align === 'right' ? Math.max(8, r.right - width) : Math.min(r.left, window.innerWidth - width - 8),
         top: flip ? undefined : r.bottom + gap,
