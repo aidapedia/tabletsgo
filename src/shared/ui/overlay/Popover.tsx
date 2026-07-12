@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 
 // Shared panel shell — every dropdown/action menu in the app (this Popover's
 // panel, and the mouse-anchored ContextMenu) renders on this same surface.
@@ -8,15 +9,23 @@ export const MENU_PANEL_CLASS =
 /**
  * Anchored popover. `trigger` is a render-prop receiving { open, toggle }.
  * `children` can be a node or a render-prop receiving { close }.
+ *
+ * `portal` renders the panel into <body> with fixed positioning so it can
+ * escape an ancestor's `overflow-hidden`/clipping (e.g. inside a modal). It
+ * flips above the trigger when there isn't room below.
  */
-export default function Popover({ trigger, children, align = 'left', placement = 'bottom', width = 300, panelClassName = '' }) {
+export default function Popover({ trigger, children, align = 'left', placement = 'bottom', width = 300, panelClassName = '', portal = false }) {
   const [open, setOpen] = useState(false)
   const ref = useRef(null)
+  const panelRef = useRef(null)
+  const [pos, setPos] = useState(null)
 
   useEffect(() => {
     if (!open) return
     const onDown = (e) => {
-      if (ref.current && !ref.current.contains(e.target)) setOpen(false)
+      if (ref.current?.contains(e.target)) return
+      if (panelRef.current?.contains(e.target)) return
+      setOpen(false)
     }
     const onKey = (e) => e.key === 'Escape' && setOpen(false)
     // Capture phase so we still hear the click even when a child (e.g. the React
@@ -29,19 +38,59 @@ export default function Popover({ trigger, children, align = 'left', placement =
     }
   }, [open])
 
+  // Measure the trigger and place the fixed panel (portal mode only).
+  useLayoutEffect(() => {
+    if (!open || !portal) return
+    const place = () => {
+      const r = ref.current?.getBoundingClientRect()
+      if (!r) return
+      const gap = 6
+      const panelH = panelRef.current?.offsetHeight ?? 0
+      const below = window.innerHeight - r.bottom
+      const flip = placement === 'top' || (below < panelH + gap && r.top > below)
+      setPos({
+        left: align === 'right' ? Math.max(8, r.right - width) : Math.min(r.left, window.innerWidth - width - 8),
+        top: flip ? undefined : r.bottom + gap,
+        bottom: flip ? window.innerHeight - r.top + gap : undefined,
+      })
+    }
+    place()
+    window.addEventListener('scroll', place, true)
+    window.addEventListener('resize', place)
+    return () => {
+      window.removeEventListener('scroll', place, true)
+      window.removeEventListener('resize', place)
+    }
+  }, [open, portal, align, placement, width])
+
   const close = () => setOpen(false)
+  const content = typeof children === 'function' ? children({ close }) : children
 
   return (
     <div className="relative" ref={ref}>
       {trigger({ open, toggle: () => setOpen((o) => !o) })}
-      {open && (
+
+      {open && portal &&
+        createPortal(
+          <div
+            ref={panelRef}
+            className={`fixed z-[100] ${MENU_PANEL_CLASS} ${panelClassName}`}
+            style={{ width, left: pos?.left, top: pos?.top, bottom: pos?.bottom, visibility: pos ? 'visible' : 'hidden' }}
+          >
+            {content}
+          </div>,
+          document.body
+        )}
+
+      {open && !portal && (
         <div
+          ref={panelRef}
           className={`absolute z-50 ${MENU_PANEL_CLASS} ${
             align === 'right' ? 'right-0' : 'left-0'
           } ${placement === 'top' ? 'bottom-full mb-1.5' : 'top-full mt-1.5'} ${panelClassName}`}
           style={{ width }}
         >
-          {typeof children === 'function' ? children({ close }) : children}
+          {content}
         </div>
       )}
     </div>
