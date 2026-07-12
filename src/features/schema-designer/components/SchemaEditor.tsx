@@ -550,7 +550,7 @@ function pathWithJumps(points, verticals) {
   return d
 }
 
-export default function SchemaEditor({ conn, changes, domains = [], onUpdateDomain, onDeleteDomain, pending = [], onPendingChange, onStageItems, onSaveDraft, onOpenTable, onOpenSchema }) {
+export default function SchemaEditor({ conn, changes, domains = [], onUpdateDomain, onDeleteDomain, pending = [], onPendingChange, onStageItems, onSaveDraft, onUpdateDraft, draftId, onOpenTable, onOpenSchema }) {
   const dialect = conn.type === 'postgresql' ? 'postgresql' : 'sqlite'
   const types = useColumnTypes(conn)
   const toast = useToast()
@@ -1318,6 +1318,11 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
       {/* Toolbar / action list — Save sits on the left; Export on the right.
           Save is always shown but disabled until there are pending changes. */}
       <div className="flex items-center gap-2 border-b border-edge px-3 py-2">
+        {/* Submit — move the pending changes into the Changes queue, ready to
+            execute. Save — persist as a draft: update the linked draft when this
+            tab was opened from one, otherwise create the first draft. Save as
+            draft — only meaningful once linked, forks a *copy* into a new draft
+            (Save / Save As), so it's hidden on a fresh editor. */}
         <Button
           variant="primary"
           size="sm"
@@ -1325,14 +1330,31 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
           onClick={() => { onStageItems?.(pending); clearPending() }}
           disabled={pending.length === 0}
         >
+          Submit
+        </Button>
+
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => (draftId ? onUpdateDraft?.(draftId, pending) : setNaming(true))}
+          disabled={pending.length === 0}
+        >
           Save
         </Button>
 
+        {draftId && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setNaming(true)}
+            disabled={pending.length === 0}
+          >
+            Save as
+          </Button>
+        )}
+
         {pending.length > 0 && (
           <>
-            <Button variant="ghost" size="sm" onClick={() => setNaming(true)}>
-              Save as draft
-            </Button>
             <Button variant="subtle" size="sm" onClick={clearPending}>
               Discard
             </Button>

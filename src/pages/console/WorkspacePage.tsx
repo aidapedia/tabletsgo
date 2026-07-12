@@ -745,6 +745,19 @@ export default function Workspace() {
     }
   }
 
+  // Schema editor "Save" on a tab already linked to an existing draft — persist
+  // its current pending items back to that draft (no new draft created).
+  const updateSchemaDraft = async (draftId, items) => {
+    const sql = items.map((i) => i.sql).join('\n')
+    setSaved((prev) => prev.map((s) => (s.id === draftId ? { ...s, sql } : s)))
+    try {
+      await updateSaved(id, draftId, { sql })
+      toast.success('Draft saved.')
+    } catch (e) {
+      toast.error(`Save failed: ${e.message}`)
+    }
+  }
+
   // Open a saved schema draft in its own tab (focus if already open; keep its edits).
   const openSchemaDraft = (q) => {
     const key = `schema:${q.id}`
@@ -1333,6 +1346,8 @@ export default function Workspace() {
                 onPendingChange={(items) => setSchemaPending((p) => ({ ...p, [current.key]: items }))}
                 onStageItems={stageSchemaItems}
                 onSaveDraft={saveSchemaDraft}
+                onUpdateDraft={updateSchemaDraft}
+                draftId={current.key.startsWith('schema:') ? current.key.slice(7) : undefined}
                 onOpenTable={openTable}
                 onOpenSchema={openSchema}
               />
