@@ -24,7 +24,7 @@ export default function SettingsPage() {
       label: 'Data',
       body: (
         <div>
-          <SubHead title="Data" desc="Control how much data Tabletsgo loads." />
+          <SubHead title="Data" desc="Control how Tabletsgo loads data and runs your changes." />
           <DataSetting />
         </div>
       ),

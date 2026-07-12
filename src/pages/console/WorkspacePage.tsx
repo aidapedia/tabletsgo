@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useAuth } from '@/features/auth'
 import { useConnections } from '@/features/connections'
+import { useSettings } from '@/features/settings'
 import { useToast } from '@/shared/ui/feedback/Toast'
 import Select from '@/shared/ui/form/Select'
 import Button from '@/shared/ui/buttons/Button'
@@ -101,6 +102,7 @@ export default function Workspace() {
   const { user, logout } = useAuth()
   const toast = useToast()
   const { connections, patchLocalConnection } = useConnections()
+  const { queryTimeout, directExecute } = useSettings()
   const conn = connections.find((c) => c.id === id)
   const { bindings } = useKeymap()
 
@@ -399,25 +401,32 @@ export default function Workspace() {
       reversible: false,
       rollbackSql: null,
     })
-    toast.info(`Added empty-table to changes — commit to apply.`)
+    if (!directExecute) toast.info(`Added empty-table to changes — commit to apply.`)
   }
   // Snapshot the table's columns before staging the drop so we can offer a
   // best-effort rollback (a CREATE TABLE that reconstructs it).
   const deleteTable = async (table) => {
     const { rollbackSql, reversible } = await buildDropTableRollback(nsConn, table)
     addChange({ kind: 'delete', label: `Drop table ${table}`, sql: `DROP TABLE "${table}"`, table, ddl: true, reversible, rollbackSql })
-    toast.info(`Added drop-table to changes — commit to apply.`)
+    if (!directExecute) toast.info(`Added drop-table to changes — commit to apply.`)
   }
 
-  const addChange = (c) =>
-    setChanges((prev) => [{ id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, ts: Date.now(), ...c }, ...prev])
+  const newChange = (c) => ({ id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, ts: Date.now(), ...c })
 
-  // Execute every staged change in order (oldest first). Stop at the first
-  // failure, keeping it (and the rest) in the list so they can be retried.
-  const commitChanges = async () => {
-    if (!changes.length || committing) return
-    setCommitting(true)
-    const ordered = [...changes].reverse()
+  // With Direct execute on, mutations skip the Changes panel and run right away;
+  // otherwise they're staged for a later commit.
+  const addChange = (c) => {
+    if (directExecute) {
+      executeDirect(newChange(c))
+      return
+    }
+    setChanges((prev) => [newChange(c), ...prev])
+  }
+
+  // Run a batch of changes (oldest first) against the DB. Stops at the first
+  // failure, records any DDL that ran as one schema-version bump, refreshes the
+  // views, and prunes deployed drafts. Returns { succeeded, remaining, failure }.
+  const runChangeBatch = async (ordered) => {
     const remaining = []
     const succeeded = []
     let failure = null
@@ -426,7 +435,7 @@ export default function Workspace() {
         remaining.push(ch)
         continue
       }
-      const res = await runQuery(nsConn, ch.sql)
+      const res = await runQuery(nsConn, ch.sql, { timeoutMs: queryTimeout * 1000 })
       if (res?.error) {
         failure = res.error
         remaining.push(ch)
@@ -434,12 +443,10 @@ export default function Workspace() {
         succeeded.push(ch)
       }
     }
-    setCommitting(false)
-    setChanges(remaining.reverse())
     setDataVersion((v) => v + 1)
     loadTables() // pick up created/dropped tables in the sidebar
 
-    // One schema version bump per commit, covering only the DDL that actually
+    // One schema version bump per batch, covering only the DDL that actually
     // ran successfully in it — plain row edits never touch schemaVersion.
     const ddlSucceeded = succeeded.filter((ch) => ch.ddl)
     if (ddlSucceeded.length) {
@@ -464,6 +471,25 @@ export default function Workspace() {
       (did) => !remainingDraftIds.has(did) && saved.some((s) => s.id === did)
     )
     for (const did of deployedDraftIds) removeSaved(did)
+
+    return { succeeded, remaining, failure }
+  }
+
+  // Direct-execute path: run one change immediately, no staging.
+  const executeDirect = async (change) => {
+    const { failure } = await runChangeBatch([change])
+    if (failure) toast.error(`${change.label} failed: ${failure}`)
+    else toast.success(`Executed: ${change.label}`)
+  }
+
+  // Execute every staged change in order (oldest first). Stop at the first
+  // failure, keeping it (and the rest) in the list so they can be retried.
+  const commitChanges = async () => {
+    if (!changes.length || committing) return
+    setCommitting(true)
+    const { succeeded, remaining, failure } = await runChangeBatch([...changes].reverse())
+    setCommitting(false)
+    setChanges(remaining.reverse())
 
     if (failure) {
       toast.error(`Committed ${succeeded.length}, then failed: ${failure}`)

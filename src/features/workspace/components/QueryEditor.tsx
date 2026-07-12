@@ -8,6 +8,7 @@ import SqlEditor from '@/shared/ui/SqlEditor'
 import { useToast } from '@/shared/ui/feedback/Toast'
 import { ChevronDown, GaugeIcon, SaveIcon, WandIcon } from '@/shared/ui/icons'
 import { formatCombo, useKeymap, useShortcut } from '@/features/keymap'
+import { useSettings } from '@/features/settings'
 
 const MIN_PANE = 100 // px — floor for both the editor and results panes while dragging
 
@@ -21,6 +22,7 @@ function primaryTable(sql) {
 export default function QueryEditor({ conn, dialect, initialSql, tabKey, persisted, onPersist, onRan, onSave, onAnalyze }) {
   const toast = useToast()
   const { bindings } = useKeymap()
+  const { queryTimeout } = useSettings()
   // Seed from the persisted snapshot (restored on tab switch) when present,
   // otherwise from initialSql for a fresh tab.
   const [sql, setSql] = useState(persisted?.sql ?? initialSql ?? '')
@@ -108,7 +110,7 @@ export default function QueryEditor({ conn, dialect, initialSql, tabKey, persist
     const trimmed = sql.trim()
     const table = primaryTable(trimmed)
     try {
-      const queryResult = await runQuery(conn, sql)
+      const queryResult = await runQuery(conn, sql, { timeoutMs: queryTimeout * 1000 })
       const ms = Math.round(performance.now() - startedAt)
       setElapsedMs(ms)
       if (queryResult.error) {
