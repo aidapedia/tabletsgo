@@ -5,6 +5,8 @@ import TextButton from '@/shared/ui/buttons/TextButton'
 import Tooltip from '@/shared/ui/overlay/Tooltip'
 import JsonEditor from '@/shared/ui/JsonEditor'
 import NumberStepper from '@/shared/ui/form/NumberStepper'
+import DatePicker from '@/shared/ui/form/DatePicker'
+import TimePicker from '@/shared/ui/form/TimePicker'
 import { CloseIcon, ExternalLinkIcon } from '@/shared/ui/icons'
 
 // JSON helpers — Postgres JSONB columns arrive as parsed objects/arrays.
@@ -380,10 +382,6 @@ export default function DataGrid({
         const kind = editing.kind
         const isTextArea = kind === 'json' || kind === 'text'
         const parts = dateTimeParts(draft)
-        const inputCls =
-          'rounded-soft border border-edge bg-bg px-3 py-2 text-[12px] text-ink outline-none focus:border-green-dim'
-        const colorScheme =
-          typeof document !== 'undefined' && document.documentElement.classList.contains('dark') ? 'dark' : 'light'
         const kindLabel = { json: 'JSON', boolean: 'Boolean', date: 'Date', time: 'Time', datetime: 'Date & time', number: 'Number' }[kind]
 
         return (
@@ -465,45 +463,25 @@ export default function DataGrid({
                   )}
 
                   {kind === 'date' && (
-                    <input
-                      type="date"
-                      autoFocus
-                      value={parts.date}
-                      style={{ colorScheme }}
-                      onChange={(e) => setDraft(e.target.value)}
-                      className={`${inputCls} w-full`}
-                    />
+                    <DatePicker autoFocus value={parts.date} onChange={(v) => setDraft(v)} />
                   )}
 
                   {kind === 'time' && (
-                    <input
-                      type="time"
-                      step="1"
-                      autoFocus
-                      value={parts.time}
-                      style={{ colorScheme }}
-                      onChange={(e) => setDraft(e.target.value)}
-                      className={`${inputCls} w-full`}
-                    />
+                    <TimePicker autoFocus value={parts.time} onChange={(v) => setDraft(v)} />
                   )}
 
                   {kind === 'datetime' && (
                     <div className="flex flex-wrap gap-2">
-                      <input
-                        type="date"
+                      <DatePicker
                         autoFocus
                         value={parts.date}
-                        style={{ colorScheme }}
-                        onChange={(e) => setDraft(joinDateTime(e.target.value, parts.time))}
-                        className={`${inputCls} flex-1`}
+                        onChange={(v) => setDraft(joinDateTime(v, parts.time))}
+                        className="flex-1"
                       />
-                      <input
-                        type="time"
-                        step="1"
+                      <TimePicker
                         value={parts.time}
-                        style={{ colorScheme }}
-                        onChange={(e) => setDraft(joinDateTime(parts.date, e.target.value))}
-                        className={`${inputCls} flex-1`}
+                        onChange={(v) => setDraft(joinDateTime(parts.date, v))}
+                        className="flex-1"
                       />
                     </div>
                   )}
