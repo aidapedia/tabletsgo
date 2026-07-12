@@ -94,11 +94,22 @@ export async function insertRow(conn, table, values) {
   }
 }
 
-export async function runQuery(conn, sql) {
+// `timeoutMs` (optional) aborts the request client-side once it elapses,
+// surfacing a timeout error instead of hanging on a slow/runaway query.
+export async function runQuery(conn, sql, { timeoutMs }: { timeoutMs?: number } = {}) {
+  const controller = timeoutMs ? new AbortController() : null
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null
   try {
-    return await request(`/connections/${conn.id}/query`, { method: 'POST', body: { sql, ...nsBody(conn) } })
+    return await request(`/connections/${conn.id}/query`, {
+      method: 'POST',
+      body: { sql, ...nsBody(conn) },
+      signal: controller?.signal,
+    })
   } catch (error) {
+    if (controller?.signal.aborted) return { error: `Query timed out after ${Math.round((timeoutMs ?? 0) / 1000)}s` }
     return { error: (error as Error)?.message || 'Query failed' }
+  } finally {
+    if (timer) clearTimeout(timer)
   }
 }
 

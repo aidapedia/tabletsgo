@@ -80,7 +80,12 @@ export function matchFilter(row, f) {
 
 export default function TableView({ conn, table, onChange, onOpenReference, initialFilter }) {
   const toast = useToast()
-  const { tableRowLimit } = useSettings()
+  const { tableRowLimit, directExecute } = useSettings()
+  // With Direct execute on, the parent runs the change immediately and toasts
+  // the result, so the "added to changes" confirmations here would be misleading.
+  const stagedInfo = (msg) => {
+    if (!directExecute) toast.info(msg)
+  }
   const [columns, setColumns] = useState([])
   const [rows, setRows] = useState([])
   const [pkCols, setPkCols] = useState([])
@@ -220,7 +225,7 @@ export default function TableView({ conn, table, onChange, onOpenReference, init
     if (!targets.length) return
     const sql = `DELETE FROM "${table}" WHERE ${targets.map((r) => `(${rowWhere(r)})`).join(' OR ')}`
     onChange?.({ kind: 'delete', label: `Delete ${targets.length} row(s)`, sql, table })
-    toast.info(`Added delete to changes — commit to apply.`)
+    stagedInfo(`Added delete to changes — commit to apply.`)
     if (clear) clearSelection()
   }
   const deleteSelected = () => stageDelete(selectedRows())
@@ -232,14 +237,14 @@ export default function TableView({ conn, table, onChange, onOpenReference, init
       for (const c of columns) if (!pkCols.includes(c)) values[c] = row[c]
       onChange?.({ kind: 'duplicate', label: 'Duplicate row', sql: insertSql(values), table })
     }
-    toast.info(`Added ${targets.length} insert(s) to changes — commit to apply.`)
+    stagedInfo(`Added ${targets.length} insert(s) to changes — commit to apply.`)
     if (clear) clearSelection()
   }
   const duplicateSelected = () => stageDuplicate(selectedRows())
 
   const stageInsert = (values) => {
     onChange?.({ kind: 'insert', label: 'Insert row', sql: insertSql(values), table })
-    toast.info('Added insert to changes — commit to apply.')
+    stagedInfo('Added insert to changes — commit to apply.')
   }
 
   // Cell context-menu actions
@@ -248,7 +253,7 @@ export default function TableView({ conn, table, onChange, onOpenReference, init
     if (expr == null) return
     const sql = `UPDATE "${table}" SET "${col}" = ${expr} WHERE ${rowWhere(row)}`
     onChange?.({ kind: 'update', label: `Set ${col} to ${mode.toUpperCase()}`, sql, table })
-    toast.info('Added update to changes — commit to apply.')
+    stagedInfo('Added update to changes — commit to apply.')
   }
 
   const copyText = async (text, label = 'Copied to clipboard') => {
@@ -311,7 +316,7 @@ export default function TableView({ conn, table, onChange, onOpenReference, init
       onChange?.({ kind: 'update', label: `Update row in ${table}`, sql: `UPDATE "${table}" SET ${setClause} WHERE ${where}`, table })
     }
     setEdits({})
-    toast.info(`Added ${entries.length} update(s) to changes — commit to apply.`)
+    stagedInfo(`Added ${entries.length} update(s) to changes — commit to apply.`)
   }
   const discardEdits = () => setEdits({})
 
@@ -546,7 +551,7 @@ export default function TableView({ conn, table, onChange, onOpenReference, init
               sql: `UPDATE "${table}" SET ${setClause} WHERE ${rowWhere(inspecting)}`,
               table,
             })
-            toast.info('Added update to changes — commit to apply.')
+            stagedInfo('Added update to changes — commit to apply.')
           }}
         />
       )}
