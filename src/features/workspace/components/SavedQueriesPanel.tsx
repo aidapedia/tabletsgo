@@ -5,6 +5,7 @@ import {
   FolderIcon,
   FolderOpenIcon,
   FolderPlusIcon,
+  GaugeIcon,
   MoreVerticalIcon,
   RefreshIcon,
   SearchIcon,
@@ -28,6 +29,7 @@ export default function SavedQueriesPanel({
   saved = [],
   folders = [],
   onOpenSaved,
+  onAnalyzeSaved,
   onRenameSaved,
   onDeleteSaved,
   onCreateFolder,
@@ -150,6 +152,9 @@ export default function SavedQueriesPanel({
                 </MenuItem>
                 <MenuItem onClick={() => { setRenaming({ id: s.id, value: s.name }); close() }}>
                   <EditIcon width={14} height={14} /> Rename
+                </MenuItem>
+                <MenuItem onClick={() => { onAnalyzeSaved?.(s); close() }}>
+                  <GaugeIcon width={14} height={14} /> Analyze performance
                 </MenuItem>
 
                 <div className="my-1 h-px bg-edge" />

@@ -1096,6 +1096,381 @@ async function runPostgresQuery(pool, sql, schema) {
 }
 
 // ============================================================================
+// Query analyzer (POST /api/connections/:id/analyze)
+// ============================================================================
+// Runs the dialect's EXPLAIN machinery on one statement and normalizes the
+// result into a dialect-agnostic shape: a plan (with per-row warnings), index
+// suggestions (ready-to-run CREATE INDEX DDL, deduped against existing
+// indexes) and query-level suggestions. Read-only SELECTs are additionally
+// executed for real timings ("actual"); anything else stays estimate-only so
+// analysis can never modify data.
+
+// Strip -- and /* */ comments, respecting string literals.
+function stripSqlComments(sql) {
+  let out = ''
+  let i = 0
+  let quote = null // ', ", or `
+  while (i < sql.length) {
+    const ch = sql[i]
+    if (quote) {
+      out += ch
+      if (ch === quote) quote = null
+      i++
+      continue
+    }
+    if (ch === "'" || ch === '"' || ch === '`') {
+      quote = ch
+      out += ch
+      i++
+      continue
+    }
+    if (ch === '-' && sql[i + 1] === '-') {
+      while (i < sql.length && sql[i] !== '\n') i++
+      continue
+    }
+    if (ch === '/' && sql[i + 1] === '*') {
+      i += 2
+      while (i < sql.length && !(sql[i] === '*' && sql[i + 1] === '/')) i++
+      i += 2
+      out += ' '
+      continue
+    }
+    out += ch
+    i++
+  }
+  return out
+}
+
+// Split on ';' outside string literals. Used only to reject multi-statement
+// input — the analyzer works on exactly one statement.
+function splitSqlStatements(sql) {
+  const parts = []
+  let cur = ''
+  let quote = null
+  for (const ch of sql) {
+    if (quote) {
+      cur += ch
+      if (ch === quote) quote = null
+      continue
+    }
+    if (ch === "'" || ch === '"' || ch === '`') {
+      quote = ch
+      cur += ch
+      continue
+    }
+    if (ch === ';') {
+      parts.push(cur)
+      cur = ''
+      continue
+    }
+    cur += ch
+  }
+  parts.push(cur)
+  return parts.map((p) => p.trim()).filter(Boolean)
+}
+
+// Classify the statement to pick the safe analysis mode. Returns
+// { kind: 'select' | 'dml', readOnly } or throws for unsupported statements.
+// A SELECT counts as read-only only when no write keyword appears anywhere
+// (covers data-modifying CTEs); a false positive merely downgrades to
+// estimates, never executes anything.
+function classifyStatement(sql) {
+  const first = (sql.match(/^\s*([a-z]+)/i)?.[1] || '').toLowerCase()
+  if (first === 'select' || first === 'with' || first === 'values') {
+    const readOnly = !/\b(insert|update|delete|merge|replace)\b/i.test(sql)
+    return { kind: 'select', readOnly }
+  }
+  if (first === 'insert' || first === 'update' || first === 'delete' || first === 'replace' || first === 'merge') {
+    return { kind: 'dml', readOnly: false }
+  }
+  throw new Error('Only SELECT and data-modification statements can be analyzed.')
+}
+
+// Candidate columns referenced in WHERE/ON comparisons and ORDER BY. Regex
+// extraction only — each candidate is validated against the table's real
+// column list before use, so sloppiness here is harmless.
+function extractQueryColumns(sql) {
+  // For UPDATE/DELETE only the WHERE clause matters — SET assignments would
+  // otherwise read as comparisons and pollute the index suggestion.
+  let scope = sql
+  if (/^\s*(update|delete)\b/i.test(sql)) {
+    const w = sql.search(/\bwhere\b/i)
+    scope = w >= 0 ? sql.slice(w) : ''
+  }
+  const where = []
+  const compRe = /(?:"([^"]+)"|\b([a-z_][\w]*))\s*(?:=|<>|!=|<=|>=|<|>|\s+(?:not\s+)?(?:in|like|between|is)\b)/gi
+  let m
+  while ((m = compRe.exec(scope))) {
+    const name = (m[1] || m[2] || '').split('.').pop()
+    if (name && !/^(select|from|where|and|or|not|on|join|inner|left|right|outer|as|case|when|then|else|end|null|true|false|in|like|between|is|exists)$/i.test(name)) {
+      where.push(name)
+    }
+  }
+  const orderBy = []
+  const om = sql.match(/\border\s+by\b([\s\S]*?)(\blimit\b|\boffset\b|$)/i)
+  if (om) {
+    for (const part of om[1].split(',')) {
+      const col = part
+        .replace(/\b(asc|desc|nulls\s+(first|last))\b/gi, '')
+        .trim()
+        .replace(/^"|"$/g, '')
+        .split('.')
+        .pop()
+      if (col && /^[\w]+$/.test(col)) orderBy.push(col)
+    }
+  }
+  return { where: [...new Set(where)], orderBy: [...new Set(orderBy)] }
+}
+
+const quoteIdent = (name) => `"${String(name).replace(/"/g, '""')}"`
+
+function buildIndexDdl(table, columns, schema) {
+  const base = `idx_${table}_${columns.join('_')}`.toLowerCase().replace(/[^a-z0-9_]/g, '_').slice(0, 60)
+  const target = schema && schema !== 'public' ? `${quoteIdent(schema)}.${quoteIdent(table)}` : quoteIdent(table)
+  return `CREATE INDEX ${quoteIdent(base)} ON ${target} (${columns.map(quoteIdent).join(', ')});`
+}
+
+// True when an existing index already leads with the suggestion's first
+// column — the case where a new index would be redundant.
+function hasCoveringIndex(existing, columns) {
+  const lead = (columns[0] || '').toLowerCase()
+  return existing.some((idx) => (idx.columns || '').split(',')[0]?.trim().toLowerCase() === lead)
+}
+
+// Filter suggestion candidates down to real columns and dedupe.
+function makeIndexSuggestion(table, candidates, realColumns, existingIndexes, reason, schema) {
+  const real = new Set(realColumns.map((c) => c.name.toLowerCase()))
+  const cols = candidates.filter((c) => real.has(c.toLowerCase()))
+  if (!cols.length || hasCoveringIndex(existingIndexes, cols)) return null
+  return { table, columns: cols, reason, ddl: buildIndexDdl(table, cols, schema) }
+}
+
+// Query-level suggestions shared by both dialects.
+function queryLevelSuggestions(sql, plan, primaryTableColumnCount) {
+  const out = []
+  if (/select\s+\*/i.test(sql) && primaryTableColumnCount > 10) {
+    out.push({ code: 'select-star', message: `SELECT * fetches ${primaryTableColumnCount} columns; select only the columns you need.` })
+  }
+  if (/\blike\s+'%/i.test(sql)) {
+    out.push({ code: 'leading-wildcard-like', message: "LIKE with a leading wildcard ('%…') cannot use an index — consider full-text search or a suffix strategy." })
+  }
+  const hasFullScan = plan.some((p) => p.warning && /full table scan/i.test(p.warning))
+  if (hasFullScan && !/\blimit\b/i.test(sql) && !/\b(count|sum|avg|min|max|group\s+by)\b/i.test(sql)) {
+    out.push({ code: 'full-scan-no-limit', message: 'Full table scan without LIMIT may return the whole table — add a LIMIT or a WHERE clause an index can serve.' })
+  }
+  return out
+}
+
+async function analyzeSqlite(db, sql, cls) {
+  const eqp = runSqliteQuery(db, `EXPLAIN QUERY PLAN ${sql}`)
+  if (eqp.error) throw new Error(eqp.error)
+
+  // Normalize plan rows. Modern sqlite emits id/parent/notused/detail; older
+  // builds emit selectid/order/from/detail — read `detail` by name with a
+  // last-column fallback and compute depth from id/parent when available.
+  const depthById = new Map()
+  const plan = (eqp.rows || []).map((r) => {
+    const detail = r.detail ?? Object.values(r)[Object.values(r).length - 1] ?? ''
+    let depth = 0
+    if (r.id !== undefined && r.parent !== undefined) {
+      depth = r.parent === 0 ? 0 : (depthById.get(r.parent) ?? 0) + 1
+      depthById.set(r.id, depth)
+    }
+    const row = { depth, step: '', detail: String(detail), table: null, index: null, rows: null, warning: null }
+
+    let m
+    if ((m = /^SCAN\s+("?[\w]+"?)(?:\s+AS\s+\S+)?(\s+USING\s+(?:COVERING\s+)?INDEX\s+(\S+))?/i.exec(detail))) {
+      row.step = 'SCAN'
+      row.table = m[1].replace(/^"|"$/g, '')
+      if (m[3]) row.index = m[3]
+      else if (!/USING INTEGER PRIMARY KEY/i.test(detail)) row.warning = 'Full table scan'
+    } else if ((m = /^SEARCH\s+("?[\w]+"?)(?:\s+AS\s+\S+)?\s+USING\s+(?:COVERING\s+)?INDEX\s+(\S+)/i.exec(detail))) {
+      row.step = 'SEARCH'
+      row.table = m[1].replace(/^"|"$/g, '')
+      row.index = m[2]
+    } else if (/^SEARCH\s+/i.test(detail)) {
+      row.step = 'SEARCH'
+      row.table = /^SEARCH\s+("?[\w]+"?)/i.exec(detail)?.[1]?.replace(/^"|"$/g, '') || null
+    } else if (/USE TEMP B-TREE FOR (ORDER BY|GROUP BY|DISTINCT)/i.test(detail)) {
+      row.step = 'SORT'
+      row.warning = 'Sort without index (temp B-tree)'
+    } else {
+      row.step = detail.split(/\s+/)[0]?.toUpperCase() || ''
+    }
+    return row
+  })
+
+  // Real timing for read-only SELECTs only.
+  let summary = { mode: 'estimated', executed: false }
+  if (cls.kind === 'select' && cls.readOnly) {
+    const t0 = performance.now()
+    const run = runSqliteQuery(db, sql)
+    const elapsedMs = Math.round((performance.now() - t0) * 100) / 100
+    if (run.error) throw new Error(run.error)
+    summary = { mode: 'actual', executed: true, elapsedMs, rowsReturned: run.rows?.length ?? 0 }
+  }
+
+  // Index suggestions from full scans / temp-btree sorts.
+  const { where, orderBy } = extractQueryColumns(sql)
+  const indexSuggestions = []
+  const columnsByTable = new Map()
+  const colsFor = (table) => {
+    if (!columnsByTable.has(table)) {
+      try {
+        columnsByTable.set(table, getSqliteColumns(db, table))
+      } catch {
+        columnsByTable.set(table, [])
+      }
+    }
+    return columnsByTable.get(table)
+  }
+  const scannedTables = [...new Set(plan.filter((p) => p.warning === 'Full table scan' && p.table).map((p) => p.table))]
+  for (const table of scannedTables) {
+    const sug = makeIndexSuggestion(
+      table, where, colsFor(table), getSqliteIndexes(db, table),
+      `Full table scan on ${quoteIdent(table)} while filtering — an index on the filtered column(s) would let SQLite seek instead of scan.`
+    )
+    if (sug) indexSuggestions.push(sug)
+  }
+  if (plan.some((p) => p.warning === 'Sort without index (temp B-tree)') && orderBy.length) {
+    // Attribute the sort to the first scanned/searched table.
+    const table = plan.find((p) => p.table)?.table
+    if (table) {
+      const sug = makeIndexSuggestion(
+        table, orderBy, colsFor(table), getSqliteIndexes(db, table),
+        `ORDER BY builds a temporary B-tree — an index on the sort column(s) delivers rows pre-sorted.`
+      )
+      if (sug && !indexSuggestions.some((s) => s.ddl === sug.ddl)) indexSuggestions.push(sug)
+    }
+  }
+
+  const primaryTable = plan.find((p) => p.table)?.table
+  const querySuggestions = queryLevelSuggestions(sql, plan, primaryTable ? colsFor(primaryTable).length : 0)
+
+  return {
+    dialect: 'sqlite',
+    summary,
+    plan,
+    rawPlan: { columns: eqp.columns, rows: eqp.rows },
+    indexSuggestions,
+    querySuggestions,
+  }
+}
+
+async function analyzePostgres(pool, sql, schema, cls) {
+  const analyze = cls.kind === 'select' && cls.readOnly
+  const explain = await runPostgresQuery(pool, `EXPLAIN (FORMAT JSON${analyze ? ', ANALYZE' : ''}) ${sql}`, schema)
+  if (explain.error) throw new Error(explain.error)
+
+  // FORMAT JSON returns one row with a single "QUERY PLAN" value — node-pg may
+  // hand it over pre-parsed (json type) or as a string.
+  const raw = explain.rows?.[0]?.['QUERY PLAN']
+  const tree = typeof raw === 'string' ? JSON.parse(raw) : raw
+  const root = Array.isArray(tree) ? tree[0] : tree
+  if (!root?.Plan) throw new Error('Unexpected EXPLAIN output.')
+
+  // Walk the plan tree depth-first into normalized rows.
+  const plan = []
+  const walk = (node, depth) => {
+    const details = []
+    if (node['Join Type']) details.push(`${node['Join Type']} join`)
+    if (node['Index Cond']) details.push(`Index Cond: ${node['Index Cond']}`)
+    if (node.Filter) details.push(`Filter: ${node.Filter}`)
+    if (node['Sort Key']) details.push(`Sort Key: ${Array.isArray(node['Sort Key']) ? node['Sort Key'].join(', ') : node['Sort Key']}`)
+    if (node['Sort Method']) details.push(`Sort Method: ${node['Sort Method']}`)
+    let warning = null
+    if (node['Node Type'] === 'Seq Scan' && node.Filter) warning = 'Full table scan with filter'
+    else if (node['Node Type'] === 'Seq Scan') warning = 'Full table scan'
+    else if (node['Node Type'] === 'Sort' && String(node['Sort Method'] || '').toLowerCase().startsWith('external')) warning = 'Sort spilled to disk'
+    plan.push({
+      depth,
+      step: node['Node Type'],
+      detail: details.join(' · ') || node['Node Type'],
+      table: node['Relation Name'] || null,
+      index: node['Index Name'] || null,
+      rows: node['Actual Rows'] ?? node['Plan Rows'] ?? null,
+      warning,
+      sortKey: node['Sort Key'] || null, // internal, stripped below
+      filter: node.Filter || null, // internal, stripped below
+    })
+    for (const child of node.Plans || []) walk(child, depth + 1)
+  }
+  walk(root.Plan, 0)
+
+  const summary = analyze
+    ? {
+        mode: 'actual',
+        executed: true,
+        elapsedMs: Math.round(((root['Planning Time'] || 0) + (root['Execution Time'] || 0)) * 100) / 100,
+        estimatedCost: root.Plan['Total Cost'],
+        rowsReturned: root.Plan['Actual Rows'] ?? null,
+      }
+    : { mode: 'estimated', executed: false, estimatedCost: root.Plan['Total Cost'] }
+
+  // Suggestions straight from the plan: Seq Scan filters and Sort keys.
+  const identRe = /(?:"([^"]+)"|\b([a-z_][\w]*))\s*(?:=|<>|!=|<=|>=|<|>|\s+(?:not\s+)?(?:in|like|between|is)\b)/gi
+  const indexSuggestions = []
+  const metaCache = new Map()
+  const metaFor = async (table) => {
+    if (!metaCache.has(table)) {
+      metaCache.set(table, {
+        columns: await getPostgresColumns(pool, table, schema || 'public'),
+        indexes: await getPostgresIndexes(pool, table, schema || 'public'),
+      })
+    }
+    return metaCache.get(table)
+  }
+  for (const row of plan) {
+    if (row.warning === 'Full table scan with filter' && row.table) {
+      const cands = []
+      let m
+      while ((m = identRe.exec(row.filter))) cands.push((m[1] || m[2]).split('.').pop())
+      identRe.lastIndex = 0
+      const { columns, indexes } = await metaFor(row.table)
+      const sug = makeIndexSuggestion(
+        row.table, [...new Set(cands)], columns, indexes,
+        `Sequential scan on ${quoteIdent(row.table)} while filtering — an index on the filtered column(s) would let Postgres use an index scan.`,
+        schema
+      )
+      if (sug && !indexSuggestions.some((s) => s.ddl === sug.ddl)) indexSuggestions.push(sug)
+    }
+    if (row.step === 'Sort' && row.sortKey) {
+      // Only worth an index when the sort feeds off a full scan.
+      const scanBelow = plan.find((p) => p.depth > row.depth && p.table && (p.warning || '').startsWith('Full table scan'))
+      if (scanBelow) {
+        const keys = (Array.isArray(row.sortKey) ? row.sortKey : [row.sortKey])
+          .map((k) => String(k).replace(/\b(asc|desc|nulls\s+(first|last))\b/gi, '').trim().replace(/^"|"$/g, '').split('.').pop())
+          .filter((k) => /^[\w]+$/.test(k))
+        const { columns, indexes } = await metaFor(scanBelow.table)
+        const sug = makeIndexSuggestion(
+          scanBelow.table, keys, columns, indexes,
+          `Sort on ${quoteIdent(scanBelow.table)} — an index on the sort key(s) delivers rows pre-sorted.`,
+          schema
+        )
+        if (sug && !indexSuggestions.some((s) => s.ddl === sug.ddl)) indexSuggestions.push(sug)
+      }
+    }
+  }
+  for (const row of plan) {
+    delete row.sortKey
+    delete row.filter
+  }
+
+  const primaryTable = plan.find((p) => p.table)?.table
+  const primaryCols = primaryTable ? (await metaFor(primaryTable)).columns.length : 0
+  const querySuggestions = queryLevelSuggestions(sql, plan, primaryCols)
+
+  return {
+    dialect: 'postgresql',
+    summary,
+    plan,
+    rawPlan: { columns: ['QUERY PLAN'], rows: [{ 'QUERY PLAN': JSON.stringify(tree, null, 2) }] },
+    indexSuggestions,
+    querySuggestions,
+  }
+}
+
+// ============================================================================
 // Workflow executor
 // ============================================================================
 // SECURITY: workflows run arbitrary SQL, make server-side HTTP requests (can
@@ -3349,6 +3724,39 @@ app.post('/api/connections/:id/insert', async (req, res) => {
       const result = await pool.query(sql, cols.map((c) => values[c]))
       res.json({ ok: true, changes: result.rowCount })
     }
+  } catch (error) {
+    res.status(400).json({ error: error.message })
+  }
+})
+
+// Analyze query performance — EXPLAIN-based, normalized across dialects.
+// Read-only SELECTs also run for real timings; writes are never executed.
+app.post('/api/connections/:id/analyze', async (req, res) => {
+  const conn = getConnection(req.params.id)
+  if (!conn) return res.status(404).json({ error: 'Connection not found' })
+
+  const { sql, database, schema } = req.body
+  if (!sql || !sql.trim()) {
+    return res.status(400).json({ error: 'SQL query required' })
+  }
+
+  try {
+    const stripped = stripSqlComments(sql)
+    const statements = splitSqlStatements(stripped)
+    if (statements.length !== 1) throw new Error('Only a single statement can be analyzed.')
+    // Drop any EXPLAIN prefix the user already typed so we don't explain an EXPLAIN.
+    const statement = statements[0].replace(/^explain\s+(query\s+plan\s+|analyze\s+|\([^)]*\)\s*)?/i, '')
+    const cls = classifyStatement(statement)
+
+    let result
+    if (conn.type === 'sqlite') {
+      result = await analyzeSqlite(getSqliteDb(conn.filepath), statement, cls)
+    } else if (conn.type === 'postgresql') {
+      result = await analyzePostgres(getPostgresPool(conn, database), statement, schema, cls)
+    } else {
+      throw new Error(`Query analysis is not supported for ${conn.type} connections.`)
+    }
+    res.json(result)
   } catch (error) {
     res.status(400).json({ error: error.message })
   }

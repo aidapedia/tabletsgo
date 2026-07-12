@@ -1099,6 +1099,45 @@ For PostgreSQL, a non-`public` `schema` is set on the search path first.
 - **404:** `{ "error": "Connection not found" }`
 - **Example:** `POST http://localhost:3000/api/connections/demo-sqlite/query`
 
+### POST `/api/connections/:id/analyze`
+Analyze one statement's performance. Runs the dialect's EXPLAIN machinery
+(SQLite `EXPLAIN QUERY PLAN`, PostgreSQL `EXPLAIN (FORMAT JSON)`) and normalizes
+the result into a dialect-agnostic shape with index and query suggestions.
+Read-only SELECTs are additionally executed for real timings (`mode: "actual"`);
+DML statements are only estimated and **never executed**. Any `EXPLAIN` prefix
+already present in the SQL is stripped first. Suggested indexes are deduped
+against the table's existing indexes.
+
+- **Body:** `{ "sql": "SELECT * FROM users WHERE email = 'a@b.c'", "database": "appdb", "schema": "public" }`
+  (`database`/`schema` optional, PG only)
+- **200:**
+  ```json
+  {
+    "dialect": "sqlite",
+    "summary": { "mode": "actual", "executed": true, "elapsedMs": 1.42, "rowsReturned": 3 },
+    "plan": [
+      { "depth": 0, "step": "SCAN", "detail": "SCAN users", "table": "users",
+        "index": null, "rows": null, "warning": "Full table scan" }
+    ],
+    "rawPlan": { "columns": ["id", "parent", "notused", "detail"], "rows": [...] },
+    "indexSuggestions": [
+      { "table": "users", "columns": ["email"],
+        "reason": "Full table scan on \"users\" while filtering — …",
+        "ddl": "CREATE INDEX \"idx_users_email\" ON \"users\" (\"email\");" }
+    ],
+    "querySuggestions": [
+      { "code": "leading-wildcard-like", "message": "LIKE with a leading wildcard ('%…') cannot use an index — …" }
+    ]
+  }
+  ```
+  `summary.mode` is `"actual"` (query executed, real timings) or `"estimated"`
+  (plan only). PostgreSQL responses also carry `summary.estimatedCost`.
+- **400:** `{ "error": "SQL query required" }`, `{ "error": "Only a single statement can be analyzed." }`,
+  `{ "error": "Only SELECT and data-modification statements can be analyzed." }`,
+  `{ "error": "Query analysis is not supported for <type> connections." }`, or a driver error message
+- **404:** `{ "error": "Connection not found" }`
+- **Example:** `POST http://localhost:3000/api/connections/demo-sqlite/analyze`
+
 ---
 
 ## Health
@@ -1165,6 +1204,7 @@ Liveness probe.
 | GET    | `/api/connections/:id/diagram`            | Tables + foreign keys           |
 | POST   | `/api/connections/:id/insert`             | Insert a row                    |
 | POST   | `/api/connections/:id/query`              | Execute SQL                     |
+| POST   | `/api/connections/:id/analyze`            | Analyze query performance       |
 | GET    | `/api/storages`                           | List storage destinations       |
 | POST   | `/api/storages`                           | Create storage destination      |
 | PUT    | `/api/storages/:sid`                      | Update storage destination      |
