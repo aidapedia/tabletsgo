@@ -687,7 +687,32 @@ function rowToStorage(row) {
     sessionToken: credentials.sessionToken || undefined,
   }
 }
-const getStorage = (id) => rowToStorage(meta.prepare('SELECT * FROM storage_destinations WHERE id = ?').get(id))
+// A reserved, always-available destination that stores backups on the server's
+// own disk (under data/backups) instead of an S3 bucket — the default when a
+// connection's backup schedule has no S3 destination configured ("not
+// integrated with S3"). It flows through the whole backup pipeline like any
+// other destination (store, prune, download, delete, restore); each step
+// branches on `dest.local` instead of talking to S3.
+const LOCAL_STORAGE_ID = 'local'
+const LOCAL_BACKUP_DIR = path.join(__dirname, 'data', 'backups')
+fs.mkdirSync(LOCAL_BACKUP_DIR, { recursive: true })
+const localStorageDest = () => ({
+  id: LOCAL_STORAGE_ID,
+  workspaceId: null,
+  name: 'Local server disk',
+  local: true,
+  endpoint: '',
+  region: '',
+  bucket: '',
+  pathPrefix: '',
+  forcePathStyle: false,
+  accessKeyId: '',
+  secretAccessKey: '',
+})
+const getStorage = (id) =>
+  id === LOCAL_STORAGE_ID
+    ? localStorageDest()
+    : rowToStorage(meta.prepare('SELECT * FROM storage_destinations WHERE id = ?').get(id))
 const listStorageRows = (workspaceId) =>
   meta.prepare('SELECT * FROM storage_destinations WHERE workspace_id = ? ORDER BY created_at').all(workspaceId).map(rowToStorage)
 
@@ -843,6 +868,22 @@ function pgToolConn(conn) {
   const env = { ...process.env, PGPASSWORD: noAuth ? '' : conn.password || '' }
   if (conn.sslmode) env.PGSSLMODE = conn.sslmode
   return { args, env }
+}
+
+// Runs a PostgreSQL CLI tool (pg_dump/pg_restore), translating the cryptic
+// `spawn <tool> ENOENT` you get when the client tools aren't installed/on PATH
+// into an actionable message (the dump/restore server requirement).
+async function execPgTool(tool, args, opts) {
+  try {
+    return await execFileAsync(tool, args, opts)
+  } catch (err) {
+    if (err.code === 'ENOENT') {
+      throw new Error(
+        `${tool} not found on the server — PostgreSQL backup/restore needs the PostgreSQL client tools (pg_dump/pg_restore) installed and on PATH.`
+      )
+    }
+    throw err
+  }
 }
 
 // A pool per (connection, database) so we can browse other databases on the
@@ -1124,7 +1165,7 @@ async function execExportSql(conn) {
     await getSqliteDb(conn.filepath).backup(tmpPath)
   } else if (conn.type === 'postgresql') {
     const { args, env } = pgToolConn(conn)
-    await execFileAsync('pg_dump', ['-Fc', '--no-owner', '-f', tmpPath, ...args], { env })
+    await execPgTool('pg_dump', ['-Fc', '--no-owner', '-f', tmpPath, ...args], { env })
   } else {
     throw new Error(`Export not supported for connection type: ${conn.type}`)
   }
@@ -1185,9 +1226,15 @@ async function execStoreToStorage(conn, input, destinationIds, opts = {}) {
       const folder = `${prefix}${sanitizeForKey(conn.name)}/`
       try {
         const key = `${folder}${dateStr}/${path.basename(input.filePath)}${opts.encrypt ? '.enc' : ''}`
-        await getS3Client(dest).send(
-          new PutObjectCommand({ Bucket: dest.bucket, Key: key, Body: fs.createReadStream(uploadPath) })
-        )
+        if (dest.local) {
+          const absPath = path.join(LOCAL_BACKUP_DIR, key)
+          fs.mkdirSync(path.dirname(absPath), { recursive: true })
+          await fs.promises.copyFile(uploadPath, absPath)
+        } else {
+          await getS3Client(dest).send(
+            new PutObjectCommand({ Bucket: dest.bucket, Key: key, Body: fs.createReadStream(uploadPath) })
+          )
+        }
         const entry = { destinationId: destId, ok: true, key, sizeBytes: input.sizeBytes }
         if (opts.encrypt) entry.encrypted = true
         if (opts.retentionDays > 0) {
@@ -1208,11 +1255,54 @@ async function execStoreToStorage(conn, input, destinationIds, opts = {}) {
   return { uploaded }
 }
 
+// Reads a stored object (S3 or local disk) into a local temp file. Shared by
+// download/restore so neither has to know which kind of destination it is.
+async function fetchStorageObjectToFile(dest, key, destPath) {
+  if (dest.local) {
+    await fs.promises.copyFile(path.join(LOCAL_BACKUP_DIR, key), destPath)
+  } else {
+    const obj = await getS3Client(dest).send(new GetObjectCommand({ Bucket: dest.bucket, Key: key }))
+    await pipeline(obj.Body, fs.createWriteStream(destPath))
+  }
+}
+
+// Deletes stored objects (S3 or local disk) by key.
+async function deleteStorageObjects(dest, keys) {
+  if (!keys.length) return
+  if (dest.local) {
+    for (const key of keys) fs.rmSync(path.join(LOCAL_BACKUP_DIR, key), { force: true })
+  } else {
+    await getS3Client(dest).send(new DeleteObjectsCommand({ Bucket: dest.bucket, Delete: { Objects: keys.map((Key) => ({ Key })) } }))
+  }
+}
+
+// Deletes local-disk backups under `folder` older than `retentionDays` worth of
+// ms (cutoff). Layout mirrors the S3 keys: <folder>/<date>/<file>.
+function pruneLocalBackups(folder, cutoff) {
+  const root = path.join(LOCAL_BACKUP_DIR, folder)
+  if (!fs.existsSync(root)) return 0
+  let removed = 0
+  for (const dateDir of fs.readdirSync(root, { withFileTypes: true })) {
+    if (!dateDir.isDirectory()) continue
+    const dirPath = path.join(root, dateDir.name)
+    for (const file of fs.readdirSync(dirPath)) {
+      const filePath = path.join(dirPath, file)
+      if (fs.statSync(filePath).mtimeMs < cutoff) {
+        fs.rmSync(filePath, { force: true })
+        removed++
+      }
+    }
+    if (fs.readdirSync(dirPath).length === 0) fs.rmSync(dirPath, { recursive: true, force: true })
+  }
+  return removed
+}
+
 // Deletes objects under `folder` older than `retentionDays`. Scoped to this
 // connection's own backup prefix — never touches anything outside it.
 async function pruneOldBackups(dest, folder, retentionDays) {
-  const client = getS3Client(dest)
   const cutoff = Date.now() - retentionDays * 86400000
+  if (dest.local) return pruneLocalBackups(folder, cutoff)
+  const client = getS3Client(dest)
   const stale = []
   let ContinuationToken
   do {
@@ -2477,7 +2567,9 @@ async function runBackupOnce(scheduleRow, conn, triggerKind) {
   let exportOutput = null
   try {
     exportOutput = await execExportSql(conn)
-    const destinationIds = safeJson(scheduleRow.destination_ids) || []
+    // No S3 destination configured ⇒ default to the local server disk.
+    const configured = safeJson(scheduleRow.destination_ids) || []
+    const destinationIds = configured.length ? configured : [LOCAL_STORAGE_ID]
     const storeOutput = await execStoreToStorage(conn, exportOutput, destinationIds, {
       encrypt: !!scheduleRow.encrypt,
       retentionDays: scheduleRow.retention_days || 0,
@@ -2531,8 +2623,14 @@ async function runDueBackups() {
 
 function validateScheduleBody(conn, destinationIds, frequency) {
   if (!['hourly', 'daily'].includes(frequency)) return 'Frequency must be hourly or daily'
-  if (!Array.isArray(destinationIds) || !destinationIds.length) return 'At least one storage destination is required'
-  if (destinationIds.some((did) => getStorage(did)?.workspaceId !== conn.workspaceId)) return 'One or more storage destinations are invalid'
+  if (!Array.isArray(destinationIds)) return 'destinationIds must be an array'
+  // An empty list is allowed: the backup falls back to the local server disk
+  // (see runBackupOnce). The reserved 'local' id is always valid; every other
+  // id must be a real S3 destination in this connection's workspace.
+  for (const did of destinationIds) {
+    if (did === LOCAL_STORAGE_ID) continue
+    if (getStorage(did)?.workspaceId !== conn.workspaceId) return 'One or more storage destinations are invalid'
+  }
   return null
 }
 
@@ -2684,7 +2782,7 @@ app.delete('/api/connections/:id/backup/runs/:runId/uploads/:destinationId', asy
   const dest = getStorage(req.params.destinationId)
   if (!dest) return res.status(404).json({ error: 'Storage destination not found' })
   try {
-    await getS3Client(dest).send(new DeleteObjectsCommand({ Bucket: dest.bucket, Delete: { Objects: [{ Key: upload.key }] } }))
+    await deleteStorageObjects(dest, [upload.key])
   } catch (err) {
     return res.status(500).json({ error: describeError(err) })
   }
@@ -2711,8 +2809,7 @@ app.get('/api/connections/:id/backup/runs/:runId/uploads/:destinationId/download
     if (decPath) fs.rm(decPath, { force: true }, () => {})
   }
   try {
-    const obj = await getS3Client(dest).send(new GetObjectCommand({ Bucket: dest.bucket, Key: upload.key }))
-    await pipeline(obj.Body, fs.createWriteStream(tmpPath))
+    await fetchStorageObjectToFile(dest, upload.key, tmpPath)
     const filePath = upload.encrypted ? (decPath = await decryptFileToFile(tmpPath)) : tmpPath
     const ext = conn?.type === 'postgresql' ? 'dump' : 'sqlite'
     const filename = `${sanitizeForKey(conn?.name)}-${new Date(run.started_at).toISOString().slice(0, 10)}.${ext}`
@@ -2751,8 +2848,7 @@ app.post('/api/connections/:id/backup/restore', async (req, res) => {
   const tmpPath = path.join(BACKUP_TMP_DIR, `${randomUUID()}-restore`)
   let decPath = null
   try {
-    const obj = await getS3Client(dest).send(new GetObjectCommand({ Bucket: dest.bucket, Key: upload.key }))
-    await pipeline(obj.Body, fs.createWriteStream(tmpPath))
+    await fetchStorageObjectToFile(dest, upload.key, tmpPath)
     const dumpPath = upload.encrypted ? (decPath = await decryptFileToFile(tmpPath)) : tmpPath
 
     if (targetConn.type === 'sqlite') {
@@ -2763,7 +2859,7 @@ app.post('/api/connections/:id/backup/restore', async (req, res) => {
     } else if (targetConn.type === 'postgresql') {
       closePostgresPools(targetConn.id)
       const { args, env } = pgToolConn(targetConn)
-      await execFileAsync('pg_restore', ['--clean', '--if-exists', '--no-owner', ...args, dumpPath], { env })
+      await execPgTool('pg_restore', ['--clean', '--if-exists', '--no-owner', ...args, dumpPath], { env })
     } else {
       return res.status(400).json({ error: `Restore not supported for connection type: ${targetConn.type}` })
     }

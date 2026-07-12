@@ -276,7 +276,7 @@ CREATE TABLE backup_schedules (
   connection_id TEXT NOT NULL UNIQUE,
   frequency TEXT NOT NULL,        -- "hourly" | "daily"
   hour_of_day INTEGER,
-  destination_ids TEXT,           -- JSON array of storage_destinations.id
+  destination_ids TEXT,           -- JSON array of storage_destinations.id (or the reserved "local"); empty ⇒ local server disk
   retry_limit INTEGER DEFAULT 0,        -- extra attempts after a scheduled failure (0-5)
   retry_delay_sec INTEGER DEFAULT 60,   -- delay between attempts
   retention_days INTEGER DEFAULT 0,     -- prune uploads older than this after each run (0 = never)
@@ -756,6 +756,19 @@ schedules upload dumps to (and that user-built workflows can also target via a
 fields, `accessKeyId`/`secretAccessKey`/`sessionToken` encrypted into
 `credentials` (AES-256-GCM, key namespaced separately from connection credentials).
 
+### Reserved "local" destination (server disk)
+
+A backup schedule can also store dumps on the server's own disk instead of (or
+alongside) S3 — the default when no S3 destination is configured. This is the
+reserved destination id **`"local"`**: it is *not* a `storage_destinations` row
+and is never returned by `GET /api/storages`, but it is accepted wherever a
+`destinationId` is (backup schedule `destinationIds`, and the `destinationId`
+path segment of the run download/delete/restore endpoints). Files are written
+under `data/backups/<sanitized connection name>/<YYYY-MM-DD>/<dump>` (mirroring
+the S3 key layout), and encryption/retention/download/delete/restore all behave
+identically to an S3 destination. If a schedule's `destinationIds` is empty, the
+backup falls back to `["local"]` at run time.
+
 ### GET `/api/storages?workspace=<id>`
 List storage destinations in a workspace.
 
@@ -813,6 +826,7 @@ Current backup schedule for this connection (`null` if none exists yet).
 Create the connection's backup schedule. 409s if one already exists.
 
 - **Body:** `{ "frequency": "hourly"|"daily", "hourOfDay"?: 0-23, "destinationIds": string[], "retryLimit"?: 0-5, "retryDelaySec"?: number, "retentionDays"?: number, "encrypt"?: boolean, "enabled"?: boolean }`
+  - `destinationIds` may include real `storage_destinations.id`s and/or the reserved `"local"` (server disk). An **empty array is allowed** and falls back to `["local"]` at run time — see the "local" destination note under Storage destinations above.
 - **200:** `{ "schedule": {...} }` (same shape as GET)
 - **400:** invalid frequency/destinations, or connection type isn't sqlite/postgresql
 - **409:** `{ "error": "This connection already has a backup schedule." }`

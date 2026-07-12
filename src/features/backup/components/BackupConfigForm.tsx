@@ -7,12 +7,16 @@ import NumberStepper from '@/shared/ui/form/NumberStepper'
 import { controlClass } from '@/shared/ui/form/Input'
 import { FormField } from '@/shared/ui/form/Form'
 import { useToast } from '@/shared/ui/feedback/Toast'
-import { CloudIcon } from '@/shared/ui/icons'
+import { CloudIcon, MonitorIcon } from '@/shared/ui/icons'
 import { toggleId } from '@/shared/lib/toggleId'
 import { createBackupSchedule, getBackupSchedule, listStorages, updateBackupSchedule } from '@/features/backup/lib/api'
 import type { BackupSchedulePayload } from '@/features/backup/lib/api'
 import type { StorageDestination } from '@/features/backup/lib/types'
 import LoadingState from '@/shared/ui/feedback/LoadingState'
+
+// Reserved id (matches the server) for the always-available destination that
+// stores backups on the server's own disk — the default when no S3 storage is set up.
+const LOCAL_STORAGE_ID = 'local'
 
 const FREQUENCIES = [
   { value: 'hourly', label: 'Hourly' },
@@ -48,7 +52,7 @@ type ConfigState = {
 const DEFAULT_CONFIG: ConfigState = {
   frequency: 'hourly',
   hourOfDay: 0,
-  destinationIds: [],
+  destinationIds: [LOCAL_STORAGE_ID],
   retryLimit: 0,
   retryDelaySec: 60,
   retentionDays: 0,
@@ -155,18 +159,28 @@ export default function BackupConfigForm({
 
       <div>
         <div className="mb-2 text-[12px] font-medium text-ink">Destinations</div>
-        {storages.length === 0 ? (
-          <p className="text-[12px] text-ink-faint">No storage destinations yet — add one in Workspace → Integrations first.</p>
-        ) : (
-          <div className="flex flex-col gap-2">
-            {storages.map((s) => (
-              <CheckboxRow key={s.id} checked={config.destinationIds.includes(s.id)} onChange={() => toggleDest(s.id)} ariaLabel={s.name}>
-                <CloudIcon width={14} height={14} className="shrink-0 text-sky-400" />
-                <span className="min-w-0 flex-1 truncate text-[12px]">{s.name}</span>
-                <span className="shrink-0 text-[10px] text-ink-faint">{s.bucket}</span>
-              </CheckboxRow>
-            ))}
-          </div>
+        <div className="flex flex-col gap-2">
+          <CheckboxRow
+            checked={config.destinationIds.includes(LOCAL_STORAGE_ID)}
+            onChange={() => toggleDest(LOCAL_STORAGE_ID)}
+            ariaLabel="Local server disk"
+          >
+            <MonitorIcon width={14} height={14} className="shrink-0 text-ink-dim" />
+            <span className="min-w-0 flex-1 truncate text-[12px]">Local server disk</span>
+            <span className="shrink-0 text-[10px] text-ink-faint">on this server</span>
+          </CheckboxRow>
+          {storages.map((s) => (
+            <CheckboxRow key={s.id} checked={config.destinationIds.includes(s.id)} onChange={() => toggleDest(s.id)} ariaLabel={s.name}>
+              <CloudIcon width={14} height={14} className="shrink-0 text-sky-400" />
+              <span className="min-w-0 flex-1 truncate text-[12px]">{s.name}</span>
+              <span className="shrink-0 text-[10px] text-ink-faint">{s.bucket}</span>
+            </CheckboxRow>
+          ))}
+        </div>
+        {storages.length === 0 && (
+          <p className="mt-2 text-[11px] text-ink-faint">
+            Backups store on this server by default. Add an S3-compatible destination in Workspace → Integrations to also keep copies off-server.
+          </p>
         )}
       </div>
 

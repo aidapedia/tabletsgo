@@ -70,7 +70,7 @@ export default function BackupVersionList({
     ]).then(([page_, storages]) => {
       setRuns(page_.runs)
       setTotal(page_.total)
-      setStorageNames(Object.fromEntries(storages.map((s: StorageDestination) => [s.id, s.name])))
+      setStorageNames({ local: 'Local server disk', ...Object.fromEntries(storages.map((s: StorageDestination) => [s.id, s.name])) })
       setLoading(false)
     })
   }
