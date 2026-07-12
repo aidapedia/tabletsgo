@@ -14,6 +14,7 @@ import { Input } from '@/shared/ui/form/Input'
 import IconButton from '@/shared/ui/buttons/IconButton'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
 import RowLabel from '@/shared/ui/RowLabel'
+import ListRow from '@/shared/ui/ListRow'
 import Popover from '@/shared/ui/overlay/Popover'
 import Tooltip from '@/shared/ui/overlay/Tooltip'
 
@@ -124,16 +125,15 @@ export default function SavedQueriesPanel({
     }
 
     return (
-      <div
+      <ListRow
         key={s.id}
         draggable
         onDragStart={(e) => onItemDragStart(e, s.id)}
         onDragEnd={onItemDragEnd}
-        className={`${rowBase} ${rowIdle} cursor-pointer ${dragId === s.id ? 'opacity-50' : ''}`}
-      >
-        <CodeIcon className="shrink-0 text-ink-faint" width={14} height={14} />
-        <RowLabel onClick={() => onOpenSaved?.(s)}>{s.name}</RowLabel>
-        <div className="shrink-0" onClick={(e) => e.stopPropagation()}>
+        onClick={() => onOpenSaved?.(s)}
+        className={dragId === s.id ? 'opacity-50' : ''}
+        icon={<CodeIcon className="shrink-0 text-ink-faint" width={14} height={14} />}
+        trailing={
           <Popover
             align="right"
             width={210}
@@ -159,8 +159,10 @@ export default function SavedQueriesPanel({
               </div>
             )}
           </Popover>
-        </div>
-      </div>
+        }
+      >
+        <RowLabel>{s.name}</RowLabel>
+      </ListRow>
     )
   }
 

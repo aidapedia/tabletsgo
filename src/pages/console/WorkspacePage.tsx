@@ -59,6 +59,8 @@ import Tooltip from '@/shared/ui/overlay/Tooltip'
 import Popover from '@/shared/ui/overlay/Popover'
 import IconButton from '@/shared/ui/buttons/IconButton'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
+import RowLabel from '@/shared/ui/RowLabel'
+import ListRow from '@/shared/ui/ListRow'
 import TextButton from '@/shared/ui/buttons/TextButton'
 import {
   ChevronRight,
@@ -890,20 +892,15 @@ export default function Workspace() {
     const onOpen = obj.type === 'function' ? () => openFunction(obj.name) : () => openTable(obj.name)
     const rowDomain = obj.type === 'table' ? domainByTable[obj.name] : null
     return (
-      <div
+      <ListRow
         key={`${obj.type}:${obj.name}`}
+        active={active}
         onClick={onOpen}
-        className={`group flex w-full cursor-pointer items-center gap-2 rounded-[7px] px-2.5 py-1.5 text-left text-xs ${
-          active ? 'bg-card-hover text-ink' : 'text-ink-dim hover:bg-elevated hover:text-ink'
-        }`}
+        icon={<Icon className={`flex-shrink-0 ${active ? 'text-ink' : 'text-ink-faint'}`} />}
       >
-        <Icon className={`flex-shrink-0 ${active ? 'text-ink' : 'text-ink-faint'}`} />
-        <span
-          className="flex-1 truncate"
-          title={obj.type === 'function' && obj.detail ? `${obj.name}(${obj.detail})` : obj.name}
-        >
+        <RowLabel title={obj.type === 'function' && obj.detail ? `${obj.name}(${obj.detail})` : obj.name}>
           {obj.name}
-        </span>
+        </RowLabel>
         {rowDomain && (
           <span className="shrink-0 group-hover:hidden" title={rowDomain.name}>
             <DomainDot color={rowDomain.color} size={7} />
@@ -913,6 +910,8 @@ export default function Workspace() {
           <Popover
             align="right"
             width={210}
+            placement="top"
+            portal
             trigger={({ open, toggle }) => (
               <IconButton
                 size="sm"
@@ -978,7 +977,7 @@ export default function Workspace() {
             )}
           </Popover>
         </div>
-      </div>
+      </ListRow>
     )
   }
 

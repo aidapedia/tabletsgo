@@ -6,14 +6,12 @@ import EmptyState from '@/shared/ui/feedback/EmptyState'
 import IconButton from '@/shared/ui/buttons/IconButton'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
 import RowLabel from '@/shared/ui/RowLabel'
+import ListRow from '@/shared/ui/ListRow'
 import TextButton from '@/shared/ui/buttons/TextButton'
 import Popover from '@/shared/ui/overlay/Popover'
 import Tooltip from '@/shared/ui/overlay/Tooltip'
 import MigrationInspector, { canRollbackTo, fmtTime } from './MigrationInspector'
 import { buildDraftMigration } from '../lib/rollback'
-
-const rowBase = 'group flex w-full items-center gap-2 rounded-[7px] px-2.5 py-1.5 text-left text-xs'
-const rowIdle = 'text-ink-dim hover:bg-elevated hover:text-ink'
 
 // Accordion section header — one open section at a time, styled to match the
 // console data-browser sections (Tables / Views / Functions). Keeps the title +
@@ -135,11 +133,11 @@ export default function SchemaPanel({
                             />
                           </div>
                         ) : (
-                          <div key={d.id} className={`${rowBase} cursor-pointer ${rowIdle}`}>
-                            <DiagramIcon className="shrink-0 text-ink-faint" width={14} height={14} />
-                            <RowLabel onClick={() => onOpenDraft?.(d)}>{d.name}</RowLabel>
-                            <Badge tone="amber" dense>draft</Badge>
-                            <div className="shrink-0" onClick={(e) => e.stopPropagation()}>
+                          <ListRow
+                            key={d.id}
+                            onClick={() => onOpenDraft?.(d)}
+                            icon={<DiagramIcon className="shrink-0 text-ink-faint" width={14} height={14} />}
+                            trailing={
                               <Popover
                                 align="right"
                                 width={170}
@@ -171,8 +169,10 @@ export default function SchemaPanel({
                                   </div>
                                 )}
                               </Popover>
-                            </div>
-                          </div>
+                            }
+                          >
+                            <RowLabel>{d.name}</RowLabel>
+                          </ListRow>
                         )
                       )
                     ))}
@@ -186,16 +186,11 @@ export default function SchemaPanel({
                         const rolledBack = (m.status || 'active') === 'rollbacked'
                         const canRollback = canRollbackTo(migrations, m)
                         return (
-                          <div key={m.id} className={`${rowBase} cursor-pointer ${rowIdle}`} onClick={() => setInspecting(m)}>
-                            <TagIcon className={`shrink-0 ${rolledBack ? 'text-ink-faint' : 'text-green-bright'}`} width={14} height={14} />
-                            <div className="flex min-w-0 flex-1 flex-col">
-                              <span className={`flex items-center gap-1.5 font-medium ${rolledBack ? 'text-ink-faint' : 'text-ink'}`}>
-                                v{m.version}
-                                <Badge tone={rolledBack ? 'faint' : 'green'} dense>{rolledBack ? 'rolled back' : 'release'}</Badge>
-                              </span>
-                              <span className="truncate text-[10px] text-ink-faint">{fmtTime(m.ts)}</span>
-                            </div>
-                            <div className="shrink-0" onClick={(e) => e.stopPropagation()}>
+                          <ListRow
+                            key={m.id}
+                            onClick={() => setInspecting(m)}
+                            icon={<TagIcon className={`shrink-0 ${rolledBack ? 'text-ink-faint' : 'text-green-bright'}`} width={14} height={14} />}
+                            trailing={
                               <Popover
                                 align="right"
                                 width={210}
@@ -233,8 +228,16 @@ export default function SchemaPanel({
                                   </div>
                                 )}
                               </Popover>
+                            }
+                          >
+                            <div className="flex min-w-0 flex-1 flex-col">
+                              <span className={`flex items-center gap-1.5 font-medium ${rolledBack ? 'text-ink-faint' : 'text-ink'}`}>
+                                v{m.version}
+                                <Badge tone={rolledBack ? 'faint' : 'green'} dense>{rolledBack ? 'rolled back' : 'release'}</Badge>
+                              </span>
+                              <span className="truncate text-[10px] text-ink-faint">{fmtTime(m.ts)}</span>
                             </div>
-                          </div>
+                          </ListRow>
                         )
                       })
                     ))}

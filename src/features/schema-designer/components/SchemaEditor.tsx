@@ -46,7 +46,7 @@ function TableNode({ data, selected }) {
   // ("new"); a table staged for DROP is red + struck through ("dropped").
   return (
     <div
-      className={`group relative cursor-pointer rounded-soft border-2 bg-panel text-[11px] shadow-[0_12px_30px_-12px_rgba(0,0,0,0.7)] transition-colors hover:border-green-bright ${
+      className={`group relative cursor-pointer rounded-soft border-2 bg-panel text-[11px] transition-colors hover:border-green-bright ${
         selected ? 'border-[var(--color-green)]' : data.dropped ? 'border-red' : data.pending ? 'border-green' : 'border-edge-strong'
       } ${data.dropped ? 'opacity-70' : ''}`}
     >

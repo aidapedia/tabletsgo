@@ -4,11 +4,9 @@ import { Input } from '@/shared/ui/form/Input'
 import IconButton from '@/shared/ui/buttons/IconButton'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
 import RowLabel from '@/shared/ui/RowLabel'
+import ListRow from '@/shared/ui/ListRow'
 import Popover from '@/shared/ui/overlay/Popover'
 import Tooltip from '@/shared/ui/overlay/Tooltip'
-
-const rowBase = 'group flex w-full items-center gap-2 rounded-[7px] px-2.5 py-1.5 text-left text-xs'
-const rowIdle = 'text-ink-dim hover:bg-elevated hover:text-ink'
 
 // Left-rail list of this connection's workflows. Modeled on SavedQueriesPanel
 // (minus folders): open in a tab, create, rename inline, delete.
@@ -90,18 +88,12 @@ export default function WorkflowsPanel({ workflows = [], activeId, onOpen, onNew
                   />
                 </div>
               ) : (
-                <div
+                <ListRow
                   key={w.id}
-                  className={`${rowBase} cursor-pointer ${w.id === activeId ? 'bg-card-hover text-ink' : rowIdle}`}
-                >
-                  <WorkflowIcon className="shrink-0 text-ink-faint" width={14} height={14} />
-                  <RowLabel onClick={() => onOpen?.(w)}>{w.name}</RowLabel>
-                  {w.protected && (
-                    <Tooltip label="Protected — created from a Backup schedule, can't be deleted" placement="top">
-                      <ShieldIcon className="shrink-0 text-ink-faint" width={12} height={12} />
-                    </Tooltip>
-                  )}
-                  <div className="shrink-0" onClick={(e) => e.stopPropagation()}>
+                  active={w.id === activeId}
+                  onClick={() => onOpen?.(w)}
+                  icon={<WorkflowIcon className="shrink-0 text-ink-faint" width={14} height={14} />}
+                  trailing={
                     <Popover
                       align="right"
                       width={170}
@@ -133,8 +125,15 @@ export default function WorkflowsPanel({ workflows = [], activeId, onOpen, onNew
                         </div>
                       )}
                     </Popover>
-                  </div>
-                </div>
+                  }
+                >
+                  <RowLabel>{w.name}</RowLabel>
+                  {w.protected && (
+                    <Tooltip label="Protected — created from a Backup schedule, can't be deleted" placement="top">
+                      <ShieldIcon className="shrink-0 text-ink-faint" width={12} height={12} />
+                    </Tooltip>
+                  )}
+                </ListRow>
               )
             )}
           </div>
