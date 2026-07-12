@@ -275,6 +275,8 @@ function initMetaDb() {
   }
   addColumn('saved_queries', 'kind TEXT')
   addColumn('saved_queries', 'folder_id TEXT')
+  // Folders can nest: parent_id points at another saved_folders row (NULL = root).
+  addColumn('saved_folders', 'parent_id TEXT')
   // Invited members: username holds the email, password blank until accepted.
   addColumn('users', "status TEXT")           // 'active' | 'pending'
   addColumn('users', 'invite_token TEXT')
@@ -2658,38 +2660,97 @@ app.get('/api/connections/:id/saved', (req, res) => {
 })
 
 // ---- Saved folders (per connection) ----
+// Folders form a tree via `parent_id` (NULL = root); queries hang off any folder.
+
+// True if `folderId` is `candidateAncestor` or nested somewhere beneath it —
+// used to reject reparenting a folder into its own subtree (which would orphan
+// a cycle). Walks up from `folderId` following parent_id within this connection.
+function folderHasAncestor(connectionId, folderId, candidateAncestor) {
+  const parentOf = new Map(
+    meta
+      .prepare('SELECT id, parent_id FROM saved_folders WHERE connection_id = ?')
+      .all(connectionId)
+      .map((r) => [r.id, r.parent_id || null])
+  )
+  let cur = folderId
+  const seen = new Set()
+  while (cur && !seen.has(cur)) {
+    if (cur === candidateAncestor) return true
+    seen.add(cur)
+    cur = parentOf.get(cur) || null
+  }
+  return false
+}
+
 app.get('/api/connections/:id/folders', (req, res) => {
   const rows = meta
-    .prepare('SELECT id, name, ts FROM saved_folders WHERE connection_id = ? ORDER BY ts ASC')
+    .prepare('SELECT id, name, parent_id, ts FROM saved_folders WHERE connection_id = ? ORDER BY ts ASC')
     .all(req.params.id)
-  res.json(rows)
+  res.json(rows.map((r) => ({ id: r.id, name: r.name, parentId: r.parent_id || null, ts: r.ts })))
 })
 
 app.post('/api/connections/:id/folders', (req, res) => {
-  const { name } = req.body || {}
+  const { name, parentId } = req.body || {}
   if (!name?.trim()) return res.status(400).json({ error: 'A folder name is required' })
-  const entry = { id: randomUUID(), name: name.trim(), ts: Date.now() }
+  if (parentId) {
+    const parent = meta
+      .prepare('SELECT id FROM saved_folders WHERE id = ? AND connection_id = ?')
+      .get(parentId, req.params.id)
+    if (!parent) return res.status(400).json({ error: 'Parent folder not found' })
+  }
+  const entry = { id: randomUUID(), name: name.trim(), parentId: parentId || null, ts: Date.now() }
   meta
-    .prepare('INSERT INTO saved_folders (id, connection_id, name, ts) VALUES (?, ?, ?, ?)')
-    .run(entry.id, req.params.id, entry.name, entry.ts)
+    .prepare('INSERT INTO saved_folders (id, connection_id, name, parent_id, ts) VALUES (?, ?, ?, ?, ?)')
+    .run(entry.id, req.params.id, entry.name, entry.parentId, entry.ts)
   res.json(entry)
 })
 
 app.put('/api/connections/:id/folders/:fid', (req, res) => {
-  const { name } = req.body || {}
-  if (!name?.trim()) return res.status(400).json({ error: 'A folder name is required' })
+  const body = req.body || {}
+  const { name } = body
+  const sets = []
+  const vals = []
+  if (name != null) {
+    if (!name.trim()) return res.status(400).json({ error: 'A folder name is required' })
+    sets.push('name = ?')
+    vals.push(name.trim())
+  }
+  // parentId is explicitly settable (null moves the folder to the root).
+  if ('parentId' in body) {
+    const parentId = body.parentId || null
+    if (parentId) {
+      if (parentId === req.params.fid) return res.status(400).json({ error: "A folder can't be its own parent" })
+      const parent = meta
+        .prepare('SELECT id FROM saved_folders WHERE id = ? AND connection_id = ?')
+        .get(parentId, req.params.id)
+      if (!parent) return res.status(400).json({ error: 'Parent folder not found' })
+      if (folderHasAncestor(req.params.id, parentId, req.params.fid))
+        return res.status(400).json({ error: "Can't move a folder into its own subfolder" })
+    }
+    sets.push('parent_id = ?')
+    vals.push(parentId)
+  }
+  if (!sets.length) return res.status(400).json({ error: 'Nothing to update' })
   const r = meta
-    .prepare('UPDATE saved_folders SET name = ? WHERE id = ? AND connection_id = ?')
-    .run(name.trim(), req.params.fid, req.params.id)
+    .prepare(`UPDATE saved_folders SET ${sets.join(', ')} WHERE id = ? AND connection_id = ?`)
+    .run(...vals, req.params.fid, req.params.id)
   if (!r.changes) return res.status(404).json({ error: 'Not found' })
-  res.json({ ok: true, name: name.trim() })
+  res.json({ ok: true })
 })
 
 app.delete('/api/connections/:id/folders/:fid', (req, res) => {
-  // Detach the folder's queries back to the root, then remove the folder.
+  // Reparent the folder's contents up one level (to its own parent) rather than
+  // deleting them: child folders and queries move to the deleted folder's parent.
+  const row = meta
+    .prepare('SELECT parent_id FROM saved_folders WHERE id = ? AND connection_id = ?')
+    .get(req.params.fid, req.params.id)
+  const parentId = row?.parent_id || null
   meta
-    .prepare('UPDATE saved_queries SET folder_id = NULL WHERE folder_id = ? AND connection_id = ?')
-    .run(req.params.fid, req.params.id)
+    .prepare('UPDATE saved_folders SET parent_id = ? WHERE parent_id = ? AND connection_id = ?')
+    .run(parentId, req.params.fid, req.params.id)
+  meta
+    .prepare('UPDATE saved_queries SET folder_id = ? WHERE folder_id = ? AND connection_id = ?')
+    .run(parentId, req.params.fid, req.params.id)
   meta.prepare('DELETE FROM saved_folders WHERE id = ? AND connection_id = ?').run(req.params.fid, req.params.id)
   res.json({ ok: true })
 })

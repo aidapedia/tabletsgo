@@ -31,12 +31,17 @@ export async function fetchFolders(connectionId) {
   return safeRequest(`/connections/${connectionId}/folders`, [])
 }
 
-export async function createFolder(connectionId, name) {
-  return request(`/connections/${connectionId}/folders`, { method: 'POST', body: { name } })
+export async function createFolder(connectionId, name, parentId = null) {
+  return request(`/connections/${connectionId}/folders`, { method: 'POST', body: { name, parentId: parentId || null } })
 }
 
 export async function renameFolder(connectionId, folderId, name) {
   await request(`/connections/${connectionId}/folders/${folderId}`, { method: 'PUT', body: { name } })
+}
+
+// Move a folder under a new parent (null = root). Nesting builds subdirectories.
+export async function moveFolder(connectionId, folderId, parentId) {
+  await request(`/connections/${connectionId}/folders/${folderId}`, { method: 'PUT', body: { parentId: parentId || null } })
 }
 
 export async function deleteFolder(connectionId, folderId) {

@@ -30,6 +30,7 @@ import {
   createFolder,
   renameFolder,
   deleteFolder,
+  moveFolder,
 } from '@/features/workspace/lib/savedQueries'
 import { draftToItems } from '@/shared/lib/schemaDraft'
 import SearchInput from '@/shared/ui/form/SearchInput'
@@ -47,6 +48,7 @@ import IconRail from '@/features/workspace/components/IconRail'
 import { formatCombo, useKeymap, useShortcut } from '@/features/keymap'
 import SavedQueriesPanel from '@/features/workspace/components/SavedQueriesPanel'
 import AnalyzePanel from '@/features/workspace/components/AnalyzePanel'
+import AnalyzeFolderPanel from '@/features/workspace/components/AnalyzeFolderPanel'
 import { WorkflowsPanel, listWorkflows, createWorkflow, deleteWorkflow, updateWorkflow } from '@/features/workflow'
 import QueryHistoryView from '@/features/workspace/components/QueryHistoryView'
 import SchemaHistoryView from '@/features/schema-designer/components/SchemaHistoryView'
@@ -131,6 +133,7 @@ export default function Workspace() {
   const [tabMenu, setTabMenu] = useState(null) // { x, y, key } | null
   const [savingQuery, setSavingQuery] = useState(null) // sql string being saved | null
   const [analyzeSql, setAnalyzeSql] = useState(null) // sql string being analyzed | null
+  const [analyzeFolder, setAnalyzeFolder] = useState(null) // { name, queries } being analyzed | null
   const [changes, setChanges] = useState([]) // staged (uncommitted) SQL mutations
   const [changesOpen, setChangesOpen] = useState(false)
   const [schemaPending, setSchemaPending] = useState({}) // per schema-editor tab: key -> items[]
@@ -629,11 +632,11 @@ export default function Workspace() {
   }
 
   // ---- Folders ----
-  const addFolder = async (name) => {
+  const addFolder = async (name, parentId = null) => {
     const next = name?.trim()
     if (!next) return
     try {
-      const folder = await createFolder(id, next)
+      const folder = await createFolder(id, next, parentId)
       setFolders((prev) => [...prev, folder])
     } catch (e) {
       toast.error(`Couldn't create folder: ${e.message}`)
@@ -650,13 +653,32 @@ export default function Workspace() {
     }
   }
   const removeFolder = async (fid) => {
-    // Detach the folder's queries back to the root locally, mirroring the server.
-    setFolders((prev) => prev.filter((f) => f.id !== fid))
-    setSaved((prev) => prev.map((s) => (s.folderId === fid ? { ...s, folderId: null } : s)))
+    // Reparent this folder's contents up one level locally, mirroring the server:
+    // its subfolders and queries move to its own parent (root for a top-level folder).
+    const parentId = folders.find((f) => f.id === fid)?.parentId || null
+    setFolders((prev) =>
+      prev.filter((f) => f.id !== fid).map((f) => (f.parentId === fid ? { ...f, parentId } : f))
+    )
+    setSaved((prev) => prev.map((s) => (s.folderId === fid ? { ...s, folderId: parentId } : s)))
     try {
       await deleteFolder(id, fid)
     } catch (e) {
       toast.error(`Delete failed: ${e.message}`)
+    }
+  }
+  const moveFolderToParent = async (fid, parentId) => {
+    const target = parentId || null
+    if (fid === target) return
+    // Guard against cycles: refuse to nest a folder under its own descendant.
+    const parentOf = new Map(folders.map((f) => [f.id, f.parentId || null]))
+    for (let cur = target; cur; cur = parentOf.get(cur)) {
+      if (cur === fid) return
+    }
+    setFolders((prev) => prev.map((f) => (f.id === fid ? { ...f, parentId: target } : f)))
+    try {
+      await moveFolder(id, fid, target)
+    } catch (e) {
+      toast.error(`Move failed: ${e.message}`)
     }
   }
   const moveSavedToFolder = async (sid, folderId) => {
@@ -1205,12 +1227,14 @@ export default function Workspace() {
             folders={folders}
             onOpenSaved={openSavedQuery}
             onAnalyzeSaved={(s) => setAnalyzeSql(s.sql)}
+            onAnalyzeFolder={(f, queries) => setAnalyzeFolder({ name: f.name, queries })}
             onRenameSaved={renameSavedQuery}
             onDeleteSaved={removeSaved}
             onCreateFolder={addFolder}
             onRenameFolder={renameFolderById}
             onDeleteFolder={removeFolder}
             onMoveToFolder={moveSavedToFolder}
+            onMoveFolder={moveFolderToParent}
             onNew={() => openQuery()}
             onRefresh={() => {
               fetchSaved(id).then(setSaved)
@@ -1503,6 +1527,20 @@ export default function Workspace() {
           onClose={() => setAnalyzeSql(null)}
           onOpenInEditor={(ddl) => {
             setAnalyzeSql(null)
+            openQuery(ddl)
+          }}
+        />
+      )}
+
+      {analyzeFolder != null && conn && (
+        <AnalyzeFolderPanel
+          conn={nsConn}
+          dialect={DIALECT[conn.type]}
+          folderName={analyzeFolder.name}
+          queries={analyzeFolder.queries}
+          onClose={() => setAnalyzeFolder(null)}
+          onOpenInEditor={(ddl) => {
+            setAnalyzeFolder(null)
             openQuery(ddl)
           }}
         />
