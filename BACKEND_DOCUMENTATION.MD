@@ -99,7 +99,12 @@ reassembles this same shape on every read, so API consumers see no difference:
 
 ### Folder
 ```jsonc
-{ "id": "uuid", "name": "Reports", "ts": 1719600000000 }
+{
+  "id": "uuid",
+  "name": "Reports",
+  "parentId": null,     // parent folder id or null (root) — folders nest into subdirectories
+  "ts": 1719600000000
+}
 ```
 
 ### Domain
@@ -207,6 +212,7 @@ CREATE TABLE saved_folders (
   id TEXT PRIMARY KEY,
   connection_id TEXT NOT NULL,
   name TEXT NOT NULL,
+  parent_id TEXT,               -- nullable self-FK to saved_folders.id (NULL = root); enables nesting
   ts INTEGER
 );
 CREATE TABLE domains (
@@ -543,31 +549,35 @@ Delete a saved query.
 ## Folders (per connection)
 
 ### GET `/api/connections/:id/folders`
-List folders (oldest first).
+List folders (oldest first). Folders nest via `parentId` (null = root).
 
-- **200:** `Folder[]` → `[{ "id", "name", "ts" }]`
+- **200:** `Folder[]` → `[{ "id", "name", "parentId", "ts" }]`
 - **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/folders`
 
 ### POST `/api/connections/:id/folders`
-Create a folder.
+Create a folder. Pass `parentId` to create a subfolder under an existing folder.
 
-- **Body:** `{ "name": "Reports" }`
-- **200:** `{ "id", "name", "ts" }`
-- **400:** `{ "error": "A folder name is required" }`
+- **Body:** `{ "name": "Reports", "parentId": null }`  // `parentId` optional (defaults to root)
+- **200:** `{ "id", "name", "parentId", "ts" }`
+- **400:** `{ "error": "A folder name is required" }` / `{ "error": "Parent folder not found" }`
 - **Example:** `POST http://localhost:3000/api/connections/demo-sqlite/folders`
 
 ### PUT `/api/connections/:id/folders/:fid`
-Rename a folder.
+Rename and/or move (reparent) a folder. Send `name`, `parentId`, or both.
+`parentId: null` moves the folder to the root.
 
-- **Body:** `{ "name": "Renamed" }`
-- **200:** `{ "ok": true, "name": "Renamed" }`
-- **400:** `{ "error": "A folder name is required" }`
+- **Body:** `{ "name": "Renamed" }` and/or `{ "parentId": "fld-2" }`
+- **200:** `{ "ok": true }`
+- **400:** `{ "error": "A folder name is required" }` / `{ "error": "Parent folder not found" }` /
+  `{ "error": "Can't move a folder into its own subfolder" }` / `{ "error": "A folder can't be its own parent" }` /
+  `{ "error": "Nothing to update" }`
 - **404:** `{ "error": "Not found" }`
 - **Example:** `PUT http://localhost:3000/api/connections/demo-sqlite/folders/fld-1`
 
 ### DELETE `/api/connections/:id/folders/:fid`
-Delete a folder. Its queries are detached back to the root (`folder_id = NULL`),
-not deleted.
+Delete a folder. Its contents move up one level (to the deleted folder's parent,
+or the root for a top-level folder): child subfolders are reparented and queries
+are re-attached (`folder_id`/`parent_id` set to the parent), not deleted.
 
 - **200:** `{ "ok": true }`
 - **Example:** `DELETE http://localhost:3000/api/connections/demo-sqlite/folders/fld-1`
@@ -1182,9 +1192,9 @@ Liveness probe.
 | DELETE | `/api/connections/:id/domains/:domainId`  | Delete a domain + detach tables |
 | PUT    | `/api/connections/:id/tables/:table/domain` | Set/clear a table's domain    |
 | GET    | `/api/connections/:id/folders`            | List folders                    |
-| POST   | `/api/connections/:id/folders`            | Create folder                   |
-| PUT    | `/api/connections/:id/folders/:fid`       | Rename folder                   |
-| DELETE | `/api/connections/:id/folders/:fid`       | Delete folder (detach queries)  |
+| POST   | `/api/connections/:id/folders`            | Create folder (opt. `parentId`) |
+| PUT    | `/api/connections/:id/folders/:fid`       | Rename / move (reparent) folder |
+| DELETE | `/api/connections/:id/folders/:fid`       | Delete folder (contents move up)|
 | GET    | `/api/connections/:id/history`            | List query history              |
 | POST   | `/api/connections/:id/history`            | Record a query execution        |
 | DELETE | `/api/connections/:id/history`            | Clear query history             |

@@ -30,12 +30,14 @@ export default function SavedQueriesPanel({
   folders = [],
   onOpenSaved,
   onAnalyzeSaved,
+  onAnalyzeFolder,
   onRenameSaved,
   onDeleteSaved,
   onCreateFolder,
   onRenameFolder,
   onDeleteFolder,
   onMoveToFolder,
+  onMoveFolder,
   onRefresh,
 }: any) {
   const [searchOpen, setSearchOpen] = useState(false)
@@ -43,9 +45,9 @@ export default function SavedQueriesPanel({
   const [openFolders, setOpenFolders] = useState(() => new Set()) // expanded folder ids
   const [renaming, setRenaming] = useState(null) // { id, value } — saved query rename
   const [renamingFolder, setRenamingFolder] = useState(null) // { id, value }
-  const [creatingFolder, setCreatingFolder] = useState(false)
+  const [creatingFolder, setCreatingFolder] = useState(null) // { parentId } while adding a (sub)folder
   const [newFolderName, setNewFolderName] = useState('')
-  const [dragId, setDragId] = useState(null) // saved query id being dragged
+  const [drag, setDrag] = useState(null) // { type: 'query' | 'folder', id } being dragged
   const [dropTarget, setDropTarget] = useState(undefined) // folder id | null (root) | undefined (none)
 
   const q = filter.trim().toLowerCase()
@@ -53,8 +55,35 @@ export default function SavedQueriesPanel({
 
   const sortedFolders = useMemo(() => [...folders].sort(byName), [folders])
   const visibleSaved = useMemo(() => saved.filter(matches), [saved, q])
+  const childFolders = (pid) => sortedFolders.filter((f) => (f.parentId || null) === pid)
+  // Every saved query in a folder plus its subfolders (unfiltered by search).
+  const queriesInSubtree = (fid) => {
+    const own = saved.filter((s) => (s.folderId || null) === fid).sort(byName)
+    return childFolders(fid).reduce((acc, c) => acc.concat(queriesInSubtree(c.id)), own)
+  }
   const itemsIn = (fid) => visibleSaved.filter((s) => (s.folderId || null) === fid).sort(byName)
+  // Count of visible queries in a folder plus all of its subfolders.
+  const subtreeItemCount = (fid) =>
+    itemsIn(fid).length + childFolders(fid).reduce((n, c) => n + subtreeItemCount(c.id), 0)
   const rootItems = useMemo(() => itemsIn(null), [visibleSaved])
+
+  // parentId lookup for cycle-safe drop-target checks.
+  const parentOf = useMemo(() => new Map(folders.map((f) => [f.id, f.parentId || null])), [folders])
+  // True if `targetId` is `ancestorId` or nested somewhere beneath it.
+  const isSelfOrDescendant = (targetId, ancestorId) => {
+    let cur = targetId
+    const seen = new Set()
+    while (cur && !seen.has(cur)) {
+      if (cur === ancestorId) return true
+      seen.add(cur)
+      cur = parentOf.get(cur) || null
+    }
+    return false
+  }
+
+  // A folder auto-expands during search if it (or any descendant) holds a match.
+  const folderHasMatch = (fid) =>
+    itemsIn(fid).length > 0 || childFolders(fid).some((c) => folderHasMatch(c.id))
 
   const toggleFolder = (fid) =>
     setOpenFolders((s) => {
@@ -62,6 +91,7 @@ export default function SavedQueriesPanel({
       n.has(fid) ? n.delete(fid) : n.add(fid)
       return n
     })
+  const expandFolder = (fid) => setOpenFolders((s) => new Set(s).add(fid))
 
   const commitRename = () => {
     if (renaming?.value.trim()) onRenameSaved?.(renaming.id, renaming.value.trim())
@@ -72,29 +102,48 @@ export default function SavedQueriesPanel({
     setRenamingFolder(null)
   }
   const commitNewFolder = () => {
-    if (newFolderName.trim()) onCreateFolder?.(newFolderName.trim())
+    if (newFolderName.trim()) onCreateFolder?.(newFolderName.trim(), creatingFolder?.parentId ?? null)
     setNewFolderName('')
-    setCreatingFolder(false)
+    setCreatingFolder(null)
+  }
+  const startSubfolder = (parentId) => {
+    expandFolder(parentId)
+    setNewFolderName('')
+    setCreatingFolder({ parentId })
   }
 
-  // ---- Drag and drop (move a saved query into a folder / back to root) ----
-  const onItemDragStart = (e, id) => {
-    setDragId(id)
+  // ---- Drag and drop: move a saved query OR a folder into a folder / back to root ----
+  const onQueryDragStart = (e, id) => {
+    setDrag({ type: 'query', id })
     e.dataTransfer.effectAllowed = 'move'
     e.dataTransfer.setData('text/plain', id)
   }
-  const onItemDragEnd = () => {
-    setDragId(null)
+  const onFolderDragStart = (e, id) => {
+    e.stopPropagation()
+    setDrag({ type: 'folder', id })
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', id)
+  }
+  const onDragEnd = () => {
+    setDrag(null)
     setDropTarget(undefined)
   }
+  // Whether the current drag may land on folder `fid` (null = root).
+  const canDropOn = (fid) => {
+    if (!drag) return false
+    if (drag.type === 'query') return true
+    // A folder can't drop onto itself or into its own subtree; null (root) is always fine.
+    return fid == null || !isSelfOrDescendant(fid, drag.id)
+  }
   const handleDrop = (fid) => {
-    if (dragId != null) onMoveToFolder?.(dragId, fid)
-    setDragId(null)
+    if (drag?.type === 'query') onMoveToFolder?.(drag.id, fid)
+    else if (drag?.type === 'folder' && canDropOn(fid)) onMoveFolder?.(drag.id, fid)
+    setDrag(null)
     setDropTarget(undefined)
   }
   const dropProps = (fid) => ({
     onDragOver: (e) => {
-      if (dragId == null) return
+      if (!canDropOn(fid)) return
       e.preventDefault()
       setDropTarget(fid)
     },
@@ -130,10 +179,10 @@ export default function SavedQueriesPanel({
       <ListRow
         key={s.id}
         draggable
-        onDragStart={(e) => onItemDragStart(e, s.id)}
-        onDragEnd={onItemDragEnd}
+        onDragStart={(e) => onQueryDragStart(e, s.id)}
+        onDragEnd={onDragEnd}
         onClick={() => onOpenSaved?.(s)}
-        className={dragId === s.id ? 'opacity-50' : ''}
+        className={drag?.type === 'query' && drag.id === s.id ? 'opacity-50' : ''}
         icon={<CodeIcon className="shrink-0 text-ink-faint" width={14} height={14} />}
         trailing={
           <Popover
@@ -173,8 +222,10 @@ export default function SavedQueriesPanel({
 
   const renderFolder = (f) => {
     const items = itemsIn(f.id)
-    const expanded = openFolders.has(f.id) || (q && items.length > 0)
+    const subfolders = childFolders(f.id)
+    const expanded = openFolders.has(f.id) || (q && folderHasMatch(f.id))
     const isDrop = dropTarget === f.id
+    const addingHere = creatingFolder?.parentId === f.id
 
     if (renamingFolder?.id === f.id) {
       return (
@@ -198,9 +249,14 @@ export default function SavedQueriesPanel({
     return (
       <div key={f.id}>
         <div
+          draggable
+          onDragStart={(e) => onFolderDragStart(e, f.id)}
+          onDragEnd={onDragEnd}
           onClick={() => toggleFolder(f.id)}
           {...dropProps(f.id)}
-          className={`${rowBase} cursor-pointer ${isDrop ? 'bg-green/15 text-ink ring-1 ring-green-dim' : rowIdle}`}
+          className={`${rowBase} cursor-pointer ${drag?.type === 'folder' && drag.id === f.id ? 'opacity-50' : ''} ${
+            isDrop ? 'bg-green/15 text-ink ring-1 ring-green-dim' : rowIdle
+          }`}
         >
           {expanded ? (
             <FolderOpenIcon className="shrink-0 text-ink-faint" width={15} height={15} />
@@ -208,11 +264,13 @@ export default function SavedQueriesPanel({
             <FolderIcon className="shrink-0 text-ink-faint" width={15} height={15} />
           )}
           <span className="min-w-0 flex-1 truncate">{f.name}</span>
-          {items.length > 0 && <span className="text-[10px] text-ink-faint">{items.length}</span>}
+          {subtreeItemCount(f.id) > 0 && (
+            <span className="text-[10px] text-ink-faint">{subtreeItemCount(f.id)}</span>
+          )}
           <div className="shrink-0" onClick={(e) => e.stopPropagation()}>
             <Popover
               align="right"
-              width={170}
+              width={180}
               trigger={({ open, toggle }) => (
                 <IconButton size="sm" active={open} onClick={toggle} aria-label="Folder actions" className={open ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}>
                   <MoreVerticalIcon width={15} height={15} />
@@ -221,8 +279,14 @@ export default function SavedQueriesPanel({
             >
               {({ close }) => (
                 <div className="p-1">
+                  <MenuItem onClick={() => { startSubfolder(f.id); close() }}>
+                    <FolderPlusIcon width={14} height={14} /> New subfolder
+                  </MenuItem>
                   <MenuItem onClick={() => { setRenamingFolder({ id: f.id, value: f.name }); close() }}>
                     <EditIcon width={14} height={14} /> Rename
+                  </MenuItem>
+                  <MenuItem onClick={() => { onAnalyzeFolder?.(f, queriesInSubtree(f.id)); close() }}>
+                    <GaugeIcon width={14} height={14} /> Analyze queries
                   </MenuItem>
                   <div className="my-1 h-px bg-edge" />
                   <MenuItem danger onClick={() => { onDeleteFolder?.(f.id); close() }}>
@@ -235,11 +299,12 @@ export default function SavedQueriesPanel({
         </div>
 
         {expanded && (
-          <div className="ml-3 flex flex-col border-l border-edge pl-1.5">
-            {items.length === 0 ? (
+          <div className="ml-3 flex flex-col gap-0.5 border-l border-edge pl-1.5">
+            {subfolders.map(renderFolder)}
+            {addingHere && renderNewFolderInput()}
+            {items.map(renderItem)}
+            {subfolders.length === 0 && items.length === 0 && !addingHere && (
               <div className="px-2.5 py-1 text-[11px] text-ink-faint">Empty — drag queries here</div>
-            ) : (
-              items.map(renderItem)
             )}
           </div>
         )}
@@ -247,6 +312,28 @@ export default function SavedQueriesPanel({
     )
   }
 
+  const renderNewFolderInput = () => (
+    <div className="flex items-center gap-2 px-2.5 py-1">
+      <FolderIcon className="shrink-0 text-ink-faint" width={15} height={15} />
+      <Input
+        autoFocus
+        className="!py-1"
+        placeholder="Folder name…"
+        value={newFolderName}
+        onChange={(e) => setNewFolderName(e.target.value)}
+        onBlur={commitNewFolder}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') commitNewFolder()
+          else if (e.key === 'Escape') {
+            setNewFolderName('')
+            setCreatingFolder(null)
+          }
+        }}
+      />
+    </div>
+  )
+
+  const rootFolders = childFolders(null)
   const nothingSaved = saved.length === 0 && folders.length === 0
 
   return (
@@ -271,7 +358,7 @@ export default function SavedQueriesPanel({
             </IconButton>
           </Tooltip>
           <Tooltip label="New folder" placement="bottom">
-            <IconButton onClick={() => setCreatingFolder(true)}>
+            <IconButton onClick={() => { setNewFolderName(''); setCreatingFolder({ parentId: null }) }}>
               <FolderPlusIcon />
             </IconButton>
           </Tooltip>
@@ -290,32 +377,13 @@ export default function SavedQueriesPanel({
       )}
 
       <div className="flex-1 overflow-y-auto px-2 pb-4">
-        {creatingFolder && (
-          <div className="flex items-center gap-2 px-2.5 py-1">
-            <FolderIcon className="shrink-0 text-ink-faint" width={15} height={15} />
-            <Input
-              autoFocus
-              className="!py-1"
-              placeholder="Folder name…"
-              value={newFolderName}
-              onChange={(e) => setNewFolderName(e.target.value)}
-              onBlur={commitNewFolder}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') commitNewFolder()
-                else if (e.key === 'Escape') {
-                  setNewFolderName('')
-                  setCreatingFolder(false)
-                }
-              }}
-            />
-          </div>
-        )}
+        {creatingFolder && creatingFolder.parentId == null && renderNewFolderInput()}
 
         {nothingSaved && !creatingFolder ? (
           <div className="px-2 py-3 text-[11px] text-ink-faint">No saved queries yet.</div>
         ) : (
           <div className="flex flex-col gap-0.5">
-            {sortedFolders.map(renderFolder)}
+            {rootFolders.map(renderFolder)}
 
             {/* Root (un-foldered) queries — also the drop zone for "remove from folder" */}
             <div
