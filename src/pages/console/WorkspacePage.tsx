@@ -46,6 +46,7 @@ const WorkflowEditor = lazy(() => import('@/features/workflow/components/Workflo
 import IconRail from '@/features/workspace/components/IconRail'
 import { formatCombo, useKeymap, useShortcut } from '@/features/keymap'
 import SavedQueriesPanel from '@/features/workspace/components/SavedQueriesPanel'
+import AnalyzePanel from '@/features/workspace/components/AnalyzePanel'
 import { WorkflowsPanel, listWorkflows, createWorkflow, deleteWorkflow, updateWorkflow } from '@/features/workflow'
 import QueryHistoryView from '@/features/workspace/components/QueryHistoryView'
 import SchemaHistoryView from '@/features/schema-designer/components/SchemaHistoryView'
@@ -129,6 +130,7 @@ export default function Workspace() {
   const [workflows, setWorkflows] = useState([])
   const [tabMenu, setTabMenu] = useState(null) // { x, y, key } | null
   const [savingQuery, setSavingQuery] = useState(null) // sql string being saved | null
+  const [analyzeSql, setAnalyzeSql] = useState(null) // sql string being analyzed | null
   const [changes, setChanges] = useState([]) // staged (uncommitted) SQL mutations
   const [changesOpen, setChangesOpen] = useState(false)
   const [schemaPending, setSchemaPending] = useState({}) // per schema-editor tab: key -> items[]
@@ -1202,6 +1204,7 @@ export default function Workspace() {
             saved={saved.filter((s) => s.kind !== 'schema')}
             folders={folders}
             onOpenSaved={openSavedQuery}
+            onAnalyzeSaved={(s) => setAnalyzeSql(s.sql)}
             onRenameSaved={renameSavedQuery}
             onDeleteSaved={removeSaved}
             onCreateFolder={addFolder}
@@ -1364,6 +1367,7 @@ export default function Workspace() {
                 onPersist={persistQueryState}
                 onRan={recordRun}
                 onSave={saveQuery}
+                onAnalyze={setAnalyzeSql}
               />
             </Suspense>
           )}
@@ -1488,6 +1492,19 @@ export default function Workspace() {
           domains={domains}
           onChange={setDomains}
           onClose={() => setDomainTable(null)}
+        />
+      )}
+
+      {analyzeSql != null && conn && (
+        <AnalyzePanel
+          conn={nsConn}
+          dialect={DIALECT[conn.type]}
+          sql={analyzeSql}
+          onClose={() => setAnalyzeSql(null)}
+          onOpenInEditor={(ddl) => {
+            setAnalyzeSql(null)
+            openQuery(ddl)
+          }}
         />
       )}
 

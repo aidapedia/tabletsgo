@@ -102,6 +102,12 @@ export async function runQuery(conn, sql) {
   }
 }
 
+// Analyze a query's performance (EXPLAIN-based, dialect-normalized). Unlike
+// runQuery this throws on failure — the AnalyzePanel shows one error state.
+export async function analyzeQuery(conn, sql) {
+  return request<any>(`/connections/${conn.id}/analyze`, { method: 'POST', body: { sql, ...nsBody(conn) } })
+}
+
 // Record a successfully-executed DDL batch (already run via runQuery above) —
 // bumps the connection's schema version and appends one migration row.
 export async function recordSchemaMigration(conn, statements) {

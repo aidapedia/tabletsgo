@@ -6,7 +6,7 @@ import Button from '@/shared/ui/buttons/Button'
 import Tooltip from '@/shared/ui/overlay/Tooltip'
 import SqlEditor from '@/shared/ui/SqlEditor'
 import { useToast } from '@/shared/ui/feedback/Toast'
-import { ChevronDown, SaveIcon, WandIcon } from '@/shared/ui/icons'
+import { ChevronDown, GaugeIcon, SaveIcon, WandIcon } from '@/shared/ui/icons'
 import { formatCombo, useKeymap, useShortcut } from '@/features/keymap'
 
 const MIN_PANE = 100 // px — floor for both the editor and results panes while dragging
@@ -18,7 +18,7 @@ function primaryTable(sql) {
   return m ? m[1].replace(/^.*\./, '') : null
 }
 
-export default function QueryEditor({ conn, dialect, initialSql, tabKey, persisted, onPersist, onRan, onSave }) {
+export default function QueryEditor({ conn, dialect, initialSql, tabKey, persisted, onPersist, onRan, onSave, onAnalyze }) {
   const toast = useToast()
   const { bindings } = useKeymap()
   // Seed from the persisted snapshot (restored on tab switch) when present,
@@ -181,6 +181,17 @@ export default function QueryEditor({ conn, dialect, initialSql, tabKey, persist
             disabled={!sql.trim()}
           >
             <SaveIcon width={15} height={15} />
+          </Button>
+        </Tooltip>
+        <Tooltip label="Analyze performance" placement="bottom">
+          <Button
+            variant="subtle"
+            size="sm"
+            className="!px-2"
+            onClick={() => onAnalyze?.(sql)}
+            disabled={!sql.trim()}
+          >
+            <GaugeIcon width={15} height={15} />
           </Button>
         </Tooltip>
 
