@@ -19,15 +19,16 @@ import IconButton from '@/shared/ui/buttons/IconButton'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
 import TextButton from '@/shared/ui/buttons/TextButton'
 import Popover from '@/shared/ui/overlay/Popover'
-import Checkbox from '@/shared/ui/form/Checkbox'
 import Badge from '@/shared/ui/Badge'
 import Select from '@/shared/ui/form/Select'
 import { controlClass, Input } from '@/shared/ui/form/Input'
 import { useToast } from '@/shared/ui/feedback/Toast'
 import TableEditPanel from '@/features/schema-designer/components/TableEditPanel'
 import CreateTablePanel from '@/features/schema-designer/components/CreateTablePanel'
+import SchemaSidebar from '@/features/schema-designer/components/SchemaSidebar'
 import SaveQueryPanel from '@/shared/ui/SaveQueryPanel'
 import { newItemId } from '@/shared/lib/schemaDraft'
+import { DomainEditPanel } from '@/features/domains'
 import { FK_ACTIONS, fkEligible, normFkAction, useColumnTypes } from '@/features/schema-designer/components/columnFields'
 import { useShortcut } from '@/features/keymap'
 import { ChevronRight, ColumnsIcon, DownloadIcon, EditIcon, PlusIcon, SaveIcon, TableIcon, TrashIcon, WandIcon } from '@/shared/ui/icons'
@@ -40,12 +41,14 @@ const rowCenter = (i) => HEADER_H + PAD_T + i * ROW_H + ROW_H / 2
 
 // ---- Custom node: a table with per-column FK handles ----
 function TableNode({ data, selected }) {
-  // Pending (staged-but-uncommitted) tables/columns are marked amber.
+  // Staged-but-uncommitted state is colour-coded to mirror the Changes panel
+  // (add = green, alter = amber, drop = red): a newly-created table is green
+  // ("new"); a table staged for DROP is red + struck through ("dropped").
   return (
     <div
       className={`group relative cursor-pointer rounded-soft border-2 bg-panel text-[11px] shadow-[0_12px_30px_-12px_rgba(0,0,0,0.7)] transition-colors hover:border-green-bright ${
-        selected ? 'border-[var(--color-green)]' : data.pending ? 'border-amber' : 'border-edge-strong'
-      }`}
+        selected ? 'border-[var(--color-green)]' : data.dropped ? 'border-red' : data.pending ? 'border-green' : 'border-edge-strong'
+      } ${data.dropped ? 'opacity-70' : ''}`}
     >
       {/* Clips the header/rows to the card's rounded corners. The connect
           dots below render outside this wrapper (not inside it) so they
@@ -53,17 +56,39 @@ function TableNode({ data, selected }) {
       <div className="overflow-hidden rounded-[8px]">
         <div
           className={`flex items-center gap-2 border-b px-3 text-[12px] font-bold ${
-            data.pending ? 'border-amber/40 bg-amber/20 text-amber' : 'border-edge bg-elevated text-ink'
+            data.dropped
+              ? 'border-red/40 bg-red/20 text-red'
+              : data.pending
+                ? 'border-green/40 bg-green/20 text-green-bright'
+                : 'border-edge bg-elevated text-ink'
           }`}
           style={{ height: HEADER_H }}
         >
-          <span className="truncate">{data.name}</span>
-          {data.pending && <Badge tone="amber" dense>staged</Badge>}
+          <span className={`min-w-0 flex-1 truncate ${data.dropped ? 'line-through' : ''}`}>{data.name}</span>
+          {data.dropped ? <Badge tone="red" dense>dropped</Badge> : data.pending && <Badge tone="green" dense>new</Badge>}
+          {/* Edit affordance — revealed on hover; click opens the table editor
+              (detected via `.table-edit` in onNodeClick). Hidden for staged
+              new/dropped tables, which aren't ALTER-editable. */}
+          {!data.pending && !data.dropped && (
+            <button
+              type="button"
+              className="table-edit flex h-[18px] w-[18px] shrink-0 cursor-pointer items-center justify-center rounded text-ink-faint opacity-0 transition-opacity hover:bg-black/10 hover:text-ink group-hover:opacity-100"
+              title="Edit table"
+            >
+              <EditIcon width={12} height={12} />
+            </button>
+          )}
         </div>
         <div style={{ paddingTop: PAD_T, paddingBottom: PAD_T }}>
           {data.columns.map((c, i) => {
             const involved = data.srcCols.has(c.name) || data.tgtCols.has(c.name)
+            // Column-level staged edits (mirror the Changes panel): a newly
+            // ADDed column is green; one whose type changed is amber; one
+            // staged for DROP COLUMN — or any column of a table staged for
+            // DROP — is red + struck through.
             const pendingCol = data.pendingCols.has(c.name)
+            const changedCol = data.changedCols?.has(c.name)
+            const droppedCol = data.dropped || data.droppedCols?.has(c.name)
             // Each column can connect from either edge — which end becomes
             // the FK is resolved from which side is the primary key (see
             // resolveFkConnection), not from which handle was grabbed. The
@@ -115,12 +140,26 @@ function TableNode({ data, selected }) {
                 )}
                 <span
                   className={`flex-1 truncate ${
-                    pendingCol ? 'text-amber' : c.pk ? 'font-semibold text-ink' : 'text-ink-dim'
+                    droppedCol
+                      ? 'text-red/70 line-through'
+                      : pendingCol
+                        ? 'text-green-bright'
+                        : changedCol
+                          ? 'text-amber'
+                          : c.pk
+                            ? 'font-semibold text-ink'
+                            : 'text-ink-dim'
                   }`}
                 >
                   {c.name}
                 </span>
-                <span className="font-mono text-[10px] text-ink-faint">{(c.type || '').toUpperCase()}</span>
+                <span
+                  className={`font-mono text-[10px] ${
+                    droppedCol ? 'text-red/60 line-through' : pendingCol ? 'text-green-bright' : changedCol ? 'text-amber' : 'text-ink-faint'
+                  }`}
+                >
+                  {(c.type || '').toUpperCase()}
+                </span>
                 {c.pk && <span className="rounded bg-green/15 px-1 text-[9px] font-bold text-green-bright">PK</span>}
                 {data.srcCols.has(c.name) && <span className="rounded bg-amber/15 px-1 text-[9px] font-bold text-amber">FK</span>}
               </div>
@@ -159,7 +198,56 @@ function TableNode({ data, selected }) {
   )
 }
 
-const nodeTypes = { table: TableNode }
+// ---- Custom node: a translucent region wrapping a domain's tables ----
+// A non-interactive backdrop sized to the bounding box of its member tables
+// (see domainGroups below). pointer-events are disabled so it never intercepts
+// pans/clicks meant for the tables painted on top of it.
+function DomainGroupNode({ data }) {
+  const [hover, setHover] = useState(false)
+  const color = data.color || '#94a3b8'
+  return (
+    // The whole region is the drag surface (grab anywhere — the header bar or the
+    // padding around the tables — to move the group and its tables together).
+    // Tables paint above it (higher zIndex), so clicking/dragging a table still
+    // hits the table, not the region. Hovering highlights the grabbable region.
+    <div
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      className="relative h-full w-full cursor-grab rounded-[14px] border-2 transition-[background-color,box-shadow] active:cursor-grabbing"
+      style={{
+        borderColor: color,
+        backgroundColor: hover ? `${color}24` : `${color}12`,
+        boxShadow: hover ? `0 0 0 2px ${color}66, 0 10px 30px -12px ${color}80` : 'none',
+      }}
+    >
+      {/* Header bar: an obvious, wide grab target. Its edit button opens the
+          domain editor (detected via the `.domain-edit` class in onNodeClick). */}
+      <div
+        className="absolute inset-x-0 top-0 flex h-[22px] items-center gap-1.5 rounded-t-[12px] px-2 transition-colors"
+        style={{ backgroundColor: hover ? `${color}40` : `${color}26` }}
+      >
+        <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: color }} />
+        <span className="flex-1 truncate text-[11px] font-semibold" style={{ color }}>
+          {data.name}
+        </span>
+        {/* Edit affordance — revealed on hover, matching the table cards; click
+            opens the domain editor (detected via `.domain-edit` in onNodeClick). */}
+        <button
+          type="button"
+          className={`domain-edit flex h-[18px] w-[18px] shrink-0 cursor-pointer items-center justify-center rounded transition-opacity hover:bg-black/10 ${
+            hover ? 'opacity-100' : 'opacity-0'
+          }`}
+          style={{ color }}
+          title="Edit domain"
+        >
+          <EditIcon width={12} height={12} />
+        </button>
+      </div>
+    </div>
+  )
+}
+
+const nodeTypes = { table: TableNode, domainGroup: DomainGroupNode }
 
 // ---- Parse staged change SQL into pending tables / columns ----
 function parsePendingColumns(body) {
@@ -219,6 +307,9 @@ function parsePendingForeignKeys(items) {
 function parsePending(changes) {
   const newTables = {} // name -> [{name,type}]
   const newCols = {} // table -> { colName: type }
+  const droppedTables = new Set() // names of tables staged for DROP
+  const droppedCols = {} // table -> Set(colName) staged for DROP COLUMN
+  const retypedCols = {} // table -> { colName: newType } staged for ALTER COLUMN TYPE
   for (const ch of changes || []) {
     const sql = ch.sql || ''
     let m = sql.match(/^\s*CREATE TABLE\s+"([^"]+)"\s*\(([\s\S]*)\)\s*;?\s*$/i)
@@ -226,12 +317,27 @@ function parsePending(changes) {
       newTables[m[1]] = parsePendingColumns(m[2])
       continue
     }
+    m = sql.match(/^\s*DROP TABLE\s+(?:IF EXISTS\s+)?"([^"]+)"\s*;?\s*$/i)
+    if (m) {
+      droppedTables.add(m[1])
+      continue
+    }
+    m = sql.match(/^\s*ALTER TABLE\s+"([^"]+)"\s+DROP COLUMN\s+"([^"]+)"\s*;?\s*$/i)
+    if (m) {
+      ;(droppedCols[m[1]] ||= new Set()).add(m[2])
+      continue
+    }
+    m = sql.match(/^\s*ALTER TABLE\s+"([^"]+)"\s+ALTER COLUMN\s+"([^"]+)"\s+TYPE\s+([^;]+?)\s*;?\s*$/i)
+    if (m) {
+      ;(retypedCols[m[1]] ||= {})[m[2]] = m[3]
+      continue
+    }
     // Capture the type up to the first modifier / trailing `;` so it doesn't
     // carry the statement terminator (which broke FK type-matching + display).
     m = sql.match(/^\s*ALTER TABLE\s+"([^"]+)"\s+ADD COLUMN\s+"([^"]+)"\s+([^;]+?)\s*(?:\b(?:NOT NULL|PRIMARY KEY|DEFAULT|REFERENCES)\b.*)?;?\s*$/i)
     if (m) (newCols[m[1]] ||= {})[m[2]] = m[3]
   }
-  return { newTables, newCols }
+  return { newTables, newCols, droppedTables, droppedCols, retypedCols }
 }
 
 
@@ -444,7 +550,7 @@ function pathWithJumps(points, verticals) {
   return d
 }
 
-export default function SchemaEditor({ conn, changes, pending = [], onPendingChange, onStageItems, onSaveDraft, onOpenTable, onOpenSchema }) {
+export default function SchemaEditor({ conn, changes, domains = [], onUpdateDomain, onDeleteDomain, pending = [], onPendingChange, onStageItems, onSaveDraft, onUpdateDraft, draftId, onOpenTable, onOpenSchema }) {
   const dialect = conn.type === 'postgresql' ? 'postgresql' : 'sqlite'
   const types = useColumnTypes(conn)
   const toast = useToast()
@@ -458,9 +564,9 @@ export default function SchemaEditor({ conn, changes, pending = [], onPendingCha
   const [fkEdit, setFkEdit] = useState(null) // { onDelete, onUpdate } — editing a committed FK's actions
   const [fkConfirm, setFkConfirm] = useState(null) // { x, y, fkTable, fkCol, pkTable, pkCol, name, onDelete, onUpdate } — new drag-to-connect FK, pending confirmation
   const [hiddenTables, setHiddenTables] = useState(() => new Set()) // tables hidden from the diagram
-  const [tableSearch, setTableSearch] = useState('') // filter for the show/hide list
   const [menu, setMenu] = useState(null) // canvas context menu { x, y }
   const [nodeMenu, setNodeMenu] = useState(null) // table right-click menu { x, y, table, pending }
+  const [editingDomain, setEditingDomain] = useState(null) // domain being edited from the canvas | null
   const [creating, setCreating] = useState(false) // create-table panel open
   const [naming, setNaming] = useState(false) // "save as draft" name prompt open
   const canEditFk = dialect === 'postgresql' // drag-to-connect FK editing (SQLite can't alter FKs)
@@ -571,20 +677,38 @@ export default function SchemaEditor({ conn, changes, pending = [], onPendingCha
 
   // Merge committed schema with pending edits (local bar) + staged Changes.
   const augmented = useMemo(() => {
-    const { newTables, newCols } = parsePending([...pending, ...(changes || [])])
+    const { newTables, newCols, droppedTables, droppedCols, retypedCols } = parsePending([...pending, ...(changes || [])])
     const existing = new Set(diagram.tables.map((t) => t.name))
     const tables = diagram.tables.map((t) => {
       const add = newCols[t.name]
+      const drop = droppedCols[t.name] // Set of column names staged for DROP
+      const retype = retypedCols[t.name] // { colName: newType } staged for type change
       const pendingCols = new Set()
-      let columns = t.columns
+      const changedCols = new Set()
+      // Reflect staged type changes on the shown column type (amber).
+      let columns = t.columns.map((c) => {
+        if (retype && retype[c.name] !== undefined) {
+          changedCols.add(c.name)
+          return { ...c, type: retype[c.name] }
+        }
+        return c
+      })
       if (add) {
         const extra = Object.entries(add)
           .filter(([c]) => !t.columns.some((x) => x.name === c))
           .map(([c, type]) => ({ name: c, type }))
         extra.forEach((c) => pendingCols.add(c.name))
-        columns = [...t.columns, ...extra]
+        columns = [...columns, ...extra]
       }
-      return { ...t, columns, pending: false, pendingCols }
+      return {
+        ...t,
+        columns,
+        pending: false,
+        pendingCols,
+        changedCols,
+        droppedCols: drop || new Set(),
+        dropped: droppedTables.has(t.name),
+      }
     })
     for (const [name, cols] of Object.entries(newTables)) {
       if (existing.has(name)) continue
@@ -599,53 +723,122 @@ export default function SchemaEditor({ conn, changes, pending = [], onPendingCha
   // too, so keep it in sync on every nodes change.
   liveNodes.current = nodes
   const rf = useRef(null)
+  const canvasWrapRef = useRef(null) // canvas container — for positioning the FK edit popup from the sidebar
   // Set by onConnect right before onConnectEnd fires for the same gesture —
   // lets onConnectEnd (which has the mouse position) open the confirm modal.
   const pendingConnectRef = useRef(null)
 
   // Node size (matches the fixed row metrics) so dagre arranges without overlaps.
-  const sizeOf = (t) => ({ w: 230, h: HEADER_H + PAD_T * 2 + t.columns.length * ROW_H })
+  const sizeOf = (t) => ({ w: NODE_W, h: HEADER_H + PAD_T * 2 + t.columns.length * ROW_H })
 
-  // Arrange tables with dagre: ranks follow FK relationships, no collisions.
+  // Inner padding a domain region reserves around its member tables, plus the
+  // top strip for its draggable label. Kept in sync with domainGroups (below),
+  // which derives the region rectangle from the same members.
+  const DOMAIN_PAD = 22
+  const DOMAIN_LABEL_H = 26
+
+  // Build a table React Flow node at an absolute position.
+  const tableNodeAt = useCallback(
+    (t, position) => ({
+      id: t.name,
+      type: 'table',
+      zIndex: 1, // paint above the domain-group backdrops (zIndex 0)
+      position,
+      style: { width: NODE_W },
+      data: {
+        name: t.name,
+        columns: t.columns,
+        pending: t.pending,
+        dropped: t.dropped,
+        pendingCols: t.pendingCols,
+        changedCols: t.changedCols,
+        droppedCols: t.droppedCols,
+        srcCols: fkInfo.src[t.name] || new Set(),
+        tgtCols: fkInfo.tgt[t.name] || new Set(),
+        canEditFk,
+      },
+    }),
+    [fkInfo, canEditFk]
+  )
+
+  // Arrange tables with dagre. Tables sharing a domain are clustered into their
+  // own block (laid out internally, then placed as one unit), so each domain
+  // region wraps only its members and never overlaps a foreign table. Ranks
+  // follow FK relationships, no collisions.
   const layoutNodes = useCallback(() => {
-    const g = new dagre.graphlib.Graph()
-    g.setDefaultEdgeLabel(() => ({}))
-    g.setGraph({ rankdir: 'LR', nodesep: 50, ranksep: 110, marginx: 24, marginy: 24 })
-
     const visible = augmented.filter((t) => !hiddenTables.has(t.name))
     const sizes = {}
-    for (const t of visible) {
-      const s = sizeOf(t)
-      sizes[t.name] = s
-      g.setNode(t.name, { width: s.w, height: s.h })
-    }
-    for (const fk of diagram.foreignKeys) {
-      if (fk.table !== fk.refTable && !hiddenTables.has(fk.table) && !hiddenTables.has(fk.refTable)) {
-        g.setEdge(fk.table, fk.refTable)
-      }
-    }
-    dagre.layout(g)
+    for (const t of visible) sizes[t.name] = sizeOf(t)
 
-    return visible.map((t) => {
-      const p = g.node(t.name)
-      const s = sizes[t.name]
-      return {
-        id: t.name,
-        type: 'table',
-        position: { x: p.x - s.w / 2, y: p.y - s.h / 2 },
-        style: { width: s.w },
-        data: {
-          name: t.name,
-          columns: t.columns,
-          pending: t.pending,
-          pendingCols: t.pendingCols,
-          srcCols: fkInfo.src[t.name] || new Set(),
-          tgtCols: fkInfo.tgt[t.name] || new Set(),
-          canEditFk,
-        },
+    // Which domain (if any, and only if it has a visible member) each table is in.
+    const domainOf = {}
+    for (const d of domains) for (const tn of d.tables || []) domainOf[tn] = d.id
+    const activeDomains = new Set(visible.map((t) => domainOf[t.name]).filter(Boolean))
+
+    // 1) Lay out each domain's members internally → relative offsets + inner size.
+    const inner = {} // domainId -> { rel: {table -> {x,y}}, w, h }
+    for (const did of activeDomains) {
+      const members = visible.filter((t) => domainOf[t.name] === did)
+      const g = new dagre.graphlib.Graph()
+      g.setDefaultEdgeLabel(() => ({}))
+      g.setGraph({ rankdir: 'LR', nodesep: 40, ranksep: 80, marginx: 0, marginy: 0 })
+      for (const t of members) g.setNode(t.name, { width: sizes[t.name].w, height: sizes[t.name].h })
+      for (const fk of diagram.foreignKeys) {
+        if (domainOf[fk.table] === did && domainOf[fk.refTable] === did && fk.table !== fk.refTable) g.setEdge(fk.table, fk.refTable)
       }
-    })
-  }, [augmented, diagram, fkInfo, hiddenTables, canEditFk])
+      dagre.layout(g)
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+      const rel = {}
+      for (const t of members) {
+        const p = g.node(t.name)
+        const s = sizes[t.name]
+        const x = p.x - s.w / 2, y = p.y - s.h / 2
+        rel[t.name] = { x, y }
+        minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x + s.w); maxY = Math.max(maxY, y + s.h)
+      }
+      // Normalize so the top-left member sits at (PAD, PAD + LABEL_H) inside the block.
+      for (const t of members) { rel[t.name].x += DOMAIN_PAD - minX; rel[t.name].y += DOMAIN_PAD + DOMAIN_LABEL_H - minY }
+      inner[did] = { rel, w: maxX - minX + DOMAIN_PAD * 2, h: maxY - minY + DOMAIN_PAD * 2 + DOMAIN_LABEL_H }
+    }
+
+    // 2) Lay out blocks: each domain (as one node) + each ungrouped table.
+    const blockOf = (table) => (activeDomains.has(domainOf[table]) ? `d:${domainOf[table]}` : `t:${table}`)
+    const g2 = new dagre.graphlib.Graph()
+    g2.setDefaultEdgeLabel(() => ({}))
+    g2.setGraph({ rankdir: 'LR', nodesep: 60, ranksep: 120, marginx: 24, marginy: 24 })
+    for (const did of activeDomains) g2.setNode(`d:${did}`, { width: inner[did].w, height: inner[did].h })
+    for (const t of visible) if (!activeDomains.has(domainOf[t.name])) g2.setNode(`t:${t.name}`, { width: sizes[t.name].w, height: sizes[t.name].h })
+    const seen = new Set()
+    for (const fk of diagram.foreignKeys) {
+      if (fk.table === fk.refTable || hiddenTables.has(fk.table) || hiddenTables.has(fk.refTable)) continue
+      const a = blockOf(fk.table), b = blockOf(fk.refTable)
+      if (a === b) continue
+      const key = a < b ? `${a}|${b}` : `${b}|${a}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      g2.setEdge(a, b)
+    }
+    dagre.layout(g2)
+
+    // 3) Expand blocks back into absolute table positions.
+    const out = []
+    for (const did of activeDomains) {
+      const b = g2.node(`d:${did}`)
+      const bx = b.x - inner[did].w / 2, by = b.y - inner[did].h / 2
+      for (const t of visible) {
+        if (domainOf[t.name] !== did) continue
+        const r = inner[did].rel[t.name]
+        out.push(tableNodeAt(t, { x: bx + r.x, y: by + r.y }))
+      }
+    }
+    for (const t of visible) {
+      if (activeDomains.has(domainOf[t.name])) continue
+      const b = g2.node(`t:${t.name}`)
+      const s = sizes[t.name]
+      out.push(tableNodeAt(t, { x: b.x - s.w / 2, y: b.y - s.h / 2 }))
+    }
+    return out
+  }, [augmented, diagram, hiddenTables, domains, tableNodeAt])
 
   const toggleTable = (name) =>
     setHiddenTables((s) => {
@@ -802,10 +995,131 @@ export default function SchemaEditor({ conn, changes, pending = [], onPendingCha
   // Inject each table's connection endpoints into node data (without re-running
   // dagre), so a connected column can paint a solid dot on the exact edge its
   // line lands on. Kept off `layoutNodes` so it never reshuffles the diagram.
+  // Domain regions: one translucent region per domain, sized to the bounding
+  // box of its visible member tables (using live node positions, so the region
+  // tracks member drags). Rendered behind the tables (lower zIndex). The region
+  // body is pointer-transparent so it never steals pans/clicks; only its label
+  // chip (the `dragHandle`) is interactive — dragging it moves the whole group
+  // (see handleNodesChange), clicking it opens the domain editor.
+  const domainGroups = useMemo(() => {
+    if (!domains.length || !nodes.length) return []
+    const byTable = {}
+    for (const n of nodes) byTable[n.id] = n
+    const heightOf = (n) => HEADER_H + PAD_T * 2 + (n.data.columns?.length || 0) * ROW_H
+    return domains
+      .map((d) => {
+        const members = (d.tables || []).map((t) => byTable[t]).filter(Boolean)
+        if (!members.length) return null
+        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+        for (const n of members) {
+          const w = n.style?.width || NODE_W
+          minX = Math.min(minX, n.position.x)
+          minY = Math.min(minY, n.position.y)
+          maxX = Math.max(maxX, n.position.x + w)
+          maxY = Math.max(maxY, n.position.y + heightOf(n))
+        }
+        const w = maxX - minX + DOMAIN_PAD * 2
+        const h = maxY - minY + DOMAIN_PAD * 2 + DOMAIN_LABEL_H
+        return {
+          id: `domain:${d.id}`,
+          type: 'domainGroup',
+          position: { x: minX - DOMAIN_PAD, y: minY - DOMAIN_PAD - DOMAIN_LABEL_H },
+          // Provide explicit dimensions so React Flow never has to (re)measure
+          // the node — otherwise it flips to visibility:hidden each time this
+          // memo rebuilds during a drag, and a mousedown in that window falls
+          // through to the pane (panning instead of dragging the group).
+          width: w,
+          height: h,
+          style: { width: w, height: h },
+          data: { name: d.name, color: d.color },
+          draggable: true,
+          selectable: false,
+          connectable: false,
+          deletable: false,
+          focusable: false,
+          zIndex: 0,
+        }
+      })
+      .filter(Boolean)
+  }, [domains, nodes])
+
   const displayNodes = useMemo(
-    () => nodes.map((n) => (n.data.fkSides === fkEndpoints[n.id] ? n : { ...n, data: { ...n.data, fkSides: fkEndpoints[n.id] } })),
-    [nodes, fkEndpoints]
+    () => [
+      ...domainGroups,
+      ...nodes.map((n) => (n.data.fkSides === fkEndpoints[n.id] ? n : { ...n, data: { ...n.data, fkSides: fkEndpoints[n.id] } })),
+    ],
+    [domainGroups, nodes, fkEndpoints]
   )
+
+  // Domain regions aren't stored in node state (they're derived from members),
+  // so dragging one is translated here into position changes for its member
+  // tables — the region then follows the members it wraps. Everything else
+  // passes straight through to useNodesState's handler.
+  const handleNodesChange = useCallback(
+    (changes) => {
+      const passthrough = []
+      const extra = []
+      for (const ch of changes) {
+        if (ch.id?.startsWith?.('domain:')) {
+          if (ch.type === 'position' && ch.position) {
+            const grp = domainGroups.find((g) => g.id === ch.id)
+            if (grp) {
+              const dx = ch.position.x - grp.position.x
+              const dy = ch.position.y - grp.position.y
+              if (dx || dy) {
+                const dom = domains.find((d) => `domain:${d.id}` === ch.id)
+                for (const tn of dom?.tables || []) {
+                  const node = liveNodes.current.find((n) => n.id === tn)
+                  if (node) extra.push({ id: tn, type: 'position', position: { x: node.position.x + dx, y: node.position.y + dy }, dragging: ch.dragging })
+                }
+              }
+            }
+          }
+          continue // never apply domain-node changes to table state
+        }
+        passthrough.push(ch)
+      }
+      onNodesChange([...passthrough, ...extra])
+    },
+    [onNodesChange, domainGroups, domains]
+  )
+
+  // ---- Sidebar focus / edit actions ----
+  const fitToNodes = (ids) => {
+    const list = ids.filter(Boolean).map((id) => ({ id }))
+    if (list.length) rf.current?.fitView({ nodes: list, duration: 400, padding: 0.35, maxZoom: 1.2 })
+  }
+  // Reveal any hidden tables in `names`, then (after they've been laid out) fit
+  // the view to `focus`. If nothing was hidden, fit immediately.
+  const revealAndFit = (names, focus) => {
+    const hidden = names.filter((n) => hiddenTables.has(n))
+    if (hidden.length) {
+      setHiddenTables((s) => {
+        const next = new Set(s)
+        hidden.forEach((n) => next.delete(n))
+        return next
+      })
+      setTimeout(() => fitToNodes(focus), 90)
+    } else {
+      fitToNodes(focus)
+    }
+  }
+  const focusTable = (name) => revealAndFit([name], [name])
+  const focusDomain = (d) => revealAndFit(d.tables || [], d.tables || [])
+  // Focus a foreign key's two tables and open its edit popup (centered near the
+  // top of the canvas, since there's no click point from the list).
+  const openReference = (fk, i) => {
+    const both = [fk.table, fk.refTable]
+    revealAndFit(both, both)
+    setSelectedEdge(`e${i}`)
+    const rect = canvasWrapRef.current?.getBoundingClientRect()
+    setEdgePopup({ x: rect ? rect.left + rect.width / 2 - 110 : 240, y: rect ? rect.top + 70 : 120, fk })
+    setFkEdit(
+      canEditFk && fk.constraint && !fk.pendingFk && !fk.removed
+        ? { onDelete: normFkAction(fk.onDelete), onUpdate: normFkAction(fk.onUpdate) }
+        : null
+    )
+  }
 
   // Whether a column already carries a live (not staged-for-removal) FK —
   // used to stop a second connection from being drawn off the same column.
@@ -1004,6 +1318,11 @@ export default function SchemaEditor({ conn, changes, pending = [], onPendingCha
       {/* Toolbar / action list — Save sits on the left; Export on the right.
           Save is always shown but disabled until there are pending changes. */}
       <div className="flex items-center gap-2 border-b border-edge px-3 py-2">
+        {/* Submit — move the pending changes into the Changes queue, ready to
+            execute. Save — persist as a draft: update the linked draft when this
+            tab was opened from one, otherwise create the first draft. Save as
+            draft — only meaningful once linked, forks a *copy* into a new draft
+            (Save / Save As), so it's hidden on a fresh editor. */}
         <Button
           variant="primary"
           size="sm"
@@ -1011,14 +1330,31 @@ export default function SchemaEditor({ conn, changes, pending = [], onPendingCha
           onClick={() => { onStageItems?.(pending); clearPending() }}
           disabled={pending.length === 0}
         >
+          Submit
+        </Button>
+
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => (draftId ? onUpdateDraft?.(draftId, pending) : setNaming(true))}
+          disabled={pending.length === 0}
+        >
           Save
         </Button>
 
+        {draftId && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setNaming(true)}
+            disabled={pending.length === 0}
+          >
+            Save as
+          </Button>
+        )}
+
         {pending.length > 0 && (
           <>
-            <Button variant="ghost" size="sm" onClick={() => setNaming(true)}>
-              Save as draft
-            </Button>
             <Button variant="subtle" size="sm" onClick={clearPending}>
               Discard
             </Button>
@@ -1030,64 +1366,18 @@ export default function SchemaEditor({ conn, changes, pending = [], onPendingCha
 
         <span className="ml-1 text-[11px] text-ink-faint">{conn.name} · {diagram.tables.length} table(s)</span>
 
-        {/* Right cluster — Tables (show/hide) + Export */}
+        {/* Right cluster — show/hide all tables + Export */}
         <div className="ml-auto flex items-center gap-2">
-          <Popover
-            align="right"
-            width={240}
-            trigger={({ open, toggle }) => (
-              <Button
-                variant="subtle"
-                size="sm"
-                icon={TableIcon}
-                chevron
-                active={open}
-                onClick={toggle}
-                disabled={loading || !augmented.length}
-              >
-                Tables
-              </Button>
-            )}
-          >
-            <div className="p-2">
-              <div className="mb-1.5 flex items-center justify-between px-1.5">
-                <span className="text-[11px] font-semibold text-ink-dim">Show / hide tables</span>
-                <div className="flex items-center gap-1.5 text-[11px] font-semibold">
-                  <TextButton tone="green" className="!text-[11px]" onClick={showAllTables}>
-                    All
-                  </TextButton>
-                  <span className="text-ink-faint">·</span>
-                  <TextButton className="!text-[11px]" onClick={hideAllTables}>
-                    None
-                  </TextButton>
-                </div>
-              </div>
-              <input
-                value={tableSearch}
-                onChange={(e) => setTableSearch(e.target.value)}
-                placeholder="Search tables…"
-                className="mb-1.5 w-full rounded-soft border border-edge bg-elevated px-2 py-1.5 text-[11px] text-ink outline-none placeholder:text-ink-faint focus:border-green-dim"
-              />
-              <div className="max-h-[260px] overflow-y-auto">
-                {[...augmented]
-                  .sort((a, b) => a.name.localeCompare(b.name))
-                  .filter((t) => t.name.toLowerCase().includes(tableSearch.trim().toLowerCase()))
-                  .map((t) => (
-                    <div
-                      key={t.name}
-                      onClick={() => toggleTable(t.name)}
-                      className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1.5 text-[11px] text-ink-dim hover:bg-card-hover hover:text-ink"
-                    >
-                      <Checkbox checked={!hiddenTables.has(t.name)} onChange={() => toggleTable(t.name)} ariaLabel={`Toggle ${t.name}`} />
-                      <span className="truncate">{t.name}</span>
-                    </div>
-                  ))}
-                {augmented.every((t) => !t.name.toLowerCase().includes(tableSearch.trim().toLowerCase())) && (
-                  <div className="px-1.5 py-2 text-[11px] text-ink-faint">No tables match.</div>
-                )}
-              </div>
-            </div>
-          </Popover>
+          <div className="flex items-center gap-1.5 text-[11px] font-semibold">
+            <span className="text-ink-faint">Tables</span>
+            <TextButton tone="green" className="!text-[11px]" onClick={showAllTables}>
+              All
+            </TextButton>
+            <span className="text-ink-faint">·</span>
+            <TextButton className="!text-[11px]" onClick={hideAllTables}>
+              None
+            </TextButton>
+          </div>
 
           <Popover
             align="right"
@@ -1112,7 +1402,20 @@ export default function SchemaEditor({ conn, changes, pending = [], onPendingCha
       </div>
 
       <div className="flex min-h-0 flex-1">
+        <SchemaSidebar
+          pending={pending}
+          onRemovePending={removePendingItem}
+          tables={augmented}
+          hiddenTables={hiddenTables}
+          onToggleTable={toggleTable}
+          onFocusTable={focusTable}
+          foreignKeys={augmentedForeignKeys}
+          onEditReference={openReference}
+          domains={domains}
+          onFocusDomain={focusDomain}
+        />
         <div
+          ref={canvasWrapRef}
           className="relative min-w-0 flex-1"
           onContextMenu={(e) => {
             e.preventDefault()
@@ -1134,7 +1437,7 @@ export default function SchemaEditor({ conn, changes, pending = [], onPendingCha
                 edgeTypes={edgeTypes as any}
                 connectionLineComponent={FkConnectionLine as any}
                 connectionMode={ConnectionMode.Loose}
-                onNodesChange={onNodesChange}
+                onNodesChange={handleNodesChange}
                 onInit={(inst) => (rf.current = inst)}
                 // Dragging shouldn't select a node (which would leave the active
                 // green outline stuck on it) — only an explicit click selects.
@@ -1142,12 +1445,26 @@ export default function SchemaEditor({ conn, changes, pending = [], onPendingCha
                 isValidConnection={isValidConnection}
                 onConnect={onConnect}
                 onConnectEnd={onConnectEnd}
-                onNodeClick={(_, node) => setSelected(node.id)}
+                onNodeClick={(e, node) => {
+                  const target = e.target as HTMLElement
+                  // Domains and tables are edited only via their hover edit icon
+                  // (`.domain-edit` / `.table-edit`); a plain click just leaves the
+                  // node draggable and never opens the editor.
+                  if (node.id.startsWith('domain:')) {
+                    if (target?.closest?.('.domain-edit')) {
+                      const d = domains.find((dm) => `domain:${dm.id}` === node.id)
+                      if (d) setEditingDomain(d)
+                    }
+                    return
+                  }
+                  if (target?.closest?.('.table-edit')) setSelected(node.id)
+                }}
                 onNodeContextMenu={(e, node) => {
                   e.preventDefault()
                   // Stop the event bubbling to the canvas' onContextMenu, which
                   // would otherwise also open the empty-space menu on top.
                   e.stopPropagation()
+                  if (node.id.startsWith('domain:')) return
                   setMenu(null)
                   setNodeMenu({ x: e.clientX, y: e.clientY, table: node.id, pending: !!node.data?.pending })
                 }}
@@ -1229,6 +1546,15 @@ export default function SchemaEditor({ conn, changes, pending = [], onPendingCha
 
       {creating && (
         <CreateTablePanel conn={conn} onClose={() => setCreating(false)} onStage={addPending} />
+      )}
+
+      {editingDomain && (
+        <DomainEditPanel
+          domain={editingDomain}
+          onSave={(fields) => onUpdateDomain?.(editingDomain.id, fields)}
+          onDelete={() => onDeleteDomain?.(editingDomain.id)}
+          onClose={() => setEditingDomain(null)}
+        />
       )}
 
       {naming && (

@@ -126,6 +126,25 @@ function initMetaDb() {
       name TEXT NOT NULL,
       ts INTEGER
     );
+    -- Domains: named, colored groupings for a connection's tables. A domain is
+    -- an entity (name + color); table_domains maps each table to exactly one
+    -- domain (UNIQUE per table), so tables can be grouped by domain.
+    CREATE TABLE IF NOT EXISTS domains (
+      id TEXT PRIMARY KEY,
+      connection_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      color TEXT,                  -- hex color string, e.g. '#6366f1'
+      ts INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS table_domains (
+      id TEXT PRIMARY KEY,
+      connection_id TEXT NOT NULL,
+      table_name TEXT NOT NULL,
+      domain_id TEXT NOT NULL,
+      ts INTEGER,
+      UNIQUE(connection_id, table_name)   -- one domain per table
+    );
+    CREATE INDEX IF NOT EXISTS idx_table_domains_conn ON table_domains(connection_id);
     CREATE TABLE IF NOT EXISTS workflows (
       id TEXT PRIMARY KEY,
       connection_id TEXT NOT NULL,
@@ -1724,6 +1743,8 @@ app.delete('/api/workspaces/:id', (req, res) => {
       deleteConnectionRow(row.id)
       meta.prepare('DELETE FROM saved_queries WHERE connection_id = ?').run(row.id)
       meta.prepare('DELETE FROM saved_folders WHERE connection_id = ?').run(row.id)
+      meta.prepare('DELETE FROM domains WHERE connection_id = ?').run(row.id)
+      meta.prepare('DELETE FROM table_domains WHERE connection_id = ?').run(row.id)
       meta.prepare('DELETE FROM workflows WHERE connection_id = ?').run(row.id)
       meta.prepare('DELETE FROM query_history WHERE connection_id = ?').run(row.id)
       meta.prepare('DELETE FROM connection_access WHERE connection_id = ?').run(row.id)
@@ -2136,6 +2157,8 @@ app.delete('/api/connections/:id', (req, res) => {
   deleteConnectionRow(req.params.id)
   meta.prepare('DELETE FROM saved_queries WHERE connection_id = ?').run(req.params.id)
   meta.prepare('DELETE FROM saved_folders WHERE connection_id = ?').run(req.params.id)
+  meta.prepare('DELETE FROM domains WHERE connection_id = ?').run(req.params.id)
+  meta.prepare('DELETE FROM table_domains WHERE connection_id = ?').run(req.params.id)
   meta.prepare('DELETE FROM workflows WHERE connection_id = ?').run(req.params.id)
   meta.prepare('DELETE FROM workflow_runs WHERE connection_id = ?').run(req.params.id)
   meta.prepare('DELETE FROM query_history WHERE connection_id = ?').run(req.params.id)
@@ -2246,6 +2269,87 @@ app.put('/api/connections/:id/saved/:sid', (req, res) => {
 
 app.delete('/api/connections/:id/saved/:sid', (req, res) => {
   meta.prepare('DELETE FROM saved_queries WHERE id = ? AND connection_id = ?').run(req.params.sid, req.params.id)
+  res.json({ ok: true })
+})
+
+// ---- Domains (per connection) ----
+// A domain is a named, colored entity that groups tables; each table belongs to
+// at most one domain. The shape is database-agnostic (table names are plain
+// strings) so it works for any dialect the connection targets. Each domain
+// carries the list of table names it currently groups.
+const domainWithTables = (connectionId, domain) => ({
+  id: domain.id,
+  name: domain.name,
+  color: domain.color || null,
+  ts: domain.ts,
+  tables: meta
+    .prepare('SELECT table_name FROM table_domains WHERE connection_id = ? AND domain_id = ? ORDER BY table_name ASC')
+    .all(connectionId, domain.id)
+    .map((r) => r.table_name),
+})
+
+app.get('/api/connections/:id/domains', (req, res) => {
+  const rows = meta
+    .prepare('SELECT id, name, color, ts FROM domains WHERE connection_id = ? ORDER BY ts ASC')
+    .all(req.params.id)
+  res.json(rows.map((d) => domainWithTables(req.params.id, d)))
+})
+
+app.post('/api/connections/:id/domains', (req, res) => {
+  const { name, color } = req.body || {}
+  if (!name?.trim()) return res.status(400).json({ error: 'A domain name is required' })
+  const entry = { id: randomUUID(), name: name.trim(), color: color || null, ts: Date.now() }
+  meta
+    .prepare('INSERT INTO domains (id, connection_id, name, color, ts) VALUES (?, ?, ?, ?, ?)')
+    .run(entry.id, req.params.id, entry.name, entry.color, entry.ts)
+  res.json(domainWithTables(req.params.id, entry))
+})
+
+app.put('/api/connections/:id/domains/:domainId', (req, res) => {
+  const body = req.body || {}
+  const sets = []
+  const vals = []
+  if (body.name != null) {
+    if (!body.name.trim()) return res.status(400).json({ error: 'A domain name is required' })
+    sets.push('name = ?')
+    vals.push(body.name.trim())
+  }
+  if ('color' in body) {
+    sets.push('color = ?')
+    vals.push(body.color || null)
+  }
+  if (!sets.length) return res.status(400).json({ error: 'Nothing to update' })
+  const r = meta
+    .prepare(`UPDATE domains SET ${sets.join(', ')} WHERE id = ? AND connection_id = ?`)
+    .run(...vals, req.params.domainId, req.params.id)
+  if (!r.changes) return res.status(404).json({ error: 'Not found' })
+  const domain = meta.prepare('SELECT id, name, color, ts FROM domains WHERE id = ?').get(req.params.domainId)
+  res.json(domainWithTables(req.params.id, domain))
+})
+
+app.delete('/api/connections/:id/domains/:domainId', (req, res) => {
+  meta.prepare('DELETE FROM table_domains WHERE domain_id = ? AND connection_id = ?').run(req.params.domainId, req.params.id)
+  meta.prepare('DELETE FROM domains WHERE id = ? AND connection_id = ?').run(req.params.domainId, req.params.id)
+  res.json({ ok: true })
+})
+
+// Set (or clear) a table's domain. `domainId: null` removes the table from any
+// domain; otherwise the table is reassigned to that single domain (upsert).
+app.put('/api/connections/:id/tables/:table/domain', (req, res) => {
+  const domainId = req.body?.domainId ?? null
+  const table = req.params.table
+  if (domainId === null) {
+    meta.prepare('DELETE FROM table_domains WHERE connection_id = ? AND table_name = ?').run(req.params.id, table)
+    return res.json({ ok: true })
+  }
+  const domain = meta.prepare('SELECT id FROM domains WHERE id = ? AND connection_id = ?').get(domainId, req.params.id)
+  if (!domain) return res.status(404).json({ error: 'Domain not found' })
+  meta
+    .prepare(
+      `INSERT INTO table_domains (id, connection_id, table_name, domain_id, ts) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(connection_id, table_name) DO UPDATE SET domain_id = excluded.domain_id, ts = excluded.ts`
+    )
+    .run(randomUUID(), req.params.id, table, domainId, Date.now())
   res.json({ ok: true })
 })
 

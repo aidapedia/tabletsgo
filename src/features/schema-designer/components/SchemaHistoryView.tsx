@@ -1,20 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
 import DataGrid from '@/features/workspace/components/DataGrid'
 import Button from '@/shared/ui/buttons/Button'
-import IconButton from '@/shared/ui/buttons/IconButton'
-import TextButton from '@/shared/ui/buttons/TextButton'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
 import Popover from '@/shared/ui/overlay/Popover'
 import ContextMenu from '@/shared/ui/overlay/ContextMenu'
-import SqlEditor from '@/shared/ui/SqlEditor'
-import { useSlideOver } from '@/shared/hooks/useSlideOver'
-import { useToast } from '@/shared/ui/feedback/Toast'
 import { FilterPanel, SortPanel, ColumnsPanel, matchFilter, PAGE_SIZES } from '@/features/workspace/components/TableView'
 import {
   ChevronLeft,
   ChevronRight,
   ColumnsIcon,
-  CopyIcon,
   DownloadIcon,
   EyeIcon,
   FilterIcon,
@@ -23,36 +17,9 @@ import {
   SortIcon,
 } from '@/shared/ui/icons'
 import LoadingState from '@/shared/ui/feedback/LoadingState'
+import MigrationInspector, { fmtTime, rollbackTitle } from './MigrationInspector'
 
 const COLUMNS = ['Version', 'Status', 'Up SQL', 'Down SQL', 'Reversible', 'Executor', 'Committed at']
-
-const fmtTime = (ts) => {
-  if (!ts) return '—'
-  const d = new Date(ts)
-  return d.toLocaleString(undefined, {
-    year: 'numeric',
-    month: 'short',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  })
-}
-
-// Shared disabled-state explanation for the Rollback action (row button + context menu item).
-const rollbackTitle = (row) => {
-  if (row.__isBaseline) {
-    return row.__canRollback
-      ? 'Roll the schema all the way back to its initial state (undo every migration).'
-      : 'Not every migration is reversible — can’t roll back to the initial state.'
-  }
-  const isRolledBack = (row.__migration.status || 'active') === 'rollbacked'
-  return isRolledBack
-    ? 'Already rolled back.'
-    : !row.__canRollback
-      ? 'Current version — nothing newer to roll back.'
-      : 'Roll the schema back to this version.'
-}
 
 // Schema-version migration history for the active connection, opened from the
 // version badge in the workspace header. Reuses the same DataGrid/toolbar
@@ -380,120 +347,6 @@ export default function SchemaHistoryView({ migrations = [], loading = false, di
           }}
         />
       )}
-    </div>
-  )
-}
-
-// Read-only detail view for a single migration — opened from the row context
-// menu (or the Up/Down SQL cells, truncated in the grid). Offers the same
-// Rollback action as the row button/menu, gated the same way.
-function MigrationInspector({ migration, dialect, canRollback, onClose, onRollback }) {
-  const { show, close } = useSlideOver(onClose)
-  const toast = useToast()
-  const isRolledBack = (migration.status || 'active') === 'rollbacked'
-
-  const copySql = async (sql, label) => {
-    try {
-      await navigator.clipboard.writeText(sql)
-      toast.success(label)
-    } catch {
-      toast.error('Could not copy to clipboard')
-    }
-  }
-
-  const sqlHeader = (label, sql) => (
-    <div className="mb-1.5 flex items-center justify-between">
-      <span className="text-[11px] font-semibold tracking-wide text-ink-faint">{label}</span>
-      <TextButton tone="faint" className="!text-[11px] hover:!text-ink" onClick={() => copySql(sql, `Copied ${label.toLowerCase()}`)}>
-        <CopyIcon width={13} height={13} /> Copy
-      </TextButton>
-    </div>
-  )
-
-  return (
-    <div
-      className={`fixed inset-0 z-50 flex justify-end bg-black/50 transition-opacity duration-200 ${
-        show ? 'opacity-100' : 'opacity-0'
-      }`}
-      onMouseDown={() => close()}
-    >
-      <div
-        className={`flex h-full w-full max-w-[560px] flex-col border-l border-edge-strong bg-panel shadow-[-20px_0_60px_-20px_rgba(0,0,0,0.8)] transition-transform duration-200 ease-out ${
-          show ? 'translate-x-0' : 'translate-x-full'
-        }`}
-        onMouseDown={(e) => e.stopPropagation()}
-        onKeyDown={(e) => e.key === 'Escape' && close()}
-      >
-        <div className="flex items-center justify-between border-b border-edge px-5 py-4">
-          <h3 className="flex items-center gap-2 text-base font-bold">
-            Migration v{migration.version}
-            <span
-              className={`rounded px-1.5 py-0.5 text-[10px] font-bold tracking-wide ${
-                isRolledBack ? 'bg-ink-faint/15 text-ink-faint' : 'bg-green/15 text-green-bright'
-              }`}
-            >
-              {isRolledBack ? 'rolled back' : 'active'}
-            </span>
-          </h3>
-          <IconButton size="lg" onClick={() => close()} aria-label="Close">
-            <ChevronRight />
-          </IconButton>
-        </div>
-
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-          <div className="mb-5 grid grid-cols-2 gap-4">
-            <div>
-              <div className="mb-1.5 text-[11px] font-semibold tracking-wide text-ink-faint">Executor</div>
-              <div className="text-sm text-ink">{migration.executorName || '—'}</div>
-            </div>
-            <div>
-              <div className="mb-1.5 text-[11px] font-semibold tracking-wide text-ink-faint">Committed at</div>
-              <div className="text-sm text-ink">{fmtTime(migration.ts)}</div>
-            </div>
-          </div>
-
-          <div className="mb-5">
-            {sqlHeader('Up SQL', migration.forwardSql.join('\n'))}
-            <SqlEditor value={migration.forwardSql.join('\n')} onChange={() => {}} dialect={dialect} editable={false} maxHeight="240px" />
-          </div>
-
-          <div>
-            {migration.reversible ? (
-              <>
-                {sqlHeader('Down SQL', migration.rollbackSql.filter(Boolean).join('\n'))}
-                <SqlEditor
-                  value={migration.rollbackSql.filter(Boolean).join('\n')}
-                  onChange={() => {}}
-                  dialect={dialect}
-                  editable={false}
-                  maxHeight="240px"
-                />
-              </>
-            ) : (
-              <>
-                <div className="mb-1.5 text-[11px] font-semibold tracking-wide text-ink-faint">Down SQL</div>
-                <div className="rounded-soft border border-edge bg-bg px-3 py-2 text-[11px] text-ink-faint">
-                  Not reversible — no down SQL was recorded for this commit.
-                </div>
-              </>
-            )}
-          </div>
-        </div>
-
-        <div className="flex items-center justify-end gap-3 border-t border-edge px-5 py-4">
-          <Button variant="subtle" onClick={() => close()}>
-            Close
-          </Button>
-          <Button
-            variant="primary"
-            disabled={!canRollback}
-            title={rollbackTitle({ __isBaseline: false, __canRollback: canRollback, __migration: migration })}
-            onClick={() => close(() => onRollback(migration))}
-          >
-            Rollback to this version
-          </Button>
-        </div>
-      </div>
     </div>
   )
 }
