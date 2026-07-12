@@ -10,6 +10,7 @@ import TextButton from '@/shared/ui/buttons/TextButton'
 import Popover from '@/shared/ui/overlay/Popover'
 import Tooltip from '@/shared/ui/overlay/Tooltip'
 import MigrationInspector, { canRollbackTo, fmtTime } from './MigrationInspector'
+import { buildDraftMigration } from '../lib/rollback'
 
 const rowBase = 'group flex w-full items-center gap-2 rounded-[7px] px-2.5 py-1.5 text-left text-xs'
 const rowIdle = 'text-ink-dim hover:bg-elevated hover:text-ink'
@@ -36,6 +37,7 @@ function SectionHeader({ open, label, count, onToggle }: any) {
 // an accordion (one open at a time), each release exposing an inspector (Up/Down
 // SQL) and a rollback action via its hover kebab.
 export default function SchemaPanel({
+  conn,
   drafts = [],
   migrations = [],
   dialect,
@@ -49,6 +51,7 @@ export default function SchemaPanel({
 }: any) {
   const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null)
   const [inspecting, setInspecting] = useState<any>(null) // migration shown in the inspector slide-over
+  const [inspectingDraft, setInspectingDraft] = useState<any>(null) // draft shown in the inspector slide-over
   const [open, setOpen] = useState('drafts') // which accordion section is expanded
   const toggle = (k: string) => setOpen((p) => (p === k ? null : k))
 
@@ -70,6 +73,13 @@ export default function SchemaPanel({
   const refreshAll = () => {
     onRefreshDrafts?.()
     onRefreshMigrations?.()
+  }
+
+  // Build the draft's Up/Down SQL (DROP TABLE reconstruction needs a live column
+  // snapshot, so this is async) and open the inspector on it.
+  const openDraftInspector = async (d: any) => {
+    const migration = await buildDraftMigration(conn, d.sql)
+    setInspectingDraft({ name: d.name, migration })
   }
 
   const sections = [
@@ -147,6 +157,10 @@ export default function SchemaPanel({
                               >
                                 {({ close }) => (
                                   <div className="p-1">
+                                    <MenuItem onClick={() => { openDraftInspector(d); close() }}>
+                                      <EyeIcon width={14} height={14} /> Open Inspector
+                                    </MenuItem>
+                                    <div className="my-1 h-px bg-edge" />
                                     <MenuItem onClick={() => { setRenaming({ id: d.id, value: d.name }); close() }}>
                                       <EditIcon width={14} height={14} /> Rename
                                     </MenuItem>
@@ -241,6 +255,16 @@ export default function SchemaPanel({
             setInspecting(null)
             onRollback?.(m)
           }}
+        />
+      )}
+
+      {inspectingDraft && (
+        <MigrationInspector
+          variant="draft"
+          name={inspectingDraft.name}
+          migration={inspectingDraft.migration}
+          dialect={dialect}
+          onClose={() => setInspectingDraft(null)}
         />
       )}
     </>

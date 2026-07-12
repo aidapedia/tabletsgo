@@ -1173,6 +1173,7 @@ export default function Workspace() {
           />
         ) : panel === 'schema' ? (
           <SchemaPanel
+            conn={nsConn}
             drafts={saved.filter((s) => s.kind === 'schema')}
             migrations={schemaMigrations}
             dialect={DIALECT[conn?.type]}

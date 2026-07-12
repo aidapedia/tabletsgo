@@ -12,6 +12,8 @@ export function draftToItems(sql) {
     .map((s) => {
       const create = s.match(/^\s*CREATE TABLE\s+"([^"]+)"/i)
       if (create) return { id: newItemId(), sql: `${s};`, table: create[1], mode: 'new' }
+      const drop = s.match(/^\s*DROP TABLE\s+(?:IF EXISTS\s+)?"([^"]+)"/i)
+      if (drop) return { id: newItemId(), sql: `${s};`, table: drop[1], mode: 'delete' }
       const alter = s.match(/^\s*ALTER TABLE\s+"([^"]+)"/i)
       return { id: newItemId(), sql: `${s};`, table: alter ? alter[1] : '', mode: 'edit' }
     })

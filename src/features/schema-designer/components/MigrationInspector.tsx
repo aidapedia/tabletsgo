@@ -48,9 +48,14 @@ export const rollbackTitle = (row) => {
 // Read-only detail view for a single migration — opened from the schema-history
 // row context menu, or the Schema Versions sidebar kebab. Shows the forward (Up)
 // and rollback (Down) SQL and offers the same Rollback action, gated the same way.
-export default function MigrationInspector({ migration, dialect, canRollback, onClose, onRollback }) {
+//
+// The same view doubles as a draft inspector (`variant="draft"`, `name` = draft
+// name): it shows the draft's Up SQL and best-effort Down SQL, but drops the
+// executor/committed meta and the Rollback action (a draft isn't committed yet).
+export default function MigrationInspector({ migration, dialect, canRollback = false, onClose, onRollback = (_m: any) => {}, variant = 'release', name = '' }) {
   const { show, close } = useSlideOver(onClose)
   const toast = useToast()
+  const isDraft = variant === 'draft'
   const isRolledBack = (migration.status || 'active') === 'rollbacked'
 
   const copySql = async (sql, label) => {
@@ -86,14 +91,22 @@ export default function MigrationInspector({ migration, dialect, canRollback, on
         onKeyDown={(e) => e.key === 'Escape' && close()}
       >
         <div className="flex items-center justify-between border-b border-edge px-5 py-4">
-          <h3 className="flex items-center gap-2 text-base font-bold">
-            Migration v{migration.version}
+          <h3 className="flex items-center gap-2 truncate text-base font-bold">
+            {isDraft ? (
+              <span className="truncate">{name}</span>
+            ) : (
+              <>Migration v{migration.version}</>
+            )}
             <span
-              className={`rounded px-1.5 py-0.5 text-[10px] font-bold tracking-wide ${
-                isRolledBack ? 'bg-ink-faint/15 text-ink-faint' : 'bg-green/15 text-green-bright'
+              className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold tracking-wide ${
+                isDraft
+                  ? 'bg-amber/15 text-amber'
+                  : isRolledBack
+                    ? 'bg-ink-faint/15 text-ink-faint'
+                    : 'bg-green/15 text-green-bright'
               }`}
             >
-              {isRolledBack ? 'rolled back' : 'active'}
+              {isDraft ? 'draft' : isRolledBack ? 'rolled back' : 'active'}
             </span>
           </h3>
           <IconButton size="lg" onClick={() => close()} aria-label="Close">
@@ -102,16 +115,18 @@ export default function MigrationInspector({ migration, dialect, canRollback, on
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-          <div className="mb-5 grid grid-cols-2 gap-4">
-            <div>
-              <div className="mb-1.5 text-[11px] font-semibold tracking-wide text-ink-faint">Executor</div>
-              <div className="text-sm text-ink">{migration.executorName || '—'}</div>
+          {!isDraft && (
+            <div className="mb-5 grid grid-cols-2 gap-4">
+              <div>
+                <div className="mb-1.5 text-[11px] font-semibold tracking-wide text-ink-faint">Executor</div>
+                <div className="text-sm text-ink">{migration.executorName || '—'}</div>
+              </div>
+              <div>
+                <div className="mb-1.5 text-[11px] font-semibold tracking-wide text-ink-faint">Committed at</div>
+                <div className="text-sm text-ink">{fmtTime(migration.ts)}</div>
+              </div>
             </div>
-            <div>
-              <div className="mb-1.5 text-[11px] font-semibold tracking-wide text-ink-faint">Committed at</div>
-              <div className="text-sm text-ink">{fmtTime(migration.ts)}</div>
-            </div>
-          </div>
+          )}
 
           <div className="mb-5">
             {sqlHeader('Up SQL', migration.forwardSql.join('\n'))}
@@ -119,9 +134,17 @@ export default function MigrationInspector({ migration, dialect, canRollback, on
           </div>
 
           <div>
-            {migration.reversible ? (
+            {/* Drafts always show best-effort down SQL (with inline notes for
+                statements that can't be reversed); committed migrations only
+                show it when fully reversible. */}
+            {migration.reversible || isDraft ? (
               <>
                 {sqlHeader('Down SQL', migration.rollbackSql.filter(Boolean).join('\n'))}
+                {!migration.reversible && (
+                  <div className="mb-1.5 text-[11px] text-amber">
+                    Partial — some statements have no automatic down SQL (see notes below).
+                  </div>
+                )}
                 <SqlEditor
                   value={migration.rollbackSql.filter(Boolean).join('\n')}
                   onChange={() => {}}
@@ -134,7 +157,9 @@ export default function MigrationInspector({ migration, dialect, canRollback, on
               <>
                 <div className="mb-1.5 text-[11px] font-semibold tracking-wide text-ink-faint">Down SQL</div>
                 <div className="rounded-soft border border-edge bg-bg px-3 py-2 text-[11px] text-ink-faint">
-                  Not reversible — no down SQL was recorded for this commit.
+                  {isDraft
+                    ? 'Not reversible — this draft has statements with no automatic down SQL.'
+                    : 'Not reversible — no down SQL was recorded for this commit.'}
                 </div>
               </>
             )}
@@ -145,14 +170,16 @@ export default function MigrationInspector({ migration, dialect, canRollback, on
           <Button variant="subtle" onClick={() => close()}>
             Close
           </Button>
-          <Button
-            variant="primary"
-            disabled={!canRollback}
-            title={rollbackTitle({ __isBaseline: false, __canRollback: canRollback, __migration: migration })}
-            onClick={() => close(() => onRollback(migration))}
-          >
-            Rollback to this version
-          </Button>
+          {!isDraft && (
+            <Button
+              variant="primary"
+              disabled={!canRollback}
+              title={rollbackTitle({ __isBaseline: false, __canRollback: canRollback, __migration: migration })}
+              onClick={() => close(() => onRollback(migration))}
+            >
+              Rollback to this version
+            </Button>
+          )}
         </div>
       </div>
     </div>
