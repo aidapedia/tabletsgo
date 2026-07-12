@@ -1,10 +1,12 @@
-import { forwardRef, useEffect, useImperativeHandle, useState } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useState } from 'react'
 import Button from '@/shared/ui/buttons/Button'
 import IconButton from '@/shared/ui/buttons/IconButton'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
 import Popover from '@/shared/ui/overlay/Popover'
 import ConfirmDialog from '@/shared/ui/feedback/ConfirmDialog'
 import { useToast } from '@/shared/ui/feedback/Toast'
+import SearchInput from '@/shared/ui/form/SearchInput'
+import EmptyState from '@/shared/ui/feedback/EmptyState'
 import { CloudIcon, EditIcon, MoreVerticalIcon, PlusIcon, TrashIcon } from '@/shared/ui/icons'
 import { listStorages, deleteStorage } from '@/features/backup/lib/api'
 import type { StorageDestination } from '@/features/backup/lib/types'
@@ -18,6 +20,7 @@ export type StorageListHandle = { openCreate: () => void }
 const StorageList = forwardRef<StorageListHandle, { workspaceId: string }>(function StorageList({ workspaceId }, ref) {
   const toast = useToast()
   const [storages, setStorages] = useState<StorageDestination[]>([])
+  const [query, setQuery] = useState('')
   const [loading, setLoading] = useState(true)
   const [modal, setModal] = useState<{ mode: 'new' | 'edit'; storage?: StorageDestination } | null>(null)
   const [pendingDelete, setPendingDelete] = useState<StorageDestination | null>(null)
@@ -34,6 +37,17 @@ const StorageList = forwardRef<StorageListHandle, { workspaceId: string }>(funct
   useEffect(reload, [workspaceId])
 
   useImperativeHandle(ref, () => ({ openCreate: () => setModal({ mode: 'new' }) }), [])
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    if (!q) return storages
+    return storages.filter(
+      (s) =>
+        s.name.toLowerCase().includes(q) ||
+        s.bucket?.toLowerCase().includes(q) ||
+        s.endpoint?.toLowerCase().includes(q),
+    )
+  }, [storages, query])
 
   const handleSaved = (s: StorageDestination) => {
     setStorages((prev) => (prev.some((x) => x.id === s.id) ? prev.map((x) => (x.id === s.id ? s : x)) : [...prev, s]))
@@ -65,8 +79,18 @@ const StorageList = forwardRef<StorageListHandle, { workspaceId: string }>(funct
           </Button>
         </div>
       ) : (
-        <div className="grid grid-cols-3 gap-4 max-[1080px]:grid-cols-2 max-[720px]:grid-cols-1">
-          {storages.map((s) => (
+        <>
+          <div className="mb-4">
+            <SearchInput
+              iconSize={16}
+              placeholder="Search storage destinations…"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              inputClassName="!py-2.5 !pl-10 !text-[13px]"
+            />
+          </div>
+          <div className="grid grid-cols-3 gap-4 max-[1080px]:grid-cols-2 max-[720px]:grid-cols-1">
+            {filtered.map((s) => (
             <div key={s.id} className="group relative flex flex-col rounded-card border border-edge bg-card p-5">
               <div className="flex items-start justify-between">
                 <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[12px] bg-elevated text-sky-400">
@@ -102,8 +126,26 @@ const StorageList = forwardRef<StorageListHandle, { workspaceId: string }>(funct
                 </div>
               </div>
             </div>
-          ))}
-        </div>
+            ))}
+
+            {/* Add-destination card */}
+            {!query.trim() && (
+              <button
+                onClick={() => setModal({ mode: 'new' })}
+                className="flex min-h-[132px] flex-col items-center justify-center gap-3 rounded-card border border-dashed border-edge-strong text-ink-dim transition-colors hover:border-green-dim hover:text-ink"
+              >
+                <span className="flex h-11 w-11 items-center justify-center rounded-[12px] bg-elevated text-green">
+                  <PlusIcon width={20} height={20} />
+                </span>
+                <span className="text-[13px] font-medium">New destination</span>
+              </button>
+            )}
+          </div>
+
+          {filtered.length === 0 && (
+            <EmptyState className="py-16">No storage destinations match your search.</EmptyState>
+          )}
+        </>
       )}
 
       {modal && (
