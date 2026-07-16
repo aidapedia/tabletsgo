@@ -912,6 +912,33 @@ function getPostgresPool(conn, database) {
   return postgresConnections.get(key)
 }
 
+// `pg_proc.prokind` only exists on PostgreSQL 11+; older servers (and some
+// wire-compatible ones, e.g. Redshift) classify functions with the proisagg /
+// proiswindow booleans instead. A server can't change version under a live
+// pool, so cache the lookup per pool. An unreadable version falls back to the
+// pre-11 form, which is the safer guess for anything not answering `SHOW`.
+const postgresVersions = new WeakMap()
+
+async function postgresVersionNum(pool) {
+  if (!postgresVersions.has(pool)) {
+    let num = 0
+    try {
+      const r = await pool.query('SHOW server_version_num')
+      num = parseInt(r.rows[0]?.server_version_num, 10) || 0
+    } catch (error) {
+      num = 0
+    }
+    postgresVersions.set(pool, num)
+  }
+  return postgresVersions.get(pool)
+}
+
+// SQL predicate selecting plain functions (not aggregates/window functions/procedures).
+async function pgPlainFunctionFilter(pool) {
+  const version = await postgresVersionNum(pool)
+  return version >= 110000 ? `p.prokind = 'f'` : `NOT p.proisagg AND NOT p.proiswindow`
+}
+
 function closePostgresPools(id) {
   for (const [key, pool] of postgresConnections) {
     if (key === id || key.startsWith(`${id}::`)) {
@@ -960,7 +987,7 @@ async function listPostgresObjects(pool, schema = 'public') {
     const r = await pool.query(
       `SELECT p.proname AS name, pg_get_function_identity_arguments(p.oid) AS args
        FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-       WHERE n.nspname = $1 AND p.prokind = 'f'
+       WHERE n.nspname = $1 AND ${await pgPlainFunctionFilter(pool)}
        ORDER BY p.proname`,
       [schema]
     )
@@ -1078,7 +1105,7 @@ async function getPostgresFunction(pool, name, schema = 'public') {
             pg_get_function_identity_arguments(p.oid) AS args,
             pg_get_functiondef(p.oid) AS definition
      FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-     WHERE n.nspname = $1 AND p.proname = $2 AND p.prokind = 'f'
+     WHERE n.nspname = $1 AND p.proname = $2 AND ${await pgPlainFunctionFilter(pool)}
      ORDER BY p.proname`,
     [schema, name]
   )
