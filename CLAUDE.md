@@ -110,7 +110,7 @@ Conventions:
 ## CONFIGURATION (env / Docker)
 Configurable values live in env vars, wired through `docker-compose.yml` (see `.env.example`); don't hardcode them:
 - `PORT` (server), `META_DB` (metadata SQLite path), `NODE_ENV` — server runtime.
-- `CONNECTION_ENCRYPTION_KEY` — **required**. Encrypts connection credentials (host/port/username/password/…) at rest (AES-256-GCM); the server refuses to boot without it.
+- `ENCRYPTION_KEY` — **required**. Encrypts connection credentials (host/port/username/password/…) at rest (AES-256-GCM); the server refuses to boot without it.
 - `ADMIN_USERNAME` (email) / `ADMIN_PASSWORD` / `WORKSPACE_NAME` — **optional** pre-seed of the admin + first workspace. Unset ⇒ the in-browser first-run setup wizard runs (default). Don't bake defaults into the Dockerfile.
 - `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` / `SMTP_SECURE` — **optional** fallback SMTP for member-invite emails (per-workspace UI settings override these). Invites always return a copyable link even without SMTP.
 - `VITE_API_URL` — frontend API base, **baked at build time** via Dockerfile `ARG` (not runtime). Default `/api`.

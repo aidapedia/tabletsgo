@@ -32,7 +32,7 @@ endpoint with its request, response, and an example URL.
 | --------- | ------------------ | ---------------------------------------- |
 | `PORT`    | `3000`             | HTTP listen port.                        |
 | `META_DB` | `./data/app.db`    | SQLite file storing app metadata (below).|
-| `CONNECTION_ENCRYPTION_KEY` | *(required)* | AES-256-GCM key encrypting connection credentials at rest — server refuses to start without it. Also derives (with a distinct salt) the key used for storage-destination credentials. |
+| `ENCRYPTION_KEY` | *(required)* | AES-256-GCM key encrypting connection credentials at rest — server refuses to start without it. Also derives (with a distinct salt) the key used for storage-destination credentials. |
 | `WORKFLOW_SCHEDULER_ENABLED` | `true` | Set to `false` to disable the minutely cron tick that fires workflows with an active hourly/daily schedule (including backups). Useful for local dev/CI. |
 
 **System requirement:** PostgreSQL backup/restore shells out to `pg_dump`/`pg_restore`, so the `postgresql-client` package must be installed on the host/image running `server.js` (already added to the provided `Dockerfile`).
@@ -680,7 +680,7 @@ Node-graph automations (React Flow) run against the connection. A workflow's
 - `storage` ("Store to Storage"): `{ destinationIds: string[], retentionDays?: number, encrypt?: boolean }`
   — uploads the upstream node's `{ filePath }` output to each listed storage
   destination (see below). `encrypt` (default off) encrypts the file with a
-  server-derived key (AES-256-GCM, scrypt off `CONNECTION_ENCRYPTION_KEY`) before
+  server-derived key (AES-256-GCM, scrypt off `ENCRYPTION_KEY`) before
   upload; `retentionDays` (default `0` = never) deletes objects older than that
   under the same connection's key prefix after a successful upload. Output:
   `{ uploaded: [{ destinationId, ok, key?, sizeBytes?, error?, encrypted?, prunedCount?, pruneError? }] }`.

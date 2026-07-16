@@ -117,7 +117,7 @@ cd tabletsgo
 
 # 1. Create your env (generates a required encryption key)
 cp .env.example .env
-node -e "console.log('CONNECTION_ENCRYPTION_KEY='+require('crypto').randomBytes(32).toString('hex'))" >> .env
+node -e "console.log('ENCRYPTION_KEY='+require('crypto').randomBytes(32).toString('hex'))" >> .env
 
 # 2. Run it
 docker compose up -d
@@ -133,7 +133,7 @@ All configuration is via environment variables (see [`.env.example`](.env.exampl
 
 | Variable | Required | Description |
 |---|:---:|---|
-| `CONNECTION_ENCRYPTION_KEY` | ✅ | AES‑256‑GCM key encrypting connection credentials at rest. The server won't start without it. **Changing/losing it makes existing credentials unreadable.** |
+| `ENCRYPTION_KEY` | ✅ | AES‑256‑GCM key encrypting connection credentials at rest. The server won't start without it. **Changing/losing it makes existing credentials unreadable.** |
 | `PORT` | | Host port to expose (container listens on `3000`). |
 | `META_DB` | | Path to the metadata SQLite DB (default `/app/data/app.db`). |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` / `WORKSPACE_NAME` | | Optional admin pre‑seed. Leave unset to use the in‑browser setup wizard. |

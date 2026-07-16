@@ -14,7 +14,7 @@ services:
       # Required — encrypts connection credentials at rest. The server refuses
       # to start without it. Generate one with:
       #   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-      - CONNECTION_ENCRYPTION_KEY=${CONNECTION_ENCRYPTION_KEY:-}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY:-}
       # Optional admin pre-seed — leave unset to use the in-browser setup wizard.
       - ADMIN_USERNAME=${ADMIN_USERNAME:-}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}

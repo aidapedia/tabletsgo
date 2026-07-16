@@ -37,8 +37,8 @@ const PORT = process.env.PORT || 3000
 // Connection credentials (host/port/username/password/…) are encrypted at rest
 // with this key. Required — refuse to boot rather than silently store secrets
 // in plaintext.
-if (!process.env.CONNECTION_ENCRYPTION_KEY) {
-  console.error('❌ CONNECTION_ENCRYPTION_KEY is not set. Set it in your environment (see .env.example) before starting the server.')
+if (!process.env.ENCRYPTION_KEY) {
+  console.error('❌ ENCRYPTION_KEY is not set. Set it in your environment (see .env.example) before starting the server.')
   process.exit(1)
 }
 
@@ -64,14 +64,14 @@ meta.pragma('journal_mode = WAL')
 const sha256 = (s) => createHash('sha256').update(String(s)).digest('hex')
 
 // ---- Connection credential encryption (AES-256-GCM) ----
-const CRED_KEY = scryptSync(process.env.CONNECTION_ENCRYPTION_KEY, 'tabletsgo-connections', 32)
+const CRED_KEY = scryptSync(process.env.ENCRYPTION_KEY, 'tabletsgo-connections', 32)
 // Storage destination credentials (S3 access/secret keys) use a distinct
 // derived key — same passphrase, different scrypt salt — for namespace
 // separation from connection credentials.
-const STORAGE_CRED_KEY = scryptSync(process.env.CONNECTION_ENCRYPTION_KEY, 'tabletsgo-storage', 32)
+const STORAGE_CRED_KEY = scryptSync(process.env.ENCRYPTION_KEY, 'tabletsgo-storage', 32)
 // Optional at-rest encryption for backup files before upload — same passphrase,
 // yet another derived key for namespace separation.
-const BACKUP_FILE_KEY = scryptSync(process.env.CONNECTION_ENCRYPTION_KEY, 'tabletsgo-backup-file', 32)
+const BACKUP_FILE_KEY = scryptSync(process.env.ENCRYPTION_KEY, 'tabletsgo-backup-file', 32)
 function encryptSecret(plaintext, key = CRED_KEY) {
   const iv = randomBytes(12)
   const cipher = createCipheriv('aes-256-gcm', key, iv)

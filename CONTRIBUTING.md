@@ -25,7 +25,7 @@ npm install
 
 # Create your env (generates a required encryption key)
 cp .env.example .env
-node -e "console.log('CONNECTION_ENCRYPTION_KEY='+require('crypto').randomBytes(32).toString('hex'))" >> .env
+node -e "console.log('ENCRYPTION_KEY='+require('crypto').randomBytes(32).toString('hex'))" >> .env
 
 # Run frontend (Vite) + backend (Express) together
 npm run dev:all
