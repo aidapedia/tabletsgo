@@ -35,7 +35,7 @@ import {
 } from '@/features/workspace/lib/savedQueries'
 import { draftToItems } from '@/shared/lib/schemaDraft'
 import SearchInput from '@/shared/ui/form/SearchInput'
-import TableView from '@/features/workspace/components/TableView'
+import TableView, { makeFilter } from '@/features/workspace/components/TableView'
 import CreateTablePanel from '@/features/schema-designer/components/CreateTablePanel'
 import SchemaPanel from '@/features/schema-designer/components/SchemaPanel'
 
@@ -92,6 +92,8 @@ const kbd =
 
 const DIALECT = { postgresql: 'PostgreSQL', sqlite: 'SQLite', redis: 'Redis' }
 let queryCounter = 0
+// Stable identity for unfiltered table tabs — TableView keys effects off `filters`.
+const EMPTY_FILTERS = []
 
 const centerState =
   'flex h-full flex-col items-center justify-center gap-4 text-ink-faint'
@@ -333,15 +335,20 @@ export default function Workspace() {
   // different FK points at the same table — otherwise opens a new table tab.
   const openTableFiltered = (table, column, value) => {
     const key = `table:${table}`
-    const initialFilter = { col: column, value }
+    const filters = [makeFilter(column, '=', String(value ?? ''))]
     setTabs((prev) =>
       prev.some((t) => t.key === key)
-        ? prev.map((t) => (t.key === key ? { ...t, title: table, initialFilter } : t))
-        : [...prev, { key, kind: 'table', table, title: table, initialFilter }]
+        ? prev.map((t) => (t.key === key ? { ...t, title: table, filters } : t))
+        : [...prev, { key, kind: 'table', table, title: table, filters }]
     )
     setActiveTab(key)
     setSidebarOpen(false)
   }
+
+  // Table filters live on the tab, not inside TableView — only the active tab is
+  // mounted, so tab-local state would be lost on every tab switch.
+  const setTabFilters = (key, filters) =>
+    setTabs((prev) => prev.map((t) => (t.key === key ? { ...t, filters } : t)))
 
   const openQuery = (sql?) => {
     queryCounter += 1
@@ -1376,7 +1383,8 @@ export default function Workspace() {
               table={current.table}
               onChange={addChange}
               onOpenReference={openTableFiltered}
-              initialFilter={current.initialFilter}
+              filters={current.filters || EMPTY_FILTERS}
+              onFiltersChange={(f) => setTabFilters(current.key, f)}
             />
           )}
           {conn && current?.kind === 'schema' && (

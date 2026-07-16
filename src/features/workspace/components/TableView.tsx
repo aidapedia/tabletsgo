@@ -56,7 +56,8 @@ const ctl =
   'rounded-soft border border-edge bg-bg px-2.5 py-1.5 text-[11px] text-ink outline-none focus:border-green-dim'
 
 let filterId = 0
-const blankFilter = () => ({ id: `f${++filterId}`, col: '', op: 'contains', value: '', enabled: true })
+export const makeFilter = (col = '', op = 'contains', value = '') => ({ id: `f${++filterId}`, col, op, value, enabled: true })
+const blankFilter = () => makeFilter()
 
 export function matchFilter(row, f) {
   if (!f.enabled || !f.col) return true
@@ -77,7 +78,9 @@ export function matchFilter(row, f) {
   }
 }
 
-export default function TableView({ conn, table, onChange, onOpenReference, initialFilter }) {
+// `filters` is owned by the parent tab so it survives the unmount that happens
+// when the user switches tabs (only the active tab is mounted).
+export default function TableView({ conn, table, onChange, onOpenReference, filters, onFiltersChange }) {
   const toast = useToast()
   const { tableRowLimit, directExecute } = useSettings()
   // With Direct execute on, the parent runs the change immediately and toasts
@@ -99,7 +102,6 @@ export default function TableView({ conn, table, onChange, onOpenReference, init
   const [cellMenu, setCellMenu] = useState(null) // right-click cell menu: { x, y, row, col, value }
   const [inspecting, setInspecting] = useState(null) // row object shown in the Inspector slide-over
 
-  const [filters, setFilters] = useState([])
   const [sort, setSort] = useState(null) // { col, dir }
   const [hidden, setHidden] = useState([])
   const [page, setPage] = useState(1)
@@ -121,18 +123,15 @@ export default function TableView({ conn, table, onChange, onOpenReference, init
   }
 
   useEffect(() => {
-    // Seed a filter when opened from a foreign-key link (e.g. col = value).
-    setFilters(
-      initialFilter
-        ? [{ id: `f${++filterId}`, col: initialFilter.col, op: '=', value: String(initialFilter.value ?? ''), enabled: true }]
-        : []
-    )
     setSort(null)
     setHidden([])
-    setPage(1)
     load()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conn, table, initialFilter])
+  }, [conn, table])
+
+  // Any filter change (local edit, or a new FK drill-down into this same tab)
+  // puts us back on the first page.
+  useEffect(() => setPage(1), [filters])
 
   // Rows are targeted by primary key when available; otherwise we fall back to
   // matching every column so selection / delete / duplicate work on any table.
@@ -273,8 +272,7 @@ export default function TableView({ conn, table, onChange, onOpenReference, init
   }
 
   const addQuickFilter = (col, op, value) => {
-    setFilters((f) => [...f, { id: `f${++filterId}`, col, op, value: op === 'isnull' || op === 'notnull' ? '' : cellText(value), enabled: true }])
-    setPage(1)
+    onFiltersChange([...filters, makeFilter(col, op, op === 'isnull' || op === 'notnull' ? '' : cellText(value))])
   }
 
   // Inline cell edit → held locally as an unsaved edit (not staged yet).
@@ -396,10 +394,7 @@ export default function TableView({ conn, table, onChange, onOpenReference, init
             <FilterPanel
               columns={columns}
               initial={filters}
-              onApply={(f) => {
-                setFilters(f)
-                setPage(1)
-              }}
+              onApply={onFiltersChange}
               onClose={close}
             />
           )}
