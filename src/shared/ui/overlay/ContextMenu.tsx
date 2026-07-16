@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { MENU_PANEL_CLASS } from './Popover'
+import useDismiss from './useDismiss'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
 import { ChevronRight } from '@/shared/ui/icons'
 
@@ -20,25 +21,13 @@ export default function ContextMenu({ x, y, onClose, children, width = 220 }) {
     })
   }, [x, y, width])
 
+  useDismiss([ref], onClose)
+
+  // Mouse-anchored, so a resize leaves it stranded away from its target.
   useEffect(() => {
     const close = () => onClose?.()
-    const onKey = (e) => e.key === 'Escape' && close()
-    window.addEventListener('keydown', onKey)
-    // Attaching the outside-click/contextmenu listeners a tick late avoids
-    // catching the very right-click event that just opened this menu (it's
-    // still bubbling to `window` when this effect's mount pass runs).
-    const id = setTimeout(() => {
-      window.addEventListener('click', close)
-      window.addEventListener('contextmenu', close)
-      window.addEventListener('resize', close)
-    }, 0)
-    return () => {
-      clearTimeout(id)
-      window.removeEventListener('click', close)
-      window.removeEventListener('contextmenu', close)
-      window.removeEventListener('resize', close)
-      window.removeEventListener('keydown', onKey)
-    }
+    window.addEventListener('resize', close)
+    return () => window.removeEventListener('resize', close)
   }, [onClose])
 
   return (

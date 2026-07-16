@@ -7,6 +7,7 @@ import { useToast } from '@/shared/ui/feedback/Toast'
 import Select from '@/shared/ui/form/Select'
 import Button from '@/shared/ui/buttons/Button'
 import ConfirmDialog from '@/shared/ui/feedback/ConfirmDialog'
+import ContextMenu from '@/shared/ui/overlay/ContextMenu'
 import {
   getNamespaces,
   listObjects,
@@ -295,22 +296,6 @@ export default function Workspace() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [sidebarOpen])
-
-  useEffect(() => {
-    if (!tabMenu) return
-    const close = () => setTabMenu(null)
-    const onKey = (e) => e.key === 'Escape' && close()
-    window.addEventListener('click', close)
-    window.addEventListener('contextmenu', close)
-    window.addEventListener('resize', close)
-    window.addEventListener('keydown', onKey)
-    return () => {
-      window.removeEventListener('click', close)
-      window.removeEventListener('contextmenu', close)
-      window.removeEventListener('resize', close)
-      window.removeEventListener('keydown', onKey)
-    }
-  }, [tabMenu])
 
   if (!conn) {
     return (
@@ -1497,15 +1482,7 @@ export default function Workspace() {
       </main>
 
       {tabMenu && (
-        <div
-          className="fixed z-[60] min-w-[190px] overflow-hidden rounded-soft border border-edge-strong bg-elevated py-1"
-          style={{
-            left: Math.min(tabMenu.x, window.innerWidth - 200),
-            top: Math.min(tabMenu.y, window.innerHeight - 120),
-          }}
-          onClick={(e) => e.stopPropagation()}
-          onContextMenu={(e) => e.preventDefault()}
-        >
+        <ContextMenu x={tabMenu.x} y={tabMenu.y} width={190} onClose={() => setTabMenu(null)}>
           <MenuItem
             onClick={() => {
               removeTab(tabMenu.key)
@@ -1532,7 +1509,7 @@ export default function Workspace() {
           >
             Close all tabs
           </MenuItem>
-        </div>
+        </ContextMenu>
       )}
 
       {creatingTable && (

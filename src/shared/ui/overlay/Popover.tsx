@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import useDismiss from './useDismiss'
 
 // Shared panel shell — every dropdown/action menu in the app (this Popover's
 // panel, and the mouse-anchored ContextMenu) renders on this same surface.
@@ -20,23 +21,7 @@ export default function Popover({ trigger, children, align = 'left', placement =
   const panelRef = useRef(null)
   const [pos, setPos] = useState(null)
 
-  useEffect(() => {
-    if (!open) return
-    const onDown = (e) => {
-      if (ref.current?.contains(e.target)) return
-      if (panelRef.current?.contains(e.target)) return
-      setOpen(false)
-    }
-    const onKey = (e) => e.key === 'Escape' && setOpen(false)
-    // Capture phase so we still hear the click even when a child (e.g. the React
-    // Flow canvas) stops propagation before it reaches window.
-    window.addEventListener('mousedown', onDown, true)
-    window.addEventListener('keydown', onKey)
-    return () => {
-      window.removeEventListener('mousedown', onDown, true)
-      window.removeEventListener('keydown', onKey)
-    }
-  }, [open])
+  useDismiss([ref, panelRef], () => setOpen(false), open)
 
   // Measure the trigger and place the fixed panel (portal mode only).
   useLayoutEffect(() => {

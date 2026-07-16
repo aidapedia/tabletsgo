@@ -19,6 +19,7 @@ import IconButton from '@/shared/ui/buttons/IconButton'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
 import TextButton from '@/shared/ui/buttons/TextButton'
 import Popover from '@/shared/ui/overlay/Popover'
+import ContextMenu from '@/shared/ui/overlay/ContextMenu'
 import Badge from '@/shared/ui/Badge'
 import Select from '@/shared/ui/form/Select'
 import { controlClass, Input } from '@/shared/ui/form/Input'
@@ -1304,24 +1305,6 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
   }, [augmented])
   const tableNames = Object.keys(schemaMap)
 
-  // Close the canvas context menu on any outside interaction.
-  useEffect(() => {
-    if (!menu && !nodeMenu) return
-    const close = () => {
-      setMenu(null)
-      setNodeMenu(null)
-    }
-    const onKey = (e) => e.key === 'Escape' && close()
-    window.addEventListener('click', close)
-    window.addEventListener('resize', close)
-    window.addEventListener('keydown', onKey)
-    return () => {
-      window.removeEventListener('click', close)
-      window.removeEventListener('resize', close)
-      window.removeEventListener('keydown', onKey)
-    }
-  }, [menu, nodeMenu])
-
   // Dismiss the FK popup (and clear the edge selection) on Escape / resize.
   useEffect(() => {
     if (!edgePopup) return
@@ -1787,12 +1770,7 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
 
       {/* Table right-click menu */}
       {nodeMenu && (
-        <div
-          className="fixed z-[60] min-w-[180px] rounded-soft border border-edge-strong bg-elevated p-1"
-          style={{ left: Math.min(nodeMenu.x, window.innerWidth - 200), top: Math.min(nodeMenu.y, window.innerHeight - 150) }}
-          onClick={(e) => e.stopPropagation()}
-          onContextMenu={(e) => e.preventDefault()}
-        >
+        <ContextMenu x={nodeMenu.x} y={nodeMenu.y} width={180} onClose={() => setNodeMenu(null)}>
           <div className="truncate px-2.5 pb-1.5 pt-1 text-[11px] font-semibold text-ink-dim">{nodeMenu.table}</div>
           <MenuItem disabled={nodeMenu.pending} onClick={() => { onOpenTable?.(nodeMenu.table); setNodeMenu(null) }}>
             <TableIcon width={14} height={14} /> Open in new tab
@@ -1810,17 +1788,12 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
           <MenuItem danger className="!text-red" onClick={() => { deleteTable(nodeMenu.table, nodeMenu.pending); setNodeMenu(null) }}>
             <TrashIcon width={14} height={14} /> Delete table
           </MenuItem>
-        </div>
+        </ContextMenu>
       )}
 
       {/* Canvas right-click menu */}
       {menu && (
-        <div
-          className="fixed z-[60] min-w-[180px] rounded-soft border border-edge-strong bg-elevated p-1"
-          style={{ left: Math.min(menu.x, window.innerWidth - 200), top: Math.min(menu.y, window.innerHeight - 180) }}
-          onClick={(e) => e.stopPropagation()}
-          onContextMenu={(e) => e.preventDefault()}
-        >
+        <ContextMenu x={menu.x} y={menu.y} width={180} onClose={() => setMenu(null)}>
           <MenuItem onClick={() => { setCreating(true); setMenu(null) }}>
             <PlusIcon width={14} height={14} /> Create new Table
           </MenuItem>
@@ -1838,7 +1811,7 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
           <MenuItem onClick={() => { autoLayout(); setMenu(null) }}>
             <WandIcon width={14} height={14} /> Auto arrange
           </MenuItem>
-        </div>
+        </ContextMenu>
       )}
     </div>
   )
