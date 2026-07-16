@@ -792,12 +792,25 @@ function getSqliteColumns(db, table) {
   for (const fk of db.prepare(`PRAGMA foreign_key_list("${table}")`).all()) {
     fkMap[fk.from] = { table: fk.table, column: fk.to }
   }
+  // SQLite auto-assigns only the rowid alias: the sole PK column declared
+  // exactly INTEGER, on a table that has a rowid. That reads as no default in
+  // PRAGMA table_info, so it has to be derived. The AUTOINCREMENT keyword is a
+  // rowid-reuse policy on that same column, not a separate case.
+  const ddl =
+    db.prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`).get(table)?.sql || ''
+  const withoutRowid = /WITHOUT\s+ROWID/i.test(ddl)
+  const pkCols = cols.filter((c) => c.pk)
+  const rowidAlias =
+    !withoutRowid && pkCols.length === 1 && /^integer$/i.test((pkCols[0].type || '').trim())
+      ? pkCols[0].name
+      : null
   return cols.map((c) => ({
     name: c.name,
     type: c.type || '',
     notnull: !!c.notnull,
     pk: !!c.pk,
     default: c.dflt_value,
+    autoIncrement: c.name === rowidAlias,
     references: fkMap[c.name] || null,
   }))
 }
@@ -987,7 +1000,7 @@ function pgFullType(c) {
 
 async function getPostgresColumns(pool, table, schema = 'public') {
   const r = await pool.query(
-    `SELECT column_name, data_type, is_nullable, column_default,
+    `SELECT column_name, data_type, is_nullable, column_default, is_identity,
             character_maximum_length, numeric_precision, numeric_scale
      FROM information_schema.columns
      WHERE table_name = $1 AND table_schema = $2
@@ -1017,12 +1030,15 @@ async function getPostgresColumns(pool, table, schema = 'public') {
   )
   const fkMap = {}
   for (const row of fkRes.rows) fkMap[row.column] = { table: row.ref_table, column: row.ref_column }
+  // serial exposes its sequence as a nextval() default; identity columns keep it
+  // out of column_default entirely, so both have to be checked.
   return r.rows.map((c) => ({
     name: c.column_name,
     type: pgFullType(c),
     notnull: c.is_nullable === 'NO',
     pk: pkSet.has(c.column_name),
     default: c.column_default,
+    autoIncrement: c.is_identity === 'YES' || /^nextval\(/i.test(c.column_default || ''),
     references: fkMap[c.column_name] || null,
   }))
 }

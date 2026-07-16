@@ -13,6 +13,12 @@ const NUMERIC = /int|real|numeric|decimal|float|double|serial/i
 const isJsonType = (t) => /json/i.test(t || '')
 const isTextArea = (t) => /text|clob/i.test(t || '')
 
+// A value is only mandatory when the database has no way to supply one itself:
+// NOT NULL, no default, and not auto-assigned (serial/identity/rowid alias).
+// Anything the database can fill in stays blankable — a blank field is left out
+// of the INSERT entirely, so the default or sequence applies.
+const isRequired = (col) => col.notnull && col.default == null && !col.autoIncrement
+
 const coerce = (col, v) => {
   if (NUMERIC.test(col.type)) {
     const n = Number(v)
@@ -166,8 +172,15 @@ export default function RowEditorPanel({
           const fid = `row-f-${col.name}`
           const val = values[col.name] ?? ''
           const typeLabel = (col.type || 'ANY').toUpperCase()
-          const required = col.notnull && !(col.pk && col.default != null)
-          const placeholder = required ? undefined : 'NULL'
+          const required = isRequired(col)
+          // Blank means "let the database decide" whenever it can; say which.
+          const placeholder = required
+            ? undefined
+            : col.autoIncrement
+              ? 'AUTO'
+              : col.default != null
+                ? 'DEFAULT'
+                : 'NULL'
           return (
             <div key={col.name} className="mb-5">
               <div className="mb-2 flex items-center justify-between gap-2">

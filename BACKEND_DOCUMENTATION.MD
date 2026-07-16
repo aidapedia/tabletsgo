@@ -141,10 +141,17 @@ A table belongs to **at most one** domain (a domain is a grouping "by domain").
   "type": "integer",
   "notnull": true,
   "pk": false,
-  "default": null,
+  "default": null,          // raw default expression as the dialect reports it, e.g. "nextval('t_id_seq'::regclass)"
+  "autoIncrement": false,   // database assigns this column when the INSERT omits it
   "references": { "table": "users", "column": "id" } // null when not a foreign key (only on /columns)
 }
 ```
+
+`autoIncrement` is normalized per dialect so clients never have to sniff the
+`default` string: PostgreSQL reports it for identity columns (`is_identity = 'YES'`)
+and `serial` (`nextval(...)` default); SQLite reports it for the rowid alias (the
+sole `INTEGER PRIMARY KEY` on a rowid table). A column is safe to omit from an
+`INSERT` when it is nullable, has a `default`, or is `autoIncrement`.
 
 ### Query result (from `/query`)
 ```jsonc
@@ -1024,7 +1031,7 @@ Read rows from a table (capped by `limit`).
 ### GET `/api/connections/:id/columns/:table`
 Column metadata for a table (used for PK detection, inserts, editing).
 
-- **200:** `Column[]` → `[{ "name", "type", "notnull", "pk", "default", "references": { "table", "column" } | null }]`
+- **200:** `Column[]` → `[{ "name", "type", "notnull", "pk", "default", "autoIncrement", "references": { "table", "column" } | null }]`
 - **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/columns/users`
 
 ### GET `/api/connections/:id/indexes/:table`
