@@ -19,6 +19,7 @@ import IconButton from '@/shared/ui/buttons/IconButton'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
 import TextButton from '@/shared/ui/buttons/TextButton'
 import Popover from '@/shared/ui/overlay/Popover'
+import ContextMenu, { ContextMenuSub } from '@/shared/ui/overlay/ContextMenu'
 import Badge from '@/shared/ui/Badge'
 import Select from '@/shared/ui/form/Select'
 import { controlClass, Input } from '@/shared/ui/form/Input'
@@ -29,9 +30,9 @@ import SchemaSidebar from '@/features/schema-designer/components/SchemaSidebar'
 import SaveQueryPanel from '@/shared/ui/SaveQueryPanel'
 import { newItemId } from '@/shared/lib/schemaDraft'
 import { DomainEditPanel } from '@/features/domains'
-import { FK_ACTIONS, fkEligible, normFkAction, useColumnTypes } from '@/features/schema-designer/components/columnFields'
+import { columnTypeSql, FK_ACTIONS, fkEligible, normFkAction, parseColumnDefs, useColumnTypes } from '@/features/schema-designer/components/columnFields'
 import { useShortcut } from '@/features/keymap'
-import { ChevronRight, ColumnsIcon, DownloadIcon, EditIcon, PlusIcon, SaveIcon, TableIcon, TrashIcon, WandIcon } from '@/shared/ui/icons'
+import { ChevronRight, ColumnsIcon, DownloadIcon, EditIcon, PlusIcon, SaveIcon, TableIcon, TagIcon, TrashIcon, WandIcon } from '@/shared/ui/icons'
 
 // Fixed metrics so per-column handles line up with their rows.
 const HEADER_H = 34
@@ -67,9 +68,10 @@ function TableNode({ data, selected }) {
           <span className={`min-w-0 flex-1 truncate ${data.dropped ? 'line-through' : ''}`}>{data.name}</span>
           {data.dropped ? <Badge tone="red" dense>dropped</Badge> : data.pending && <Badge tone="green" dense>new</Badge>}
           {/* Edit affordance — revealed on hover; click opens the table editor
-              (detected via `.table-edit` in onNodeClick). Hidden for staged
-              new/dropped tables, which aren't ALTER-editable. */}
-          {!data.pending && !data.dropped && (
+              (detected via `.table-edit` in onNodeClick). A staged new table
+              reopens its CREATE instead; a table staged for DROP is going away,
+              so it isn't editable at all. */}
+          {!data.dropped && (
             <button
               type="button"
               className="table-edit flex h-[18px] w-[18px] shrink-0 cursor-pointer items-center justify-center rounded text-ink-faint opacity-0 transition-opacity hover:bg-black/10 hover:text-ink group-hover:opacity-100"
@@ -199,9 +201,10 @@ function TableNode({ data, selected }) {
 }
 
 // ---- Custom node: a translucent region wrapping a domain's tables ----
-// A non-interactive backdrop sized to the bounding box of its member tables
-// (see domainGroups below). pointer-events are disabled so it never intercepts
-// pans/clicks meant for the tables painted on top of it.
+// A translucent backdrop sized to the bounding box of its member tables (see
+// domainGroups below). The whole region is a drag surface, so it's painted
+// under both the tables and the FK lines (zIndex -1) to stay out of the way of
+// clicks meant for them.
 function DomainGroupNode({ data }) {
   const [hover, setHover] = useState(false)
   const color = data.color || '#94a3b8'
@@ -217,7 +220,7 @@ function DomainGroupNode({ data }) {
       style={{
         borderColor: color,
         backgroundColor: hover ? `${color}24` : `${color}12`,
-        boxShadow: hover ? `0 0 0 2px ${color}66, 0 10px 30px -12px ${color}80` : 'none',
+        boxShadow: hover ? `0 0 0 2px ${color}66` : 'none',
       }}
     >
       {/* Header bar: an obvious, wide grab target. Its edit button opens the
@@ -250,26 +253,9 @@ function DomainGroupNode({ data }) {
 const nodeTypes = { table: TableNode, domainGroup: DomainGroupNode }
 
 // ---- Parse staged change SQL into pending tables / columns ----
-function parsePendingColumns(body) {
-  const parts = []
-  let depth = 0
-  let cur = ''
-  for (const ch of body) {
-    if (ch === '(') depth++
-    else if (ch === ')') depth--
-    if (ch === ',' && depth === 0) {
-      parts.push(cur)
-      cur = ''
-    } else cur += ch
-  }
-  if (cur.trim()) parts.push(cur)
-  return parts
-    .map((p) => {
-      const m = p.trim().match(/^"([^"]+)"\s+(\S+)/)
-      return m ? { name: m[1], type: m[2] } : null
-    })
-    .filter(Boolean)
-}
+// A staged CREATE TABLE — the source of truth for a not-yet-committed table,
+// both to draw it and to reopen it in the create-table form for editing.
+const CREATE_TABLE_RE = /^\s*CREATE TABLE\s+"([^"]+)"\s*\(([\s\S]*)\)\s*;?\s*$/i
 
 // Parse staged FK add/drop SQL (from drag-to-connect diagram edits, or the
 // "Foreign key" section of TableEditPanel) so they can be drawn on the
@@ -305,16 +291,16 @@ function parsePendingForeignKeys(items) {
 }
 
 function parsePending(changes) {
-  const newTables = {} // name -> [{name,type}]
+  const newTables: Record<string, any[]> = {} // name -> parsed column models
   const newCols = {} // table -> { colName: type }
   const droppedTables = new Set() // names of tables staged for DROP
   const droppedCols = {} // table -> Set(colName) staged for DROP COLUMN
   const retypedCols = {} // table -> { colName: newType } staged for ALTER COLUMN TYPE
   for (const ch of changes || []) {
     const sql = ch.sql || ''
-    let m = sql.match(/^\s*CREATE TABLE\s+"([^"]+)"\s*\(([\s\S]*)\)\s*;?\s*$/i)
+    let m = sql.match(CREATE_TABLE_RE)
     if (m) {
-      newTables[m[1]] = parsePendingColumns(m[2])
+      newTables[m[1]] = parseColumnDefs(m[2])
       continue
     }
     m = sql.match(/^\s*DROP TABLE\s+(?:IF EXISTS\s+)?"([^"]+)"\s*;?\s*$/i)
@@ -342,9 +328,9 @@ function parsePending(changes) {
 
 
 // Reusable export format list (used by the toolbar dropdown and the canvas menu).
-function ExportOptions({ onExport }) {
+function ExportItems({ onExport }) {
   return (
-    <div className="p-1">
+    <>
       <MenuItem onClick={() => onExport('png')}>
         <DownloadIcon width={14} height={14} /> PNG image
       </MenuItem>
@@ -354,6 +340,15 @@ function ExportOptions({ onExport }) {
       <MenuItem onClick={() => onExport('svg')}>
         <DownloadIcon width={14} height={14} /> SVG vector
       </MenuItem>
+    </>
+  )
+}
+
+// Popover's panel has no padding of its own; ContextMenuSub's already does.
+function ExportOptions({ onExport }) {
+  return (
+    <div className="p-1">
+      <ExportItems onExport={onExport} />
     </div>
   )
 }
@@ -550,7 +545,7 @@ function pathWithJumps(points, verticals) {
   return d
 }
 
-export default function SchemaEditor({ conn, changes, domains = [], onUpdateDomain, onDeleteDomain, pending = [], onPendingChange, onStageItems, onSaveDraft, onUpdateDraft, draftId, onOpenTable, onOpenSchema }) {
+export default function SchemaEditor({ conn, changes, domains = [], onUpdateDomain, onDeleteDomain, onSetDomain, pending = [], onPendingChange, onStageItems, onSaveDraft, onUpdateDraft, draftId, onOpenTable, onOpenSchema }) {
   const dialect = conn.type === 'postgresql' ? 'postgresql' : 'sqlite'
   const types = useColumnTypes(conn)
   const toast = useToast()
@@ -568,6 +563,7 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
   const [nodeMenu, setNodeMenu] = useState(null) // table right-click menu { x, y, table, pending }
   const [editingDomain, setEditingDomain] = useState(null) // domain being edited from the canvas | null
   const [creating, setCreating] = useState(false) // create-table panel open
+  const [editingDraft, setEditingDraft] = useState(null) // staged new table being re-edited { table, columns }
   const [naming, setNaming] = useState(false) // "save as draft" name prompt open
   const canEditFk = dialect === 'postgresql' // drag-to-connect FK editing (SQLite can't alter FKs)
 
@@ -594,6 +590,38 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
     if (isPending) onPendingChange?.(pending.filter((p) => p.table !== table))
     else addPending([`DROP TABLE "${table}";`], table, 'delete')
   }
+
+  // The still-local staged CREATE TABLE for `table`. Only items in `pending`
+  // are editable here — once submitted to the Changes queue they're owned by
+  // that panel and are display-only on the diagram.
+  const pendingCreate = (table) =>
+    pending.find((p) => {
+      const m = (p.sql || '').match(CREATE_TABLE_RE)
+      return m && m[1] === table
+    })
+
+  // Reopen a staged new table in the create-table form, parsed back from its
+  // own CREATE TABLE, so it can be edited before it's ever committed.
+  const editPendingTable = (table) => {
+    const item = pendingCreate(table)
+    if (!item) {
+      toast.error(`“${table}” is already in the Changes queue — undo it there to edit it.`)
+      return
+    }
+    setEditingDraft({ table, columns: parseColumnDefs(item.sql.match(CREATE_TABLE_RE)[2]) })
+  }
+
+  // Restage an edited draft: its old statements go, the rebuilt CREATE lands in
+  // their place. Mirrors deleteTable's "a pending table is just its statements".
+  const replacePendingTable = (oldName, statements, newName) =>
+    onPendingChange?.([
+      ...pending.filter((p) => p.table !== oldName),
+      ...statements.map((sql) => ({ id: newItemId(), sql, table: newName, mode: 'new' })),
+    ])
+
+  // Edit a table — a committed one via ALTER (TableEditPanel), a staged new one
+  // by reopening its CREATE (CreateTablePanel).
+  const openTableEditor = (table, isPending) => (isPending ? editPendingTable(table) : setSelected(table))
 
   // Reconstruct a committed FK's ADD CONSTRAINT statement (optionally with
   // different actions) — used both as a drop's rollback and to re-add the
@@ -712,7 +740,14 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
     })
     for (const [name, cols] of Object.entries(newTables)) {
       if (existing.has(name)) continue
-      tables.push({ name, columns: cols, pending: true, pendingCols: new Set() })
+      // The parsed columns keep type and length apart (as the form needs them);
+      // the diagram wants the SQL spelling back, like a committed column's.
+      tables.push({
+        name,
+        columns: cols.map((c) => ({ ...c, type: columnTypeSql(c) })),
+        pending: true,
+        pendingCols: new Set(),
+      })
     }
     return tables
   }, [diagram, changes, pending])
@@ -742,7 +777,7 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
     (t, position) => ({
       id: t.name,
       type: 'table',
-      zIndex: 1, // paint above the domain-group backdrops (zIndex 0)
+      zIndex: 1, // paint above the FK lines and the domain regions (zIndex -1)
       position,
       style: { width: NODE_W },
       data: {
@@ -849,9 +884,18 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
   const showAllTables = () => setHiddenTables(new Set())
   const hideAllTables = () => setHiddenTables(new Set(augmented.map((t) => t.name)))
 
-  // (Re)build nodes whenever the diagram or staged changes update.
+  // (Re)build nodes whenever the diagram or staged changes update, but keep the
+  // position of every table already on the canvas — once a table is placed
+  // (by the initial layout or by the user dragging it) nothing reshuffles it.
+  // Only tables new to the canvas take the position dagre computed for them.
+  // Re-arranging the whole diagram is an explicit action: right-click the
+  // canvas → Auto arrange (or the schema.autoLayout shortcut).
   useEffect(() => {
-    setNodes(layoutNodes())
+    setNodes((prev) => {
+      const placed = {}
+      for (const n of prev) placed[n.id] = n.position
+      return layoutNodes().map((n) => (placed[n.id] ? { ...n, position: placed[n.id] } : n))
+    })
   }, [layoutNodes, setNodes])
 
   // Edges are derived from live node positions, with jump arcs over crossings.
@@ -997,10 +1041,9 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
   // line lands on. Kept off `layoutNodes` so it never reshuffles the diagram.
   // Domain regions: one translucent region per domain, sized to the bounding
   // box of its visible member tables (using live node positions, so the region
-  // tracks member drags). Rendered behind the tables (lower zIndex). The region
-  // body is pointer-transparent so it never steals pans/clicks; only its label
-  // chip (the `dragHandle`) is interactive — dragging it moves the whole group
-  // (see handleNodesChange), clicking it opens the domain editor.
+  // tracks member drags). Painted behind the tables and the FK lines (see the
+  // zIndex note below). Grabbing anywhere on the region drags the whole group
+  // (see handleNodesChange); its header's edit button opens the domain editor.
   const domainGroups = useMemo(() => {
     if (!domains.length || !nodes.length) return []
     const byTable = {}
@@ -1037,7 +1080,13 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
           connectable: false,
           deletable: false,
           focusable: false,
-          zIndex: 0,
+          // Must be negative, not 0: React Flow's edge <svg> has no z-index of
+          // its own, so a region at 0 would paint over the FK lines crossing it
+          // and swallow their clicks (the region is a full-rect drag surface).
+          // Negative z-index descendants paint first, so the lines stay above
+          // the region — and above the pane, since the transformed viewport is
+          // the stacking context. Tables (zIndex 1) still paint over both.
+          zIndex: -1,
         }
       })
       .filter(Boolean)
@@ -1265,24 +1314,6 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
   }, [augmented])
   const tableNames = Object.keys(schemaMap)
 
-  // Close the canvas context menu on any outside interaction.
-  useEffect(() => {
-    if (!menu && !nodeMenu) return
-    const close = () => {
-      setMenu(null)
-      setNodeMenu(null)
-    }
-    const onKey = (e) => e.key === 'Escape' && close()
-    window.addEventListener('click', close)
-    window.addEventListener('resize', close)
-    window.addEventListener('keydown', onKey)
-    return () => {
-      window.removeEventListener('click', close)
-      window.removeEventListener('resize', close)
-      window.removeEventListener('keydown', onKey)
-    }
-  }, [menu, nodeMenu])
-
   // Dismiss the FK popup (and clear the edge selection) on Escape / resize.
   useEffect(() => {
     if (!edgePopup) return
@@ -1457,7 +1488,7 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
                     }
                     return
                   }
-                  if (target?.closest?.('.table-edit')) setSelected(node.id)
+                  if (target?.closest?.('.table-edit')) openTableEditor(node.id, !!node.data?.pending)
                 }}
                 onNodeContextMenu={(e, node) => {
                   e.preventDefault()
@@ -1504,7 +1535,7 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
               </ReactFlow>
 
               {/* Zoom / fit controls — bottom-left of the canvas */}
-              <div className="absolute bottom-3 left-3 z-10 flex items-center gap-0.5 rounded-soft border border-edge bg-elevated p-1 shadow-[0_8px_24px_-12px_rgba(0,0,0,0.7)]">
+              <div className="absolute bottom-3 left-3 z-10 flex items-center gap-0.5 rounded-soft border border-edge bg-elevated p-1">
                 <IconButton onClick={() => rf.current?.zoomOut()} aria-label="Zoom out">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                     <path d="M5 12h14" />
@@ -1548,6 +1579,16 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
         <CreateTablePanel conn={conn} onClose={() => setCreating(false)} onStage={addPending} />
       )}
 
+      {editingDraft && (
+        <CreateTablePanel
+          conn={conn}
+          initialTable={editingDraft.table}
+          draftColumns={editingDraft.columns}
+          onClose={() => setEditingDraft(null)}
+          onStage={(statements, tableName) => replacePendingTable(editingDraft.table, statements, tableName)}
+        />
+      )}
+
       {editingDomain && (
         <DomainEditPanel
           domain={editingDomain}
@@ -1577,7 +1618,7 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
           add/drop shows its pending status with an undo, when undoable. */}
       {edgePopup && (
         <div
-          className="fixed z-[60] min-w-[200px] rounded-soft border border-edge-strong bg-elevated px-3 py-2.5 shadow-[0_12px_34px_-10px_rgba(0,0,0,0.75)]"
+          className="fixed z-[60] min-w-[200px] rounded-soft border border-edge-strong bg-elevated px-3 py-2.5"
           style={{ left: Math.min(edgePopup.x, window.innerWidth - 260), top: Math.min(edgePopup.y, window.innerHeight - 150) }}
           onClick={(e) => e.stopPropagation()}
           onContextMenu={(e) => e.preventDefault()}
@@ -1682,7 +1723,7 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
           name the constraint (defaulted) and set its actions before staging. */}
       {fkConfirm && (
         <div
-          className="fixed z-[60] min-w-[240px] rounded-soft border border-edge-strong bg-elevated px-3 py-2.5 shadow-[0_12px_34px_-10px_rgba(0,0,0,0.75)]"
+          className="fixed z-[60] min-w-[240px] rounded-soft border border-edge-strong bg-elevated px-3 py-2.5"
           style={{ left: Math.min(fkConfirm.x, window.innerWidth - 300), top: Math.min(fkConfirm.y, window.innerHeight - 260) }}
           onClick={(e) => e.stopPropagation()}
           onContextMenu={(e) => e.preventDefault()}
@@ -1738,12 +1779,7 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
 
       {/* Table right-click menu */}
       {nodeMenu && (
-        <div
-          className="fixed z-[60] min-w-[180px] rounded-soft border border-edge-strong bg-elevated p-1 shadow-[0_12px_34px_-10px_rgba(0,0,0,0.75)]"
-          style={{ left: Math.min(nodeMenu.x, window.innerWidth - 200), top: Math.min(nodeMenu.y, window.innerHeight - 150) }}
-          onClick={(e) => e.stopPropagation()}
-          onContextMenu={(e) => e.preventDefault()}
-        >
+        <ContextMenu x={nodeMenu.x} y={nodeMenu.y} width={180} onClose={() => setNodeMenu(null)}>
           <div className="truncate px-2.5 pb-1.5 pt-1 text-[11px] font-semibold text-ink-dim">{nodeMenu.table}</div>
           <MenuItem disabled={nodeMenu.pending} onClick={() => { onOpenTable?.(nodeMenu.table); setNodeMenu(null) }}>
             <TableIcon width={14} height={14} /> Open in new tab
@@ -1751,42 +1787,32 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
           <MenuItem disabled={nodeMenu.pending} onClick={() => { onOpenSchema?.(nodeMenu.table); setNodeMenu(null) }}>
             <ColumnsIcon width={14} height={14} /> View table schema
           </MenuItem>
-          <MenuItem onClick={() => { setSelected(nodeMenu.table); setNodeMenu(null) }}>
+          <MenuItem onClick={() => { openTableEditor(nodeMenu.table, nodeMenu.pending); setNodeMenu(null) }}>
             <EditIcon width={14} height={14} /> Edit table
+          </MenuItem>
+          <MenuItem onClick={() => { onSetDomain?.(nodeMenu.table); setNodeMenu(null) }}>
+            <TagIcon width={14} height={14} /> Move to domain…
           </MenuItem>
           <div className="my-1 h-px bg-edge" />
           <MenuItem danger className="!text-red" onClick={() => { deleteTable(nodeMenu.table, nodeMenu.pending); setNodeMenu(null) }}>
             <TrashIcon width={14} height={14} /> Delete table
           </MenuItem>
-        </div>
+        </ContextMenu>
       )}
 
       {/* Canvas right-click menu */}
       {menu && (
-        <div
-          className="fixed z-[60] min-w-[180px] rounded-soft border border-edge-strong bg-elevated p-1 shadow-[0_12px_34px_-10px_rgba(0,0,0,0.75)]"
-          style={{ left: Math.min(menu.x, window.innerWidth - 200), top: Math.min(menu.y, window.innerHeight - 180) }}
-          onClick={(e) => e.stopPropagation()}
-          onContextMenu={(e) => e.preventDefault()}
-        >
+        <ContextMenu x={menu.x} y={menu.y} width={180} onClose={() => setMenu(null)}>
           <MenuItem onClick={() => { setCreating(true); setMenu(null) }}>
             <PlusIcon width={14} height={14} /> Create new Table
           </MenuItem>
-          <div className="group relative">
-            <MenuItem className="justify-between">
-              <span className="flex items-center gap-2">
-                <DownloadIcon width={14} height={14} /> Export
-              </span>
-              <ChevronRight width={13} height={13} />
-            </MenuItem>
-            <div className="absolute left-full top-0 z-10 hidden min-w-[150px] rounded-soft border border-edge-strong bg-elevated shadow-[0_12px_34px_-10px_rgba(0,0,0,0.75)] group-hover:block">
-              <ExportOptions onExport={(f) => { exportImage(f); setMenu(null) }} />
-            </div>
-          </div>
+          <ContextMenuSub label="Export" icon={DownloadIcon} width={150}>
+            <ExportItems onExport={(f) => { exportImage(f); setMenu(null) }} />
+          </ContextMenuSub>
           <MenuItem onClick={() => { autoLayout(); setMenu(null) }}>
             <WandIcon width={14} height={14} /> Auto arrange
           </MenuItem>
-        </div>
+        </ContextMenu>
       )}
     </div>
   )

@@ -7,6 +7,7 @@ import { useToast } from '@/shared/ui/feedback/Toast'
 import Select from '@/shared/ui/form/Select'
 import Button from '@/shared/ui/buttons/Button'
 import ConfirmDialog from '@/shared/ui/feedback/ConfirmDialog'
+import ContextMenu from '@/shared/ui/overlay/ContextMenu'
 import {
   getNamespaces,
   listObjects,
@@ -35,7 +36,7 @@ import {
 } from '@/features/workspace/lib/savedQueries'
 import { draftToItems } from '@/shared/lib/schemaDraft'
 import SearchInput from '@/shared/ui/form/SearchInput'
-import TableView from '@/features/workspace/components/TableView'
+import TableView, { makeFilter } from '@/features/workspace/components/TableView'
 import CreateTablePanel from '@/features/schema-designer/components/CreateTablePanel'
 import SchemaPanel from '@/features/schema-designer/components/SchemaPanel'
 
@@ -92,6 +93,8 @@ const kbd =
 
 const DIALECT = { postgresql: 'PostgreSQL', sqlite: 'SQLite', redis: 'Redis' }
 let queryCounter = 0
+// Stable identity for unfiltered table tabs — TableView keys effects off `filters`.
+const EMPTY_FILTERS = []
 
 const centerState =
   'flex h-full flex-col items-center justify-center gap-4 text-ink-faint'
@@ -294,22 +297,6 @@ export default function Workspace() {
     return () => window.removeEventListener('keydown', onKey)
   }, [sidebarOpen])
 
-  useEffect(() => {
-    if (!tabMenu) return
-    const close = () => setTabMenu(null)
-    const onKey = (e) => e.key === 'Escape' && close()
-    window.addEventListener('click', close)
-    window.addEventListener('contextmenu', close)
-    window.addEventListener('resize', close)
-    window.addEventListener('keydown', onKey)
-    return () => {
-      window.removeEventListener('click', close)
-      window.removeEventListener('contextmenu', close)
-      window.removeEventListener('resize', close)
-      window.removeEventListener('keydown', onKey)
-    }
-  }, [tabMenu])
-
   if (!conn) {
     return (
       <div className={centerState}>
@@ -333,15 +320,20 @@ export default function Workspace() {
   // different FK points at the same table — otherwise opens a new table tab.
   const openTableFiltered = (table, column, value) => {
     const key = `table:${table}`
-    const initialFilter = { col: column, value }
+    const filters = [makeFilter(column, '=', String(value ?? ''))]
     setTabs((prev) =>
       prev.some((t) => t.key === key)
-        ? prev.map((t) => (t.key === key ? { ...t, title: table, initialFilter } : t))
-        : [...prev, { key, kind: 'table', table, title: table, initialFilter }]
+        ? prev.map((t) => (t.key === key ? { ...t, title: table, filters } : t))
+        : [...prev, { key, kind: 'table', table, title: table, filters }]
     )
     setActiveTab(key)
     setSidebarOpen(false)
   }
+
+  // Table filters live on the tab, not inside TableView — only the active tab is
+  // mounted, so tab-local state would be lost on every tab switch.
+  const setTabFilters = (key, filters) =>
+    setTabs((prev) => prev.map((t) => (t.key === key ? { ...t, filters } : t)))
 
   const openQuery = (sql?) => {
     queryCounter += 1
@@ -1057,7 +1049,7 @@ export default function Workspace() {
 
       {/* Left region: icon rail + tables sidebar (slide-over drawer on mobile) */}
       <div
-        className={`z-40 flex shrink-0 max-[720px]:fixed max-[720px]:inset-y-0 max-[720px]:left-0 max-[720px]:shadow-[8px_0_30px_-10px_rgba(0,0,0,0.7)] max-[720px]:transition-transform max-[720px]:duration-200 ${
+        className={`z-40 flex shrink-0 max-[720px]:fixed max-[720px]:inset-y-0 max-[720px]:left-0 max-[720px]:transition-transform max-[720px]:duration-200 ${
           sidebarOpen ? 'max-[720px]:translate-x-0' : 'max-[720px]:-translate-x-full'
         }`}
       >
@@ -1376,7 +1368,8 @@ export default function Workspace() {
               table={current.table}
               onChange={addChange}
               onOpenReference={openTableFiltered}
-              initialFilter={current.initialFilter}
+              filters={current.filters || EMPTY_FILTERS}
+              onFiltersChange={(f) => setTabFilters(current.key, f)}
             />
           )}
           {conn && current?.kind === 'schema' && (
@@ -1394,6 +1387,7 @@ export default function Workspace() {
                 domains={domains}
                 onUpdateDomain={updateDomainById}
                 onDeleteDomain={removeDomain}
+                onSetDomain={setDomainTable}
                 pending={schemaPending[current.key] || []}
                 onPendingChange={(items) => setSchemaPending((p) => ({ ...p, [current.key]: items }))}
                 onStageItems={stageSchemaItems}
@@ -1488,15 +1482,7 @@ export default function Workspace() {
       </main>
 
       {tabMenu && (
-        <div
-          className="fixed z-[60] min-w-[190px] overflow-hidden rounded-soft border border-edge-strong bg-elevated py-1 shadow-[0_12px_34px_-10px_rgba(0,0,0,0.75)]"
-          style={{
-            left: Math.min(tabMenu.x, window.innerWidth - 200),
-            top: Math.min(tabMenu.y, window.innerHeight - 120),
-          }}
-          onClick={(e) => e.stopPropagation()}
-          onContextMenu={(e) => e.preventDefault()}
-        >
+        <ContextMenu x={tabMenu.x} y={tabMenu.y} width={190} onClose={() => setTabMenu(null)}>
           <MenuItem
             onClick={() => {
               removeTab(tabMenu.key)
@@ -1523,7 +1509,7 @@ export default function Workspace() {
           >
             Close all tabs
           </MenuItem>
-        </div>
+        </ContextMenu>
       )}
 
       {creatingTable && (
@@ -1636,7 +1622,7 @@ export default function Workspace() {
       {/* Database unreachable — offer to retry (with a spinner) or leave. */}
       {connError && (
         <div className="fixed inset-0 z-[60] flex animate-fade items-center justify-center bg-black/60 p-6 backdrop-blur-[3px]">
-          <div className="w-full max-w-[400px] animate-pop rounded-[16px] border border-edge-strong bg-panel p-5 shadow-[0_30px_80px_-20px_rgba(0,0,0,0.8)]">
+          <div className="w-full max-w-[400px] animate-pop rounded-[16px] border border-edge-strong bg-panel p-5">
             <div className="flex items-center gap-2.5">
               {reconnecting && (
                 <span className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-green/30 border-t-green" />

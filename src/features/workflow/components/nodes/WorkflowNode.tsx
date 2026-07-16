@@ -22,7 +22,7 @@ export default function WorkflowNode({ type, data, selected }: { type: NodeType;
 
   return (
     <div
-      className={`w-[220px] cursor-pointer rounded-soft border-2 bg-panel shadow-[0_12px_30px_-12px_rgba(0,0,0,0.7)] transition-colors hover:border-green-bright ${border}`}
+      className={`w-[220px] cursor-pointer rounded-soft border-2 bg-panel transition-colors hover:border-green-bright ${border}`}
     >
       {spec.hasInput && (
         <Handle type="target" position={Position.Left} className="!h-2 !w-2 !border-2 !border-edge-strong !bg-elevated" />

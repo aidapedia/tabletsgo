@@ -237,7 +237,7 @@ export default function QueryEditor({ conn, dialect, initialSql, tabKey, persist
               onClick={(e) => { e.stopPropagation(); setResultsCollapsed((c) => !c) }}
               onMouseDown={(e) => e.stopPropagation()}
               aria-label={resultsCollapsed ? 'Expand results' : 'Collapse results'}
-              className="flex h-5 w-9 items-center justify-center rounded-full border border-edge bg-panel text-ink-dim shadow-[0_6px_16px_-6px_rgba(0,0,0,0.6)] transition-colors hover:border-edge-strong hover:text-ink"
+              className="flex h-5 w-9 items-center justify-center rounded-full border border-edge bg-panel text-ink-dim transition-colors hover:border-edge-strong hover:text-ink"
             >
               <ChevronDown width={13} height={13} className={`transition-transform ${resultsCollapsed ? 'rotate-180' : ''}`} />
             </button>

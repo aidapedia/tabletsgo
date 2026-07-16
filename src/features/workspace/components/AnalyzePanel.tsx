@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
 import Badge from '@/shared/ui/Badge'
 import Button from '@/shared/ui/buttons/Button'
-import IconButton from '@/shared/ui/buttons/IconButton'
 import TextButton from '@/shared/ui/buttons/TextButton'
 import SqlEditor from '@/shared/ui/SqlEditor'
 import EmptyState from '@/shared/ui/feedback/EmptyState'
 import LoadingState from '@/shared/ui/feedback/LoadingState'
+import SlideOverPanel from '@/shared/ui/overlay/SlideOverPanel'
 import { useSlideOver } from '@/shared/hooks/useSlideOver'
 import { useToast } from '@/shared/ui/feedback/Toast'
 import { analyzeQuery } from '@/shared/api/database'
@@ -52,33 +52,25 @@ export default function AnalyzePanel({ conn, dialect, sql, onClose, onOpenInEdit
   )
 
   return (
-    <div
-      className={`fixed inset-0 z-50 flex justify-end bg-black/50 transition-opacity duration-200 ${
-        show ? 'opacity-100' : 'opacity-0'
-      }`}
-      onMouseDown={() => close()}
+    <SlideOverPanel
+      show={show}
+      close={close}
+      width={560}
+      title={
+        <span className="flex items-center gap-2 truncate">
+          Analyze performance
+          <span className="shrink-0 rounded border border-edge bg-elevated px-1.5 py-0.5 text-[10px] font-semibold text-ink-dim">
+            {dialect}
+          </span>
+        </span>
+      }
+      footer={
+        <Button variant="subtle" onClick={() => close()}>
+          Close
+        </Button>
+      }
     >
-      <div
-        className={`flex h-full w-full max-w-[560px] flex-col border-l border-edge-strong bg-panel shadow-[-20px_0_60px_-20px_rgba(0,0,0,0.8)] transition-transform duration-200 ease-out ${
-          show ? 'translate-x-0' : 'translate-x-full'
-        }`}
-        onMouseDown={(e) => e.stopPropagation()}
-        onKeyDown={(e) => e.key === 'Escape' && close()}
-      >
-        <div className="flex items-center justify-between border-b border-edge px-5 py-4">
-          <h3 className="flex items-center gap-2 truncate text-base font-bold">
-            Analyze performance
-            <span className="shrink-0 rounded border border-edge bg-elevated px-1.5 py-0.5 text-[10px] font-semibold text-ink-dim">
-              {dialect}
-            </span>
-          </h3>
-          <IconButton size="lg" onClick={() => close()} aria-label="Close">
-            <ChevronRight />
-          </IconButton>
-        </div>
-
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-          {loading && <LoadingState className="py-10 text-center" />}
+      {loading && <LoadingState className="py-10 text-center" />}
 
           {error && (
             <div className="rounded-soft border border-red/30 bg-red/10 px-3 py-2 text-xs text-red">{error}</div>
@@ -189,14 +181,6 @@ export default function AnalyzePanel({ conn, dialect, sql, onClose, onOpenInEdit
               </div>
             </>
           )}
-        </div>
-
-        <div className="flex items-center justify-end gap-3 border-t border-edge px-5 py-4">
-          <Button variant="subtle" onClick={() => close()}>
-            Close
-          </Button>
-        </div>
-      </div>
-    </div>
+    </SlideOverPanel>
   )
 }

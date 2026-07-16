@@ -2,11 +2,10 @@ import { useState } from 'react'
 import { useSlideOver } from '@/shared/hooks/useSlideOver'
 import { useToast } from '@/shared/ui/feedback/Toast'
 import Button from '@/shared/ui/buttons/Button'
-import IconButton from '@/shared/ui/buttons/IconButton'
 import Checkbox from '@/shared/ui/form/Checkbox'
+import SlideOverPanel from '@/shared/ui/overlay/SlideOverPanel'
 import { Input, controlClass } from '@/shared/ui/form/Input'
 import { Label } from '@/shared/ui/form/Form'
-import { CloseIcon } from '@/shared/ui/icons'
 import { createStorage, updateStorage, testStorage } from '@/features/backup/lib/api'
 import type { StorageDestination } from '@/features/backup/lib/types'
 
@@ -83,26 +82,26 @@ export default function StorageModal({
   }
 
   return (
-    <div
-      className={`fixed inset-0 z-50 flex justify-end bg-black/50 transition-opacity duration-200 ${show ? 'opacity-100' : 'opacity-0'}`}
-      onMouseDown={() => close()}
+    <SlideOverPanel
+      show={show}
+      close={close}
+      width={480}
+      onSubmit={handleSave}
+      title={isEdit ? 'Edit Storage Destination' : 'New Storage Destination'}
+      footer={
+        <>
+          {isEdit && (
+            <Button type="button" variant="ghost" size="lg" onClick={runTest} disabled={!valid || test === 'loading' || saving}>
+              {test === 'loading' ? 'Testing…' : 'Test Connection'}
+            </Button>
+          )}
+          <Button type="submit" variant="primary" size="lg" disabled={!valid || saving}>
+            {saving ? 'Saving…' : isEdit ? 'Save Changes' : 'Create Destination'}
+          </Button>
+        </>
+      }
     >
-      <div
-        className={`flex h-full w-full max-w-[480px] flex-col border-l border-edge-strong bg-panel shadow-[-20px_0_60px_-20px_rgba(0,0,0,0.8)] transition-transform duration-200 ease-out ${
-          show ? 'translate-x-0' : 'translate-x-full'
-        }`}
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        <form onSubmit={handleSave} className="flex h-full flex-col">
-          <div className="flex shrink-0 items-center justify-between border-b border-edge px-6 py-[18px]">
-            <h3 className="text-sm font-bold">{isEdit ? 'Edit Storage Destination' : 'New Storage Destination'}</h3>
-            <IconButton size="toolbar" className="!rounded-[9px]" onClick={() => close()} aria-label="Close">
-              <CloseIcon />
-            </IconButton>
-          </div>
-
-          <div className="min-h-0 flex-1 overflow-y-auto p-6">
-            <div className="mb-[18px]">
+      <div className="mb-[18px]">
               <Label>Name</Label>
               <Input placeholder="e.g. Backups (S3)" value={form.name} onChange={set('name')} required />
             </div>
@@ -150,30 +149,16 @@ export default function StorageModal({
               <Input className="font-mono" type="password" value={form.secretAccessKey} onChange={set('secretAccessKey')} required />
             </div>
 
-            {test && test !== 'loading' && (
-              <div
-                className={`mt-1 mb-[18px] rounded-soft px-3.5 py-2.5 text-[11px] font-medium ${
-                  test.ok ? 'border border-green-dim bg-green/10 text-green-bright' : 'border border-red/25 bg-red/10 text-[#ff9b9b]'
-                }`}
-              >
-                {test.ok ? '✓ ' : '✕ '}
-                {test.message}
-              </div>
-            )}
-          </div>
-
-          <div className="flex shrink-0 justify-end gap-3 border-t border-edge px-6 py-[18px]">
-            {isEdit && (
-              <Button type="button" variant="ghost" size="lg" onClick={runTest} disabled={!valid || test === 'loading' || saving}>
-                {test === 'loading' ? 'Testing…' : 'Test Connection'}
-              </Button>
-            )}
-            <Button type="submit" variant="primary" size="lg" disabled={!valid || saving}>
-              {saving ? 'Saving…' : isEdit ? 'Save Changes' : 'Create Destination'}
-            </Button>
-          </div>
-        </form>
-      </div>
-    </div>
+      {test && test !== 'loading' && (
+        <div
+          className={`mt-1 mb-[18px] rounded-soft px-3.5 py-2.5 text-[11px] font-medium ${
+            test.ok ? 'border border-green-dim bg-green/10 text-green-bright' : 'border border-red/25 bg-red/10 text-[#ff9b9b]'
+          }`}
+        >
+          {test.ok ? '✓ ' : '✕ '}
+          {test.message}
+        </div>
+      )}
+    </SlideOverPanel>
   )
 }

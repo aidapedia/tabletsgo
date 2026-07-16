@@ -3,8 +3,8 @@ import { getColumns, getTableData } from '@/shared/api/database'
 import { useSettings } from '@/features/settings'
 import { useShortcut } from '@/features/keymap'
 import DataGrid, { cellText } from '@/features/workspace/components/DataGrid'
-import InsertRowPanel from '@/features/workspace/components/InsertRowPanel'
-import InspectorPanel from '@/features/workspace/components/InspectorPanel'
+import RowEditorPanel from '@/features/workspace/components/RowEditorPanel'
+import { EXPORT_FORMATS, downloadRows, sqlValue, toCsv } from '@/features/workspace/lib/exportRows'
 import Button from '@/shared/ui/buttons/Button'
 import TextButton from '@/shared/ui/buttons/TextButton'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
@@ -32,14 +32,6 @@ import {
 
 const NUMERIC_TYPE = /(int|serial|numeric|decimal|real|double|float)/i
 
-// Quote a JS value for inline SQL (dev tool — table is trusted, values escaped).
-const sqlValue = (v) => {
-  if (v === null || v === undefined) return 'NULL'
-  if (typeof v === 'number') return String(v)
-  if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE'
-  return `'${String(v).replace(/'/g, "''")}'`
-}
-
 const OPERATORS = [
   { value: 'contains', label: 'contains' },
   { value: '=', label: '=' },
@@ -57,7 +49,8 @@ const ctl =
   'rounded-soft border border-edge bg-bg px-2.5 py-1.5 text-[11px] text-ink outline-none focus:border-green-dim'
 
 let filterId = 0
-const blankFilter = () => ({ id: `f${++filterId}`, col: '', op: 'contains', value: '', enabled: true })
+export const makeFilter = (col = '', op = 'contains', value = '') => ({ id: `f${++filterId}`, col, op, value, enabled: true })
+const blankFilter = () => makeFilter()
 
 export function matchFilter(row, f) {
   if (!f.enabled || !f.col) return true
@@ -78,7 +71,9 @@ export function matchFilter(row, f) {
   }
 }
 
-export default function TableView({ conn, table, onChange, onOpenReference, initialFilter }) {
+// `filters` is owned by the parent tab so it survives the unmount that happens
+// when the user switches tabs (only the active tab is mounted).
+export default function TableView({ conn, table, onChange, onOpenReference, filters, onFiltersChange }) {
   const toast = useToast()
   const { tableRowLimit, directExecute } = useSettings()
   // With Direct execute on, the parent runs the change immediately and toasts
@@ -100,7 +95,6 @@ export default function TableView({ conn, table, onChange, onOpenReference, init
   const [cellMenu, setCellMenu] = useState(null) // right-click cell menu: { x, y, row, col, value }
   const [inspecting, setInspecting] = useState(null) // row object shown in the Inspector slide-over
 
-  const [filters, setFilters] = useState([])
   const [sort, setSort] = useState(null) // { col, dir }
   const [hidden, setHidden] = useState([])
   const [page, setPage] = useState(1)
@@ -122,18 +116,15 @@ export default function TableView({ conn, table, onChange, onOpenReference, init
   }
 
   useEffect(() => {
-    // Seed a filter when opened from a foreign-key link (e.g. col = value).
-    setFilters(
-      initialFilter
-        ? [{ id: `f${++filterId}`, col: initialFilter.col, op: '=', value: String(initialFilter.value ?? ''), enabled: true }]
-        : []
-    )
     setSort(null)
     setHidden([])
-    setPage(1)
     load()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conn, table, initialFilter])
+  }, [conn, table])
+
+  // Any filter change (local edit, or a new FK drill-down into this same tab)
+  // puts us back on the first page.
+  useEffect(() => setPage(1), [filters])
 
   // Rows are targeted by primary key when available; otherwise we fall back to
   // matching every column so selection / delete / duplicate work on any table.
@@ -170,23 +161,8 @@ export default function TableView({ conn, table, onChange, onOpenReference, init
 
   const activeFilterCount = filters.filter((f) => f.enabled && f.col && f.value !== '').length
 
-  const exportCsv = () => {
-    const esc = (v) => {
-      if (v == null) return ''
-      const s = String(v)
-      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
-    }
-    const csv = [
-      visibleColumns.join(','),
-      ...sorted.map((r) => visibleColumns.map((c) => esc(r[c])).join(',')),
-    ].join('\n')
-    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }))
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `${table}.csv`
-    a.click()
-    URL.revokeObjectURL(url)
-  }
+  // Exports what the grid currently shows: visible columns, filtered + sorted rows.
+  const exportAs = (format) => downloadRows(format, { columns: visibleColumns, rows: sorted, table })
 
   const toggleColumn = (c) =>
     setHidden((h) => (h.includes(c) ? h.filter((x) => x !== c) : [...h, c]))
@@ -264,18 +240,10 @@ export default function TableView({ conn, table, onChange, onOpenReference, init
       toast.error('Could not copy to clipboard')
     }
   }
-  const rowToCsv = (row) => {
-    const esc = (v) => {
-      if (v == null) return ''
-      const s = String(v)
-      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
-    }
-    return [columns.join(','), columns.map((c) => esc(row[c])).join(',')].join('\n')
-  }
+  const rowToCsv = (row) => toCsv(columns, [row])
 
   const addQuickFilter = (col, op, value) => {
-    setFilters((f) => [...f, { id: `f${++filterId}`, col, op, value: op === 'isnull' || op === 'notnull' ? '' : cellText(value), enabled: true }])
-    setPage(1)
+    onFiltersChange([...filters, makeFilter(col, op, op === 'isnull' || op === 'notnull' ? '' : cellText(value))])
   }
 
   // Inline cell edit → held locally as an unsaved edit (not staged yet).
@@ -329,7 +297,7 @@ export default function TableView({ conn, table, onChange, onOpenReference, init
   useShortcut('workspace.duplicateSelected', duplicateSelected)
   useShortcut('workspace.discardEdits', discardEdits)
   useShortcut('general.save', saveEdits)
-  useShortcut('workspace.exportCsv', exportCsv)
+  useShortcut('workspace.exportCsv', () => exportAs('csv'))
   useShortcut('workspace.refresh', load)
 
   const selCount = selected.size
@@ -397,10 +365,7 @@ export default function TableView({ conn, table, onChange, onOpenReference, init
             <FilterPanel
               columns={columns}
               initial={filters}
-              onApply={(f) => {
-                setFilters(f)
-                setPage(1)
-              }}
+              onApply={onFiltersChange}
               onClose={close}
             />
           )}
@@ -427,9 +392,38 @@ export default function TableView({ conn, table, onChange, onOpenReference, init
           )}
         </Popover>
 
-            <Button variant="subtle" size="sm" icon={DownloadIcon} onClick={exportCsv} disabled={!sorted.length}>
-              Export
-            </Button>
+            <Popover
+              width={150}
+              trigger={({ open, toggle }) => (
+                <Button
+                  variant="subtle"
+                  size="sm"
+                  icon={DownloadIcon}
+                  chevron
+                  active={open}
+                  onClick={toggle}
+                  disabled={!sorted.length}
+                >
+                  Export
+                </Button>
+              )}
+            >
+              {({ close }) => (
+                <div className="p-1">
+                  {EXPORT_FORMATS.map((f) => (
+                    <MenuItem
+                      key={f.id}
+                      onClick={() => {
+                        exportAs(f.id)
+                        close()
+                      }}
+                    >
+                      <DownloadIcon width={14} height={14} /> {f.label}
+                    </MenuItem>
+                  ))}
+                </div>
+              )}
+            </Popover>
           </>
         )}
 
@@ -526,9 +520,11 @@ export default function TableView({ conn, table, onChange, onOpenReference, init
       )}
 
       {showInsert && (
-        <InsertRowPanel
-          conn={conn}
-          table={table}
+        <RowEditorPanel
+          title="Insert New Row"
+          submitLabel="Add to changes"
+          columns={colMeta}
+          loading={loading}
           onClose={() => setShowInsert(false)}
           onStage={(values) => {
             stageInsert(values)
@@ -538,7 +534,9 @@ export default function TableView({ conn, table, onChange, onOpenReference, init
       )}
 
       {inspecting && (
-        <InspectorPanel
+        <RowEditorPanel
+          title="Inspector"
+          submitLabel="Save changes"
           row={inspecting}
           columns={colMeta}
           onClose={() => setInspecting(null)}
@@ -552,6 +550,10 @@ export default function TableView({ conn, table, onChange, onOpenReference, init
               table,
             })
             stagedInfo('Added update to changes — commit to apply.')
+            // Must close explicitly: useSlideOver runs this commit *instead of*
+            // onClose, so the invisible overlay would stay mounted and swallow
+            // every click.
+            setInspecting(null)
           }}
         />
       )}
@@ -562,10 +564,6 @@ export default function TableView({ conn, table, onChange, onOpenReference, init
           const isNum = NUMERIC_TYPE.test(colTypes[col] || '')
           return (
             <ContextMenu x={cellMenu.x} y={cellMenu.y} onClose={() => setCellMenu(null)}>
-              <MenuItem onClick={() => { copyText(cellText(value)); setCellMenu(null) }}>
-                <CopyIcon width={14} height={14} /> Copy cell value
-              </MenuItem>
-
               <ContextMenuSub label="Filter by this column" icon={FilterIcon}>
                 <MenuItem onClick={() => { addQuickFilter(col, '=', value); setCellMenu(null) }}>equals</MenuItem>
                 <MenuItem onClick={() => { addQuickFilter(col, '!=', value); setCellMenu(null) }}>not equals</MenuItem>
@@ -581,7 +579,6 @@ export default function TableView({ conn, table, onChange, onOpenReference, init
                 <MenuItem onClick={() => { addQuickFilter(col, 'isnull', ''); setCellMenu(null) }}>is null</MenuItem>
                 <MenuItem onClick={() => { addQuickFilter(col, 'notnull', ''); setCellMenu(null) }}>is not null</MenuItem>
               </ContextMenuSub>
-
               <ContextMenuSub label="Set as" icon={EditIcon}>
                 <MenuItem onClick={() => { setCellAs(row, col, 'null'); setCellMenu(null) }}>NULL</MenuItem>
                 <MenuItem onClick={() => { setCellAs(row, col, 'empty'); setCellMenu(null) }}>EMPTY</MenuItem>
@@ -589,29 +586,33 @@ export default function TableView({ conn, table, onChange, onOpenReference, init
                   DEFAULT
                 </MenuItem>
               </ContextMenuSub>
-
-              <div className="my-1 h-px bg-edge" />
-
-              <MenuItem onClick={() => { setShowInsert(true); setCellMenu(null) }}>
-                <PlusSmall width={14} height={14} /> Insert row
-              </MenuItem>
-              <MenuItem onClick={() => { stageDuplicate([row], { clear: false }); setCellMenu(null) }}>
-                <CopyIcon width={14} height={14} /> Duplicate row
-              </MenuItem>
-              <MenuItem danger onClick={() => { stageDelete([row], { clear: false }); setCellMenu(null) }}>
-                <TrashIcon width={14} height={14} /> Delete row
-              </MenuItem>
-
-              <div className="my-1 h-px bg-edge" />
-
-              <MenuItem onClick={() => { setInspecting(row); setCellMenu(null) }}>
-                <EyeIcon width={14} height={14} /> Open Inspector
+              
+              <MenuItem onClick={() => { copyText(cellText(value)); setCellMenu(null) }}>
+                <CopyIcon width={14} height={14} /> Copy cell value
               </MenuItem>
               <ContextMenuSub label="Copy row as" icon={CopyIcon}>
                 <MenuItem onClick={() => { copyText(insertSql(row), 'Copied SQL'); setCellMenu(null) }}>SQL</MenuItem>
                 <MenuItem onClick={() => { copyText(rowToCsv(row), 'Copied CSV'); setCellMenu(null) }}>CSV</MenuItem>
                 <MenuItem onClick={() => { copyText(JSON.stringify(row, null, 2), 'Copied JSON'); setCellMenu(null) }}>JSON</MenuItem>
               </ContextMenuSub>
+
+              <div className="my-1 h-px bg-edge" />
+              
+              <MenuItem onClick={() => { setInspecting(row); setCellMenu(null) }}>
+                <EyeIcon width={14} height={14} /> Open Inspector
+              </MenuItem>
+              <MenuItem onClick={() => { setShowInsert(true); setCellMenu(null) }}>
+                <PlusSmall width={14} height={14} /> Insert row
+              </MenuItem>
+              <MenuItem onClick={() => { stageDuplicate([row], { clear: false }); setCellMenu(null) }}>
+                <CopyIcon width={14} height={14} /> Duplicate row
+              </MenuItem>
+
+              <div className="my-1 h-px bg-edge" />
+              <MenuItem danger onClick={() => { stageDelete([row], { clear: false }); setCellMenu(null) }}>
+                <TrashIcon width={14} height={14} /> Delete row
+              </MenuItem>
+              
             </ContextMenu>
           )
         })()}

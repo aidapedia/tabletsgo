@@ -33,7 +33,6 @@ const editorTheme = EditorView.theme(
       border: '1px solid var(--color-edge-strong)',
       borderRadius: '10px',
       overflow: 'hidden',
-      boxShadow: '0 16px 40px -12px rgba(0,0,0,0.8)',
       zIndex: '200', // above the node config slide-over (z-50)
     },
     '.cm-tooltip.cm-tooltip-autocomplete > ul': {

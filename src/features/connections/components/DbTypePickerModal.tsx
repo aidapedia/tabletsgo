@@ -21,7 +21,7 @@ export default function DbTypePickerModal({ onClose, onPick }: { onClose: () => 
       onMouseDown={onClose}
     >
       <div
-        className="w-full max-w-[680px] animate-pop rounded-[16px] border border-edge-strong bg-panel p-6 shadow-[0_30px_80px_-20px_rgba(0,0,0,0.8)]"
+        className="w-full max-w-[680px] animate-pop rounded-[16px] border border-edge-strong bg-panel p-6"
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="flex items-start justify-between">

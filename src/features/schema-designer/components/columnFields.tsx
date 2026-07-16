@@ -124,6 +124,88 @@ export const colDef = (c) => {
   return d
 }
 
+// Split a CREATE TABLE body on its top-level commas — commas nested in parens
+// (`numeric(10,2)`) or inside a quoted string (`DEFAULT 'a, b'`) or identifier
+// belong to the definition they sit in and must not split it.
+export function splitTopLevel(body) {
+  const parts = []
+  let depth = 0
+  let quote = null // the open quote character, if we're inside one
+  let cur = ''
+  for (const ch of body || '') {
+    if (quote) {
+      // A doubled quote is an escaped one ('' inside a string), so this closes
+      // the string only if the next character reopens it — which the next
+      // iteration handles by starting a fresh string.
+      if (ch === quote) quote = null
+    } else if (ch === "'" || ch === '"') quote = ch
+    else if (ch === '(') depth++
+    else if (ch === ')') depth--
+    else if (ch === ',' && depth === 0) {
+      parts.push(cur)
+      cur = ''
+      continue
+    }
+    cur += ch
+  }
+  if (cur.trim()) parts.push(cur)
+  return parts
+}
+
+const FK_ACTION_RE = 'CASCADE|SET NULL|SET DEFAULT|RESTRICT|NO ACTION'
+
+// Inverse of `colDef`: turn one column definition back into the shared column
+// model. Clauses are peeled off right-to-left in the order `colDef` writes
+// them; whatever is left over is the type, which may be several words
+// (`double precision`) and carry a length (`character varying(255)`).
+function parseColumnDef(part) {
+  const m = (part || '').trim().match(/^"([^"]+)"\s+([\s\S]+)$/)
+  if (!m) return null
+  const col = { ...newColumn('TEXT'), name: m[1] }
+  let rest = m[2].trim()
+
+  const fk = rest.match(
+    new RegExp(
+      `\\s*REFERENCES\\s+"([^"]+)"\\s*\\(\\s*"([^"]+)"\\s*\\)(?:\\s+ON DELETE\\s+(${FK_ACTION_RE}))?(?:\\s+ON UPDATE\\s+(${FK_ACTION_RE}))?\\s*$`,
+      'i'
+    )
+  )
+  if (fk) {
+    col.fk = true
+    col.fkTable = fk[1]
+    col.fkColumn = fk[2]
+    col.fkOnDelete = normFkAction((fk[3] || '').toUpperCase())
+    col.fkOnUpdate = normFkAction((fk[4] || '').toUpperCase())
+    rest = rest.slice(0, fk.index).trim()
+  }
+  const def = rest.match(/\s*DEFAULT\s+([\s\S]+)$/i)
+  if (def) {
+    col.default = def[1].trim()
+    rest = rest.slice(0, def.index).trim()
+  }
+  if (/\s+NOT\s+NULL\s*$/i.test(rest)) {
+    col.notNull = true
+    rest = rest.replace(/\s+NOT\s+NULL\s*$/i, '').trim()
+  }
+  if (/\s+PRIMARY\s+KEY\s*$/i.test(rest)) {
+    col.pk = true
+    rest = rest.replace(/\s+PRIMARY\s+KEY\s*$/i, '').trim()
+  }
+
+  const len = rest.match(/^([\s\S]*?)\s*\(\s*(\d+)\s*\)\s*$/)
+  if (len) {
+    col.type = len[1].trim()
+    col.varcharLen = len[2]
+  } else col.type = rest
+  return col
+}
+
+// Parse a CREATE TABLE body into editable columns, so a staged (uncommitted)
+// CREATE TABLE can be reopened in the create-table form. Table-level
+// constraints (a bare `PRIMARY KEY (...)` line, etc.) don't match a column
+// definition and are dropped.
+export const parseColumnDefs = (body) => splitTopLevel(body).map(parseColumnDef).filter(Boolean)
+
 // One editable column "card" — name, type (+ custom VARCHAR length), primary
 // key, not null, default value and foreign key reference. Shared between the
 // create-table and edit-table forms so both expose the exact same fields.

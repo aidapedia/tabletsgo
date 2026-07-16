@@ -1,7 +1,7 @@
 import { useSlideOver } from '@/shared/hooks/useSlideOver'
 import Button from '@/shared/ui/buttons/Button'
-import IconButton from '@/shared/ui/buttons/IconButton'
-import { ChevronRight, CodeIcon, CopyIcon, EditIcon, PlusSmall, TableIcon, TrashIcon } from '@/shared/ui/icons'
+import SlideOverPanel from '@/shared/ui/overlay/SlideOverPanel'
+import { CodeIcon, CopyIcon, EditIcon, PlusSmall, TableIcon, TrashIcon } from '@/shared/ui/icons'
 import { relativeTime } from '@/shared/lib/recents'
 
 const KIND = {
@@ -17,34 +17,34 @@ export default function ChangesPanel({ changes = [], committing = false, onCommi
   const { show, close } = useSlideOver(onClose)
 
   return (
-    <div
-      className={`fixed inset-0 z-50 flex justify-end bg-black/50 transition-opacity duration-200 ${
-        show ? 'opacity-100' : 'opacity-0'
-      }`}
-      onMouseDown={() => close()}
+    <SlideOverPanel
+      show={show}
+      close={close}
+      width={420}
+      bodyClassName="px-3 py-3"
+      footerClassName="justify-between"
+      title={
+        <span className="flex items-center gap-2">
+          Changes
+          <span className="rounded-[20px] bg-elevated px-2 py-0.5 text-[10px] font-semibold text-ink-dim">
+            {changes.length}
+          </span>
+        </span>
+      }
+      footer={
+        changes.length > 0 && (
+          <>
+            <Button variant="subtle" size="sm" onClick={() => onClear?.()} disabled={committing}>
+              Clear all
+            </Button>
+            <Button variant="primary" size="sm" onClick={() => onCommit?.()} disabled={committing}>
+              {committing ? 'Committing…' : `Commit ${changes.length} change${changes.length > 1 ? 's' : ''}`}
+            </Button>
+          </>
+        )
+      }
     >
-      <div
-        className={`flex h-full w-full max-w-[420px] flex-col border-l border-edge-strong bg-panel shadow-[-20px_0_60px_-20px_rgba(0,0,0,0.8)] transition-transform duration-200 ease-out ${
-          show ? 'translate-x-0' : 'translate-x-full'
-        }`}
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div className="flex shrink-0 items-center justify-between border-b border-edge px-5 py-4">
-          <div className="flex items-center gap-2">
-            <h3 className="text-sm font-bold">Changes</h3>
-            <span className="rounded-[20px] bg-elevated px-2 py-0.5 text-[10px] font-semibold text-ink-dim">
-              {changes.length}
-            </span>
-          </div>
-          <IconButton size="lg" onClick={() => close()} aria-label="Close">
-            <ChevronRight />
-          </IconButton>
-        </div>
-
-        {/* Body */}
-        <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
-          {changes.length === 0 ? (
+      {changes.length === 0 ? (
             <div className="px-2 py-10 text-center text-[12px] text-ink-faint">
               No changes yet. Inserts, updates and deletes will appear here.
             </div>
@@ -81,20 +81,6 @@ export default function ChangesPanel({ changes = [], committing = false, onCommi
               })}
             </div>
           )}
-        </div>
-
-        {/* Footer */}
-        {changes.length > 0 && (
-          <div className="flex shrink-0 items-center justify-between gap-3 border-t border-edge px-5 py-3">
-            <Button variant="subtle" size="sm" onClick={() => onClear?.()} disabled={committing}>
-              Clear all
-            </Button>
-            <Button variant="primary" size="sm" onClick={() => onCommit?.()} disabled={committing}>
-              {committing ? 'Committing…' : `Commit ${changes.length} change${changes.length > 1 ? 's' : ''}`}
-            </Button>
-          </div>
-        )}
-      </div>
-    </div>
+    </SlideOverPanel>
   )
 }
