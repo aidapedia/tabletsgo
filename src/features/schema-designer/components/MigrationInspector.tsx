@@ -1,10 +1,10 @@
 import Button from '@/shared/ui/buttons/Button'
-import IconButton from '@/shared/ui/buttons/IconButton'
+import SlideOverPanel from '@/shared/ui/overlay/SlideOverPanel'
 import TextButton from '@/shared/ui/buttons/TextButton'
 import SqlEditor from '@/shared/ui/SqlEditor'
 import { useSlideOver } from '@/shared/hooks/useSlideOver'
 import { useToast } from '@/shared/ui/feedback/Toast'
-import { ChevronRight, CopyIcon } from '@/shared/ui/icons'
+import { CopyIcon } from '@/shared/ui/icons'
 
 export const fmtTime = (ts) => {
   if (!ts) return '—'
@@ -77,45 +77,45 @@ export default function MigrationInspector({ migration, dialect, canRollback = f
   )
 
   return (
-    <div
-      className={`fixed inset-0 z-50 flex justify-end bg-black/50 transition-opacity duration-200 ${
-        show ? 'opacity-100' : 'opacity-0'
-      }`}
-      onMouseDown={() => close()}
-    >
-      <div
-        className={`flex h-full w-full max-w-[560px] flex-col border-l border-edge-strong bg-panel shadow-[-20px_0_60px_-20px_rgba(0,0,0,0.8)] transition-transform duration-200 ease-out ${
-          show ? 'translate-x-0' : 'translate-x-full'
-        }`}
-        onMouseDown={(e) => e.stopPropagation()}
-        onKeyDown={(e) => e.key === 'Escape' && close()}
-      >
-        <div className="flex items-center justify-between border-b border-edge px-5 py-4">
-          <h3 className="flex items-center gap-2 truncate text-base font-bold">
-            {isDraft ? (
-              <span className="truncate">{name}</span>
-            ) : (
-              <>Migration v{migration.version}</>
-            )}
-            <span
-              className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold tracking-wide ${
-                isDraft
-                  ? 'bg-amber/15 text-amber'
-                  : isRolledBack
-                    ? 'bg-ink-faint/15 text-ink-faint'
-                    : 'bg-green/15 text-green-bright'
-              }`}
-            >
-              {isDraft ? 'draft' : isRolledBack ? 'rolled back' : 'active'}
-            </span>
-          </h3>
-          <IconButton size="lg" onClick={() => close()} aria-label="Close">
-            <ChevronRight />
-          </IconButton>
-        </div>
-
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+    <SlideOverPanel
+      show={show}
+      close={close}
+      width={560}
+      title={
+        <span className="flex items-center gap-2 truncate">
+          {isDraft ? <span className="truncate">{name}</span> : <>Migration v{migration.version}</>}
+          <span
+            className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold tracking-wide ${
+              isDraft
+                ? 'bg-amber/15 text-amber'
+                : isRolledBack
+                  ? 'bg-ink-faint/15 text-ink-faint'
+                  : 'bg-green/15 text-green-bright'
+            }`}
+          >
+            {isDraft ? 'draft' : isRolledBack ? 'rolled back' : 'active'}
+          </span>
+        </span>
+      }
+      footer={
+        <>
+          <Button variant="subtle" onClick={() => close()}>
+            Close
+          </Button>
           {!isDraft && (
+            <Button
+              variant="primary"
+              disabled={!canRollback}
+              title={rollbackTitle({ __isBaseline: false, __canRollback: canRollback, __migration: migration })}
+              onClick={() => close(() => onRollback(migration))}
+            >
+              Rollback to this version
+            </Button>
+          )}
+        </>
+      }
+    >
+      {!isDraft && (
             <div className="mb-5 grid grid-cols-2 gap-4">
               <div>
                 <div className="mb-1.5 text-[11px] font-semibold tracking-wide text-ink-faint">Executor</div>
@@ -164,24 +164,6 @@ export default function MigrationInspector({ migration, dialect, canRollback = f
               </>
             )}
           </div>
-        </div>
-
-        <div className="flex items-center justify-end gap-3 border-t border-edge px-5 py-4">
-          <Button variant="subtle" onClick={() => close()}>
-            Close
-          </Button>
-          {!isDraft && (
-            <Button
-              variant="primary"
-              disabled={!canRollback}
-              title={rollbackTitle({ __isBaseline: false, __canRollback: canRollback, __migration: migration })}
-              onClick={() => close(() => onRollback(migration))}
-            >
-              Rollback to this version
-            </Button>
-          )}
-        </div>
-      </div>
-    </div>
+    </SlideOverPanel>
   )
 }

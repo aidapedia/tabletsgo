@@ -3,8 +3,7 @@ import { getColumns, getTableData } from '@/shared/api/database'
 import { useSettings } from '@/features/settings'
 import { useShortcut } from '@/features/keymap'
 import DataGrid, { cellText } from '@/features/workspace/components/DataGrid'
-import InsertRowPanel from '@/features/workspace/components/InsertRowPanel'
-import InspectorPanel from '@/features/workspace/components/InspectorPanel'
+import RowEditorPanel from '@/features/workspace/components/RowEditorPanel'
 import Button from '@/shared/ui/buttons/Button'
 import TextButton from '@/shared/ui/buttons/TextButton'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
@@ -526,9 +525,11 @@ export default function TableView({ conn, table, onChange, onOpenReference, init
       )}
 
       {showInsert && (
-        <InsertRowPanel
-          conn={conn}
-          table={table}
+        <RowEditorPanel
+          title="Insert New Row"
+          submitLabel="Add to changes"
+          columns={colMeta}
+          loading={loading}
           onClose={() => setShowInsert(false)}
           onStage={(values) => {
             stageInsert(values)
@@ -538,7 +539,9 @@ export default function TableView({ conn, table, onChange, onOpenReference, init
       )}
 
       {inspecting && (
-        <InspectorPanel
+        <RowEditorPanel
+          title="Inspector"
+          submitLabel="Save changes"
           row={inspecting}
           columns={colMeta}
           onClose={() => setInspecting(null)}

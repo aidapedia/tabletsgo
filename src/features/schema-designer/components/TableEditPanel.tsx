@@ -1,12 +1,12 @@
 import { useState } from 'react'
 import Button from '@/shared/ui/buttons/Button'
-import IconButton from '@/shared/ui/buttons/IconButton'
 import TextButton from '@/shared/ui/buttons/TextButton'
 import Checkbox from '@/shared/ui/form/Checkbox'
 import Select from '@/shared/ui/form/Select'
 import Tooltip from '@/shared/ui/overlay/Tooltip'
+import SlideOverPanel from '@/shared/ui/overlay/SlideOverPanel'
 import { useSlideOver } from '@/shared/hooks/useSlideOver'
-import { ChevronRight, PlusIcon, TrashIcon } from '@/shared/ui/icons'
+import { PlusIcon, TrashIcon } from '@/shared/ui/icons'
 import { controlClass, Input } from '@/shared/ui/form/Input'
 import { Label } from '@/shared/ui/form/Form'
 import { ColumnField, FK_ACTIONS, colDef, newColumn, normFkAction as normAction } from '@/features/schema-designer/components/columnFields'
@@ -114,27 +114,22 @@ export default function TableEditPanel({ table, dialect, types, tableNames = [],
   }
 
   return (
-    <div
-      className={`fixed inset-0 z-50 flex justify-end bg-black/50 transition-opacity duration-200 ${
-        show ? 'opacity-100' : 'opacity-0'
-      }`}
-      onMouseDown={() => close()}
+    <SlideOverPanel
+      show={show}
+      close={close}
+      title={table.name}
+      footer={
+        <>
+          <Button variant="subtle" size="sm" onClick={() => close()}>
+            Cancel
+          </Button>
+          <Button variant="primary" size="sm" disabled={!statements.length} onClick={save}>
+            Save to changes
+          </Button>
+        </>
+      }
     >
-      <div
-        className={`flex h-full w-full max-w-[460px] flex-col border-l border-edge-strong bg-panel shadow-[-20px_0_60px_-20px_rgba(0,0,0,0.8)] transition-transform duration-200 ease-out ${
-          show ? 'translate-x-0' : 'translate-x-full'
-        }`}
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        <div className="flex shrink-0 items-center justify-between border-b border-edge px-5 py-4">
-          <h3 className="text-sm font-bold">{table.name}</h3>
-          <IconButton size="lg" onClick={() => close()} aria-label="Close">
-            <ChevronRight />
-          </IconButton>
-        </div>
-
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-          <Label>Columns</Label>
+      <Label>Columns</Label>
           <div className="flex flex-col gap-3">
             {existing.map((c, i) => (
               <div
@@ -303,22 +298,11 @@ export default function TableEditPanel({ table, dialect, types, tableNames = [],
             <PlusIcon width={14} height={14} /> Add column
           </TextButton>
 
-          <p className="mt-3 text-[11px] text-ink-faint">
-            Default can be a literal or expression — e.g. <span className="text-ink-dim">0</span>,{' '}
-            <span className="text-ink-dim">'active'</span>, <span className="text-ink-dim">now()</span>. Saving stages the ALTER
-            statements in Changes.
-          </p>
-        </div>
-
-        <div className="flex shrink-0 justify-end gap-2 border-t border-edge px-5 py-4">
-          <Button variant="subtle" size="sm" onClick={() => close()}>
-            Cancel
-          </Button>
-          <Button variant="primary" size="sm" disabled={!statements.length} onClick={save}>
-            Save to changes
-          </Button>
-        </div>
-      </div>
-    </div>
+      <p className="mt-3 text-[11px] text-ink-faint">
+        Default can be a literal or expression — e.g. <span className="text-ink-dim">0</span>,{' '}
+        <span className="text-ink-dim">'active'</span>, <span className="text-ink-dim">now()</span>. Saving stages the ALTER
+        statements in Changes.
+      </p>
+    </SlideOverPanel>
   )
 }

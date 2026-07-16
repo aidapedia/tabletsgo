@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { getColumns, getSchema } from '@/shared/api/database'
 import Button from '@/shared/ui/buttons/Button'
-import IconButton from '@/shared/ui/buttons/IconButton'
 import TextButton from '@/shared/ui/buttons/TextButton'
+import SlideOverPanel from '@/shared/ui/overlay/SlideOverPanel'
 import { useSlideOver } from '@/shared/hooks/useSlideOver'
-import { ChevronRight, PlusIcon } from '@/shared/ui/icons'
+import { PlusIcon } from '@/shared/ui/icons'
 import { Input } from '@/shared/ui/form/Input'
 import { FormField, Label } from '@/shared/ui/form/Form'
 import { ColumnField, colDef, newColumn, useColumnTypes } from '@/features/schema-designer/components/columnFields'
@@ -78,28 +78,24 @@ export default function CreateTablePanel({ conn, initialTable, onClose, onStage 
   }
 
   return (
-    <div
-      className={`fixed inset-0 z-50 flex justify-end bg-black/50 transition-opacity duration-200 ${
-        show ? 'opacity-100' : 'opacity-0'
-      }`}
-      onMouseDown={() => close()}
+    <SlideOverPanel
+      show={show}
+      close={close}
+      width={520}
+      onSubmit={handleSubmit}
+      title={isEdit ? 'Edit Table' : 'Create Table'}
+      footer={
+        <>
+          <Button type="button" variant="subtle" onClick={() => close()}>
+            Cancel
+          </Button>
+          <Button type="submit" variant="primary" disabled={!valid}>
+            Add to changes
+          </Button>
+        </>
+      }
     >
-      <div
-        className={`flex h-full w-full max-w-[520px] flex-col border-l border-edge-strong bg-panel shadow-[-20px_0_60px_-20px_rgba(0,0,0,0.8)] transition-transform duration-200 ease-out ${
-          show ? 'translate-x-0' : 'translate-x-full'
-        }`}
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        <form onSubmit={handleSubmit} className="flex h-full flex-col">
-          <div className="flex shrink-0 items-center justify-between border-b border-edge px-5 py-4">
-            <h3 className="text-sm font-bold">{isEdit ? 'Edit Table' : 'Create Table'}</h3>
-            <IconButton size="lg" onClick={() => close()} aria-label="Close">
-              <ChevronRight />
-            </IconButton>
-          </div>
-
-          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-            <FormField label="Table Name" className="mb-[18px]">
+      <FormField label="Table Name" className="mb-[18px]">
               <Input
                 type="text"
                 placeholder="e.g. users"
@@ -151,23 +147,11 @@ export default function CreateTablePanel({ conn, initialTable, onClose, onStage 
               </p>
             )}
 
-            {statements.length > 0 && (
-              <pre className="mt-5 overflow-x-auto rounded-soft border border-edge bg-bg px-3.5 py-3 font-mono text-[11px] leading-[1.6] text-ink-dim">
-                {statements.join('\n')}
-              </pre>
-            )}
-          </div>
-
-          <div className="flex shrink-0 justify-end gap-3 border-t border-edge px-5 py-4">
-            <Button type="button" variant="subtle" onClick={() => close()}>
-              Cancel
-            </Button>
-            <Button type="submit" variant="primary" disabled={!valid}>
-              Add to changes
-            </Button>
-          </div>
-        </form>
-      </div>
-    </div>
+      {statements.length > 0 && (
+        <pre className="mt-5 overflow-x-auto rounded-soft border border-edge bg-bg px-3.5 py-3 font-mono text-[11px] leading-[1.6] text-ink-dim">
+          {statements.join('\n')}
+        </pre>
+      )}
+    </SlideOverPanel>
   )
 }

@@ -4,11 +4,12 @@ import Select from '@/shared/ui/form/Select'
 import CheckboxRow from '@/shared/ui/form/CheckboxRow'
 import { toggleId } from '@/shared/lib/toggleId'
 import IconButton from '@/shared/ui/buttons/IconButton'
+import SlideOverPanel from '@/shared/ui/overlay/SlideOverPanel'
 import SqlEditor from '@/shared/ui/SqlEditor'
 import { Input, Textarea, controlClass } from '@/shared/ui/form/Input'
 import { FormField, Label } from '@/shared/ui/form/Form'
 import { useSlideOver } from '@/shared/hooks/useSlideOver'
-import { ChevronRight, PlusIcon, TrashIcon } from '@/shared/ui/icons'
+import { PlusIcon, TrashIcon } from '@/shared/ui/icons'
 import { NODE_SPECS } from '@/features/workflow/lib/nodeSpec'
 import { listStorages } from '@/features/backup'
 
@@ -51,35 +52,34 @@ export default function NodeConfigPanel({ node, onChange, onChangeType, allowTyp
   const removeCase = (i: number) => set({ cases: (d.cases || []).filter((_: any, idx: number) => idx !== i) })
 
   return (
-    <div
-      className={`fixed inset-0 z-50 flex justify-end bg-black/50 transition-opacity duration-200 ${
-        show ? 'opacity-100' : 'opacity-0'
-      }`}
-      onMouseDown={() => close()}
-    >
-      <div
-        className={`flex h-full w-full max-w-[440px] flex-col border-l border-edge-strong bg-panel shadow-[-20px_0_60px_-20px_rgba(0,0,0,0.8)] transition-transform duration-200 ease-out ${
-          show ? 'translate-x-0' : 'translate-x-full'
-        }`}
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        <div className="flex shrink-0 items-center justify-between border-b border-edge px-5 py-4">
-          <div className="flex items-center gap-2.5">
-            <span className={`flex h-7 w-7 items-center justify-center rounded bg-elevated ${spec.accent}`}>
-              <spec.icon width={15} height={15} />
-            </span>
-            <div>
-              <h3 className="text-sm font-bold">{spec.label}</h3>
-              <p className="text-[10px] uppercase tracking-wide text-ink-faint">{spec.category}</p>
-            </div>
+    <SlideOverPanel
+      show={show}
+      close={close}
+      width={440}
+      footerClassName="justify-between"
+      footer={
+        <>
+          <Button variant="danger" size="sm" icon={TrashIcon} onClick={() => close(() => onDelete(node.id))}>
+            Delete node
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => close()}>
+            Done
+          </Button>
+        </>
+      }
+      header={
+        <div className="flex min-w-0 items-center gap-2.5">
+          <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded bg-elevated ${spec.accent}`}>
+            <spec.icon width={15} height={15} />
+          </span>
+          <div className="min-w-0">
+            <h3 className="truncate text-sm font-bold">{spec.label}</h3>
+            <p className="text-[10px] uppercase tracking-wide text-ink-faint">{spec.category}</p>
           </div>
-          <IconButton size="lg" onClick={() => close()} aria-label="Close">
-            <ChevronRight />
-          </IconButton>
         </div>
-
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-          <p className="mb-4 text-[11px] leading-relaxed text-ink-faint">{spec.description}</p>
+      }
+    >
+      <p className="mb-4 text-[11px] leading-relaxed text-ink-faint">{spec.description}</p>
 
           {onChangeType && (
             <FormField label="Node type" className="mb-4" hint="Switching type resets this node's configuration.">
@@ -257,17 +257,6 @@ export default function NodeConfigPanel({ node, onChange, onChangeType, allowTyp
               )}
             </>
           )}
-        </div>
-
-        <div className="flex shrink-0 items-center justify-between border-t border-edge px-5 py-3.5">
-          <Button variant="danger" size="sm" icon={TrashIcon} onClick={() => close(() => onDelete(node.id))}>
-            Delete node
-          </Button>
-          <Button variant="ghost" size="sm" onClick={() => close()}>
-            Done
-          </Button>
-        </div>
-      </div>
-    </div>
+    </SlideOverPanel>
   )
 }
