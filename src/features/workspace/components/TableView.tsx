@@ -4,6 +4,7 @@ import { useSettings } from '@/features/settings'
 import { useShortcut } from '@/features/keymap'
 import DataGrid, { cellText } from '@/features/workspace/components/DataGrid'
 import RowEditorPanel from '@/features/workspace/components/RowEditorPanel'
+import { EXPORT_FORMATS, downloadRows, sqlValue, toCsv } from '@/features/workspace/lib/exportRows'
 import Button from '@/shared/ui/buttons/Button'
 import TextButton from '@/shared/ui/buttons/TextButton'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
@@ -30,14 +31,6 @@ import {
 } from '@/shared/ui/icons'
 
 const NUMERIC_TYPE = /(int|serial|numeric|decimal|real|double|float)/i
-
-// Quote a JS value for inline SQL (dev tool — table is trusted, values escaped).
-const sqlValue = (v) => {
-  if (v === null || v === undefined) return 'NULL'
-  if (typeof v === 'number') return String(v)
-  if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE'
-  return `'${String(v).replace(/'/g, "''")}'`
-}
 
 const OPERATORS = [
   { value: 'contains', label: 'contains' },
@@ -168,23 +161,8 @@ export default function TableView({ conn, table, onChange, onOpenReference, filt
 
   const activeFilterCount = filters.filter((f) => f.enabled && f.col && f.value !== '').length
 
-  const exportCsv = () => {
-    const esc = (v) => {
-      if (v == null) return ''
-      const s = String(v)
-      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
-    }
-    const csv = [
-      visibleColumns.join(','),
-      ...sorted.map((r) => visibleColumns.map((c) => esc(r[c])).join(',')),
-    ].join('\n')
-    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }))
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `${table}.csv`
-    a.click()
-    URL.revokeObjectURL(url)
-  }
+  // Exports what the grid currently shows: visible columns, filtered + sorted rows.
+  const exportAs = (format) => downloadRows(format, { columns: visibleColumns, rows: sorted, table })
 
   const toggleColumn = (c) =>
     setHidden((h) => (h.includes(c) ? h.filter((x) => x !== c) : [...h, c]))
@@ -262,14 +240,7 @@ export default function TableView({ conn, table, onChange, onOpenReference, filt
       toast.error('Could not copy to clipboard')
     }
   }
-  const rowToCsv = (row) => {
-    const esc = (v) => {
-      if (v == null) return ''
-      const s = String(v)
-      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
-    }
-    return [columns.join(','), columns.map((c) => esc(row[c])).join(',')].join('\n')
-  }
+  const rowToCsv = (row) => toCsv(columns, [row])
 
   const addQuickFilter = (col, op, value) => {
     onFiltersChange([...filters, makeFilter(col, op, op === 'isnull' || op === 'notnull' ? '' : cellText(value))])
@@ -326,7 +297,7 @@ export default function TableView({ conn, table, onChange, onOpenReference, filt
   useShortcut('workspace.duplicateSelected', duplicateSelected)
   useShortcut('workspace.discardEdits', discardEdits)
   useShortcut('general.save', saveEdits)
-  useShortcut('workspace.exportCsv', exportCsv)
+  useShortcut('workspace.exportCsv', () => exportAs('csv'))
   useShortcut('workspace.refresh', load)
 
   const selCount = selected.size
@@ -421,9 +392,38 @@ export default function TableView({ conn, table, onChange, onOpenReference, filt
           )}
         </Popover>
 
-            <Button variant="subtle" size="sm" icon={DownloadIcon} onClick={exportCsv} disabled={!sorted.length}>
-              Export
-            </Button>
+            <Popover
+              width={150}
+              trigger={({ open, toggle }) => (
+                <Button
+                  variant="subtle"
+                  size="sm"
+                  icon={DownloadIcon}
+                  chevron
+                  active={open}
+                  onClick={toggle}
+                  disabled={!sorted.length}
+                >
+                  Export
+                </Button>
+              )}
+            >
+              {({ close }) => (
+                <div className="p-1">
+                  {EXPORT_FORMATS.map((f) => (
+                    <MenuItem
+                      key={f.id}
+                      onClick={() => {
+                        exportAs(f.id)
+                        close()
+                      }}
+                    >
+                      <DownloadIcon width={14} height={14} /> {f.label}
+                    </MenuItem>
+                  ))}
+                </div>
+              )}
+            </Popover>
           </>
         )}
 
