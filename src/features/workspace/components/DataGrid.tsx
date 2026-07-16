@@ -5,8 +5,7 @@ import TextButton from '@/shared/ui/buttons/TextButton'
 import Tooltip from '@/shared/ui/overlay/Tooltip'
 import JsonEditor from '@/shared/ui/JsonEditor'
 import NumberStepper from '@/shared/ui/form/NumberStepper'
-import DatePicker from '@/shared/ui/form/DatePicker'
-import TimePicker from '@/shared/ui/form/TimePicker'
+import DateTimeField from '@/shared/ui/form/DateTimeField'
 import { CloseIcon, ExternalLinkIcon } from '@/shared/ui/icons'
 
 // JSON helpers — Postgres JSONB columns arrive as parsed objects/arrays.
@@ -43,8 +42,9 @@ const pad2 = (n) => String(n).padStart(2, '0')
 const isoDateTime = (d) =>
   `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`
 
-// Map a SQL column type (+ the value) to an editor kind.
-function editorKind(type, value) {
+// Map a SQL column type (+ the value) to an editor kind. `value` only sharpens
+// the guess for untyped columns, so callers that only know the type can omit it.
+export function editorKind(type, value = null) {
   const t = (type || '').toLowerCase()
   if (t.includes('json') || isJsonValue(value)) return 'json'
   if (t.includes('bool')) return 'boolean'
@@ -381,7 +381,6 @@ export default function DataGrid({
       (() => {
         const kind = editing.kind
         const isTextArea = kind === 'json' || kind === 'text'
-        const parts = dateTimeParts(draft)
         const kindLabel = { json: 'JSON', boolean: 'Boolean', date: 'Date', time: 'Time', datetime: 'Date & time', number: 'Number' }[kind]
 
         return (
@@ -462,28 +461,8 @@ export default function DataGrid({
                     </div>
                   )}
 
-                  {kind === 'date' && (
-                    <DatePicker autoFocus value={parts.date} onChange={(v) => setDraft(v)} />
-                  )}
-
-                  {kind === 'time' && (
-                    <TimePicker autoFocus value={parts.time} onChange={(v) => setDraft(v)} />
-                  )}
-
-                  {kind === 'datetime' && (
-                    <div className="flex flex-wrap gap-2">
-                      <DatePicker
-                        autoFocus
-                        value={parts.date}
-                        onChange={(v) => setDraft(joinDateTime(v, parts.time))}
-                        className="flex-1"
-                      />
-                      <TimePicker
-                        value={parts.time}
-                        onChange={(v) => setDraft(joinDateTime(parts.date, v))}
-                        className="flex-1"
-                      />
-                    </div>
+                  {(kind === 'date' || kind === 'time' || kind === 'datetime') && (
+                    <DateTimeField autoFocus kind={kind} value={draft} onChange={setDraft} />
                   )}
 
                   {(kind === 'date' || kind === 'time' || kind === 'datetime' || kind === 'number') && (

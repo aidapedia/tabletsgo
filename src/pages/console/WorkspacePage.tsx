@@ -1277,6 +1277,16 @@ export default function Workspace() {
               <CodeIcon width={16} height={16} />
             </IconButton>
           </Tooltip>
+          <Tooltip label="New Schema diagram" placement="bottom">
+            <IconButton size="toolbar" onClick={openSchemaEditor} aria-label="New Schema diagram">
+              <DiagramIcon width={16} height={16} />
+            </IconButton>
+          </Tooltip>
+          <Tooltip label="New workflow" placement="bottom">
+            <IconButton size="toolbar" onClick={newWorkflow} aria-label="New workflow">
+              <WorkflowIcon width={16} height={16} />
+            </IconButton>
+          </Tooltip>
           <div className="relative flex max-w-[560px] flex-1 items-center">
             <SearchIcon width={16} height={16} className="absolute left-3.5 text-ink-faint" />
             <input

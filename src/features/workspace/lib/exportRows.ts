@@ -36,7 +36,7 @@ export const toSql = (columns, rows, table) => {
 export const EXPORT_FORMATS = [
   { id: 'csv', label: 'CSV', ext: 'csv', mime: 'text/csv;charset=utf-8;' },
   { id: 'json', label: 'JSON', ext: 'json', mime: 'application/json;charset=utf-8;' },
-  { id: 'sql', label: 'SQL insert', ext: 'sql', mime: 'application/sql;charset=utf-8;' },
+  { id: 'sql', label: 'SQL', ext: 'sql', mime: 'application/sql;charset=utf-8;' },
 ]
 
 // Serialize + save. `table` names the file and the INSERT target for SQL.

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import Popover from '@/shared/ui/overlay/Popover'
 import { CalendarIcon, ChevronLeft, ChevronRight } from '@/shared/ui/icons'
 
@@ -12,7 +12,11 @@ const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June',
 const MONTHS_SHORT = MONTHS.map((m) => m.slice(0, 3))
 
 const pad = (n) => String(n).padStart(2, '0')
-const toStr = (y, m, d) => `${y}-${pad(m + 1)}-${pad(d)}`
+export const toStr = (y, m, d) => `${y}-${pad(m + 1)}-${pad(d)}`
+export const todayStr = () => {
+  const t = new Date()
+  return toStr(t.getFullYear(), t.getMonth(), t.getDate())
+}
 
 // Parse 'YYYY-MM-DD' into {y,m,d} (m 0-based) without going through Date() to
 // avoid timezone shifts.
@@ -28,7 +32,12 @@ const triggerClass =
 const navBtn = 'rounded-soft p-1 text-ink-dim hover:bg-card-hover hover:text-ink'
 const cellBtn = 'flex items-center justify-center rounded-soft text-[12px] transition-colors'
 
-export default function DatePicker({ value = '', onChange, autoFocus = false, className = '' }) {
+/**
+ * The calendar itself — month nav plus the day/month/year grids. Split out of
+ * DatePicker so other controls (e.g. DateTimeField) can host the same calendar
+ * next to their own inputs and footer actions.
+ */
+export function CalendarPanel({ value = '', onChange }) {
   const sel = parse(value)
   const today = new Date()
   const [view, setView] = useState(() =>
@@ -36,6 +45,13 @@ export default function DatePicker({ value = '', onChange, autoFocus = false, cl
   )
   // Which zoom level the panel shows: pick a day, a month, or a year.
   const [mode, setMode] = useState('days')
+
+  // Follow the value when it changes from outside — typing in a host's text
+  // field, or a Today/Now shortcut — so the grid shows the month in question.
+  useEffect(() => {
+    const p = parse(value)
+    if (p) setView({ y: p.y, m: p.m })
+  }, [value])
 
   const grid = useMemo(() => {
     const first = new Date(view.y, view.m, 1).getDay()
@@ -66,22 +82,9 @@ export default function DatePicker({ value = '', onChange, autoFocus = false, cl
     d === today.getDate() && view.m === today.getMonth() && view.y === today.getFullYear()
   const isSel = (d) => sel && d === sel.d && view.m === sel.m && view.y === sel.y
 
-  const label = sel ? toStr(sel.y, sel.m, sel.d) : ''
-
   return (
-    <Popover
-      width={264}
-      portal
-      trigger={({ toggle }) => (
-        <button type="button" autoFocus={autoFocus} onClick={toggle} className={`${triggerClass} ${className}`}>
-          <span className={label ? 'text-ink' : 'text-ink-faint'}>{label || 'Select date'}</span>
-          <CalendarIcon className="ml-auto text-ink-faint" />
-        </button>
-      )}
-    >
-      {({ close }) => (
-        <div className="p-3">
-          <div className="mb-2 flex items-center justify-between">
+    <>
+      <div className="mb-2 flex items-center justify-between">
             <button type="button" onClick={() => step(-1)} className={navBtn}>
               <ChevronLeft />
             </button>
@@ -111,7 +114,7 @@ export default function DatePicker({ value = '', onChange, autoFocus = false, cl
                   <button
                     key={i}
                     type="button"
-                    onClick={() => { onChange?.(toStr(view.y, view.m, d)); close() }}
+                    onClick={() => onChange?.(toStr(view.y, view.m, d))}
                     className={`mx-auto h-8 w-8 ${cellBtn} ${
                       isSel(d)
                         ? 'bg-green text-bg font-semibold'
@@ -161,18 +164,35 @@ export default function DatePicker({ value = '', onChange, autoFocus = false, cl
             </div>
           )}
 
+    </>
+  )
+}
+
+export default function DatePicker({ value = '', onChange, autoFocus = false, className = '' }) {
+  const sel = parse(value)
+  const label = sel ? toStr(sel.y, sel.m, sel.d) : ''
+
+  return (
+    <Popover
+      width={264}
+      portal
+      trigger={({ toggle }) => (
+        <button type="button" autoFocus={autoFocus} onClick={toggle} className={`${triggerClass} ${className}`}>
+          <span className={label ? 'text-ink' : 'text-ink-faint'}>{label || 'Select date'}</span>
+          <CalendarIcon className="ml-auto text-ink-faint" />
+        </button>
+      )}
+    >
+      {({ close }) => (
+        <div className="p-3">
+          <CalendarPanel value={value} onChange={(v) => { onChange?.(v); close() }} />
           <div className="mt-2 flex items-center justify-between border-t border-edge pt-2">
             <button type="button" onClick={() => { onChange?.(''); close() }} className="text-[11px] text-ink-faint hover:text-ink">
               Clear
             </button>
             <button
               type="button"
-              onClick={() => {
-                setView({ y: today.getFullYear(), m: today.getMonth() })
-                setMode('days')
-                onChange?.(toStr(today.getFullYear(), today.getMonth(), today.getDate()))
-                close()
-              }}
+              onClick={() => { onChange?.(todayStr()); close() }}
               className="text-[11px] text-green hover:text-green-bright"
             >
               Today

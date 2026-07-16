@@ -1,5 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { ChevronDown } from '@/shared/ui/icons'
+
+const MENU_MAX_H = 240
+const MENU_GAP = 6
 
 /**
  * Themed select to replace native <select>.
@@ -26,7 +29,36 @@ export default function Select({
   disabled = false,
 }) {
   const [open, setOpen] = useState(false)
+  const [dropUp, setDropUp] = useState(false)
+  const [alignRight, setAlignRight] = useState(false)
   const ref = useRef(null)
+  const menuRef = useRef(null)
+
+  // Flip the menu to whichever side has room: above the box when it would run
+  // past the bottom of the viewport, right-aligned when it would run past the
+  // right edge. Alignment never changes the menu's own width, so measuring it
+  // here can't feed back into the next measurement.
+  useLayoutEffect(() => {
+    if (!open || !ref.current) return
+    const place = () => {
+      const r = ref.current.getBoundingClientRect()
+      const below = window.innerHeight - r.bottom - MENU_GAP
+      const above = r.top - MENU_GAP
+      setDropUp(below < Math.min(MENU_MAX_H, above) && above > below)
+
+      const menuW = menuRef.current?.offsetWidth ?? r.width
+      const roomRight = window.innerWidth - r.left
+      const roomLeft = r.right
+      setAlignRight(menuW > roomRight && roomLeft > roomRight)
+    }
+    place()
+    window.addEventListener('resize', place)
+    window.addEventListener('scroll', place, true)
+    return () => {
+      window.removeEventListener('resize', place)
+      window.removeEventListener('scroll', place, true)
+    }
+  }, [open])
 
   useEffect(() => {
     if (!open) return
@@ -76,8 +108,11 @@ export default function Select({
 
       {open && (
         <div
+          ref={menuRef}
           role="listbox"
-          className="absolute left-0 top-[calc(100%+6px)] z-50 max-h-[240px] w-max min-w-full max-w-[280px] overflow-y-auto rounded-soft border border-edge-strong bg-elevated p-1"
+          className={`absolute z-50 max-h-[240px] w-max min-w-full max-w-[280px] overflow-y-auto rounded-soft border border-edge-strong bg-elevated p-1 ${
+            dropUp ? 'bottom-[calc(100%+6px)]' : 'top-[calc(100%+6px)]'
+          } ${alignRight ? 'right-0' : 'left-0'}`}
         >
           {options.map((o) => {
             const active = o.value === value

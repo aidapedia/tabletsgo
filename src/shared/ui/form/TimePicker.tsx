@@ -48,9 +48,25 @@ function Column({ values, selected, onPick }) {
   )
 }
 
-export default function TimePicker({ value = '', onChange, autoFocus = false, className = '' }) {
+/**
+ * The hour/minute/second columns on their own. Split out of TimePicker so other
+ * controls (e.g. DateTimeField) can host them beneath a calendar. The host sets
+ * the height via `className`.
+ */
+export function TimeColumns({ value = '', onChange, className = '' }) {
   const t = parse(value)
   const set = (h, m, s) => onChange?.(`${pad(h)}:${pad(m)}:${pad(s)}`)
+  return (
+    <div className={`flex divide-x divide-edge ${className}`}>
+      <Column values={range(24)} selected={t.h} onPick={(h) => set(h, t.m ?? 0, t.s ?? 0)} />
+      <Column values={range(60)} selected={t.m} onPick={(m) => set(t.h ?? 0, m, t.s ?? 0)} />
+      <Column values={range(60)} selected={t.s} onPick={(s) => set(t.h ?? 0, t.m ?? 0, s)} />
+    </div>
+  )
+}
+
+export default function TimePicker({ value = '', onChange, autoFocus = false, className = '' }) {
+  const t = parse(value)
   const label = t.h == null ? '' : `${pad(t.h)}:${pad(t.m)}:${pad(t.s)}`
 
   return (
@@ -64,13 +80,7 @@ export default function TimePicker({ value = '', onChange, autoFocus = false, cl
         </button>
       )}
     >
-      {() => (
-        <div className="flex h-[200px] divide-x divide-edge">
-          <Column values={range(24)} selected={t.h} onPick={(h) => set(h, t.m ?? 0, t.s ?? 0)} />
-          <Column values={range(60)} selected={t.m} onPick={(m) => set(t.h ?? 0, m, t.s ?? 0)} />
-          <Column values={range(60)} selected={t.s} onPick={(s) => set(t.h ?? 0, t.m ?? 0, s)} />
-        </div>
-      )}
+      {() => <TimeColumns value={value} onChange={onChange} className="h-[200px]" />}
     </Popover>
   )
 }
