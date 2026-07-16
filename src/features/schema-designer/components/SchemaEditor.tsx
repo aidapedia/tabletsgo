@@ -19,7 +19,7 @@ import IconButton from '@/shared/ui/buttons/IconButton'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
 import TextButton from '@/shared/ui/buttons/TextButton'
 import Popover from '@/shared/ui/overlay/Popover'
-import ContextMenu from '@/shared/ui/overlay/ContextMenu'
+import ContextMenu, { ContextMenuSub } from '@/shared/ui/overlay/ContextMenu'
 import Badge from '@/shared/ui/Badge'
 import Select from '@/shared/ui/form/Select'
 import { controlClass, Input } from '@/shared/ui/form/Input'
@@ -29,10 +29,10 @@ import CreateTablePanel from '@/features/schema-designer/components/CreateTableP
 import SchemaSidebar from '@/features/schema-designer/components/SchemaSidebar'
 import SaveQueryPanel from '@/shared/ui/SaveQueryPanel'
 import { newItemId } from '@/shared/lib/schemaDraft'
-import { DomainDot, DomainEditPanel } from '@/features/domains'
+import { DomainEditPanel } from '@/features/domains'
 import { columnTypeSql, FK_ACTIONS, fkEligible, normFkAction, parseColumnDefs, useColumnTypes } from '@/features/schema-designer/components/columnFields'
 import { useShortcut } from '@/features/keymap'
-import { ChevronRight, ColumnsIcon, DownloadIcon, EditIcon, PlusIcon, SaveIcon, TableIcon, TrashIcon, WandIcon } from '@/shared/ui/icons'
+import { ChevronRight, ColumnsIcon, DownloadIcon, EditIcon, PlusIcon, SaveIcon, TableIcon, TagIcon, TrashIcon, WandIcon } from '@/shared/ui/icons'
 
 // Fixed metrics so per-column handles line up with their rows.
 const HEADER_H = 34
@@ -328,9 +328,9 @@ function parsePending(changes) {
 
 
 // Reusable export format list (used by the toolbar dropdown and the canvas menu).
-function ExportOptions({ onExport }) {
+function ExportItems({ onExport }) {
   return (
-    <div className="p-1">
+    <>
       <MenuItem onClick={() => onExport('png')}>
         <DownloadIcon width={14} height={14} /> PNG image
       </MenuItem>
@@ -340,6 +340,15 @@ function ExportOptions({ onExport }) {
       <MenuItem onClick={() => onExport('svg')}>
         <DownloadIcon width={14} height={14} /> SVG vector
       </MenuItem>
+    </>
+  )
+}
+
+// Popover's panel has no padding of its own; ContextMenuSub's already does.
+function ExportOptions({ onExport }) {
+  return (
+    <div className="p-1">
+      <ExportItems onExport={onExport} />
     </div>
   )
 }
@@ -1782,7 +1791,7 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
             <EditIcon width={14} height={14} /> Edit table
           </MenuItem>
           <MenuItem onClick={() => { onSetDomain?.(nodeMenu.table); setNodeMenu(null) }}>
-            <DomainDot color={domains.find((d) => d.tables.includes(nodeMenu.table))?.color ?? null} /> Move to domain…
+            <TagIcon width={14} height={14} /> Move to domain…
           </MenuItem>
           <div className="my-1 h-px bg-edge" />
           <MenuItem danger className="!text-red" onClick={() => { deleteTable(nodeMenu.table, nodeMenu.pending); setNodeMenu(null) }}>
@@ -1797,17 +1806,9 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
           <MenuItem onClick={() => { setCreating(true); setMenu(null) }}>
             <PlusIcon width={14} height={14} /> Create new Table
           </MenuItem>
-          <div className="group relative">
-            <MenuItem className="justify-between">
-              <span className="flex items-center gap-2">
-                <DownloadIcon width={14} height={14} /> Export
-              </span>
-              <ChevronRight width={13} height={13} />
-            </MenuItem>
-            <div className="absolute left-full top-0 z-10 hidden min-w-[150px] rounded-soft border border-edge-strong bg-elevated group-hover:block">
-              <ExportOptions onExport={(f) => { exportImage(f); setMenu(null) }} />
-            </div>
-          </div>
+          <ContextMenuSub label="Export" icon={DownloadIcon} width={150}>
+            <ExportItems onExport={(f) => { exportImage(f); setMenu(null) }} />
+          </ContextMenuSub>
           <MenuItem onClick={() => { autoLayout(); setMenu(null) }}>
             <WandIcon width={14} height={14} /> Auto arrange
           </MenuItem>
