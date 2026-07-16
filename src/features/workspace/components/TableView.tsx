@@ -555,6 +555,10 @@ export default function TableView({ conn, table, onChange, onOpenReference, init
               table,
             })
             stagedInfo('Added update to changes — commit to apply.')
+            // Must close explicitly: useSlideOver runs this commit *instead of*
+            // onClose, so the invisible overlay would stay mounted and swallow
+            // every click.
+            setInspecting(null)
           }}
         />
       )}
@@ -565,10 +569,6 @@ export default function TableView({ conn, table, onChange, onOpenReference, init
           const isNum = NUMERIC_TYPE.test(colTypes[col] || '')
           return (
             <ContextMenu x={cellMenu.x} y={cellMenu.y} onClose={() => setCellMenu(null)}>
-              <MenuItem onClick={() => { copyText(cellText(value)); setCellMenu(null) }}>
-                <CopyIcon width={14} height={14} /> Copy cell value
-              </MenuItem>
-
               <ContextMenuSub label="Filter by this column" icon={FilterIcon}>
                 <MenuItem onClick={() => { addQuickFilter(col, '=', value); setCellMenu(null) }}>equals</MenuItem>
                 <MenuItem onClick={() => { addQuickFilter(col, '!=', value); setCellMenu(null) }}>not equals</MenuItem>
@@ -584,7 +584,6 @@ export default function TableView({ conn, table, onChange, onOpenReference, init
                 <MenuItem onClick={() => { addQuickFilter(col, 'isnull', ''); setCellMenu(null) }}>is null</MenuItem>
                 <MenuItem onClick={() => { addQuickFilter(col, 'notnull', ''); setCellMenu(null) }}>is not null</MenuItem>
               </ContextMenuSub>
-
               <ContextMenuSub label="Set as" icon={EditIcon}>
                 <MenuItem onClick={() => { setCellAs(row, col, 'null'); setCellMenu(null) }}>NULL</MenuItem>
                 <MenuItem onClick={() => { setCellAs(row, col, 'empty'); setCellMenu(null) }}>EMPTY</MenuItem>
@@ -592,29 +591,33 @@ export default function TableView({ conn, table, onChange, onOpenReference, init
                   DEFAULT
                 </MenuItem>
               </ContextMenuSub>
-
-              <div className="my-1 h-px bg-edge" />
-
-              <MenuItem onClick={() => { setShowInsert(true); setCellMenu(null) }}>
-                <PlusSmall width={14} height={14} /> Insert row
-              </MenuItem>
-              <MenuItem onClick={() => { stageDuplicate([row], { clear: false }); setCellMenu(null) }}>
-                <CopyIcon width={14} height={14} /> Duplicate row
-              </MenuItem>
-              <MenuItem danger onClick={() => { stageDelete([row], { clear: false }); setCellMenu(null) }}>
-                <TrashIcon width={14} height={14} /> Delete row
-              </MenuItem>
-
-              <div className="my-1 h-px bg-edge" />
-
-              <MenuItem onClick={() => { setInspecting(row); setCellMenu(null) }}>
-                <EyeIcon width={14} height={14} /> Open Inspector
+              
+              <MenuItem onClick={() => { copyText(cellText(value)); setCellMenu(null) }}>
+                <CopyIcon width={14} height={14} /> Copy cell value
               </MenuItem>
               <ContextMenuSub label="Copy row as" icon={CopyIcon}>
                 <MenuItem onClick={() => { copyText(insertSql(row), 'Copied SQL'); setCellMenu(null) }}>SQL</MenuItem>
                 <MenuItem onClick={() => { copyText(rowToCsv(row), 'Copied CSV'); setCellMenu(null) }}>CSV</MenuItem>
                 <MenuItem onClick={() => { copyText(JSON.stringify(row, null, 2), 'Copied JSON'); setCellMenu(null) }}>JSON</MenuItem>
               </ContextMenuSub>
+
+              <div className="my-1 h-px bg-edge" />
+              
+              <MenuItem onClick={() => { setInspecting(row); setCellMenu(null) }}>
+                <EyeIcon width={14} height={14} /> Open Inspector
+              </MenuItem>
+              <MenuItem onClick={() => { setShowInsert(true); setCellMenu(null) }}>
+                <PlusSmall width={14} height={14} /> Insert row
+              </MenuItem>
+              <MenuItem onClick={() => { stageDuplicate([row], { clear: false }); setCellMenu(null) }}>
+                <CopyIcon width={14} height={14} /> Duplicate row
+              </MenuItem>
+
+              <div className="my-1 h-px bg-edge" />
+              <MenuItem danger onClick={() => { stageDelete([row], { clear: false }); setCellMenu(null) }}>
+                <TrashIcon width={14} height={14} /> Delete row
+              </MenuItem>
+              
             </ContextMenu>
           )
         })()}

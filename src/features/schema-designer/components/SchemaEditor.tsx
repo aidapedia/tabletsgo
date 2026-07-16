@@ -849,9 +849,18 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
   const showAllTables = () => setHiddenTables(new Set())
   const hideAllTables = () => setHiddenTables(new Set(augmented.map((t) => t.name)))
 
-  // (Re)build nodes whenever the diagram or staged changes update.
+  // (Re)build nodes whenever the diagram or staged changes update, but keep the
+  // position of every table already on the canvas — once a table is placed
+  // (by the initial layout or by the user dragging it) nothing reshuffles it.
+  // Only tables new to the canvas take the position dagre computed for them.
+  // Re-arranging the whole diagram is an explicit action: right-click the
+  // canvas → Auto arrange (or the schema.autoLayout shortcut).
   useEffect(() => {
-    setNodes(layoutNodes())
+    setNodes((prev) => {
+      const placed = {}
+      for (const n of prev) placed[n.id] = n.position
+      return layoutNodes().map((n) => (placed[n.id] ? { ...n, position: placed[n.id] } : n))
+    })
   }, [layoutNodes, setNodes])
 
   // Edges are derived from live node positions, with jump arcs over crossings.
