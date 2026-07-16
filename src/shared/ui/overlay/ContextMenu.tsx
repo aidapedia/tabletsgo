@@ -1,8 +1,15 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { createContext, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { MENU_PANEL_CLASS } from './Popover'
 import useDismiss from './useDismiss'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
 import { ChevronRight } from '@/shared/ui/icons'
+
+// Which ContextMenuSub is expanded, owned by the parent menu so that only one
+// flyout exists at a time. Subs can't track this themselves: closing is delayed
+// (to forgive a cursor that cuts a corner on its way to the flyout) while
+// opening is immediate, so sibling-local state leaves the old flyout on screen
+// underneath the new one for the length of the delay.
+const OpenSubContext = createContext(null)
 
 /**
  * Mouse-anchored sibling of Popover — same panel shell (MENU_PANEL_CLASS),
@@ -12,6 +19,8 @@ import { ChevronRight } from '@/shared/ui/icons'
 export default function ContextMenu({ x, y, onClose, children, width = 220 }) {
   const ref = useRef(null)
   const [pos, setPos] = useState({ left: x, top: y })
+  const [openSub, setOpenSub] = useState(null)
+  const sub = useMemo(() => ({ openSub, setOpenSub }), [openSub])
 
   useLayoutEffect(() => {
     const h = ref.current?.offsetHeight ?? 0
@@ -38,14 +47,16 @@ export default function ContextMenu({ x, y, onClose, children, width = 220 }) {
       onClick={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.preventDefault()}
     >
-      {children}
+      <OpenSubContext.Provider value={sub}>{children}</OpenSubContext.Provider>
     </div>
   )
 }
 
 /** A MenuItem row that opens a flyout panel to its side on hover. */
 export function ContextMenuSub({ label, icon: Icon, disabled = false, width = 200, children }) {
-  const [open, setOpen] = useState(false)
+  const id = useId()
+  const { openSub, setOpenSub } = useContext(OpenSubContext)
+  const open = openSub === id
   const [pos, setPos] = useState({ left: 0, top: 0 })
   const rowRef = useRef(null)
   const panelRef = useRef(null)
@@ -64,14 +75,16 @@ export function ContextMenuSub({ label, icon: Icon, disabled = false, width = 20
 
   useEffect(() => () => clearTimeout(closeTimer.current), [])
 
+  // Only ever close *this* sub — by the time the timer fires the cursor may
+  // have opened a sibling, and that one must survive.
   const scheduleClose = () => {
-    closeTimer.current = setTimeout(() => setOpen(false), 150)
+    closeTimer.current = setTimeout(() => setOpenSub((cur) => (cur === id ? null : cur)), 150)
   }
   const cancelClose = () => clearTimeout(closeTimer.current)
 
   return (
-    <div ref={rowRef} onMouseEnter={() => !disabled && (cancelClose(), setOpen(true))} onMouseLeave={scheduleClose}>
-      <MenuItem disabled={disabled} className="justify-between" onClick={() => !disabled && setOpen((o) => !o)}>
+    <div ref={rowRef} onMouseEnter={() => !disabled && (cancelClose(), setOpenSub(id))} onMouseLeave={scheduleClose}>
+      <MenuItem disabled={disabled} className="justify-between" onClick={() => !disabled && setOpenSub(open ? null : id)}>
         <span className="flex items-center gap-2.5">
           {Icon && <Icon width={14} height={14} />}
           {label}
