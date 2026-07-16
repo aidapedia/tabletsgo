@@ -9,16 +9,26 @@ import { Input } from '@/shared/ui/form/Input'
 import { FormField, Label } from '@/shared/ui/form/Form'
 import { ColumnField, colDef, newColumn, useColumnTypes } from '@/features/schema-designer/components/columnFields'
 
-export default function CreateTablePanel({ conn, initialTable, onClose, onStage }: any) {
+/**
+ * Three modes, all sharing one form:
+ * - create (default): stages a CREATE TABLE for a brand-new table.
+ * - edit (`initialTable`): a committed table — columns load from the live
+ *   schema and only ADD COLUMN is stageable.
+ * - draft (`draftColumns`): a table whose CREATE TABLE is still staged and
+ *   uncommitted, so everything (name included) is still freely editable and
+ *   submitting restages the whole CREATE.
+ */
+export default function CreateTablePanel({ conn, initialTable, draftColumns, onClose, onStage }: any) {
   const dialect = conn.type === 'postgresql' ? 'postgresql' : 'sqlite'
   const types = useColumnTypes(conn)
   const defaultType = dialect === 'postgresql' ? 'serial' : 'INTEGER'
-  const isEdit = !!initialTable
+  const isDraft = !!draftColumns
+  const isEdit = !!initialTable && !isDraft
 
   const { show, close } = useSlideOver(onClose)
   const [name, setName] = useState(initialTable || '')
   const [columns, setColumns] = useState(() =>
-    isEdit ? [] : [{ ...newColumn(defaultType), name: 'id', pk: true }]
+    isDraft ? draftColumns : isEdit ? [] : [{ ...newColumn(defaultType), name: 'id', pk: true }]
   )
   const [schema, setSchema] = useState({})
 
@@ -77,20 +87,22 @@ export default function CreateTablePanel({ conn, initialTable, onClose, onStage 
     })
   }
 
+  const title = isDraft ? 'Edit New Table' : isEdit ? 'Edit Table' : 'Create Table'
+
   return (
     <SlideOverPanel
       show={show}
       close={close}
       width={520}
       onSubmit={handleSubmit}
-      title={isEdit ? 'Edit Table' : 'Create Table'}
+      title={title}
       footer={
         <>
           <Button type="button" variant="subtle" onClick={() => close()}>
             Cancel
           </Button>
           <Button type="submit" variant="primary" disabled={!valid}>
-            Add to changes
+            {isDraft ? 'Update changes' : 'Add to changes'}
           </Button>
         </>
       }

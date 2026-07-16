@@ -1402,6 +1402,7 @@ export default function Workspace() {
                 domains={domains}
                 onUpdateDomain={updateDomainById}
                 onDeleteDomain={removeDomain}
+                onSetDomain={setDomainTable}
                 pending={schemaPending[current.key] || []}
                 onPendingChange={(items) => setSchemaPending((p) => ({ ...p, [current.key]: items }))}
                 onStageItems={stageSchemaItems}
