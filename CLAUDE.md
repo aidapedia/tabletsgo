@@ -1,0 +1,128 @@
+# CODING AGENT INSTRUCTIONS
+## DEVELOPMENT STANDARDS
+When writing code, adhere to these principles:
+
+- Prioritize simplicity and readability over clever solutions ( create a component )
+- Start with minimal functionality and verify it works before adding complexity
+- Test your code frequently with realistic inputs and validate outputs
+- Create testing environments for components that are difficult to validate directly
+- Use functional and stateless approaches where they improve clarity
+- Keep core logic clean and push implementation details to the edges
+- Maintain consistent style (indentation, naming, patterns) throughout the codebase
+- Balance file organization with simplicity - use an appropriate number of files for the project scale
+- Everytime write a api contract, please make generic and can reusable with other database model current roadmap is SQLLite, PostgreSQL and Redis. But we dont close to support more database type like MariaDB etc
+
+## PROJECT STRUCTURE
+Feature-sliced React + TypeScript. Imports use the `@/` alias (→ `src/`). Each
+feature exposes a public API through its `index.ts` barrel; reach into another
+feature via that barrel, not its internal files. Keep this map in sync whenever
+you add, remove, or rename a folder.
+
+```
+src/
+├── app/                          # app wiring (no business logic)
+│   ├── main.tsx                  # entry: mounts <AppProviders><App/>
+│   ├── App.tsx                   # renders <AppRoutes/>
+│   ├── providers/                # ThemeContext + AppProviders (composes every provider)
+│   └── routes/                   # AppRoutes (route table + RequireAuth guard)
+│
+├── shared/                       # reusable, feature-agnostic code
+│   ├── ui/                       # presentational components, grouped by kind:
+│   │   ├── buttons/              #   Button, IconButton, TextButton
+│   │   ├── form/                 #   Form/FormField/Label, Input/Textarea, Select, Checkbox,
+│   │   │                         #     CheckboxRow, SearchInput, Toggle, NumberStepper
+│   │   ├── navigation/           #   NavItem, Tab, Segmented, MenuItem
+│   │   ├── overlay/              #   Popover, Tooltip, ContextMenu
+│   │   ├── feedback/             #   Toast, ConfirmDialog, TypeToConfirmDialog, LoadingState, EmptyState
+│   │   └── (root)                #   Avatar, Badge, PersonRow, RowLabel, SaveQueryPanel, SqlEditor,
+│   │                             #     JsonEditor, icons — no group yet
+│   ├── hooks/                    # generic hooks (useSlideOver)
+│   ├── lib/                      # helpers: recents, schemaDraft, toggleId
+│   ├── api/                      # backend client: request.ts (fetch wrapper) + database.ts
+│   ├── config/                   # runtime config / env (API_URL from VITE_API_URL)
+│   └── types/                    # ambient/shared TS types (globals.d.ts)
+│
+├── features/                     # self-contained business features (each has index.ts barrel)
+│   ├── auth/                     # stores/AuthContext + api (login/setup/invite); session token
+│   ├── workspaces/               # org/tenant layer (multi-workspace): WorkspaceContext (current
+│   │                             #   workspace + switch), WorkspaceSwitcher, MembersPanel, TeamsPanel,
+│   │                             #   SmtpSettings, IntegrationsSettings (SMTP), NotificationSettings;
+│   │                             #   api (workspaces/members/teams CRUD)
+│   ├── connections/              # stores/ConnectionsContext (scoped to current workspace); components:
+│   │                             #   ConnectionForm, ConnectionDetail (Data/Access/Backup tabs),
+│   │                             #   ConnectionAccessPanel, DbTypePickerModal (owns DB_CATALOG/TYPE_LABEL);
+│   │                             #   api (connection access get/set)
+│   ├── settings/                 # stores/SettingsContext
+│   ├── domains/                  # named+colored table groupings (one domain per table): DomainPickerModal
+│   │                             #   (set a table's domain), DomainEditModal, DomainDot; api (domains CRUD +
+│   │                             #   set-table-domain). Drives the sidebar group-by-domain view and the
+│   │                             #   schema-designer's draggable/editable domain regions.
+│   ├── keymap/                   # stores/KeymapContext (useKeymap/useShortcut) + KeymapSetting
+│   ├── workspace/                # the DB console (one connection): data browsing + querying
+│   │   ├── components/           #   DataGrid, TableView, SchemaView, QueryEditor, FunctionView,
+│   │   │                         #   QueryHistoryView, InsertRowPanel, ChangesPanel, SavedQueriesPanel, IconRail
+│   │   └── lib/                  #   savedQueries, queryHistory (backend calls)
+│   ├── schema-designer/          # visual schema design (React Flow ERD + table/column editors; tables
+│   │   │                         #   sharing a domain are clustered into a draggable, editable region)
+│   │   ├── components/           #   SchemaEditor, SchemaSidebar (accordion: Draft Schema / Table List /
+│   │   │                         #     References / Domain Group — click to focus/edit), CreateTablePanel,
+│   │   │                         #     TableEditPanel, columnFields, SchemaHistoryPanel (schema-version audit trail)
+│   │   └── lib/                  #   rollback (best-effort rollback SQL for staged DDL)
+│   ├── workflow/                 # workflow automations (React Flow builder + server-side runner, incl.
+│   │   │                         #   real hourly/daily scheduling via the Schedule trigger node's Active toggle)
+│   │   ├── components/           #   WorkflowEditor, WorkflowsPanel, NodePalette, NodeConfigPanel,
+│   │   │                         #     RunLogPanel, nodes/WorkflowNode (one spec-driven card)
+│   │   └── lib/                  #   api (per-connection CRUD + run), nodeSpec (node catalog: manual,
+│   │                             #     schedule, query, http, js, switch, loop, export "Export SQL",
+│   │                             #     storage "Store to Storage")
+│   └── backup/                   # S3-compatible storage destinations (workspace-scoped) + the
+│       │                         #   per-connection backup schedule built from generic workflow nodes
+│       │                         #   (Schedule → Export SQL → Store to Storage)
+│       ├── components/           #   StorageList, StorageModal, BackupPanel, BackupCalendarHeatmap, RestorePanel
+│       └── lib/                  #   api (storages CRUD, backup schedule/runs/calendar/restore), types
+│
+└── pages/                        # route-level composition (thin — just assemble features), grouped by area
+    ├── auth/                     # unauthenticated flows: LoginPage, SetupPage, AcceptInvitePage,
+    │                             #   ForgotPasswordPage, ResetPasswordPage
+    ├── console/                  # WorkspacePage — the per-connection DB console (route /connection/:id)
+    └── home/                     # the authenticated home shell — one file per sidebar section
+        ├── HomeLayout            #   sidebar + <Outlet/>; every section route renders inside it
+        ├── ui                    #   shared page primitives: PageHeader, Section, TabbedSection, SubHead, ComingSoon
+        ├── DashboardPage (/)     #   connection + member counts
+        ├── ConnectionsPage       #   connection list (cards + filters); detail/picker/form come
+        │                         #   from features/connections
+        ├── StoragePage           # /storage → S3 storage destinations (StorageList), top-level sidebar item
+        ├── WorkspaceSettingsPage # /workspace → General / Member / Integrations / Notification tabs
+        └── SettingsPage          # /settings → Theme / Data tabs
+```
+
+Note: `features/workspaces` (plural) is the org/tenant layer (workspaces, members, invites); `features/workspace` (singular) is the per-connection DB console. Don't conflate them.
+
+Conventions:
+- A feature folder gets `components/`, `stores/`, `lib/`, `hooks/`, `types.ts` only as needed — don't create empty buckets.
+- Cross-feature use goes through the barrel (`@/features/x`); intra-feature files import each other directly to avoid barrel import cycles.
+- Name folders/files for what they do (e.g. `schema-designer`, not `erd-viewer`; `database.ts`, not `sqlite.ts`).
+- All backend calls go through `shared/api/request.ts`: use `request()` for mutations (throws on failure — caller `try/catch`es and toasts) and `safeRequest(path, fallback)` for reads that should degrade quietly. Don't call `fetch` directly or re-declare `API_URL`.
+- UI styling lives in `shared/ui` components — `Button`, `IconButton`, `Input`/`Textarea`, `Form`/`FormField`/`Label`. Use those instead of shared class-string helpers (the old `shared/lib/styles.ts` is gone). `controlClass` (exported from `shared/ui/form/Input`) is **only** for non-`<input>` controls that need the field look (e.g. `Select`) — never put it on a raw `<input>`/`<textarea>`; use `Input`/`Textarea`.
+- Reuse the shared micro-components instead of re-styling inline: `Avatar` (initial bubble), `Badge` (uppercase pill), `PersonRow` (avatar+name+email), `CheckboxRow` (bordered selectable row), `SearchInput` (input with search icon), `LoadingState`/`EmptyState` (faint placeholders), `ConfirmDialog` (never `window.confirm`), `toggleId` (selection-list toggle).
+- Future decomposition candidates (out of scope so far): `pages/console/WorkspacePage.tsx` (~1460 lines), `schema-designer/SchemaEditor.tsx` (~1470), `workspace/TableView.tsx` (~760), and `server.js` (~3100 — split into route/lib modules).
+
+## CONFIGURATION (env / Docker)
+Configurable values live in env vars, wired through `docker-compose.yml` (see `.env.example`); don't hardcode them:
+- `PORT` (server), `META_DB` (metadata SQLite path), `NODE_ENV` — server runtime.
+- `CONNECTION_ENCRYPTION_KEY` — **required**. Encrypts connection credentials (host/port/username/password/…) at rest (AES-256-GCM); the server refuses to boot without it.
+- `ADMIN_USERNAME` (email) / `ADMIN_PASSWORD` / `WORKSPACE_NAME` — **optional** pre-seed of the admin + first workspace. Unset ⇒ the in-browser first-run setup wizard runs (default). Don't bake defaults into the Dockerfile.
+- `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` / `SMTP_SECURE` — **optional** fallback SMTP for member-invite emails (per-workspace UI settings override these). Invites always return a copyable link even without SMTP.
+- `VITE_API_URL` — frontend API base, **baked at build time** via Dockerfile `ARG` (not runtime). Default `/api`.
+When you add a new tunable, thread it through server.js env, the Dockerfile/compose, and `.env.example`.
+
+## AUTH MODEL
+Login/setup/accept-invite return `{ user, token }`; the token is stored in localStorage (`dbm.token`) and attached as `Authorization: Bearer` by `shared/api/request.ts`. Workspace/member and per-connection routes require it (server `requireAuth` / the `/api/connections/:id` membership middleware). Roles are **per workspace** (`admin` | `member`) via `workspace_members`. Connections carry a `workspace_id` column and are filtered by the caller's current workspace.
+
+## CONNECTIONS & SCHEMA VERSIONING
+The `connections` table stores dialect-agnostic fields (`type`, `name`, `workspace_id`, `environment`, `folder`, `tags`, `schema_version`) as plain columns and everything else (host/port/username/password/filepath/database/uri/sslmode/auth/keychain) as one AES-256-GCM-encrypted JSON blob in `credentials`. `server.js`'s `rowToConnection`/`connectionToRow` reassemble/split the flat connection shape the frontend has always used — the API contract for `/api/connections*` didn't change, only storage.
+
+Every connection has a `schemaVersion` starting at 1. DDL staged from the schema designer / create-table panel / drop-table / empty-table actions is tagged `ddl: true` with a computed `rollbackSql` (see `src/features/schema-designer/lib/rollback.ts`) when staged. After `commitChanges` in `WorkspacePage.tsx` successfully executes a batch containing DDL, it calls `POST /api/connections/:id/schema/migrations` once, which records the batch (forward + rollback SQL) in `schema_migrations` and bumps `schema_version` — one version per successful commit, not per statement. This is an audit trail only (`GET .../schema/migrations`); there is no revert/rollback-execution endpoint yet. Plain row-level data edits (insert/update/delete via `TableView`) are never tagged `ddl` and never affect `schemaVersion`.
+
+## EXTRA ACTION
+- Every time you add endpoint on server, create a structure of request response and sample url on BACKEND_DOCUMENTATION.MD
