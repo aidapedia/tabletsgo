@@ -31,7 +31,7 @@ const TONE = {
 
 function ToastItem({ toast, onClose }) {
   return (
-    <div className={`flex w-[320px] max-w-[calc(100vw-2rem)] items-start gap-3 rounded-soft border border-edge-strong bg-elevated px-4 py-3 shadow-[0_16px_40px_-12px_rgba(0,0,0,0.8)] ${
+    <div className={`flex w-[320px] max-w-[calc(100vw-2rem)] items-start gap-3 rounded-soft border border-edge-strong bg-elevated px-4 py-3 ${
       toast.leaving ? 'animate-toast-out' : 'animate-toast-in'
     }`}>
       <span className={`mt-0.5 shrink-0 ${TONE[toast.type]}`}>{ICONS[toast.type]}</span>

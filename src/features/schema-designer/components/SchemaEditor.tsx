@@ -219,7 +219,7 @@ function DomainGroupNode({ data }) {
       style={{
         borderColor: color,
         backgroundColor: hover ? `${color}24` : `${color}12`,
-        boxShadow: hover ? `0 0 0 2px ${color}66, 0 10px 30px -12px ${color}80` : 'none',
+        boxShadow: hover ? `0 0 0 2px ${color}66` : 'none',
       }}
     >
       {/* Header bar: an obvious, wide grab target. Its edit button opens the
@@ -1543,7 +1543,7 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
               </ReactFlow>
 
               {/* Zoom / fit controls — bottom-left of the canvas */}
-              <div className="absolute bottom-3 left-3 z-10 flex items-center gap-0.5 rounded-soft border border-edge bg-elevated p-1 shadow-[0_8px_24px_-12px_rgba(0,0,0,0.7)]">
+              <div className="absolute bottom-3 left-3 z-10 flex items-center gap-0.5 rounded-soft border border-edge bg-elevated p-1">
                 <IconButton onClick={() => rf.current?.zoomOut()} aria-label="Zoom out">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                     <path d="M5 12h14" />
@@ -1626,7 +1626,7 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
           add/drop shows its pending status with an undo, when undoable. */}
       {edgePopup && (
         <div
-          className="fixed z-[60] min-w-[200px] rounded-soft border border-edge-strong bg-elevated px-3 py-2.5 shadow-[0_12px_34px_-10px_rgba(0,0,0,0.75)]"
+          className="fixed z-[60] min-w-[200px] rounded-soft border border-edge-strong bg-elevated px-3 py-2.5"
           style={{ left: Math.min(edgePopup.x, window.innerWidth - 260), top: Math.min(edgePopup.y, window.innerHeight - 150) }}
           onClick={(e) => e.stopPropagation()}
           onContextMenu={(e) => e.preventDefault()}
@@ -1731,7 +1731,7 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
           name the constraint (defaulted) and set its actions before staging. */}
       {fkConfirm && (
         <div
-          className="fixed z-[60] min-w-[240px] rounded-soft border border-edge-strong bg-elevated px-3 py-2.5 shadow-[0_12px_34px_-10px_rgba(0,0,0,0.75)]"
+          className="fixed z-[60] min-w-[240px] rounded-soft border border-edge-strong bg-elevated px-3 py-2.5"
           style={{ left: Math.min(fkConfirm.x, window.innerWidth - 300), top: Math.min(fkConfirm.y, window.innerHeight - 260) }}
           onClick={(e) => e.stopPropagation()}
           onContextMenu={(e) => e.preventDefault()}
@@ -1788,7 +1788,7 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
       {/* Table right-click menu */}
       {nodeMenu && (
         <div
-          className="fixed z-[60] min-w-[180px] rounded-soft border border-edge-strong bg-elevated p-1 shadow-[0_12px_34px_-10px_rgba(0,0,0,0.75)]"
+          className="fixed z-[60] min-w-[180px] rounded-soft border border-edge-strong bg-elevated p-1"
           style={{ left: Math.min(nodeMenu.x, window.innerWidth - 200), top: Math.min(nodeMenu.y, window.innerHeight - 150) }}
           onClick={(e) => e.stopPropagation()}
           onContextMenu={(e) => e.preventDefault()}
@@ -1816,7 +1816,7 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
       {/* Canvas right-click menu */}
       {menu && (
         <div
-          className="fixed z-[60] min-w-[180px] rounded-soft border border-edge-strong bg-elevated p-1 shadow-[0_12px_34px_-10px_rgba(0,0,0,0.75)]"
+          className="fixed z-[60] min-w-[180px] rounded-soft border border-edge-strong bg-elevated p-1"
           style={{ left: Math.min(menu.x, window.innerWidth - 200), top: Math.min(menu.y, window.innerHeight - 180) }}
           onClick={(e) => e.stopPropagation()}
           onContextMenu={(e) => e.preventDefault()}
@@ -1831,7 +1831,7 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
               </span>
               <ChevronRight width={13} height={13} />
             </MenuItem>
-            <div className="absolute left-full top-0 z-10 hidden min-w-[150px] rounded-soft border border-edge-strong bg-elevated shadow-[0_12px_34px_-10px_rgba(0,0,0,0.75)] group-hover:block">
+            <div className="absolute left-full top-0 z-10 hidden min-w-[150px] rounded-soft border border-edge-strong bg-elevated group-hover:block">
               <ExportOptions onExport={(f) => { exportImage(f); setMenu(null) }} />
             </div>
           </div>

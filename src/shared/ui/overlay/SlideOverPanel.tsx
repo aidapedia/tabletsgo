@@ -96,7 +96,7 @@ export default function SlideOverPanel({
       onMouseDown={() => close()}
     >
       <div
-        className={`flex h-full w-full flex-col border-l border-edge-strong bg-panel shadow-[-20px_0_60px_-20px_rgba(0,0,0,0.8)] transition-transform duration-200 ease-out ${
+        className={`flex h-full w-full flex-col border-l border-edge-strong bg-panel transition-transform duration-200 ease-out ${
           show ? 'translate-x-0' : 'translate-x-full'
         }`}
         style={{ maxWidth: width }}

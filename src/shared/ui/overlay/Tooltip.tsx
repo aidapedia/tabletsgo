@@ -64,7 +64,7 @@ export default function Tooltip({ label, placement = 'top', multiline = false, c
           <span
             role="tooltip"
             style={{ left: pos.left, top: pos.top, transform: TRANSFORM[placement] }}
-            className={`pointer-events-none fixed z-[200] rounded-soft border border-edge-strong bg-elevated px-2.5 py-1.5 text-[11px] font-medium text-ink shadow-[0_12px_34px_-10px_rgba(0,0,0,0.75)] ${
+            className={`pointer-events-none fixed z-[200] rounded-soft border border-edge-strong bg-elevated px-2.5 py-1.5 text-[11px] font-medium text-ink ${
               multiline ? 'max-w-[280px] whitespace-pre-wrap break-words text-left' : 'whitespace-nowrap'
             }`}
           >

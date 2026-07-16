@@ -28,7 +28,7 @@ export default function ForgotPasswordPage() {
 
   return (
     <div className="flex h-full items-center justify-center bg-[radial-gradient(circle_at_50%_30%,rgba(111,207,106,0.06),transparent_60%)] bg-bg p-6">
-      <div className="w-full max-w-[400px] rounded-[16px] border border-edge bg-panel p-8 shadow-[0_30px_80px_-30px_rgba(0,0,0,0.8)]">
+      <div className="w-full max-w-[400px] rounded-[16px] border border-edge bg-panel p-8">
         <div className="mb-6 flex items-center gap-2.5">
           <Logo className="h-8 w-8" />
           <span className="text-[18px] font-bold tracking-[-0.3px]">

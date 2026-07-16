@@ -340,7 +340,7 @@ export default function WorkflowEditor({ conn, workflowId }: any) {
               )}
 
               {/* Zoom / fit controls */}
-              <div className="absolute bottom-3 left-3 z-10 flex items-center gap-0.5 rounded-soft border border-edge bg-elevated p-1 shadow-[0_8px_24px_-12px_rgba(0,0,0,0.7)]">
+              <div className="absolute bottom-3 left-3 z-10 flex items-center gap-0.5 rounded-soft border border-edge bg-elevated p-1">
                 <IconButton onClick={() => rf.current?.zoomOut()} aria-label="Zoom out">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                     <path d="M5 12h14" />
@@ -370,7 +370,7 @@ export default function WorkflowEditor({ conn, workflowId }: any) {
                     }}
                   />
                   <div
-                    className="absolute z-50 w-[280px] rounded-soft border border-edge-strong bg-elevated shadow-[0_16px_40px_-12px_rgba(0,0,0,0.8)]"
+                    className="absolute z-50 w-[280px] rounded-soft border border-edge-strong bg-elevated"
                     style={{ left: menu.x, top: menu.y }}
                   >
                     <NodePalette allow={allowNode} onAdd={(t) => { addNode(t, menu.flow); setMenu(null) }} />

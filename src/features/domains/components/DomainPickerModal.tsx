@@ -87,7 +87,7 @@ export default function DomainPickerModal({
   return (
     <div className="fixed inset-0 z-[60] flex animate-fade items-center justify-center bg-black/60 p-6 backdrop-blur-[3px]" onClick={onClose}>
       <div
-        className="w-full max-w-[420px] animate-pop rounded-[16px] border border-edge-strong bg-panel shadow-[0_30px_80px_-20px_rgba(0,0,0,0.8)]"
+        className="w-full max-w-[420px] animate-pop rounded-[16px] border border-edge-strong bg-panel"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-edge px-5 py-3.5">

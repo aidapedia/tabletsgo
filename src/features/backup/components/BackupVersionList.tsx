@@ -217,7 +217,7 @@ export default function BackupVersionList({
       {restoreTarget && !restoreTarget.confirming && (
         <div className="fixed inset-0 z-[60] flex animate-fade items-center justify-center bg-black/60 p-6 backdrop-blur-[3px]" onMouseDown={() => setRestoreTarget(null)}>
           <div
-            className="w-full max-w-[420px] animate-pop rounded-[16px] border border-edge-strong bg-panel p-5 shadow-[0_30px_80px_-20px_rgba(0,0,0,0.8)]"
+            className="w-full max-w-[420px] animate-pop rounded-[16px] border border-edge-strong bg-panel p-5"
             onMouseDown={(e) => e.stopPropagation()}
           >
             <h3 className="text-sm font-bold text-ink">Restore backup</h3>

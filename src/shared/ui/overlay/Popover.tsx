@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom'
 // Shared panel shell — every dropdown/action menu in the app (this Popover's
 // panel, and the mouse-anchored ContextMenu) renders on this same surface.
 export const MENU_PANEL_CLASS =
-  'rounded-soft border border-edge-strong bg-elevated shadow-[0_16px_40px_-12px_rgba(0,0,0,0.8)]'
+  'rounded-soft border border-edge-strong bg-elevated'
 
 /**
  * Anchored popover. `trigger` is a render-prop receiving { open, toggle }.

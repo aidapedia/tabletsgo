@@ -1064,7 +1064,7 @@ export default function Workspace() {
 
       {/* Left region: icon rail + tables sidebar (slide-over drawer on mobile) */}
       <div
-        className={`z-40 flex shrink-0 max-[720px]:fixed max-[720px]:inset-y-0 max-[720px]:left-0 max-[720px]:shadow-[8px_0_30px_-10px_rgba(0,0,0,0.7)] max-[720px]:transition-transform max-[720px]:duration-200 ${
+        className={`z-40 flex shrink-0 max-[720px]:fixed max-[720px]:inset-y-0 max-[720px]:left-0 max-[720px]:transition-transform max-[720px]:duration-200 ${
           sidebarOpen ? 'max-[720px]:translate-x-0' : 'max-[720px]:-translate-x-full'
         }`}
       >
@@ -1498,7 +1498,7 @@ export default function Workspace() {
 
       {tabMenu && (
         <div
-          className="fixed z-[60] min-w-[190px] overflow-hidden rounded-soft border border-edge-strong bg-elevated py-1 shadow-[0_12px_34px_-10px_rgba(0,0,0,0.75)]"
+          className="fixed z-[60] min-w-[190px] overflow-hidden rounded-soft border border-edge-strong bg-elevated py-1"
           style={{
             left: Math.min(tabMenu.x, window.innerWidth - 200),
             top: Math.min(tabMenu.y, window.innerHeight - 120),
@@ -1645,7 +1645,7 @@ export default function Workspace() {
       {/* Database unreachable — offer to retry (with a spinner) or leave. */}
       {connError && (
         <div className="fixed inset-0 z-[60] flex animate-fade items-center justify-center bg-black/60 p-6 backdrop-blur-[3px]">
-          <div className="w-full max-w-[400px] animate-pop rounded-[16px] border border-edge-strong bg-panel p-5 shadow-[0_30px_80px_-20px_rgba(0,0,0,0.8)]">
+          <div className="w-full max-w-[400px] animate-pop rounded-[16px] border border-edge-strong bg-panel p-5">
             <div className="flex items-center gap-2.5">
               {reconnecting && (
                 <span className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-green/30 border-t-green" />

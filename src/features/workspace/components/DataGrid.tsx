@@ -390,7 +390,7 @@ export default function DataGrid({
             onMouseDown={cancelEdit}
           >
             <div
-              className="flex max-h-[80vh] w-full max-w-[640px] flex-col overflow-hidden rounded-card border border-edge-strong bg-panel shadow-[0_24px_60px_-20px_rgba(0,0,0,0.8)]"
+              className="flex max-h-[80vh] w-full max-w-[640px] flex-col overflow-hidden rounded-card border border-edge-strong bg-panel"
               onMouseDown={(e) => e.stopPropagation()}
               onKeyDown={(e) => {
                 if (e.key === 'Escape') cancelEdit()
