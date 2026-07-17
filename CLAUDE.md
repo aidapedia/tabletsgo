@@ -75,6 +75,17 @@ src/
 │   │   └── lib/                  #   api (per-connection CRUD + run), nodeSpec (node catalog: manual,
 │   │                             #     schedule, query, http, js, switch, loop, export "Export SQL",
 │   │                             #     storage "Store to Storage")
+│   ├── dashboard/                # per-connection query dashboards (New Relic style): dynamic variables
+│   │   │                         #   ({{name}} in widget SQL, query-backed or static lists), free-placement
+│   │   │                         #   12-col drag/resize grid (hard collision blocking), fullscreen, JSON
+│   │   │                         #   export/import. Charts are hand-rolled SVG (no chart/grid deps).
+│   │   ├── components/           #   DashboardView (tab content: toolbar + VariableBar + WidgetGrid),
+│   │   │                         #     DashboardsPanel (rail list), WidgetCard (runs its query), WidgetChart,
+│   │   │                         #     WidgetEditor + DashboardSettings (modals), MarkdownText,
+│   │   │                         #     charts/ (XYChart area|line|bar, PieDonut, SankeyChart, chrome)
+│   │   └── lib/                  #   api (per-connection CRUD), variables ({{}} substitution + option
+│   │                             #     resolution), queryData (result → chart shapes), palette (validated
+│   │                             #     CVD-safe series colors), grid (collision math), scale, useSize
 │   └── backup/                   # S3-compatible storage destinations (workspace-scoped) + the
 │       │                         #   per-connection backup schedule built from generic workflow nodes
 │       │                         #   (Schedule → Export SQL → Store to Storage)

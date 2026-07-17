@@ -32,6 +32,7 @@ export const ACTIONS: KeymapAction[] = [
   { id: 'workspace.panelQueries', label: 'Switch to Queries Panel', category: 'Workspace', defaultBinding: 'mod+2' },
   { id: 'workspace.panelWorkflows', label: 'Switch to Workflows Panel', category: 'Workspace', defaultBinding: 'mod+3' },
   { id: 'workspace.panelSchema', label: 'Switch to Schema Panel', category: 'Workspace', defaultBinding: 'mod+4' },
+  { id: 'workspace.panelDashboards', label: 'Switch to Dashboards Panel', category: 'Workspace', defaultBinding: 'mod+5' },
   { id: 'workspace.toggleSidebar', label: 'Toggle Left Sidebar', category: 'Workspace', defaultBinding: 'mod+b' },
 
   { id: 'schema.createTable', label: 'New Table', category: 'Schema Designer', defaultBinding: 'mod+t' },

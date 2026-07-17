@@ -765,6 +765,60 @@ the stored graph when `graph` is omitted. Always records the outcome in `workflo
 
 ---
 
+## Dashboards (per connection)
+
+Analytics dashboards (New Relic-style) rendered by the frontend. A dashboard is
+a name + one JSON `config` blob: `{ "variables": [...], "widgets": [...] }` —
+dynamic variables (query-backed or static lists) and chart/table/metric/text
+widgets whose SQL may reference variables as `{{name}}`. The server stores the
+config opaquely (its shape is owned by `src/features/dashboard/types.ts`) and
+runs no SQL itself — widget queries execute through the existing
+`POST /api/connections/:id/query`, so dashboards work with every database type
+the query endpoint supports (SQLite, PostgreSQL, future dialects).
+
+### GET `/api/connections/:id/dashboards`
+List dashboards for a connection (newest first; no config body).
+
+- **200:** `[{ "id", "name", "ts" }]`
+- **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/dashboards`
+
+### POST `/api/connections/:id/dashboards`
+Create a dashboard. `config` is optional (e.g. importing a JSON export);
+defaults to `{ "variables": [], "widgets": [] }`.
+
+- **Body:** `{ "name": "Notifications", "config"?: { "variables": [...], "widgets": [...] } }`
+- **200:** `{ "id", "name", "config", "ts" }`
+- **400:** `{ "error": "A dashboard name is required" }`
+- **Example:** `POST http://localhost:3000/api/connections/demo-sqlite/dashboards`
+
+### GET `/api/connections/:id/dashboards/:did`
+Fetch one dashboard with its full config.
+
+- **200:** `{ "id", "name", "ts", "config": { "variables": [...], "widgets": [...] } }`
+- **404:** `{ "error": "Not found" }`
+- **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/dashboards/db-1`
+
+### PUT `/api/connections/:id/dashboards/:did`
+Update a dashboard. Any subset of `name`, `config` (`config` replaces the whole
+blob — the frontend always saves the full object).
+
+- **Body examples:**
+  - Rename: `{ "name": "Renamed" }`
+  - Save layout/widgets/variables: `{ "config": { "variables": [...], "widgets": [...] } }`
+- **200:** `{ "ok": true }`
+- **400:** `{ "error": "Nothing to update" }` (or name/config validation)
+- **404:** `{ "error": "Not found" }`
+- **Example:** `PUT http://localhost:3000/api/connections/demo-sqlite/dashboards/db-1`
+
+### DELETE `/api/connections/:id/dashboards/:did`
+Delete a dashboard.
+
+- **200:** `{ "ok": true }`
+- **404:** `{ "error": "Not found" }`
+- **Example:** `DELETE http://localhost:3000/api/connections/demo-sqlite/dashboards/db-1`
+
+---
+
 ## Storage destinations (workspace-scoped)
 
 S3-compatible object storage (AWS S3, MinIO, R2, Backblaze B2, …) that backup
@@ -1222,6 +1276,11 @@ Liveness probe.
 | POST   | `/api/connections/:id/insert`             | Insert a row                    |
 | POST   | `/api/connections/:id/query`              | Execute SQL                     |
 | POST   | `/api/connections/:id/analyze`            | Analyze query performance       |
+| GET    | `/api/connections/:id/dashboards`         | List dashboards                 |
+| POST   | `/api/connections/:id/dashboards`         | Create dashboard (opt. config)  |
+| GET    | `/api/connections/:id/dashboards/:did`    | Fetch dashboard + config        |
+| PUT    | `/api/connections/:id/dashboards/:did`    | Rename / save dashboard config  |
+| DELETE | `/api/connections/:id/dashboards/:did`    | Delete dashboard                |
 | GET    | `/api/storages`                           | List storage destinations       |
 | POST   | `/api/storages`                           | Create storage destination      |
 | PUT    | `/api/storages/:sid`                      | Update storage destination      |

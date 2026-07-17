@@ -46,12 +46,15 @@ const QueryEditor = lazy(() => import('@/features/workspace/components/QueryEdit
 const SchemaEditor = lazy(() => import('@/features/schema-designer/components/SchemaEditor'))
 // Lazy — React Flow again; only load when a workflow tab opens.
 const WorkflowEditor = lazy(() => import('@/features/workflow/components/WorkflowEditor'))
+// Lazy — recharts + react-grid-layout; only load when a dashboard tab opens.
+const DashboardView = lazy(() => import('@/features/dashboard/components/DashboardView'))
 import IconRail from '@/features/workspace/components/IconRail'
 import { formatCombo, useKeymap, useShortcut } from '@/features/keymap'
 import SavedQueriesPanel from '@/features/workspace/components/SavedQueriesPanel'
 import AnalyzePanel from '@/features/workspace/components/AnalyzePanel'
 import AnalyzeFolderPanel from '@/features/workspace/components/AnalyzeFolderPanel'
 import { WorkflowsPanel, listWorkflows, createWorkflow, deleteWorkflow, updateWorkflow } from '@/features/workflow'
+import { DashboardsPanel, listDashboards, createDashboard, deleteDashboard, updateDashboard, sanitizeConfig } from '@/features/dashboard'
 import QueryHistoryView from '@/features/workspace/components/QueryHistoryView'
 import SchemaHistoryView from '@/features/schema-designer/components/SchemaHistoryView'
 import { fetchHistory, recordHistory, clearHistory, deleteHistory } from '@/features/workspace/lib/queryHistory'
@@ -75,6 +78,7 @@ import {
   DiagramIcon,
   EditIcon,
   EyeIcon,
+  GridIcon,
   HistoryIcon,
   MenuIcon,
   MoreVerticalIcon,
@@ -135,6 +139,7 @@ export default function Workspace() {
   const [saved, setSaved] = useState([])
   const [folders, setFolders] = useState([])
   const [workflows, setWorkflows] = useState([])
+  const [dashboards, setDashboards] = useState([])
   const [tabMenu, setTabMenu] = useState(null) // { x, y, key } | null
   const [savingQuery, setSavingQuery] = useState(null) // sql string being saved | null
   const [analyzeSql, setAnalyzeSql] = useState(null) // sql string being analyzed | null
@@ -283,6 +288,7 @@ export default function Workspace() {
     fetchSaved(id).then((list) => alive && setSaved(list))
     fetchFolders(id).then((list) => alive && setFolders(list))
     listWorkflows(id).then((list) => alive && setWorkflows(list))
+    listDashboards(id).then((list) => alive && setDashboards(list))
     fetchDomains(id).then((list) => alive && setDomains(list))
     return () => {
       alive = false
@@ -605,6 +611,64 @@ export default function Workspace() {
       await deleteWorkflow(id, wid)
     } catch (e) {
       toast.error(`Delete failed: ${e.message}`)
+    }
+  }
+
+  // ---- Dashboards (per connection) ----
+  // Mirrors the workflow handlers: open in a tab, create, rename, delete,
+  // plus import (create a new dashboard from an exported JSON structure).
+  const dashboardFileRef = useRef(null)
+  const openDashboard = (d) => {
+    const key = `dashboard:${d.id}`
+    setTabs((prev) =>
+      prev.some((t) => t.key === key) ? prev : [...prev, { key, kind: 'dashboard', dashboardId: d.id, title: d.name }]
+    )
+    setActiveTab(key)
+    setSidebarOpen(false)
+  }
+  const newDashboard = async () => {
+    try {
+      const d = await createDashboard(id, `Dashboard ${dashboards.length + 1}`)
+      setDashboards((prev) => [{ id: d.id, name: d.name, ts: d.ts }, ...prev])
+      openDashboard(d)
+    } catch (e) {
+      toast.error(`Couldn't create dashboard: ${e.message}`)
+    }
+  }
+  const renameDashboard = async (did, name) => {
+    const next = name?.trim()
+    if (!next) return
+    setDashboards((prev) => prev.map((d) => (d.id === did ? { ...d, name: next } : d)))
+    setTabs((prev) => prev.map((t) => (t.key === `dashboard:${did}` ? { ...t, title: next } : t)))
+    try {
+      await updateDashboard(id, did, { name: next })
+    } catch (e) {
+      toast.error(`Rename failed: ${e.message}`)
+    }
+  }
+  // DashboardView renamed it via its settings modal — just sync list + tab.
+  const dashboardRenamed = (did, name) => {
+    setDashboards((prev) => prev.map((d) => (d.id === did ? { ...d, name } : d)))
+    setTabs((prev) => prev.map((t) => (t.key === `dashboard:${did}` ? { ...t, title: name } : t)))
+  }
+  const removeDashboard = async (did) => {
+    setDashboards((prev) => prev.filter((d) => d.id !== did))
+    dropTab(`dashboard:${did}`)
+    try {
+      await deleteDashboard(id, did)
+    } catch (e) {
+      toast.error(`Delete failed: ${e.message}`)
+    }
+  }
+  const importDashboardFile = async (file) => {
+    try {
+      const doc = JSON.parse(await file.text())
+      if (doc?.kind !== 'dashboard' || !doc.config) throw new Error('Not a dashboard export file.')
+      const d = await createDashboard(id, doc.name || 'Imported dashboard', sanitizeConfig(doc.config))
+      setDashboards((prev) => [{ id: d.id, name: d.name, ts: d.ts }, ...prev])
+      openDashboard(d)
+    } catch (e) {
+      toast.error(`Import failed: ${e.message}`)
     }
   }
 
@@ -1033,6 +1097,7 @@ export default function Workspace() {
   useShortcut('workspace.panelBrowser', () => selectPanel('browser'))
   useShortcut('workspace.panelQueries', () => selectPanel('queries'))
   useShortcut('workspace.panelWorkflows', () => selectPanel('workflows'))
+  useShortcut('workspace.panelDashboards', () => selectPanel('dashboards'))
   useShortcut('workspace.panelSchema', () => selectPanel('schema'))
   useShortcut('workspace.toggleSidebar', toggleSidebar)
   useShortcut('workspace.commitChanges', commitChanges)
@@ -1062,6 +1127,7 @@ export default function Workspace() {
           onBrowser={() => selectPanel('browser')}
           onQueries={() => selectPanel('queries')}
           onWorkflows={() => selectPanel('workflows')}
+          onDashboards={() => selectPanel('dashboards')}
           onSchema={() => selectPanel('schema')}
           onHome={() => navigate('/')}
           onLogout={logout}
@@ -1225,6 +1291,17 @@ export default function Workspace() {
             onDelete={removeWorkflow}
             onRefresh={() => listWorkflows(id).then(setWorkflows)}
           />
+        ) : panel === 'dashboards' ? (
+          <DashboardsPanel
+            dashboards={dashboards}
+            activeId={current?.kind === 'dashboard' ? current.dashboardId : null}
+            onOpen={openDashboard}
+            onNew={newDashboard}
+            onImport={() => dashboardFileRef.current?.click()}
+            onRename={renameDashboard}
+            onDelete={removeDashboard}
+            onRefresh={() => listDashboards(id).then(setDashboards)}
+          />
         ) : panel === 'schema' ? (
           <SchemaPanel
             conn={nsConn}
@@ -1287,6 +1364,22 @@ export default function Workspace() {
               <WorkflowIcon width={16} height={16} />
             </IconButton>
           </Tooltip>
+          <Tooltip label="New dashboard" placement="bottom">
+            <IconButton size="toolbar" onClick={newDashboard} aria-label="New dashboard">
+              <GridIcon width={16} height={16} />
+            </IconButton>
+          </Tooltip>
+          <input
+            ref={dashboardFileRef}
+            type="file"
+            accept=".json,application/json"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0]
+              if (f) importDashboardFile(f)
+              e.target.value = ''
+            }}
+          />
           <div className="relative flex max-w-[560px] flex-1 items-center">
             <SearchIcon width={16} height={16} className="absolute left-3.5 text-ink-faint" />
             <input
@@ -1352,6 +1445,8 @@ export default function Workspace() {
                   <CodeIcon className={active ? 'text-ink' : 'text-ink-faint'} />
                 ) : t.kind === 'workflow' ? (
                   <WorkflowIcon className={active ? 'text-ink' : 'text-ink-faint'} />
+                ) : t.kind === 'dashboard' ? (
+                  <GridIcon className={active ? 'text-ink' : 'text-ink-faint'} />
                 ) : (
                   <TableIcon className={active ? 'text-ink' : 'text-ink-faint'} />
                 )}
@@ -1446,6 +1541,16 @@ export default function Workspace() {
           {conn && current?.kind === 'workflow' && (
             <Suspense fallback={<div className="flex-1 p-8 text-center text-xs text-ink-faint">Loading workflow…</div>}>
               <WorkflowEditor key={current.key} conn={conn} workflowId={current.workflowId} />
+            </Suspense>
+          )}
+          {conn && current?.kind === 'dashboard' && (
+            <Suspense fallback={<div className="flex-1 p-8 text-center text-xs text-ink-faint">Loading dashboard…</div>}>
+              <DashboardView
+                key={`${current.key}:${ns.database}:${ns.schema}`}
+                conn={nsConn}
+                dashboardId={current.dashboardId}
+                onRename={dashboardRenamed}
+              />
             </Suspense>
           )}
           {!current && (

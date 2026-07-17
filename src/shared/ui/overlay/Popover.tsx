@@ -14,8 +14,23 @@ export const MENU_PANEL_CLASS =
  * `portal` renders the panel into <body> with fixed positioning so it can
  * escape an ancestor's `overflow-hidden`/clipping (e.g. inside a modal). It
  * flips above the trigger when there isn't room below.
+ *
+ * `keepMounted` keeps the panel (and its children) mounted even while closed,
+ * toggling visibility with CSS instead of adding/removing it from the tree.
+ * Use this when a child owns state/effects that must keep running while
+ * closed — e.g. a filter panel that resolves its options and applies a
+ * default value on load, not only once the user opens it.
  */
-export default function Popover({ trigger, children, align = 'left', placement = 'bottom', width = 300, panelClassName = '', portal = false }) {
+export default function Popover({
+  trigger,
+  children,
+  align = 'left',
+  placement = 'bottom',
+  width = 300,
+  panelClassName = '',
+  portal = false,
+  keepMounted = false,
+}) {
   const [open, setOpen] = useState(false)
   const ref = useRef(null)
   const panelRef = useRef(null)
@@ -62,11 +77,11 @@ export default function Popover({ trigger, children, align = 'left', placement =
     <div className="relative" ref={ref}>
       {trigger({ open, toggle: () => setOpen((o) => !o) })}
 
-      {open && portal &&
+      {(open || keepMounted) && portal &&
         createPortal(
           <div
             ref={panelRef}
-            className={`fixed z-[100] ${MENU_PANEL_CLASS} ${panelClassName}`}
+            className={`fixed z-[100] ${MENU_PANEL_CLASS} ${panelClassName} ${open ? '' : 'hidden'}`}
             style={{ width, left: pos?.left, top: pos?.top, bottom: pos?.bottom, visibility: pos ? 'visible' : 'hidden' }}
           >
             {content}
@@ -74,12 +89,12 @@ export default function Popover({ trigger, children, align = 'left', placement =
           document.body
         )}
 
-      {open && !portal && (
+      {(open || keepMounted) && !portal && (
         <div
           ref={panelRef}
           className={`absolute z-50 ${MENU_PANEL_CLASS} ${
             align === 'right' ? 'right-0' : 'left-0'
-          } ${placement === 'top' ? 'bottom-full mb-1.5' : 'top-full mt-1.5'} ${panelClassName}`}
+          } ${placement === 'top' ? 'bottom-full mb-1.5' : 'top-full mt-1.5'} ${panelClassName} ${open ? '' : 'hidden'}`}
           style={{ width }}
         >
           {content}

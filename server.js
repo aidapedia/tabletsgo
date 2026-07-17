@@ -152,6 +152,13 @@ function initMetaDb() {
       graph TEXT,                  -- JSON { nodes, edges }
       ts INTEGER
     );
+    CREATE TABLE IF NOT EXISTS dashboards (
+      id TEXT PRIMARY KEY,
+      connection_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      config TEXT,                 -- JSON { variables, widgets }
+      ts INTEGER
+    );
     CREATE TABLE IF NOT EXISTS storage_destinations (
       id TEXT PRIMARY KEY,
       workspace_id TEXT NOT NULL,
@@ -3002,6 +3009,69 @@ app.delete('/api/connections/:id/workflows/:wid', (req, res) => {
   if (!row) return res.status(404).json({ error: 'Not found' })
   if (row.protected) return res.status(409).json({ error: 'This workflow is protected and cannot be deleted.' })
   meta.prepare('DELETE FROM workflows WHERE id = ? AND connection_id = ?').run(req.params.wid, req.params.id)
+  res.json({ ok: true })
+})
+
+// ---- Dashboards (per connection) ----
+// A dashboard is a name + one JSON config: { variables: [...], widgets: [...] }.
+// The config shape is owned by the frontend (src/features/dashboard/types.ts);
+// the server just stores and returns it, so it stays database-agnostic.
+
+app.get('/api/connections/:id/dashboards', (req, res) => {
+  const rows = meta
+    .prepare('SELECT id, name, ts FROM dashboards WHERE connection_id = ? ORDER BY ts DESC')
+    .all(req.params.id)
+  res.json(rows)
+})
+
+app.post('/api/connections/:id/dashboards', (req, res) => {
+  const { name, config } = req.body || {}
+  if (!name?.trim()) return res.status(400).json({ error: 'A dashboard name is required' })
+  const entry = {
+    id: randomUUID(),
+    name: name.trim(),
+    config: config && typeof config === 'object' ? config : { variables: [], widgets: [] },
+    ts: Date.now(),
+  }
+  meta
+    .prepare('INSERT INTO dashboards (id, connection_id, name, config, ts) VALUES (?, ?, ?, ?, ?)')
+    .run(entry.id, req.params.id, entry.name, JSON.stringify(entry.config), entry.ts)
+  res.json(entry)
+})
+
+app.get('/api/connections/:id/dashboards/:did', (req, res) => {
+  const row = meta
+    .prepare('SELECT id, name, config, ts FROM dashboards WHERE id = ? AND connection_id = ?')
+    .get(req.params.did, req.params.id)
+  if (!row) return res.status(404).json({ error: 'Not found' })
+  res.json({ id: row.id, name: row.name, ts: row.ts, config: safeJson(row.config) || { variables: [], widgets: [] } })
+})
+
+app.put('/api/connections/:id/dashboards/:did', (req, res) => {
+  const body = req.body || {}
+  const sets = []
+  const vals = []
+  if (body.name != null) {
+    if (!body.name.trim()) return res.status(400).json({ error: 'A name is required' })
+    sets.push('name = ?')
+    vals.push(body.name.trim())
+  }
+  if (body.config != null) {
+    if (typeof body.config !== 'object') return res.status(400).json({ error: 'config must be an object' })
+    sets.push('config = ?')
+    vals.push(JSON.stringify(body.config))
+  }
+  if (!sets.length) return res.status(400).json({ error: 'Nothing to update' })
+  const r = meta
+    .prepare(`UPDATE dashboards SET ${sets.join(', ')} WHERE id = ? AND connection_id = ?`)
+    .run(...vals, req.params.did, req.params.id)
+  if (!r.changes) return res.status(404).json({ error: 'Not found' })
+  res.json({ ok: true })
+})
+
+app.delete('/api/connections/:id/dashboards/:did', (req, res) => {
+  const r = meta.prepare('DELETE FROM dashboards WHERE id = ? AND connection_id = ?').run(req.params.did, req.params.id)
+  if (!r.changes) return res.status(404).json({ error: 'Not found' })
   res.json({ ok: true })
 })
 
