@@ -65,6 +65,7 @@ import FunctionView from '@/features/workspace/components/FunctionView'
 import Segmented from '@/shared/ui/navigation/Segmented'
 import Tooltip from '@/shared/ui/overlay/Tooltip'
 import Popover from '@/shared/ui/overlay/Popover'
+import CommandPalette, { type Command } from '@/shared/ui/overlay/CommandPalette'
 import IconButton from '@/shared/ui/buttons/IconButton'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
 import RowLabel from '@/shared/ui/RowLabel'
@@ -157,6 +158,7 @@ export default function Workspace() {
   const [tablesVisible, setTablesVisible] = useState(true) // left panel visible
   const [panel, setPanel] = useState('browser') // 'browser' | 'queries' | 'workflows'
   const [searchOpen, setSearchOpen] = useState(false) // table search toggle
+  const [paletteOpen, setPaletteOpen] = useState(false) // ⌘K command palette
   const [tableSort, setTableSort] = useState('az') // 'az' | 'za'
   const [tableView, setTableView] = useState('flat') // 'flat' | 'domains' — Tables list grouping
   const [domains, setDomains] = useState([]) // per-connection domains (with grouped table names)
@@ -1087,12 +1089,7 @@ export default function Workspace() {
     )
   }
 
-  useShortcut('general.search', () => {
-    setPanel('browser')
-    setTablesVisible(true)
-    setSearchOpen(true)
-    setTimeout(() => searchRef.current?.focus(), 0)
-  })
+  useShortcut('general.search', () => setPaletteOpen(true))
   useShortcut('general.newTab', () => openQuery())
   useShortcut('workspace.panelBrowser', () => selectPanel('browser'))
   useShortcut('workspace.panelQueries', () => selectPanel('queries'))
@@ -1101,6 +1098,26 @@ export default function Workspace() {
   useShortcut('workspace.panelSchema', () => selectPanel('schema'))
   useShortcut('workspace.toggleSidebar', toggleSidebar)
   useShortcut('workspace.commitChanges', commitChanges)
+
+  // Commands surfaced in the ⌘K palette. `hint` mirrors the action's current
+  // keymap binding so the palette stays in sync with user-customized shortcuts.
+  const commands: Command[] = [
+    { id: 'new-query', group: 'Create', label: 'New SQL query', keywords: 'sql add query tab', icon: <CodeIcon width={15} height={15} />, hint: formatCombo(bindings['general.newTab']), run: () => openQuery() },
+    { id: 'new-schema', group: 'Create', label: 'New schema diagram', keywords: 'erd designer table diagram', icon: <DiagramIcon width={15} height={15} />, run: openSchemaEditor },
+    { id: 'new-workflow', group: 'Create', label: 'New workflow', keywords: 'automation flow', icon: <WorkflowIcon width={15} height={15} />, run: newWorkflow },
+    { id: 'new-dashboard', group: 'Create', label: 'New dashboard', keywords: 'charts widgets analytics', icon: <GridIcon width={15} height={15} />, run: newDashboard },
+    { id: 'new-table', group: 'Create', label: 'New table', keywords: 'create table ddl', icon: <PlusIcon width={15} height={15} />, run: () => setCreatingTable(true) },
+
+    { id: 'go-browser', group: 'Navigate', label: 'Browser', keywords: 'tables data browse', icon: <TableIcon width={15} height={15} />, hint: formatCombo(bindings['workspace.panelBrowser']), run: () => selectPanel('browser') },
+    { id: 'go-queries', group: 'Navigate', label: 'Saved queries', keywords: 'queries panel', icon: <CodeIcon width={15} height={15} />, hint: formatCombo(bindings['workspace.panelQueries']), run: () => selectPanel('queries') },
+    { id: 'go-workflows', group: 'Navigate', label: 'Workflows', keywords: 'automation', icon: <WorkflowIcon width={15} height={15} />, hint: formatCombo(bindings['workspace.panelWorkflows']), run: () => selectPanel('workflows') },
+    { id: 'go-schema', group: 'Navigate', label: 'Schema', keywords: 'designer diagram', icon: <DiagramIcon width={15} height={15} />, hint: formatCombo(bindings['workspace.panelSchema']), run: () => selectPanel('schema') },
+    { id: 'go-dashboards', group: 'Navigate', label: 'Dashboards', keywords: 'charts analytics', icon: <GridIcon width={15} height={15} />, hint: formatCombo(bindings['workspace.panelDashboards']), run: () => selectPanel('dashboards') },
+
+    { id: 'view-history', group: 'View', label: 'Query history', keywords: 'recent past', icon: <HistoryIcon width={15} height={15} />, run: openHistory },
+    { id: 'view-schema-history', group: 'View', label: `Schema version history (v${conn.schemaVersion ?? 1})`, keywords: 'migrations audit', icon: <TagIcon width={15} height={15} />, run: openSchemaHistory },
+    { id: 'view-changes', group: 'View', label: 'View staged changes', keywords: 'commit diff pending', icon: <EditIcon width={15} height={15} />, run: () => setChangesOpen(true) },
+  ]
 
   return (
     <div className="flex h-screen bg-bg">
@@ -1383,14 +1400,17 @@ export default function Workspace() {
               e.target.value = ''
             }}
           />
-          <div className="relative flex min-w-0 max-w-[560px] flex-1 items-center">
+          <button
+            type="button"
+            onClick={() => setPaletteOpen(true)}
+            className="relative flex min-w-0 max-w-[560px] flex-1 items-center rounded-[10px] border border-edge bg-elevated py-[9px] pl-10 pr-3.5 text-left text-xs text-ink-faint transition-colors hover:border-edge-strong"
+          >
             <SearchIcon width={16} height={16} className="absolute left-3.5 text-ink-faint" />
-            <input
-              placeholder="Search or run commands…"
-              className="w-full rounded-[10px] border border-edge bg-elevated py-[9px] pl-10 pr-3.5 text-xs text-ink outline-none"
-            />
-            <kbd className="absolute right-3 rounded-[5px] border border-edge bg-card px-1.5 py-px text-[11px] text-ink-faint max-[720px]:hidden">⌘K</kbd>
-          </div>
+            <span>Search or run commands…</span>
+            <kbd className="absolute right-3 rounded-[5px] border border-edge bg-card px-1.5 py-px text-[11px] text-ink-faint max-[720px]:hidden">
+              {formatCombo(bindings['general.search'])}
+            </kbd>
+          </button>
           <div className="ml-auto flex items-center gap-2">
             <div className="flex items-center gap-2 max-[720px]:hidden">
               <Tooltip label="Schema version history" placement="bottom">
@@ -1808,6 +1828,8 @@ export default function Workspace() {
           </div>
         </div>
       )}
+
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} commands={commands} />
     </div>
   )
 }
