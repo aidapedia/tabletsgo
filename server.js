@@ -4212,7 +4212,10 @@ async function computeUpdateInfo() {
     const latest = { version: contract.version || latestTag, sha: contract.sha || null }
     const versionDelta = cmpSemver(latest.version, current.version)
     const shaDiffers = !!(contract.sha && current.sha && current.sha !== 'dev' && contract.sha !== current.sha)
-    const updateAvailable = versionDelta > 0 || (versionDelta === 0 && shaDiffers)
+    // Same version tag, newer commit — a rebuild of the moving tag, not a new
+    // release. The UI messages this differently so "v0.16.2 → v0.16.2" isn't shown.
+    const rebuild = versionDelta === 0 && shaDiffers
+    const updateAvailable = versionDelta > 0 || rebuild
 
     const minUpgradeFrom = contract.minUpgradeFrom || null
     const upgradeBlocked = !!(minUpgradeFrom && cmpSemver(current.version, minUpgradeFrom) < 0)
@@ -4231,6 +4234,7 @@ async function computeUpdateInfo() {
       ...base,
       latest,
       updateAvailable,
+      rebuild,
       breaking: !!contract.breaking,
       migrations: !!contract.migrations,
       minUpgradeFrom,
