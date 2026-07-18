@@ -46,7 +46,7 @@ Self‑hosted, single Docker image, your data stays yours.
 | 🧮 | **SQL editor** | CodeMirror‑powered editor with SQL highlighting, formatting, query history, and reusable **saved queries**. |
 | 🎨 | **Schema designer** | Visual ERD (React Flow) to create/edit tables and columns; staged DDL with a **schema version** audit trail and best‑effort rollback SQL. |
 | ⚙️ | **Workflows** | Drag‑and‑drop automation builder: `Manual`/`Schedule` triggers → `Run query`, `HTTP Request`, `Run JavaScript`, `Switch`, `Loop`, `Export SQL`, `Store to Storage`. Real hourly/daily scheduling + run logs. |
-| 💾 | **Backups & restore** | S3‑compatible storage destinations + per‑connection scheduled backups. Calendar heatmap of runs and point‑in‑time restore. |
+| 💾 | **Backups & restore** | S3‑compatible storage destinations + per‑connection scheduled backups. Calendar heatmap of runs and point‑in‑time restore — from a tracked backup version, any file browsed out of a storage destination, or a backup file uploaded from your computer. |
 | 👥 | **Workspaces & teams** | Multi‑workspace (org/tenant) model with members, teams, and `admin`/`member` roles. Email invites (SMTP optional — always get a copyable link). |
 | 🔑 | **Auth & security** | First‑run setup wizard, token‑based auth, per‑workspace roles, and membership‑guarded connection routes. |
 | ⬆️ | **In‑app updates** | Checks GitHub for newer releases and guides admins through a safe update — backup → pre‑flight checks → apply → verify. One‑click self‑update when the Docker socket is mounted, otherwise a copyable `docker compose pull` command. |

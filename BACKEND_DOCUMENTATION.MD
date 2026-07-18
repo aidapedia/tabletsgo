@@ -986,6 +986,46 @@ upload was `encrypted`, it's decrypted automatically first.
 - **500:** `{ "ok": false, "error": "<message>" }` (download/dialect-restore failure)
 - **Example:** `POST http://localhost:3000/api/connections/demo-sqlite/backup/restore`
 
+### GET `/api/connections/:id/restore/storage-objects?destinationId=`
+Lists a storage destination's stored files (newest first, capped at 500) so
+the restore-from-storage picker can browse what's actually in the bucket (or
+under `data/backups/` for `destinationId=local`). The destination must be the
+built-in local disk or belong to the connection's workspace. S3 listings are
+scoped to the destination's `pathPrefix`.
+
+- **200:** `{ "objects": [{ "key": "myconn/2026-07-18/abc.dump.enc", "sizeBytes": 12345, "lastModified": 1752800000000|null }] }`
+- **404:** connection or storage destination not found
+- **500:** `{ "error": "<message>" }` (S3 listing failure)
+- **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/restore/storage-objects?destinationId=storage-1`
+
+### POST `/api/connections/:id/restore/from-storage`
+Restores connection `:id` from any object in a storage destination — not just
+tracked backup runs (use `POST .../backup/restore` for those). Keys ending in
+`.enc` are decrypted server-side with this server's `ENCRYPTION_KEY` first.
+SQLite targets are validated against the SQLite file header before the live
+file is overwritten. Gated by typing the connection's name.
+
+- **Body:** `{ "destinationId", "key", "confirmName": "<must equal the connection's name>" }`
+- **200:** `{ "ok": true }`
+- **400:** confirmation mismatch, missing key, unsupported connection type, or invalid local key
+- **404:** connection or storage destination not found
+- **500:** `{ "ok": false, "error": "<message>" }` (fetch/decrypt/restore failure)
+- **Example:** `POST http://localhost:3000/api/connections/demo-sqlite/restore/from-storage`
+
+### POST `/api/connections/:id/restore/upload?filename=&confirmName=`
+Restores connection `:id` from a backup file uploaded by the client. The file
+is the **raw request body** (`Content-Type: application/octet-stream` — not
+multipart), streamed to a temp file; `filename` and `confirmName` ride the
+query string (URL-encoded). Max 2 GB. A `filename` ending in `.enc` is
+decrypted server-side first; SQLite targets are header-validated as above.
+
+- **Body:** raw file bytes
+- **200:** `{ "ok": true }`
+- **400:** confirmation mismatch, unsupported connection type, or empty upload
+- **413:** upload exceeds the 2 GB limit
+- **500:** `{ "ok": false, "error": "<message>" }` (decrypt/restore failure)
+- **Example:** `POST http://localhost:3000/api/connections/demo-sqlite/restore/upload?filename=backup.sqlite&confirmName=Demo%20SQLite`
+
 ---
 
 ## Schema migrations (per connection)
@@ -1397,6 +1437,9 @@ Liveness probe. Also reports boot readiness and the running identity.
 | DELETE | `/api/connections/:id/backup/runs/:runId/uploads/:destinationId` | Delete a backup version |
 | GET    | `/api/connections/:id/backup/runs/:runId/uploads/:destinationId/download` | Download a backup version |
 | POST   | `/api/connections/:id/backup/restore`     | Restore a backup version        |
+| GET    | `/api/connections/:id/restore/storage-objects` | Browse a storage destination's files |
+| POST   | `/api/connections/:id/restore/from-storage` | Restore from a picked storage object |
+| POST   | `/api/connections/:id/restore/upload`     | Restore from an uploaded file   |
 | GET    | `/api/system/version`                     | Running app identity (version/sha) |
 | GET    | `/api/system/update/check`                | Check for a newer release       |
 | POST   | `/api/system/backup`                      | Snapshot the metadata DB (admin) |

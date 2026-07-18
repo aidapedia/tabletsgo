@@ -16,6 +16,7 @@ import vm from 'node:vm'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { pipeline } from 'stream/promises'
+import { Transform } from 'stream'
 import Database from 'better-sqlite3'
 import nodemailer from 'nodemailer'
 import cron from 'node-cron'
@@ -1449,6 +1450,38 @@ async function execStoreToStorage(conn, input, destinationIds, opts = {}) {
   return { uploaded }
 }
 
+// Connection types a backup can be restored into.
+const RESTORABLE_TYPES = new Set(['sqlite', 'postgresql'])
+
+// True if the file starts with the SQLite magic header — keeps restore from
+// overwriting a live database with a file that isn't a SQLite database at all.
+function isSqliteFile(filePath) {
+  const buf = Buffer.alloc(16)
+  const fd = fs.openSync(filePath, 'r')
+  const n = fs.readSync(fd, buf, 0, 16, 0)
+  fs.closeSync(fd)
+  return n === 16 && buf.toString('utf8', 0, 15) === 'SQLite format 3'
+}
+
+// Overwrites a connection's live data with the dump file at `dumpPath`.
+// Shared by every restore path (backup run, storage browse, file upload) —
+// the caller has already validated the target, its type, and the confirmation.
+async function restoreDumpIntoConnection(targetConn, dumpPath) {
+  if (targetConn.type === 'sqlite') {
+    if (!isSqliteFile(dumpPath)) throw new Error('The file is not a SQLite database — refusing to overwrite the live database with it.')
+    sqliteConnections.delete(targetConn.filepath)
+    const swap = `${targetConn.filepath}.tmp`
+    fs.copyFileSync(dumpPath, swap)
+    fs.renameSync(swap, targetConn.filepath) // atomic replace of the live file
+  } else if (targetConn.type === 'postgresql') {
+    closePostgresPools(targetConn.id)
+    const { args, env } = pgToolConn(targetConn)
+    await execPgTool('pg_restore', ['--clean', '--if-exists', '--no-owner', ...args, dumpPath], { env })
+  } else {
+    throw new Error(`Restore not supported for connection type: ${targetConn.type}`)
+  }
+}
+
 // Reads a stored object (S3 or local disk) into a local temp file. Shared by
 // download/restore so neither has to know which kind of destination it is.
 async function fetchStorageObjectToFile(dest, key, destPath) {
@@ -1458,6 +1491,39 @@ async function fetchStorageObjectToFile(dest, key, destPath) {
     const obj = await getS3Client(dest).send(new GetObjectCommand({ Bucket: dest.bucket, Key: key }))
     await pipeline(obj.Body, fs.createWriteStream(destPath))
   }
+}
+
+// Lists a destination's stored files (newest first, capped) so the
+// restore-from-storage picker can browse what's actually in the bucket/folder.
+async function listStorageObjects(dest, limit = 500) {
+  const objects = []
+  if (dest.local) {
+    const walk = (dir, rel) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const key = rel ? `${rel}/${entry.name}` : entry.name
+        if (entry.isDirectory()) walk(path.join(dir, entry.name), key)
+        else {
+          const st = fs.statSync(path.join(dir, entry.name))
+          objects.push({ key, sizeBytes: st.size, lastModified: Math.round(st.mtimeMs) })
+        }
+      }
+    }
+    walk(LOCAL_BACKUP_DIR, '')
+  } else {
+    const client = getS3Client(dest)
+    const prefix = dest.pathPrefix ? `${dest.pathPrefix.replace(/^\/+|\/+$/g, '')}/` : ''
+    let ContinuationToken
+    do {
+      const page = await client.send(new ListObjectsV2Command({ Bucket: dest.bucket, Prefix: prefix, ContinuationToken }))
+      for (const obj of page.Contents || []) {
+        if (obj.Key && !obj.Key.endsWith('/'))
+          objects.push({ key: obj.Key, sizeBytes: obj.Size ?? 0, lastModified: obj.LastModified ? new Date(obj.LastModified).getTime() : null })
+      }
+      ContinuationToken = page.IsTruncated ? page.NextContinuationToken : undefined
+    } while (ContinuationToken && objects.length < 5000)
+  }
+  objects.sort((a, b) => (b.lastModified || 0) - (a.lastModified || 0))
+  return objects.slice(0, limit)
 }
 
 // Deletes stored objects (S3 or local disk) by key.
@@ -3151,6 +3217,7 @@ app.post('/api/connections/:id/backup/restore', async (req, res) => {
   if (!targetConn) return res.status(404).json({ error: 'Target connection not found' })
   if (targetConn.workspaceId !== sourceConn.workspaceId) return res.status(400).json({ error: 'Target connection must be in the same workspace' })
   if (targetConn.type !== sourceConn.type) return res.status(400).json({ error: 'Target connection must be the same database type' })
+  if (!RESTORABLE_TYPES.has(targetConn.type)) return res.status(400).json({ error: `Restore not supported for connection type: ${targetConn.type}` })
   if (confirmName !== targetConn.name) return res.status(400).json({ error: "Confirmation text doesn't match the target connection's name." })
 
   const run = meta.prepare('SELECT * FROM backup_runs WHERE id = ? AND connection_id = ?').get(runId, req.params.id)
@@ -3166,19 +3233,103 @@ app.post('/api/connections/:id/backup/restore', async (req, res) => {
   try {
     await fetchStorageObjectToFile(dest, upload.key, tmpPath)
     const dumpPath = upload.encrypted ? (decPath = await decryptFileToFile(tmpPath)) : tmpPath
+    await restoreDumpIntoConnection(targetConn, dumpPath)
+    res.json({ ok: true })
+  } catch (err) {
+    res.status(500).json({ ok: false, error: describeError(err) })
+  } finally {
+    fs.rm(tmpPath, { force: true }, () => {})
+    if (decPath) fs.rm(decPath, { force: true }, () => {})
+  }
+})
 
-    if (targetConn.type === 'sqlite') {
-      sqliteConnections.delete(targetConn.filepath)
-      const swap = `${targetConn.filepath}.tmp`
-      fs.copyFileSync(dumpPath, swap)
-      fs.renameSync(swap, targetConn.filepath) // atomic replace of the live file
-    } else if (targetConn.type === 'postgresql') {
-      closePostgresPools(targetConn.id)
-      const { args, env } = pgToolConn(targetConn)
-      await execPgTool('pg_restore', ['--clean', '--if-exists', '--no-owner', ...args, dumpPath], { env })
-    } else {
-      return res.status(400).json({ error: `Restore not supported for connection type: ${targetConn.type}` })
-    }
+// ---- Restore from arbitrary sources (storage browse / file upload) ----
+// Unlike the run-based restore above, these restore into connection `:id`
+// itself (the route param is the target), gated by typing its name. Encrypted
+// artifacts (*.enc, written by the schedule's Encrypt option) are decrypted
+// server-side with this server's key.
+
+// A storage destination this connection may restore from: the built-in local
+// disk, or an S3 destination belonging to the connection's workspace.
+function storageForRestore(conn, destinationId) {
+  const dest = destinationId ? getStorage(destinationId) : null
+  if (!dest) return null
+  if (!dest.local && dest.workspaceId !== conn.workspaceId) return null
+  return dest
+}
+
+// Browse a destination's stored files so the user can pick one to restore.
+app.get('/api/connections/:id/restore/storage-objects', async (req, res) => {
+  const conn = getConnection(req.params.id)
+  if (!conn) return res.status(404).json({ error: 'Connection not found' })
+  const dest = storageForRestore(conn, req.query.destinationId)
+  if (!dest) return res.status(404).json({ error: 'Storage destination not found' })
+  try {
+    res.json({ objects: await listStorageObjects(dest) })
+  } catch (err) {
+    res.status(500).json({ error: describeError(err) })
+  }
+})
+
+// Restore from a picked storage object.
+app.post('/api/connections/:id/restore/from-storage', async (req, res) => {
+  const conn = getConnection(req.params.id)
+  if (!conn) return res.status(404).json({ error: 'Connection not found' })
+  const { destinationId, key, confirmName } = req.body || {}
+  if (!RESTORABLE_TYPES.has(conn.type)) return res.status(400).json({ error: `Restore not supported for connection type: ${conn.type}` })
+  if (confirmName !== conn.name) return res.status(400).json({ error: "Confirmation text doesn't match the connection's name." })
+  if (typeof key !== 'string' || !key) return res.status(400).json({ error: 'An object key is required' })
+  const dest = storageForRestore(conn, destinationId)
+  if (!dest) return res.status(404).json({ error: 'Storage destination not found' })
+  // Local keys must resolve inside LOCAL_BACKUP_DIR — no path traversal.
+  if (dest.local && !path.resolve(LOCAL_BACKUP_DIR, key).startsWith(LOCAL_BACKUP_DIR + path.sep)) {
+    return res.status(400).json({ error: 'Invalid object key' })
+  }
+
+  const tmpPath = path.join(BACKUP_TMP_DIR, `${randomUUID()}-restore`)
+  let decPath = null
+  try {
+    await fetchStorageObjectToFile(dest, key, tmpPath)
+    const dumpPath = key.endsWith('.enc') ? (decPath = await decryptFileToFile(tmpPath)) : tmpPath
+    await restoreDumpIntoConnection(conn, dumpPath)
+    res.json({ ok: true })
+  } catch (err) {
+    res.status(500).json({ ok: false, error: describeError(err) })
+  } finally {
+    fs.rm(tmpPath, { force: true }, () => {})
+    if (decPath) fs.rm(decPath, { force: true }, () => {})
+  }
+})
+
+// Restore from an uploaded backup file. The file streams straight from the
+// request body (Content-Type: application/octet-stream, which express.json
+// ignores) into a temp file — no multipart parser needed. `filename` and
+// `confirmName` ride the query string.
+const UPLOAD_RESTORE_MAX_BYTES = 2 * 1024 * 1024 * 1024 // 2 GB
+
+app.post('/api/connections/:id/restore/upload', async (req, res) => {
+  const conn = getConnection(req.params.id)
+  if (!conn) return res.status(404).json({ error: 'Connection not found' })
+  if (!RESTORABLE_TYPES.has(conn.type)) return res.status(400).json({ error: `Restore not supported for connection type: ${conn.type}` })
+  if (req.query.confirmName !== conn.name) return res.status(400).json({ error: "Confirmation text doesn't match the connection's name." })
+  const declared = parseInt(req.headers['content-length'])
+  if (declared > UPLOAD_RESTORE_MAX_BYTES) return res.status(413).json({ error: 'Upload exceeds the 2 GB restore limit' })
+
+  const filename = String(req.query.filename || '')
+  const tmpPath = path.join(BACKUP_TMP_DIR, `${randomUUID()}-upload`)
+  let decPath = null
+  try {
+    let received = 0
+    const counter = new Transform({
+      transform(chunk, _enc, cb) {
+        received += chunk.length
+        cb(received > UPLOAD_RESTORE_MAX_BYTES ? new Error('Upload exceeds the 2 GB restore limit') : null, chunk)
+      },
+    })
+    await pipeline(req, counter, fs.createWriteStream(tmpPath))
+    if (received === 0) return res.status(400).json({ error: 'The uploaded file is empty' })
+    const dumpPath = filename.endsWith('.enc') ? (decPath = await decryptFileToFile(tmpPath)) : tmpPath
+    await restoreDumpIntoConnection(conn, dumpPath)
     res.json({ ok: true })
   } catch (err) {
     res.status(500).json({ ok: false, error: describeError(err) })

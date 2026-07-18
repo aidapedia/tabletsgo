@@ -89,7 +89,9 @@ src/
 │   ├── backup/                   # S3-compatible storage destinations (workspace-scoped) + the
 │   │   │                         #   per-connection backup schedule built from generic workflow nodes
 │   │   │                         #   (Schedule → Export SQL → Store to Storage)
-│   │   ├── components/           #   StorageList, StorageModal, BackupPanel, BackupCalendarHeatmap, RestorePanel
+│   │   ├── components/           #   StorageList, StorageModal, BackupPanel, BackupConfigForm,
+│   │   │                         #     BackupCalendarHeatmap, BackupVersionList (run-based restore),
+│   │   │                         #     RestorePanel (restore from uploaded file or browsed storage object)
 │   │   └── lib/                  #   api (storages CRUD, backup schedule/runs/calendar/restore), types
 │   └── system-update/            # in-app update checking + guided update wizard (backup → pre-flight →
 │       │                         #   apply → verify). Compares running (version, sha) to the latest GitHub

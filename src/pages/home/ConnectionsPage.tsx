@@ -138,6 +138,7 @@ export default function ConnectionsPage() {
         onBack={() => setDetailConn(null)}
         onOpen={openConsole}
         onEdit={(c, tab) => setFormConn({ mode: 'edit', conn: c, tab })}
+        onDelete={(c) => setDeleting(c)}
       />
     )
   }
