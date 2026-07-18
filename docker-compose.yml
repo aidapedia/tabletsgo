@@ -39,7 +39,7 @@ services:
       - UPDATE_REPO=${UPDATE_REPO:-}
     volumes:
       # Persist app metadata (users / connections / saved queries) across
-      # container restarts. The demo SQLite DB re-seeds itself on a fresh start.
+      # container restarts.
       - tabletsgo-data:/app/data
       # OPTIONAL — one-click in-app updates. Mounting the Docker socket lets
       # Tabletsgo pull the new image and recreate its own container from the

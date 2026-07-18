@@ -1249,7 +1249,6 @@ On network failure it degrades to `{ ..., unreachable: true, updateAvailable: fa
     "current": { "version": "0.15.2", "sha": "20f10b5" },
     "latest":  { "version": "0.16.0", "sha": "a1b2c3d" },
     "updateAvailable": true,
-    "rebuild": false,
     "breaking": false,
     "migrations": true,
     "minUpgradeFrom": "0.14.0",
@@ -1262,7 +1261,7 @@ On network failure it degrades to `{ ..., unreachable: true, updateAvailable: fa
     ]
   }
   ```
-- `rebuild` is `true` when the latest release shares the same version tag as the running build but a different commit `sha` (a moving-tag rebuild). `updateAvailable` is still `true`; the UI messages it as a rebuild rather than a version bump.
+- `updateAvailable` is purely version-tag driven: it is `true` only when the latest release version is newer than the running version. Same-version rebuilds (moving-tag re-pushes with a different commit `sha`) are ignored and never prompt an update.
 - **Example:** `GET http://localhost:3000/api/system/update/check?refresh=1`
 
 ### POST `/api/system/backup`

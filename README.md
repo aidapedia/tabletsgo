@@ -110,7 +110,7 @@ Tabletsgo speaks a **dialect‑agnostic** connection contract, so support grows 
 
 ## Try it in 60 seconds
 
-The fastest way to kick the tires — one command, no external database required. A **demo SQLite database seeds itself** on first start, so you'll have tables to browse immediately.
+The fastest way to kick the tires — one command, no external database required. Tabletsgo ships as a single Docker image with a built‑in SQLite metadata store, so there's nothing else to install.
 
 ```bash
 git clone https://github.com/aidapedia/tabletsgo.git
@@ -124,7 +124,7 @@ node -e "console.log('ENCRYPTION_KEY='+require('crypto').randomBytes(32).toStrin
 docker compose up -d
 ```
 
-Open **http://localhost:3000**, complete the quick **first‑run setup wizard** (create your admin + workspace), open the seeded demo connection, and start browsing. 🎉
+Open **http://localhost:3000**, complete the quick **first‑run setup wizard** (create your admin + workspace), add your first connection, and start browsing. 🎉
 
 ---
 
