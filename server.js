@@ -2092,10 +2092,11 @@ app.delete('/api/workspaces/:id', (req, res) => {
     if (JSON.parse(row.data).workspaceId === req.params.id) {
       deleteConnectionRow(row.id)
       meta.prepare('DELETE FROM saved_queries WHERE connection_id = ?').run(row.id)
-      meta.prepare('DELETE FROM saved_folders WHERE connection_id = ?').run(row.id)
       meta.prepare('DELETE FROM domains WHERE connection_id = ?').run(row.id)
       meta.prepare('DELETE FROM table_domains WHERE connection_id = ?').run(row.id)
       meta.prepare('DELETE FROM workflows WHERE connection_id = ?').run(row.id)
+      meta.prepare('DELETE FROM dashboards WHERE connection_id = ?').run(row.id)
+      meta.prepare('DELETE FROM folders WHERE connection_id = ?').run(row.id)
       meta.prepare('DELETE FROM query_history WHERE connection_id = ?').run(row.id)
       meta.prepare('DELETE FROM connection_access WHERE connection_id = ?').run(row.id)
     }
@@ -2506,11 +2507,12 @@ app.delete('/api/connections/:id', (req, res) => {
 
   deleteConnectionRow(req.params.id)
   meta.prepare('DELETE FROM saved_queries WHERE connection_id = ?').run(req.params.id)
-  meta.prepare('DELETE FROM saved_folders WHERE connection_id = ?').run(req.params.id)
+  meta.prepare('DELETE FROM folders WHERE connection_id = ?').run(req.params.id)
   meta.prepare('DELETE FROM domains WHERE connection_id = ?').run(req.params.id)
   meta.prepare('DELETE FROM table_domains WHERE connection_id = ?').run(req.params.id)
   meta.prepare('DELETE FROM workflows WHERE connection_id = ?').run(req.params.id)
   meta.prepare('DELETE FROM workflow_runs WHERE connection_id = ?').run(req.params.id)
+  meta.prepare('DELETE FROM dashboards WHERE connection_id = ?').run(req.params.id)
   meta.prepare('DELETE FROM query_history WHERE connection_id = ?').run(req.params.id)
   meta.prepare('DELETE FROM connection_access WHERE connection_id = ?').run(req.params.id)
   res.json({ ok: true })
@@ -2542,19 +2544,55 @@ app.get('/api/connections/:id/saved', (req, res) => {
   res.json(rows.map((r) => ({ ...r, kind: r.kind || 'query', folderId: r.folder_id || null })))
 })
 
-// ---- Saved folders (per connection) ----
-// Folders form a tree via `parent_id` (NULL = root); queries hang off any folder.
+// ---- Folders (per connection, polymorphic by `type`) ----
+// One tree per (connection, type): 'query' groups saved queries, 'dashboard'
+// groups dashboards. Each item points back via its own `folder_id` column, and
+// `parent_id` builds the tree (NULL = root). Nesting caps are per type (queries
+// uncapped for back-compat; dashboards capped at 3) and enforced here. Adding a
+// new folderable resource = one entry in FOLDER_TYPES + a `folder_id` column.
+const FOLDER_TYPES = {
+  query: { itemTable: 'saved_queries', maxDepth: Infinity },
+  dashboard: { itemTable: 'dashboards', maxDepth: 3 },
+}
+// Coerce an untrusted `type` to a known one (defaults to 'query' for older
+// clients that predate the `type` param). Guards the itemTable interpolation.
+const folderTypeOf = (t) => (t && FOLDER_TYPES[t] ? t : 'query')
 
-// True if `folderId` is `candidateAncestor` or nested somewhere beneath it —
-// used to reject reparenting a folder into its own subtree (which would orphan
-// a cycle). Walks up from `folderId` following parent_id within this connection.
-function folderHasAncestor(connectionId, folderId, candidateAncestor) {
-  const parentOf = new Map(
+// parent_id lookup for one connection's folders of a given type.
+function folderParents(connectionId, type) {
+  return new Map(
     meta
-      .prepare('SELECT id, parent_id FROM saved_folders WHERE connection_id = ?')
-      .all(connectionId)
+      .prepare('SELECT id, parent_id FROM folders WHERE connection_id = ? AND type = ?')
+      .all(connectionId, type)
       .map((r) => [r.id, r.parent_id || null])
   )
+}
+// Levels from the root down to `folderId` (root folder = 1, NULL = 0).
+function folderDepth(connectionId, type, folderId, parentOf = folderParents(connectionId, type)) {
+  let depth = 0
+  let cur = folderId
+  const seen = new Set()
+  while (cur && !seen.has(cur)) {
+    depth++
+    seen.add(cur)
+    cur = parentOf.get(cur) || null
+  }
+  return depth
+}
+// Height of the subtree rooted at `folderId` (the folder itself = 1).
+function folderHeight(connectionId, type, folderId) {
+  const children = new Map()
+  for (const r of meta.prepare('SELECT id, parent_id FROM folders WHERE connection_id = ? AND type = ?').all(connectionId, type)) {
+    const p = r.parent_id || null
+    if (!children.has(p)) children.set(p, [])
+    children.get(p).push(r.id)
+  }
+  const heightFrom = (fid) => 1 + (children.get(fid) || []).reduce((m, c) => Math.max(m, heightFrom(c)), 0)
+  return heightFrom(folderId)
+}
+// True if `folderId` is `candidateAncestor` or nested somewhere beneath it —
+// used to reject reparenting a folder into its own subtree (a cycle).
+function folderHasAncestor(connectionId, type, folderId, candidateAncestor, parentOf = folderParents(connectionId, type)) {
   let cur = folderId
   const seen = new Set()
   while (cur && !seen.has(cur)) {
@@ -2566,30 +2604,39 @@ function folderHasAncestor(connectionId, folderId, candidateAncestor) {
 }
 
 app.get('/api/connections/:id/folders', (req, res) => {
+  const type = folderTypeOf(req.query.type)
   const rows = meta
-    .prepare('SELECT id, name, parent_id, ts FROM saved_folders WHERE connection_id = ? ORDER BY ts ASC')
-    .all(req.params.id)
-  res.json(rows.map((r) => ({ id: r.id, name: r.name, parentId: r.parent_id || null, ts: r.ts })))
+    .prepare('SELECT id, name, parent_id, ts FROM folders WHERE connection_id = ? AND type = ? ORDER BY ts ASC')
+    .all(req.params.id, type)
+  res.json(rows.map((r) => ({ id: r.id, name: r.name, parentId: r.parent_id || null, type, ts: r.ts })))
 })
 
 app.post('/api/connections/:id/folders', (req, res) => {
   const { name, parentId } = req.body || {}
+  const type = folderTypeOf(req.body?.type)
   if (!name?.trim()) return res.status(400).json({ error: 'A folder name is required' })
   if (parentId) {
     const parent = meta
-      .prepare('SELECT id FROM saved_folders WHERE id = ? AND connection_id = ?')
-      .get(parentId, req.params.id)
+      .prepare('SELECT id FROM folders WHERE id = ? AND connection_id = ? AND type = ?')
+      .get(parentId, req.params.id, type)
     if (!parent) return res.status(400).json({ error: 'Parent folder not found' })
+    if (folderDepth(req.params.id, type, parentId) >= FOLDER_TYPES[type].maxDepth)
+      return res.status(400).json({ error: `Folders can only nest ${FOLDER_TYPES[type].maxDepth} levels deep` })
   }
-  const entry = { id: randomUUID(), name: name.trim(), parentId: parentId || null, ts: Date.now() }
+  const entry = { id: randomUUID(), name: name.trim(), parentId: parentId || null, type, ts: Date.now() }
   meta
-    .prepare('INSERT INTO saved_folders (id, connection_id, name, parent_id, ts) VALUES (?, ?, ?, ?, ?)')
-    .run(entry.id, req.params.id, entry.name, entry.parentId, entry.ts)
+    .prepare('INSERT INTO folders (id, connection_id, type, name, parent_id, ts) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(entry.id, req.params.id, entry.type, entry.name, entry.parentId, entry.ts)
   res.json(entry)
 })
 
 app.put('/api/connections/:id/folders/:fid', (req, res) => {
   const body = req.body || {}
+  const folder = meta
+    .prepare('SELECT type FROM folders WHERE id = ? AND connection_id = ?')
+    .get(req.params.fid, req.params.id)
+  if (!folder) return res.status(404).json({ error: 'Not found' })
+  const type = folderTypeOf(folder.type)
   const { name } = body
   const sets = []
   const vals = []
@@ -2604,18 +2651,22 @@ app.put('/api/connections/:id/folders/:fid', (req, res) => {
     if (parentId) {
       if (parentId === req.params.fid) return res.status(400).json({ error: "A folder can't be its own parent" })
       const parent = meta
-        .prepare('SELECT id FROM saved_folders WHERE id = ? AND connection_id = ?')
-        .get(parentId, req.params.id)
+        .prepare('SELECT id FROM folders WHERE id = ? AND connection_id = ? AND type = ?')
+        .get(parentId, req.params.id, type)
       if (!parent) return res.status(400).json({ error: 'Parent folder not found' })
-      if (folderHasAncestor(req.params.id, parentId, req.params.fid))
+      if (folderHasAncestor(req.params.id, type, parentId, req.params.fid))
         return res.status(400).json({ error: "Can't move a folder into its own subfolder" })
+      // The moved subtree's deepest leaf must still fit within the depth cap.
+      const newDepth = folderDepth(req.params.id, type, parentId) + folderHeight(req.params.id, type, req.params.fid)
+      if (newDepth > FOLDER_TYPES[type].maxDepth)
+        return res.status(400).json({ error: `Folders can only nest ${FOLDER_TYPES[type].maxDepth} levels deep` })
     }
     sets.push('parent_id = ?')
     vals.push(parentId)
   }
   if (!sets.length) return res.status(400).json({ error: 'Nothing to update' })
   const r = meta
-    .prepare(`UPDATE saved_folders SET ${sets.join(', ')} WHERE id = ? AND connection_id = ?`)
+    .prepare(`UPDATE folders SET ${sets.join(', ')} WHERE id = ? AND connection_id = ?`)
     .run(...vals, req.params.fid, req.params.id)
   if (!r.changes) return res.status(404).json({ error: 'Not found' })
   res.json({ ok: true })
@@ -2623,18 +2674,20 @@ app.put('/api/connections/:id/folders/:fid', (req, res) => {
 
 app.delete('/api/connections/:id/folders/:fid', (req, res) => {
   // Reparent the folder's contents up one level (to its own parent) rather than
-  // deleting them: child folders and queries move to the deleted folder's parent.
+  // deleting them: child folders and items move to the deleted folder's parent.
   const row = meta
-    .prepare('SELECT parent_id FROM saved_folders WHERE id = ? AND connection_id = ?')
+    .prepare('SELECT type, parent_id FROM folders WHERE id = ? AND connection_id = ?')
     .get(req.params.fid, req.params.id)
+  const type = folderTypeOf(row?.type)
   const parentId = row?.parent_id || null
   meta
-    .prepare('UPDATE saved_folders SET parent_id = ? WHERE parent_id = ? AND connection_id = ?')
+    .prepare('UPDATE folders SET parent_id = ? WHERE parent_id = ? AND connection_id = ?')
     .run(parentId, req.params.fid, req.params.id)
+  // itemTable comes from the FOLDER_TYPES allowlist (via folderTypeOf) — safe to interpolate.
   meta
-    .prepare('UPDATE saved_queries SET folder_id = ? WHERE folder_id = ? AND connection_id = ?')
+    .prepare(`UPDATE ${FOLDER_TYPES[type].itemTable} SET folder_id = ? WHERE folder_id = ? AND connection_id = ?`)
     .run(parentId, req.params.fid, req.params.id)
-  meta.prepare('DELETE FROM saved_folders WHERE id = ? AND connection_id = ?').run(req.params.fid, req.params.id)
+  meta.prepare('DELETE FROM folders WHERE id = ? AND connection_id = ?').run(req.params.fid, req.params.id)
   res.json({ ok: true })
 })
 
@@ -2849,26 +2902,34 @@ app.delete('/api/connections/:id/workflows/:wid', (req, res) => {
 // A dashboard is a name + one JSON config: { variables: [...], widgets: [...] }.
 // The config shape is owned by the frontend (src/features/dashboard/types.ts);
 // the server just stores and returns it, so it stays database-agnostic.
+// Dashboards can live in a folder (folders table, type='dashboard').
 
 app.get('/api/connections/:id/dashboards', (req, res) => {
   const rows = meta
-    .prepare('SELECT id, name, ts FROM dashboards WHERE connection_id = ? ORDER BY ts DESC')
+    .prepare('SELECT id, name, folder_id, ts FROM dashboards WHERE connection_id = ? ORDER BY ts DESC')
     .all(req.params.id)
-  res.json(rows)
+  res.json(rows.map((r) => ({ id: r.id, name: r.name, folderId: r.folder_id || null, ts: r.ts })))
 })
 
 app.post('/api/connections/:id/dashboards', (req, res) => {
-  const { name, config } = req.body || {}
+  const { name, config, folderId } = req.body || {}
   if (!name?.trim()) return res.status(400).json({ error: 'A dashboard name is required' })
+  if (folderId) {
+    const parent = meta
+      .prepare("SELECT id FROM folders WHERE id = ? AND connection_id = ? AND type = 'dashboard'")
+      .get(folderId, req.params.id)
+    if (!parent) return res.status(400).json({ error: 'Folder not found' })
+  }
   const entry = {
     id: randomUUID(),
     name: name.trim(),
     config: config && typeof config === 'object' ? config : { variables: [], widgets: [] },
+    folderId: folderId || null,
     ts: Date.now(),
   }
   meta
-    .prepare('INSERT INTO dashboards (id, connection_id, name, config, ts) VALUES (?, ?, ?, ?, ?)')
-    .run(entry.id, req.params.id, entry.name, JSON.stringify(entry.config), entry.ts)
+    .prepare('INSERT INTO dashboards (id, connection_id, name, config, folder_id, ts) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(entry.id, req.params.id, entry.name, JSON.stringify(entry.config), entry.folderId, entry.ts)
   res.json(entry)
 })
 
@@ -2893,6 +2954,18 @@ app.put('/api/connections/:id/dashboards/:did', (req, res) => {
     if (typeof body.config !== 'object') return res.status(400).json({ error: 'config must be an object' })
     sets.push('config = ?')
     vals.push(JSON.stringify(body.config))
+  }
+  // folderId is explicitly settable (null moves the dashboard back to the root).
+  if ('folderId' in body) {
+    const folderId = body.folderId || null
+    if (folderId) {
+      const parent = meta
+        .prepare("SELECT id FROM folders WHERE id = ? AND connection_id = ? AND type = 'dashboard'")
+        .get(folderId, req.params.id)
+      if (!parent) return res.status(400).json({ error: 'Folder not found' })
+    }
+    sets.push('folder_id = ?')
+    vals.push(folderId)
   }
   if (!sets.length) return res.status(400).json({ error: 'Nothing to update' })
   const r = meta

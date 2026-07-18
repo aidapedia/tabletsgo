@@ -787,19 +787,23 @@ runs no SQL itself — widget queries execute through the existing
 `POST /api/connections/:id/query`, so dashboards work with every database type
 the query endpoint supports (SQLite, PostgreSQL, future dialects).
 
+Dashboards can be organized into folders (see **Dashboard folders** below); each
+dashboard carries an optional `folderId` (`null` = root).
+
 ### GET `/api/connections/:id/dashboards`
 List dashboards for a connection (newest first; no config body).
 
-- **200:** `[{ "id", "name", "ts" }]`
+- **200:** `[{ "id", "name", "folderId", "ts" }]`
 - **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/dashboards`
 
 ### POST `/api/connections/:id/dashboards`
 Create a dashboard. `config` is optional (e.g. importing a JSON export);
-defaults to `{ "variables": [], "widgets": [] }`.
+defaults to `{ "variables": [], "widgets": [] }`. `folderId` is optional
+(`null` = root; must reference an existing folder).
 
-- **Body:** `{ "name": "Notifications", "config"?: { "variables": [...], "widgets": [...] } }`
-- **200:** `{ "id", "name", "config", "ts" }`
-- **400:** `{ "error": "A dashboard name is required" }`
+- **Body:** `{ "name": "Notifications", "config"?: { "variables": [...], "widgets": [...] }, "folderId"?: "fd-1" }`
+- **200:** `{ "id", "name", "config", "folderId", "ts" }`
+- **400:** `{ "error": "A dashboard name is required" }` / `{ "error": "Folder not found" }`
 - **Example:** `POST http://localhost:3000/api/connections/demo-sqlite/dashboards`
 
 ### GET `/api/connections/:id/dashboards/:did`
@@ -811,13 +815,15 @@ Fetch one dashboard with its full config.
 
 ### PUT `/api/connections/:id/dashboards/:did`
 Update a dashboard. Any subset of `name`, `config` (`config` replaces the whole
-blob — the frontend always saves the full object).
+blob — the frontend always saves the full object), `folderId` (`null` moves the
+dashboard back to the root).
 
 - **Body examples:**
   - Rename: `{ "name": "Renamed" }`
   - Save layout/widgets/variables: `{ "config": { "variables": [...], "widgets": [...] } }`
+  - Move to a folder: `{ "folderId": "fd-1" }`
 - **200:** `{ "ok": true }`
-- **400:** `{ "error": "Nothing to update" }` (or name/config validation)
+- **400:** `{ "error": "Nothing to update" }` / `{ "error": "Folder not found" }` (or name/config validation)
 - **404:** `{ "error": "Not found" }`
 - **Example:** `PUT http://localhost:3000/api/connections/demo-sqlite/dashboards/db-1`
 
@@ -827,6 +833,45 @@ Delete a dashboard.
 - **200:** `{ "ok": true }`
 - **404:** `{ "error": "Not found" }`
 - **Example:** `DELETE http://localhost:3000/api/connections/demo-sqlite/dashboards/db-1`
+
+---
+
+## Dashboard folders (per connection)
+
+Named folders that organize a connection's dashboards into a tree, mirroring the
+saved-query folders. A folder has a `parentId` (`null` = root); nesting is capped
+at **3 levels deep** (enforced server-side on create and move). Deleting a folder
+reparents its subfolders and dashboards up one level rather than deleting them.
+
+### GET `/api/connections/:id/dashboard-folders`
+List all dashboard folders for a connection (oldest first).
+
+- **200:** `[{ "id", "name", "parentId", "ts" }]`
+- **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/dashboard-folders`
+
+### POST `/api/connections/:id/dashboard-folders`
+Create a folder. `parentId` is optional (`null` = root).
+
+- **Body:** `{ "name": "Ops", "parentId"?: "fd-1" }`
+- **200:** `{ "id", "name", "parentId", "ts" }`
+- **400:** `{ "error": "A folder name is required" }` / `{ "error": "Parent folder not found" }` / `{ "error": "Folders can only nest 3 levels deep" }`
+- **Example:** `POST http://localhost:3000/api/connections/demo-sqlite/dashboard-folders`
+
+### PUT `/api/connections/:id/dashboard-folders/:fid`
+Rename (`name`) and/or reparent (`parentId`, `null` = root) a folder. Moves are
+rejected if they create a cycle or push the subtree past the 3-level cap.
+
+- **Body examples:** `{ "name": "Renamed" }` / `{ "parentId": "fd-2" }`
+- **200:** `{ "ok": true }`
+- **400:** `{ "error": "Can't move a folder into its own subfolder" }` / `{ "error": "Folders can only nest 3 levels deep" }` (or name/parent validation)
+- **404:** `{ "error": "Not found" }`
+- **Example:** `PUT http://localhost:3000/api/connections/demo-sqlite/dashboard-folders/fd-1`
+
+### DELETE `/api/connections/:id/dashboard-folders/:fid`
+Delete a folder; its subfolders and dashboards move up to the folder's own parent.
+
+- **200:** `{ "ok": true }`
+- **Example:** `DELETE http://localhost:3000/api/connections/demo-sqlite/dashboard-folders/fd-1`
 
 ---
 
