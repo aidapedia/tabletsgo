@@ -7,7 +7,7 @@
 **A self‑hosted, team‑friendly database console.**
 Browse data, write queries, design schemas visually, automate workflows, and back up to S3 — all from one clean, keyboard‑friendly web app you run yourself.
 
-[![Version](https://img.shields.io/badge/version-0.11.3-6FCF6A)](package.json)
+[![Version](https://img.shields.io/badge/version-0.16.1-6FCF6A)](package.json)
 [![Docker](https://img.shields.io/badge/deploy-Docker-2496ED?logo=docker&logoColor=white)](#-installation)
 [![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=white)](https://react.dev)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org)
@@ -49,6 +49,7 @@ Self‑hosted, single Docker image, your data stays yours.
 | 💾 | **Backups & restore** | S3‑compatible storage destinations + per‑connection scheduled backups. Calendar heatmap of runs and point‑in‑time restore. |
 | 👥 | **Workspaces & teams** | Multi‑workspace (org/tenant) model with members, teams, and `admin`/`member` roles. Email invites (SMTP optional — always get a copyable link). |
 | 🔑 | **Auth & security** | First‑run setup wizard, token‑based auth, per‑workspace roles, and membership‑guarded connection routes. |
+| ⬆️ | **In‑app updates** | Checks GitHub for newer releases and guides admins through a safe update — backup → pre‑flight checks → apply → verify. One‑click self‑update when the Docker socket is mounted, otherwise a copyable `docker compose pull` command. |
 | ⌨️ | **Keyboard‑first** | Configurable keymap and shortcuts throughout the console. |
 | 🌗 | **Theming** | Light / dark theme, clean and distraction‑free. |
 
@@ -140,13 +141,20 @@ All configuration is via environment variables (see [`.env.example`](.env.exampl
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` / `SMTP_SECURE` | | Optional SMTP for invite emails (per‑workspace UI settings override these). Invites always return a copyable link even without SMTP. |
 | `VITE_API_URL` | | Frontend API base, **baked at build time** (default `/api`). Set to an absolute URL only for a split frontend/backend deploy. |
 | `WORKFLOW_SCHEDULER_ENABLED` | | Set `false` to disable the minutely cron tick (useful for local/CI). |
+| `TABLETSGO_TAG` | | Published image tag `docker compose` runs and pulls on self‑update (default `latest`). One‑click self‑update works best on a moving tag. |
+| `UPDATE_IMAGE` / `UPDATE_REPO` / `UPDATE_HELPER_IMAGE` | | In‑app update checker — default to the official image/repo; override only for a fork. Mount the Docker socket (see `docker-compose.yml`) to enable one‑click self‑update via `UPDATE_HELPER_IMAGE` (default `docker:cli`); otherwise the wizard shows a manual pull command. |
 
 ---
 
-## Support
-If you love this project, don't forge to support me.
+## Donation
 
-[<img style="width: 200px;" src="https://i.ibb.co.com/mCsbv8NQ/378162407-9b80104f-ee5b-4a13-8030-ef9a87ed9836.png">](https://buymeacoffee.com/aidapedia)
+To stay completely free and open-source, with no feature behind the paywall and evolve the project, we need your help. If you like Tabletsgo, please consider donating to help us fund the project's future development.
+
+---
+
+## License
+
+This project is licensed under the [Apache License 2.0](LICENSE).
 
 <div align="center">
 <sub>Built with ☕ and SQL. Self‑host it, own your data.</sub>

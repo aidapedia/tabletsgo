@@ -33,7 +33,7 @@ src/
 │   │   │                         #     CheckboxRow, SearchInput, Toggle, NumberStepper
 │   │   ├── navigation/           #   NavItem, Tab, Segmented, MenuItem
 │   │   ├── overlay/              #   Popover, Tooltip, ContextMenu
-│   │   ├── feedback/             #   Toast, ConfirmDialog, TypeToConfirmDialog, LoadingState, EmptyState
+│   │   ├── feedback/             #   Toast, ConfirmDialog, TypeToConfirmDialog, LoadingState, EmptyState, Wizard
 │   │   └── (root)                #   Avatar, Badge, PersonRow, RowLabel, SaveQueryPanel, SqlEditor,
 │   │                             #     JsonEditor, icons — no group yet
 │   ├── hooks/                    # generic hooks (useSlideOver)
@@ -86,11 +86,19 @@ src/
 │   │   └── lib/                  #   api (per-connection CRUD), variables ({{}} substitution + option
 │   │                             #     resolution), queryData (result → chart shapes), palette (validated
 │   │                             #     CVD-safe series colors), grid (collision math), scale, useSize
-│   └── backup/                   # S3-compatible storage destinations (workspace-scoped) + the
-│       │                         #   per-connection backup schedule built from generic workflow nodes
-│       │                         #   (Schedule → Export SQL → Store to Storage)
-│       ├── components/           #   StorageList, StorageModal, BackupPanel, BackupCalendarHeatmap, RestorePanel
-│       └── lib/                  #   api (storages CRUD, backup schedule/runs/calendar/restore), types
+│   ├── backup/                   # S3-compatible storage destinations (workspace-scoped) + the
+│   │   │                         #   per-connection backup schedule built from generic workflow nodes
+│   │   │                         #   (Schedule → Export SQL → Store to Storage)
+│   │   ├── components/           #   StorageList, StorageModal, BackupPanel, BackupCalendarHeatmap, RestorePanel
+│   │   └── lib/                  #   api (storages CRUD, backup schedule/runs/calendar/restore), types
+│   └── system-update/            # in-app update checking + guided update wizard (backup → pre-flight →
+│       │                         #   apply → verify). Compares running (version, sha) to the latest GitHub
+│       │                         #   Release; docker-socket-mounted ⇒ one-click self-update, else a manual
+│       │                         #   `docker compose pull` command. Admin-only apply.
+│       ├── components/           #   UpdateBanner (dismissible home-shell banner), UpdatePanel (Settings >
+│       │                         #     Updates: version + changelog + re-check), UpdateWizard (guided flow)
+│       ├── stores/               #   UpdateContext (useUpdate: info + check + per-version dismiss)
+│       └── lib/                  #   api (/api/system/* client + version polling), types
 │
 └── pages/                        # route-level composition (thin — just assemble features), grouped by area
     ├── auth/                     # unauthenticated flows: LoginPage, SetupPage, AcceptInvitePage,
@@ -104,7 +112,7 @@ src/
         │                         #   from features/connections
         ├── StoragePage           # /storage → S3 storage destinations (StorageList), top-level sidebar item
         ├── WorkspaceSettingsPage # /workspace → General / Member / Integrations / Notification tabs
-        └── SettingsPage          # /settings → Theme / Data tabs
+        └── SettingsPage          # /settings → Theme / Data / Updates tabs (Updates renders UpdatePanel)
 ```
 
 Note: `features/workspaces` (plural) is the org/tenant layer (workspaces, members, invites); `features/workspace` (singular) is the per-connection DB console. Don't conflate them.
@@ -125,6 +133,8 @@ Configurable values live in env vars, wired through `docker-compose.yml` (see `.
 - `ADMIN_USERNAME` (email) / `ADMIN_PASSWORD` / `WORKSPACE_NAME` — **optional** pre-seed of the admin + first workspace. Unset ⇒ the in-browser first-run setup wizard runs (default). Don't bake defaults into the Dockerfile.
 - `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` / `SMTP_SECURE` — **optional** fallback SMTP for member-invite emails (per-workspace UI settings override these). Invites always return a copyable link even without SMTP.
 - `VITE_API_URL` — frontend API base, **baked at build time** via Dockerfile `ARG` (not runtime). Default `/api`.
+- `TABLETSGO_TAG` — **optional**. Published image tag `docker compose` runs (and pulls on self-update). Default `latest`; one-click self-update works best on a moving tag.
+- `UPDATE_IMAGE` / `UPDATE_REPO` / `UPDATE_HELPER_IMAGE` — **optional** in-app update checker tuning (default to the official image/repo; override only for a fork). The checker compares the running `(version, sha)` against the latest GitHub Release + its `release.json` contract. Apply method is auto-detected: Docker socket mounted ⇒ one-click self-update via `UPDATE_HELPER_IMAGE` (default `docker:cli`); otherwise the wizard shows a manual `docker compose pull` command. `APP_VERSION` / `GIT_SHA` are baked into the image at build time and reported by `/api/system/version`.
 When you add a new tunable, thread it through server.js env, the Dockerfile/compose, and `.env.example`.
 
 ## AUTH MODEL
