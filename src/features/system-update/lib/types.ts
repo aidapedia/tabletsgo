@@ -14,6 +14,7 @@ export type UpdateInfo = {
   current: { version: string; sha: string }
   latest: { version: string; sha: string | null } | null
   updateAvailable: boolean
+  rebuild?: boolean // same version tag, newer commit (moving-tag rebuild)
   breaking?: boolean
   migrations?: boolean
   minUpgradeFrom?: string | null

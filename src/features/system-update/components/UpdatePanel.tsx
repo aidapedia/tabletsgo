@@ -16,6 +16,7 @@ export default function UpdatePanel() {
   const [wizardOpen, setWizardOpen] = useState(false)
 
   const upToDate = info && !info.updateAvailable && !info.unreachable
+  const shortSha = (s?: string | null) => (s ? s.slice(0, 7) : '')
 
   return (
     <div className="max-w-[640px] space-y-5">
@@ -27,13 +28,17 @@ export default function UpdatePanel() {
               v{info?.current.version ?? '…'}
             </span>
             {upToDate && <Badge tone="green">Up to date</Badge>}
-            {info?.updateAvailable && <Badge tone="amber">Update available</Badge>}
+            {info?.updateAvailable && (
+              <Badge tone="amber">{info.rebuild ? 'Rebuild available' : 'Update available'}</Badge>
+            )}
           </div>
           <div className="mt-1 text-[11px] text-ink-faint">
             {info?.unreachable
               ? 'Could not reach the update server — check your connection.'
               : info?.updateAvailable
-                ? `v${info.latest?.version} is available`
+                ? info.rebuild
+                  ? `A newer build of v${info.latest?.version} is available (${shortSha(info.latest?.sha)})`
+                  : `v${info.latest?.version} is available`
                 : lastChecked
                   ? `Last checked ${new Date(lastChecked).toLocaleTimeString()}`
                   : 'Checking…'}
@@ -49,7 +54,7 @@ export default function UpdatePanel() {
           <div className="flex items-center justify-between gap-3">
             <div>
               <div className="flex items-center gap-2 text-[13px] font-semibold text-ink">
-                Update to v{info.latest?.version}
+                {info.rebuild ? `Rebuild v${info.latest?.version}` : `Update to v${info.latest?.version}`}
                 {info.breaking && <Badge tone="red">Breaking</Badge>}
                 {info.migrations && <Badge tone="amber">Migrations</Badge>}
               </div>
