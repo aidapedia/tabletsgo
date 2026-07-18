@@ -7,6 +7,8 @@
 import express from 'express'
 import cors from 'cors'
 import fs from 'fs'
+import os from 'os'
+import http from 'http'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { randomUUID, createHash, randomBytes, createCipheriv, createDecipheriv, scryptSync } from 'crypto'
@@ -61,6 +63,46 @@ fs.mkdirSync(path.dirname(META_DB_PATH), { recursive: true })
 const meta = new Database(META_DB_PATH)
 meta.pragma('journal_mode = WAL')
 
+// ---- App identity (baked into the image at build time; package.json in dev) ----
+// Reported by /api/system/version and /api/health, and compared against the
+// latest published release to decide whether an update is available.
+let APP_VERSION = process.env.APP_VERSION || ''
+if (!APP_VERSION) {
+  try {
+    APP_VERSION = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version || '0.0.0'
+  } catch {
+    APP_VERSION = '0.0.0'
+  }
+}
+const GIT_SHA = process.env.GIT_SHA || 'dev'
+const APP_NAME = 'tabletsgo'
+
+// Bumped whenever initMetaDb()'s schema changes in a way worth snapshotting the
+// meta DB before. PRAGMA user_version persists the applied value inside the DB.
+const META_SCHEMA_VERSION = 1
+
+// App-level snapshots of the meta DB (users/connections/etc.) — distinct from the
+// S3 database backups feature. Both the boot pre-migration snapshot and the
+// update wizard's manual backup land here.
+const BACKUPS_DIR = path.join(path.dirname(META_DB_PATH), 'backups')
+
+// Boot readiness — flipped true once initMetaDb() has finished (migrations done).
+let bootReady = false
+
+// A safe synchronous snapshot of the meta DB: checkpoint the WAL so the main
+// file is complete, then copy it. Safe at boot (no concurrent writers) and
+// reused by the update wizard's backup endpoint.
+function snapshotMetaSync(destPath) {
+  fs.mkdirSync(path.dirname(destPath), { recursive: true })
+  try {
+    meta.pragma('wal_checkpoint(TRUNCATE)')
+  } catch {
+    // Best-effort — a busy WAL just means the copy may trail the newest write.
+  }
+  fs.copyFileSync(META_DB_PATH, destPath)
+  return fs.statSync(destPath).size
+}
+
 const sha256 = (s) => createHash('sha256').update(String(s)).digest('hex')
 
 // ---- Connection credential encryption (AES-256-GCM) ----
@@ -87,6 +129,21 @@ function decryptSecret(payload, key = CRED_KEY) {
 }
 
 function initMetaDb() {
+  // Migration safety: if the persisted meta-schema version is behind the code's
+  // and this is an existing install (has a users table), snapshot the DB before
+  // touching it so a bad upgrade can be rolled back by restoring the file.
+  const persistedSchemaVersion = meta.pragma('user_version', { simple: true })
+  const hadSchema = !!meta.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'users'").get()
+  if (persistedSchemaVersion < META_SCHEMA_VERSION && hadSchema) {
+    try {
+      const dest = path.join(BACKUPS_DIR, `pre-migrate-v${persistedSchemaVersion}-${Date.now()}.db`)
+      const size = snapshotMetaSync(dest)
+      console.log(`🛟 Pre-migration meta snapshot: ${dest} (${size} bytes)`)
+    } catch (e) {
+      console.error('⚠️  Pre-migration snapshot failed:', e.message)
+    }
+  }
+
   meta.exec(`
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
@@ -395,8 +452,12 @@ function initMetaDb() {
     }
     console.log(`🔐 Migrated ${legacyRows.length} connection(s) to encrypted credential storage`)
   }
+
+  // Record the applied meta-schema version so future boots know what's migrated.
+  meta.pragma(`user_version = ${META_SCHEMA_VERSION}`)
 }
 initMetaDb()
+bootReady = true
 
 // ---- Auth / session helpers ----
 const createSession = (userId) => {
@@ -3954,9 +4015,343 @@ app.post('/api/connections/:id/query', async (req, res) => {
   }
 })
 
-// Health check
+// ============================================================================
+// System / Updates — in-app update checking, backup, pre-flight and apply.
+// Detection compares the running (version, sha) against the latest published
+// GitHub Release + its release.json contract. Applying self-updates via the
+// Docker socket when mounted, else returns a manual `docker compose pull`.
+// ============================================================================
+
+const UPDATE_IMAGE = process.env.UPDATE_IMAGE || 'ghcr.io/aidapedia/tabletsgo'
+const UPDATE_REPO = process.env.UPDATE_REPO || 'aidapedia/tabletsgo'
+const UPDATE_CACHE_MS = 30 * 60 * 1000
+let updateCache = null // { at, data }
+
+// ---- Docker socket self-update ----
+// When the Docker socket is mounted into this (containerized) app, it can update
+// itself with no external tool: pull the new image, clone the running container's
+// resolved config, and hand the final stop/rename/start swap to a tiny detached
+// `docker:cli` helper (so the swap survives this process being stopped).
+// Without the socket, the wizard falls back to a manual `docker compose pull`.
+const DOCKER_SOCKET = process.env.DOCKER_SOCKET || '/var/run/docker.sock'
+const UPDATE_HELPER_IMAGE = process.env.UPDATE_HELPER_IMAGE || 'docker:cli'
+// Only offer Docker self-update when the socket is present AND we're actually
+// inside a container (avoids a false positive in local dev on a machine that
+// happens to run Docker Desktop).
+const dockerSelfUpdateAvailable = () => {
+  try {
+    return fs.statSync(DOCKER_SOCKET).isSocket() && fs.existsSync('/.dockerenv')
+  } catch {
+    return false
+  }
+}
+const updateApplyMethod = () => (dockerSelfUpdateAvailable() ? 'docker' : 'manual')
+
+// Minimal Docker Engine API client over the unix socket. `raw` returns the body
+// as text (used for the streamed image-pull progress).
+function dockerApi(method, apiPath, { body, raw = false, timeout = 300000 } = {}) {
+  return new Promise((resolve, reject) => {
+    const data = body ? JSON.stringify(body) : null
+    const req = http.request(
+      {
+        socketPath: DOCKER_SOCKET,
+        path: apiPath,
+        method,
+        headers: { 'Content-Type': 'application/json', ...(data ? { 'Content-Length': Buffer.byteLength(data) } : {}) },
+      },
+      (res) => {
+        let chunks = ''
+        res.on('data', (c) => (chunks += c))
+        res.on('end', () => {
+          if (res.statusCode >= 400) return reject(new Error(`Docker API ${method} ${apiPath} -> ${res.statusCode}: ${chunks.slice(0, 300)}`))
+          if (raw) return resolve(chunks)
+          try {
+            resolve(chunks ? JSON.parse(chunks) : {})
+          } catch {
+            resolve(chunks)
+          }
+        })
+      },
+    )
+    req.setTimeout(timeout, () => req.destroy(new Error(`Docker API ${apiPath} timed out`)))
+    req.on('error', reject)
+    if (data) req.write(data)
+    req.end()
+  })
+}
+
+const splitImageRef = (ref) => {
+  const slash = ref.lastIndexOf('/')
+  const colon = ref.lastIndexOf(':')
+  if (colon > slash) return { name: ref.slice(0, colon), tag: ref.slice(colon + 1) }
+  return { name: ref, tag: 'latest' }
+}
+
+// Self-update via the Docker socket. Throws on any failure so the caller can
+// surface a clear error (and the UI can fall back to the manual command).
+async function dockerSelfUpdate() {
+  const selfId = process.env.HOSTNAME || os.hostname()
+  const inspect = await dockerApi('GET', `/containers/${selfId}/json`)
+  const imageRef = inspect.Config?.Image
+  if (!imageRef) throw new Error('Could not determine the running image')
+  const oldName = (inspect.Name || '').replace(/^\//, '')
+
+  // Pull the current tag (e.g. :latest) so it now resolves to the newest digest,
+  // and make sure the helper image is present.
+  const { name, tag } = splitImageRef(imageRef)
+  await dockerApi('POST', `/images/create?fromImage=${encodeURIComponent(name)}&tag=${encodeURIComponent(tag)}`, { raw: true })
+  const helper = splitImageRef(UPDATE_HELPER_IMAGE)
+  await dockerApi('POST', `/images/create?fromImage=${encodeURIComponent(helper.name)}&tag=${encodeURIComponent(helper.tag)}`, { raw: true })
+
+  // Clone the running container's resolved config onto the new image. Using the
+  // live config (not the compose file) keeps env/secrets intact regardless of
+  // how they were supplied.
+  const cfg = inspect.Config || {}
+  const nets = inspect.NetworkSettings?.Networks || {}
+  const shortId = (inspect.Id || '').slice(0, 12)
+  const EndpointsConfig = {}
+  for (const [netName, n] of Object.entries(nets)) {
+    EndpointsConfig[netName] = { Aliases: (n.Aliases || []).filter((a) => a !== shortId) }
+  }
+  const spec = {
+    Image: imageRef,
+    Env: cfg.Env,
+    Cmd: cfg.Cmd,
+    Entrypoint: cfg.Entrypoint,
+    Labels: cfg.Labels,
+    WorkingDir: cfg.WorkingDir,
+    ExposedPorts: cfg.ExposedPorts,
+    Volumes: cfg.Volumes,
+    HostConfig: inspect.HostConfig,
+    NetworkingConfig: { EndpointsConfig },
+  }
+  const created = await dockerApi('POST', `/containers/create?name=${encodeURIComponent(oldName)}-update-${Date.now()}`, { body: spec })
+  const newId = created.Id
+
+  // Hand the swap to a detached helper: it stops+removes us, takes our name, and
+  // starts the new container. AutoRemove cleans the helper up afterwards.
+  const script = `sleep 2; docker stop ${selfId}; docker rm -f ${selfId}; docker rename ${newId} ${oldName}; docker start ${newId}`
+  const helperC = await dockerApi('POST', '/containers/create', {
+    body: {
+      Image: UPDATE_HELPER_IMAGE,
+      Cmd: ['sh', '-c', script],
+      HostConfig: { AutoRemove: true, Binds: [`${DOCKER_SOCKET}:/var/run/docker.sock`] },
+    },
+  })
+  await dockerApi('POST', `/containers/${helperC.Id}/start`)
+  return { newContainerId: newId }
+}
+
+// A user is an "instance admin" for update purposes if they're an admin of any
+// workspace (updates are instance-wide, not scoped to one workspace).
+const isAnyWorkspaceAdmin = (userId) =>
+  !!meta.prepare("SELECT 1 FROM workspace_members WHERE user_id = ? AND role = 'admin' LIMIT 1").get(userId)
+const requireSystemAdmin = (req, res) => {
+  const user = requireAuth(req, res)
+  if (!user) return null
+  if (!isAnyWorkspaceAdmin(user.id)) {
+    res.status(403).json({ error: 'Admin access required' })
+    return null
+  }
+  return user
+}
+
+async function fetchJson(url, { headers = {}, timeout = 8000 } = {}) {
+  const ctrl = new AbortController()
+  const t = setTimeout(() => ctrl.abort(), timeout)
+  try {
+    const res = await fetch(url, { headers: { 'User-Agent': 'tabletsgo', Accept: 'application/json', ...headers }, signal: ctrl.signal })
+    if (!res.ok) throw new Error(`${url} -> ${res.status}`)
+    return await res.json()
+  } finally {
+    clearTimeout(t)
+  }
+}
+
+const parseSemver = (v) => {
+  const m = String(v || '').replace(/^v/, '').match(/^(\d+)\.(\d+)\.(\d+)/)
+  return m ? [+m[1], +m[2], +m[3]] : null
+}
+// >0 if a newer than b, <0 if older, 0 if equal/unparseable.
+const cmpSemver = (a, b) => {
+  const pa = parseSemver(a)
+  const pb = parseSemver(b)
+  if (!pa || !pb) return 0
+  for (let i = 0; i < 3; i++) if (pa[i] !== pb[i]) return pa[i] - pb[i]
+  return 0
+}
+
+// Resolve the update state from GitHub Releases + the release.json contract.
+// Never throws — network failure degrades to { unreachable: true }.
+async function computeUpdateInfo() {
+  const current = { version: APP_VERSION, sha: GIT_SHA }
+  const base = {
+    current,
+    applyMethod: updateApplyMethod(),
+    checkedAt: Date.now(),
+  }
+  try {
+    const releases = await fetchJson(`https://api.github.com/repos/${UPDATE_REPO}/releases?per_page=10`)
+    const published = (Array.isArray(releases) ? releases : []).filter((r) => !r.draft)
+    if (!published.length) {
+      return { ...base, latest: null, updateAvailable: false, image: `${UPDATE_IMAGE}:latest`, releases: [] }
+    }
+    const latestRel = published[0]
+    const latestTag = (latestRel.tag_name || '').replace(/^v/, '')
+
+    // release.json is the machine-readable contract; fall back to tag-only.
+    let contract = {}
+    const asset = (latestRel.assets || []).find((a) => a.name === 'release.json')
+    if (asset) {
+      try {
+        contract = await fetchJson(asset.browser_download_url)
+      } catch {
+        // Missing/broken contract — treat as a plain tagged release.
+      }
+    }
+    const latest = { version: contract.version || latestTag, sha: contract.sha || null }
+    const versionDelta = cmpSemver(latest.version, current.version)
+    const shaDiffers = !!(contract.sha && current.sha && current.sha !== 'dev' && contract.sha !== current.sha)
+    const updateAvailable = versionDelta > 0 || (versionDelta === 0 && shaDiffers)
+
+    const minUpgradeFrom = contract.minUpgradeFrom || null
+    const upgradeBlocked = !!(minUpgradeFrom && cmpSemver(current.version, minUpgradeFrom) < 0)
+
+    const notes = published
+      .filter((r) => cmpSemver((r.tag_name || '').replace(/^v/, ''), current.version) > 0)
+      .map((r) => ({
+        version: (r.tag_name || '').replace(/^v/, ''),
+        name: r.name || r.tag_name,
+        notes: r.body || '',
+        url: r.html_url,
+        publishedAt: r.published_at,
+      }))
+
+    return {
+      ...base,
+      latest,
+      updateAvailable,
+      breaking: !!contract.breaking,
+      migrations: !!contract.migrations,
+      minUpgradeFrom,
+      upgradeBlocked,
+      image: `${UPDATE_IMAGE}:${latest.version}`,
+      releases: notes,
+    }
+  } catch (e) {
+    return { ...base, latest: null, updateAvailable: false, unreachable: true, error: e.message, image: `${UPDATE_IMAGE}:latest`, releases: [] }
+  }
+}
+
+// The running app's identity — cheap; used by the wizard's verify-poll.
+app.get('/api/system/version', (req, res) => {
+  if (!requireAuth(req, res)) return
+  res.json({ name: APP_NAME, version: APP_VERSION, sha: GIT_SHA })
+})
+
+// Check for a newer release (cached ~30 min; ?refresh=1 bypasses the cache).
+app.get('/api/system/update/check', async (req, res) => {
+  if (!requireAuth(req, res)) return
+  const refresh = req.query.refresh === '1' || req.query.refresh === 'true'
+  if (!refresh && updateCache && Date.now() - updateCache.at < UPDATE_CACHE_MS) {
+    return res.json(updateCache.data)
+  }
+  const data = await computeUpdateInfo()
+  updateCache = { at: Date.now(), data }
+  res.json(data)
+})
+
+// Snapshot the metadata DB before updating (rollback insurance).
+app.post('/api/system/backup', async (req, res) => {
+  if (!requireSystemAdmin(req, res)) return
+  try {
+    fs.mkdirSync(BACKUPS_DIR, { recursive: true })
+    const file = `app-${APP_VERSION}-${Date.now()}.db`
+    const dest = path.join(BACKUPS_DIR, file)
+    await meta.backup(dest)
+    res.json({ ok: true, file, sizeBytes: fs.statSync(dest).size, createdAt: Date.now() })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// Download a previously-taken snapshot.
+app.get('/api/system/backup/:file/download', (req, res) => {
+  if (!requireSystemAdmin(req, res)) return
+  const safe = path.basename(req.params.file)
+  const full = path.join(BACKUPS_DIR, safe)
+  if (path.dirname(full) !== BACKUPS_DIR || !fs.existsSync(full)) {
+    return res.status(404).json({ error: 'Backup not found' })
+  }
+  res.download(full, safe)
+})
+
+// Pre-flight validation before applying an update.
+app.get('/api/system/preflight', (req, res) => {
+  if (!requireSystemAdmin(req, res)) return
+  const checks = []
+
+  try {
+    const r = meta.pragma('integrity_check', { simple: true })
+    checks.push({ id: 'integrity', label: 'Metadata database integrity', status: r === 'ok' ? 'pass' : 'fail', detail: r === 'ok' ? 'No corruption detected' : String(r) })
+  } catch (e) {
+    checks.push({ id: 'integrity', label: 'Metadata database integrity', status: 'fail', detail: e.message })
+  }
+
+  try {
+    fs.mkdirSync(BACKUPS_DIR, { recursive: true })
+    const st = fs.statfsSync(BACKUPS_DIR)
+    const freeBytes = st.bavail * st.bsize
+    const metaSize = fs.existsSync(META_DB_PATH) ? fs.statSync(META_DB_PATH).size : 0
+    const ok = freeBytes > metaSize * 3 + 50e6
+    checks.push({ id: 'disk', label: 'Free disk for snapshot', status: ok ? 'pass' : 'warn', detail: `${Math.round(freeBytes / 1e6)} MB free` })
+  } catch {
+    checks.push({ id: 'disk', label: 'Free disk for snapshot', status: 'warn', detail: 'Could not determine free space' })
+  }
+
+  const applyMethod = updateApplyMethod()
+  checks.push({
+    id: 'apply',
+    label: 'Update apply method',
+    status: applyMethod === 'docker' ? 'pass' : 'warn',
+    detail:
+      applyMethod === 'docker'
+        ? 'Docker socket detected — one-click self-update available'
+        : 'No Docker socket — a manual pull will be required',
+  })
+
+  const info = updateCache?.data
+  if (info?.upgradeBlocked) {
+    checks.push({ id: 'path', label: 'Upgrade path', status: 'fail', detail: `Upgrade from ${info.minUpgradeFrom}+ required first — step through intermediate versions` })
+  } else if (info?.breaking) {
+    checks.push({ id: 'breaking', label: 'Breaking changes', status: 'warn', detail: 'This release contains breaking changes — review the changelog' })
+  }
+
+  res.json({ checks })
+})
+
+// Trigger the update. Self-updates via the Docker socket when available; without
+// it, returns the manual command for the UI to display.
+app.post('/api/system/update/apply', async (req, res) => {
+  if (!requireSystemAdmin(req, res)) return
+  const tag = (req.body && req.body.tag) || updateCache?.data?.latest?.version || 'latest'
+
+  if (dockerSelfUpdateAvailable()) {
+    try {
+      const r = await dockerSelfUpdate()
+      return res.json({ ok: true, method: 'docker', message: 'Pulling the new image and recreating the container — this will restart shortly.', ...r })
+    } catch (e) {
+      console.error('Docker self-update failed:', e.message)
+      return res.status(500).json({ error: `Docker self-update failed: ${e.message}` })
+    }
+  }
+
+  res.json({ ok: false, method: 'manual', command: 'docker compose pull && docker compose up -d', image: `${UPDATE_IMAGE}:${tag}` })
+})
+
+// Health check — also carries boot readiness + identity for the update flow.
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok' })
+  res.json({ status: bootReady ? 'ok' : 'starting', ready: bootReady, version: APP_VERSION, sha: GIT_SHA })
 })
 
 // Serve the built frontend (production) with SPA fallback for client routes.

@@ -15,7 +15,8 @@ jobs:
   build-and-push:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      # write: attach the release.json update contract to the GitHub Release.
+      contents: write
       packages: write
 
     steps:
@@ -49,6 +50,11 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest
 
+      # Version = the tag without the leading "v" (e.g. v0.16.0 -> 0.16.0).
+      - name: Derive version
+        id: ver
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
@@ -57,5 +63,36 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Baked into the image so the running app reports its own identity and
+          # the in-app update checker can compare (version, sha).
+          build-args: |
+            APP_VERSION=${{ steps.ver.outputs.version }}
+            GIT_SHA=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Publish the machine-readable update contract onto the GitHub Release. The
+      # in-app checker reads this to compare identity and drive the update wizard
+      # (force-backup on migrations, warn on breaking, block unsafe jumps via
+      # minUpgradeFrom). Maintainers can enrich the flags per release: set repo
+      # variables MIN_UPGRADE_FROM and, per release, mark breaking/migrations by
+      # editing the asset — defaults are safe (non-breaking, no forced backup).
+      - name: Publish release.json contract
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.ver.outputs.version }}
+          SHA: ${{ github.sha }}
+          MIN_UPGRADE_FROM: ${{ vars.MIN_UPGRADE_FROM }}
+        run: |
+          cat > release.json <<EOF
+          {
+            "version": "${VERSION}",
+            "sha": "${SHA:0:7}",
+            "channel": "stable",
+            "breaking": false,
+            "migrations": false,
+            "minUpgradeFrom": "${MIN_UPGRADE_FROM}"
+          }
+          EOF
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --generate-notes
+          gh release upload "$GITHUB_REF_NAME" release.json --clobber

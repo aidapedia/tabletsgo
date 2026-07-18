@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/features/auth'
 import { WorkspaceSwitcher } from '@/features/workspaces'
+import { UpdateBanner } from '@/features/system-update'
 import NavItem from '@/shared/ui/navigation/NavItem'
 import IconButton from '@/shared/ui/buttons/IconButton'
 import { BellIcon, BuildingIcon, CloudIcon, DatabaseIcon, GridIcon, Logo, LogoutIcon, MenuIcon, SettingsIcon } from '@/shared/ui/icons'
@@ -116,6 +117,7 @@ export default function HomeLayout() {
         </div>
 
         <main className="min-h-0 flex-1 overflow-y-auto px-8 py-10 max-[600px]:px-4 max-[600px]:py-7">
+          <UpdateBanner />
           <Outlet />
         </main>
       </div>
