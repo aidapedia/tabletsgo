@@ -11,4 +11,5 @@ export {
   DEFAULT_DIRECT_EXECUTE,
 } from './stores/SettingsContext'
 export { default as AppearanceSetting } from './components/AppearanceSetting'
+export { default as DensitySetting } from './components/DensitySetting'
 export { default as DataSetting } from './components/DataSetting'
