@@ -28,6 +28,7 @@ import {
   DeleteObjectsCommand,
 } from '@aws-sdk/client-s3'
 import pkg from 'pg'
+import { migrate } from './server/migrations.js'
 const { Client, Pool } = pkg
 
 const execFileAsync = promisify(execFile)
@@ -77,10 +78,6 @@ if (!APP_VERSION) {
 const GIT_SHA = process.env.GIT_SHA || 'dev'
 const APP_NAME = 'tabletsgo'
 
-// Bumped whenever initMetaDb()'s schema changes in a way worth snapshotting the
-// meta DB before. PRAGMA user_version persists the applied value inside the DB.
-const META_SCHEMA_VERSION = 1
-
 // App-level snapshots of the meta DB (users/connections/etc.) — distinct from the
 // S3 database backups feature. Both the boot pre-migration snapshot and the
 // update wizard's manual backup land here.
@@ -129,254 +126,26 @@ function decryptSecret(payload, key = CRED_KEY) {
 }
 
 function initMetaDb() {
-  // Migration safety: if the persisted meta-schema version is behind the code's
-  // and this is an existing install (has a users table), snapshot the DB before
-  // touching it so a bad upgrade can be rolled back by restoring the file.
-  const persistedSchemaVersion = meta.pragma('user_version', { simple: true })
-  const hadSchema = !!meta.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'users'").get()
-  if (persistedSchemaVersion < META_SCHEMA_VERSION && hadSchema) {
-    try {
-      const dest = path.join(BACKUPS_DIR, `pre-migrate-v${persistedSchemaVersion}-${Date.now()}.db`)
-      const size = snapshotMetaSync(dest)
-      console.log(`🛟 Pre-migration meta snapshot: ${dest} (${size} bytes)`)
-    } catch (e) {
-      console.error('⚠️  Pre-migration snapshot failed:', e.message)
-    }
-  }
-
-  meta.exec(`
-    CREATE TABLE IF NOT EXISTS users (
-      id TEXT PRIMARY KEY,
-      username TEXT UNIQUE NOT NULL,
-      password_hash TEXT NOT NULL,
-      name TEXT,
-      role TEXT
-    );
-    CREATE TABLE IF NOT EXISTS connections (
-      id TEXT PRIMARY KEY,
-      data TEXT,
-      created_at INTEGER
-    );
-    CREATE TABLE IF NOT EXISTS schema_migrations (
-      id TEXT PRIMARY KEY,
-      connection_id TEXT NOT NULL,
-      version INTEGER NOT NULL,
-      forward_sql TEXT NOT NULL,   -- JSON array of executed statements
-      rollback_sql TEXT,           -- JSON array, same length, null entries where not reversible
-      reversible INTEGER NOT NULL, -- 0/1 — false if any statement lacks a rollback
-      status TEXT,                 -- 'active' | 'rollbacked' (NULL on legacy rows = active)
-      executor_id TEXT,
-      executor_name TEXT,
-      ts INTEGER
-    );
-    CREATE TABLE IF NOT EXISTS saved_queries (
-      id TEXT PRIMARY KEY,
-      connection_id TEXT NOT NULL,
-      name TEXT NOT NULL,
-      sql TEXT NOT NULL,
-      kind TEXT,
-      ts INTEGER
-    );
-    CREATE TABLE IF NOT EXISTS saved_folders (
-      id TEXT PRIMARY KEY,
-      connection_id TEXT NOT NULL,
-      name TEXT NOT NULL,
-      ts INTEGER
-    );
-    -- Domains: named, colored groupings for a connection's tables. A domain is
-    -- an entity (name + color); table_domains maps each table to exactly one
-    -- domain (UNIQUE per table), so tables can be grouped by domain.
-    CREATE TABLE IF NOT EXISTS domains (
-      id TEXT PRIMARY KEY,
-      connection_id TEXT NOT NULL,
-      name TEXT NOT NULL,
-      color TEXT,                  -- hex color string, e.g. '#6366f1'
-      ts INTEGER
-    );
-    CREATE TABLE IF NOT EXISTS table_domains (
-      id TEXT PRIMARY KEY,
-      connection_id TEXT NOT NULL,
-      table_name TEXT NOT NULL,
-      domain_id TEXT NOT NULL,
-      ts INTEGER,
-      UNIQUE(connection_id, table_name)   -- one domain per table
-    );
-    CREATE INDEX IF NOT EXISTS idx_table_domains_conn ON table_domains(connection_id);
-    CREATE TABLE IF NOT EXISTS workflows (
-      id TEXT PRIMARY KEY,
-      connection_id TEXT NOT NULL,
-      name TEXT NOT NULL,
-      graph TEXT,                  -- JSON { nodes, edges }
-      ts INTEGER
-    );
-    CREATE TABLE IF NOT EXISTS dashboards (
-      id TEXT PRIMARY KEY,
-      connection_id TEXT NOT NULL,
-      name TEXT NOT NULL,
-      config TEXT,                 -- JSON { variables, widgets }
-      ts INTEGER
-    );
-    CREATE TABLE IF NOT EXISTS storage_destinations (
-      id TEXT PRIMARY KEY,
-      workspace_id TEXT NOT NULL,
-      name TEXT NOT NULL,
-      endpoint TEXT,              -- custom endpoint (MinIO/R2/B2/…); null = AWS default
-      region TEXT,
-      bucket TEXT NOT NULL,
-      path_prefix TEXT,
-      force_path_style INTEGER,   -- 0/1 — required by most non-AWS S3-compatible services
-      credentials TEXT,           -- AES-256-GCM: JSON {accessKeyId, secretAccessKey, sessionToken?}
-      created_at INTEGER,
-      updated_at INTEGER
-    );
-    CREATE TABLE IF NOT EXISTS workflow_runs (
-      id TEXT PRIMARY KEY,
-      workflow_id TEXT NOT NULL,
-      connection_id TEXT NOT NULL,  -- denormalized for the calendar aggregate query
-      trigger_kind TEXT NOT NULL,   -- 'manual' | 'schedule'
-      status TEXT NOT NULL,         -- 'success' | 'failed'
-      log TEXT,                     -- JSON: the per-node log[] runWorkflow() produces
-      error TEXT,
-      started_at INTEGER NOT NULL,
-      finished_at INTEGER,
-      ts INTEGER NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_workflow_runs_conn_day ON workflow_runs(connection_id, started_at);
-    CREATE TABLE IF NOT EXISTS backup_schedules (
-      id TEXT PRIMARY KEY,
-      connection_id TEXT NOT NULL UNIQUE,
-      frequency TEXT NOT NULL,        -- 'hourly' | 'daily'
-      hour_of_day INTEGER,
-      destination_ids TEXT,           -- JSON array
-      retry_limit INTEGER DEFAULT 0,
-      retry_delay_sec INTEGER DEFAULT 60,
-      retention_days INTEGER DEFAULT 0,
-      encrypt INTEGER DEFAULT 0,
-      enabled INTEGER DEFAULT 1,
-      next_run_at INTEGER,
-      created_at INTEGER,
-      updated_at INTEGER
-    );
-    CREATE TABLE IF NOT EXISTS backup_runs (
-      id TEXT PRIMARY KEY,
-      connection_id TEXT NOT NULL,
-      schedule_id TEXT NOT NULL,
-      trigger_kind TEXT NOT NULL,     -- 'manual' | 'schedule' | 'retry'
-      status TEXT NOT NULL,           -- 'success' | 'failed'
-      error TEXT,
-      uploads TEXT,                   -- JSON: [{destinationId, ok, key?, sizeBytes?, encrypted?, error?, prunedCount?, deleted?}]
-      started_at INTEGER NOT NULL,
-      finished_at INTEGER,
-      ts INTEGER NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_backup_runs_conn_day ON backup_runs(connection_id, started_at);
-    CREATE TABLE IF NOT EXISTS query_history (
-      id TEXT PRIMARY KEY,
-      connection_id TEXT NOT NULL,
-      table_name TEXT,
-      query TEXT NOT NULL,
-      status TEXT NOT NULL,        -- 'success' | 'failed'
-      latency INTEGER,             -- execution latency in ms
-      error TEXT,
-      executor_id TEXT,
-      executor_name TEXT,
-      ts INTEGER                   -- execution time (epoch ms)
-    );
-    CREATE TABLE IF NOT EXISTS workspaces (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      settings TEXT,               -- JSON: { smtp: {...} }
-      created_at INTEGER
-    );
-    CREATE TABLE IF NOT EXISTS workspace_members (
-      id TEXT PRIMARY KEY,
-      workspace_id TEXT NOT NULL,
-      user_id TEXT NOT NULL,
-      role TEXT NOT NULL,          -- 'admin' | 'member'
-      created_at INTEGER,
-      UNIQUE(workspace_id, user_id)
-    );
-    CREATE TABLE IF NOT EXISTS teams (
-      id TEXT PRIMARY KEY,
-      workspace_id TEXT NOT NULL,
-      name TEXT NOT NULL,
-      created_at INTEGER
-    );
-    CREATE TABLE IF NOT EXISTS team_members (
-      id TEXT PRIMARY KEY,
-      team_id TEXT NOT NULL,
-      user_id TEXT NOT NULL,
-      created_at INTEGER,
-      UNIQUE(team_id, user_id)
-    );
-    CREATE INDEX IF NOT EXISTS idx_team_members_team ON team_members(team_id);
-    -- Generic principal assignment for a connection. Empty set = open to all
-    -- workspace members (backward compatible); any row restricts access to the
-    -- listed teams' members + listed users (+ workspace admins, always).
-    CREATE TABLE IF NOT EXISTS connection_access (
-      id TEXT PRIMARY KEY,
-      connection_id TEXT NOT NULL,
-      principal_type TEXT NOT NULL,   -- 'team' | 'user'
-      principal_id TEXT NOT NULL,
-      created_at INTEGER,
-      UNIQUE(connection_id, principal_type, principal_id)
-    );
-    CREATE INDEX IF NOT EXISTS idx_connection_access_conn ON connection_access(connection_id);
-    CREATE TABLE IF NOT EXISTS sessions (
-      token TEXT PRIMARY KEY,
-      user_id TEXT NOT NULL,
-      created_at INTEGER
-    );
-  `)
-  // Migrate older DBs that predate these columns.
-  const addColumn = (table, col) => {
-    const name = col.split(' ')[0]
-    try {
-      meta.prepare(`SELECT ${name} FROM ${table} LIMIT 1`).get()
-    } catch {
-      meta.exec(`ALTER TABLE ${table} ADD COLUMN ${col}`)
-    }
-  }
-  addColumn('saved_queries', 'kind TEXT')
-  addColumn('saved_queries', 'folder_id TEXT')
-  // Folders can nest: parent_id points at another saved_folders row (NULL = root).
-  addColumn('saved_folders', 'parent_id TEXT')
-  // Invited members: username holds the email, password blank until accepted.
-  addColumn('users', "status TEXT")           // 'active' | 'pending'
-  addColumn('users', 'invite_token TEXT')
-  addColumn('users', 'invite_workspace TEXT')
-  addColumn('users', 'token_expires INTEGER')
-  // Password reset (separate from invite tokens so the two never collide).
-  addColumn('users', 'reset_token TEXT')
-  addColumn('users', 'reset_expires INTEGER')
-  meta.exec(`UPDATE users SET status = 'active' WHERE status IS NULL`)
-  // Connections: split the old opaque `data` blob into plain generic columns +
-  // an encrypted `credentials` blob (see the backfill below).
-  addColumn('connections', 'type TEXT')
-  addColumn('connections', 'name TEXT')
-  addColumn('connections', 'workspace_id TEXT')
-  addColumn('connections', 'environment TEXT')
-  addColumn('connections', 'folder TEXT')
-  addColumn('connections', 'tags TEXT')
-  addColumn('connections', 'credentials TEXT')
-  addColumn('connections', 'schema_version INTEGER')
-  addColumn('connections', 'updated_at INTEGER')
-  // Owner = the user who created the connection (defaults on create).
-  addColumn('connections', 'owner_id TEXT')
-  // Schema migrations: status tracks whether a version is still applied
-  // ('active') or has been undone via rollback ('rollbacked'). Old rows predate
-  // this column — treat NULL as active.
-  addColumn('schema_migrations', "status TEXT")
-  meta.exec(`UPDATE schema_migrations SET status = 'active' WHERE status IS NULL`)
-  // Workflows: protected = undeletable (e.g. the auto-created backup workflow);
-  // schedule_enabled/next_run_at drive the cron scheduler (see runDueWorkflows).
-  addColumn('workflows', 'protected INTEGER DEFAULT 0')
-  addColumn('workflows', 'schedule_enabled INTEGER DEFAULT 0')
-  addColumn('workflows', 'next_run_at INTEGER')
-
-  const hasUsers = !!meta.prepare('SELECT 1 FROM users LIMIT 1').get()
+  // Versioned, stepped migrations (see server/migrations.js): each pending step
+  // runs in its own transaction and stamps PRAGMA user_version. The snapshot
+  // hook copies the meta DB to data/backups/ before the first pending step
+  // touches an existing install, so a bad upgrade can be rolled back by
+  // restoring the file.
+  migrate(meta, {
+    encryptSecret,
+    snapshot(fromVersion) {
+      try {
+        const dest = path.join(BACKUPS_DIR, `pre-migrate-v${fromVersion}-${Date.now()}.db`)
+        const size = snapshotMetaSync(dest)
+        console.log(`🛟 Pre-migration meta snapshot: ${dest} (${size} bytes)`)
+      } catch (e) {
+        console.error('⚠️  Pre-migration snapshot failed:', e.message)
+      }
+    },
+  })
 
   // Optional pre-seed from env — skips the first-run setup wizard.
+  const hasUsers = !!meta.prepare('SELECT 1 FROM users LIMIT 1').get()
   if (!hasUsers && process.env.ADMIN_USERNAME && process.env.ADMIN_PASSWORD) {
     const uid = randomUUID()
     const wid = randomUUID()
@@ -392,69 +161,6 @@ function initMetaDb() {
       .run(randomUUID(), wid, uid, 'admin', now)
     console.log(`🌱 Seeded admin ${process.env.ADMIN_USERNAME} + workspace`)
   }
-
-  // Migrate pre-workspace installs: create a Default workspace, enroll existing
-  // users, and attach existing connections to it.
-  if (hasUsers && !meta.prepare('SELECT 1 FROM workspaces LIMIT 1').get()) {
-    const wid = randomUUID()
-    const now = Date.now()
-    meta.prepare('INSERT INTO workspaces (id, name, settings, created_at) VALUES (?, ?, ?, ?)').run(wid, 'Default Workspace', '{}', now)
-    meta
-      .prepare('SELECT id, role FROM users')
-      .all()
-      .forEach((u, i) => {
-        meta
-          .prepare('INSERT OR IGNORE INTO workspace_members (id, workspace_id, user_id, role, created_at) VALUES (?, ?, ?, ?, ?)')
-          .run(randomUUID(), wid, u.id, u.role === 'admin' || i === 0 ? 'admin' : 'member', now)
-      })
-    for (const row of meta.prepare('SELECT id, data FROM connections').all()) {
-      const data = JSON.parse(row.data)
-      if (!data.workspaceId) {
-        data.workspaceId = wid
-        meta.prepare('UPDATE connections SET data = ? WHERE id = ?').run(JSON.stringify(data), row.id)
-      }
-    }
-    console.log('🔁 Migrated existing users/connections into Default Workspace')
-  }
-
-  // Backfill legacy connections (still holding everything in the opaque `data`
-  // blob) into the new columns: generic fields as plain columns, the rest
-  // (host/port/username/password/…) encrypted into `credentials`.
-  const legacyRows = meta.prepare('SELECT id, data, created_at FROM connections WHERE type IS NULL AND data IS NOT NULL').all()
-  if (legacyRows.length) {
-    for (const row of legacyRows) {
-      let data
-      try {
-        data = JSON.parse(row.data)
-      } catch {
-        continue
-      }
-      const { id, name, type, workspaceId, environment, folder, tags, ...credentials } = data
-      meta
-        .prepare(
-          // `data` still has a NOT NULL constraint on installs predating this
-          // migration (it was created with `data TEXT NOT NULL`) — clear its
-          // plaintext contents with a harmless placeholder rather than NULL.
-          `UPDATE connections SET type = ?, name = ?, workspace_id = ?, environment = ?, folder = ?, tags = ?, credentials = ?, schema_version = ?, updated_at = ?, data = '{}' WHERE id = ?`
-        )
-        .run(
-          type || null,
-          name || null,
-          workspaceId || null,
-          environment || null,
-          folder || null,
-          JSON.stringify(tags || []),
-          encryptSecret(JSON.stringify(credentials)),
-          1,
-          row.created_at || Date.now(),
-          row.id
-        )
-    }
-    console.log(`🔐 Migrated ${legacyRows.length} connection(s) to encrypted credential storage`)
-  }
-
-  // Record the applied meta-schema version so future boots know what's migrated.
-  meta.pragma(`user_version = ${META_SCHEMA_VERSION}`)
 }
 initMetaDb()
 bootReady = true
