@@ -38,32 +38,7 @@ export default function UpdateWizard({ onClose }: { onClose: () => void }) {
   const [preflightNonce, setPreflightNonce] = useState(0)
 
   const latestVersion = info?.latest?.version || ''
-  const migrationsRequired = !!info?.migrations
   const upgradeBlocked = !!info?.upgradeBlocked
-
-  // Auto-run pre-flight when entering that step (idempotent read).
-  useEffect(() => {
-    if (step !== 2) return
-    let cancelled = false
-    setChecks(null)
-    runPreflight().then((c) => !cancelled && setChecks(c))
-    return () => {
-      cancelled = true
-    }
-  }, [step, preflightNonce])
-
-  // Poll for the new container once on the Verify step.
-  useEffect(() => {
-    if (step !== 4 || !latestVersion) return
-    let cancelled = false
-    setVerify('polling')
-    pollUntilVersion(latestVersion).then((ok) => !cancelled && setVerify(ok ? 'done' : 'timeout'))
-    return () => {
-      cancelled = true
-    }
-  }, [step, latestVersion, verifyNonce])
-
-  if (!info) return null
 
   const doBackup = async () => {
     setBusy(true)
@@ -92,6 +67,39 @@ export default function UpdateWizard({ onClose }: { onClose: () => void }) {
     }
   }
 
+  // Snapshot is always taken automatically on entering the Backup step — every
+  // update is protected by a rollback point, no manual click required.
+  useEffect(() => {
+    // Guarded one-shot per step entry — the backup/busy checks keep it from
+    // re-firing even though doBackup is recreated each render.
+    if (step !== 1 || backup || busy || !isAdmin) return
+    doBackup()
+  }, [step, backup, busy, isAdmin])
+
+  // Auto-run pre-flight when entering that step (idempotent read).
+  useEffect(() => {
+    if (step !== 2) return
+    let cancelled = false
+    setChecks(null)
+    runPreflight().then((c) => !cancelled && setChecks(c))
+    return () => {
+      cancelled = true
+    }
+  }, [step, preflightNonce])
+
+  // Poll for the new container once on the Verify step.
+  useEffect(() => {
+    if (step !== 4 || !latestVersion) return
+    let cancelled = false
+    setVerify('polling')
+    pollUntilVersion(latestVersion).then((ok) => !cancelled && setVerify(ok ? 'done' : 'timeout'))
+    return () => {
+      cancelled = true
+    }
+  }, [step, latestVersion, verifyNonce])
+
+  if (!info) return null
+
   const hasFail = (checks || []).some((c) => c.status === 'fail')
 
   // Footer wiring per step.
@@ -106,8 +114,9 @@ export default function UpdateWizard({ onClose }: { onClose: () => void }) {
     nextDisabled = upgradeBlocked
   } else if (step === 1) {
     onNext = () => setStep(2)
-    nextLabel = backup ? 'Continue' : 'Skip backup'
-    nextDisabled = migrationsRequired && !backup
+    nextLabel = busy ? 'Creating snapshot…' : 'Continue'
+    // Snapshot is mandatory — can't proceed until it's captured.
+    nextDisabled = !backup || busy
   } else if (step === 2) {
     onNext = () => setStep(3)
     nextDisabled = !checks || hasFail
@@ -143,9 +152,7 @@ export default function UpdateWizard({ onClose }: { onClose: () => void }) {
         <ReviewStep info={info} isAdmin={isAdmin} />
       )}
 
-      {step === 1 && (
-        <BackupStep backup={backup} busy={busy} migrationsRequired={migrationsRequired} onBackup={doBackup} />
-      )}
+      {step === 1 && <BackupStep backup={backup} busy={busy} onRetry={doBackup} />}
 
       {step === 2 && <PreflightStep checks={checks} onRerun={() => setPreflightNonce((n) => n + 1)} />}
 
@@ -208,25 +215,18 @@ function ReviewStep({ info, isAdmin }: { info: NonNullable<ReturnType<typeof use
 function BackupStep({
   backup,
   busy,
-  migrationsRequired,
-  onBackup,
+  onRetry,
 }: {
   backup: BackupResult | null
   busy: boolean
-  migrationsRequired: boolean
-  onBackup: () => void
+  onRetry: () => void
 }) {
   return (
     <div className="space-y-4">
       <p className="text-[12px] leading-relaxed text-ink-dim">
-        Snapshot the app's metadata database (users, workspaces, connections, dashboards, saved
-        queries) so you can roll back if the new version misbehaves. Your connected databases are
-        not affected by an app update.
-        {migrationsRequired && (
-          <span className="mt-1 block font-medium text-amber">
-            This release runs migrations — a backup is required before continuing.
-          </span>
-        )}
+        A snapshot of the app's metadata database (users, workspaces, connections, dashboards, saved
+        queries) is created automatically before every update, so you can always roll back if the
+        new version misbehaves. Your connected databases are not affected by an app update.
       </p>
 
       {backup ? (
@@ -245,9 +245,14 @@ function BackupStep({
             Download
           </Button>
         </div>
+      ) : busy ? (
+        <div className="flex items-center gap-2 text-[12px] text-ink-dim">
+          <RefreshIcon width={16} height={16} className="animate-spin text-green-bright" />
+          Creating snapshot…
+        </div>
       ) : (
-        <Button variant="primary" size="sm" onClick={onBackup} disabled={busy}>
-          {busy ? 'Creating snapshot…' : 'Create snapshot'}
+        <Button variant="primary" size="sm" onClick={onRetry}>
+          Retry snapshot
         </Button>
       )}
     </div>

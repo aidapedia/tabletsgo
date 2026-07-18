@@ -168,7 +168,18 @@ sole `INTEGER PRIMARY KEY` on a rowid table). A column is safe to omit from an
 ## Metadata database (`data/app.db`, SQLite)
 
 The server keeps its own SQLite DB (separate from user connections) with these
-tables. Recreate these when migrating.
+tables.
+
+**Schema versioning:** the meta schema is managed by versioned, stepped
+migrations in `server/migrations.js`. `PRAGMA user_version` records the last
+applied step; on boot, every pending step runs in its own transaction (oldest
+first) and stamps `user_version` as it goes. Before the first pending step
+touches an existing install, the DB file is snapshotted to
+`data/backups/pre-migrate-v{N}-{ts}.db` so a bad upgrade can be rolled back by
+restoring the file. Steps are **append-only** (never edit a shipped step) and
+**additive-only** (no drops/renames), so an older image can still open a newer
+DB. To change the meta schema, append a new step to the `MIGRATIONS` array —
+don't edit the `CREATE TABLE` baseline (it only applies to fresh installs).
 
 ```sql
 CREATE TABLE users (
@@ -1249,7 +1260,6 @@ On network failure it degrades to `{ ..., unreachable: true, updateAvailable: fa
     "current": { "version": "0.15.2", "sha": "20f10b5" },
     "latest":  { "version": "0.16.0", "sha": "a1b2c3d" },
     "updateAvailable": true,
-    "rebuild": false,
     "breaking": false,
     "migrations": true,
     "minUpgradeFrom": "0.14.0",
@@ -1262,7 +1272,7 @@ On network failure it degrades to `{ ..., unreachable: true, updateAvailable: fa
     ]
   }
   ```
-- `rebuild` is `true` when the latest release shares the same version tag as the running build but a different commit `sha` (a moving-tag rebuild). `updateAvailable` is still `true`; the UI messages it as a rebuild rather than a version bump.
+- `updateAvailable` is purely version-tag driven: it is `true` only when the latest release version is newer than the running version. Same-version rebuilds (moving-tag re-pushes with a different commit `sha`) are ignored and never prompt an update.
 - **Example:** `GET http://localhost:3000/api/system/update/check?refresh=1`
 
 ### POST `/api/system/backup`

@@ -7,6 +7,12 @@ on:
     tags:
       - 'v*.*.*'
 
+# A re-pushed/moved tag (e.g. re-tagging after a merge) cancels the older
+# in-progress build instead of running two builds of the same version.
+concurrency:
+  group: docker-release-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
