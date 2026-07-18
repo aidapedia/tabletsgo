@@ -1211,12 +1211,102 @@ against the table's existing indexes.
 
 ---
 
+## System / Updates
+
+In-app update checking and the guided update flow. Detection compares the running
+image identity `(version, sha)` — baked at build time via the `APP_VERSION` / `GIT_SHA`
+build args — against the latest published GitHub Release and its `release.json`
+contract asset.
+
+**Applying** uses an auto-detected `applyMethod`:
+- `docker` — the Docker socket is mounted (and we're in a container). The server
+  pulls the new image and recreates its own container via the Engine API, handing
+  the final stop/rename/start swap to a short-lived detached `docker:cli` helper.
+- `manual` — no socket; the server returns the `docker compose pull` command for the UI.
+
+Reads (`/version`, `/update/check`) require any authenticated user. Mutating routes
+(`/backup`, `/backup/:file/download`, `/preflight`, `/update/apply`) require the caller
+to be an **admin of at least one workspace** — otherwise `403 { "error": "Admin access required" }`.
+
+Related env: `UPDATE_IMAGE` (default `ghcr.io/aidapedia/tabletsgo`), `UPDATE_REPO`
+(default `aidapedia/tabletsgo`), `DOCKER_SOCKET` (default `/var/run/docker.sock`),
+`UPDATE_HELPER_IMAGE` (default `docker:cli`).
+
+### GET `/api/system/version`
+The running app's identity (used by the wizard's verify-poll after a restart).
+
+- **200:** `{ "name": "tabletsgo", "version": "0.15.2", "sha": "20f10b5" }`
+- **Example:** `GET http://localhost:3000/api/system/version`
+
+### GET `/api/system/update/check?refresh=1`
+Resolve update state. Cached in-memory ~30 min; `refresh=1` bypasses the cache.
+On network failure it degrades to `{ ..., unreachable: true, updateAvailable: false }`.
+
+- **Query:** `refresh` — `1`/`true` to force a fresh fetch.
+- **200:**
+  ```json
+  {
+    "current": { "version": "0.15.2", "sha": "20f10b5" },
+    "latest":  { "version": "0.16.0", "sha": "a1b2c3d" },
+    "updateAvailable": true,
+    "breaking": false,
+    "migrations": true,
+    "minUpgradeFrom": "0.14.0",
+    "upgradeBlocked": false,
+    "image": "ghcr.io/aidapedia/tabletsgo:0.16.0",
+    "applyMethod": "webhook",
+    "checkedAt": 1752800000000,
+    "releases": [
+      { "version": "0.16.0", "name": "v0.16.0", "notes": "# What's new\n- ...", "url": "https://github.com/aidapedia/tabletsgo/releases/tag/v0.16.0", "publishedAt": "2026-07-18T00:00:00Z" }
+    ]
+  }
+  ```
+- **Example:** `GET http://localhost:3000/api/system/update/check?refresh=1`
+
+### POST `/api/system/backup`
+Snapshot the metadata DB (`app.db`) into `data/backups/` (rollback insurance). Admin only.
+
+- **200:** `{ "ok": true, "file": "app-0.15.2-1752800000000.db", "sizeBytes": 245760, "createdAt": 1752800000000 }`
+- **Example:** `POST http://localhost:3000/api/system/backup`
+
+### GET `/api/system/backup/:file/download`
+Stream a previously-taken snapshot (basename-sanitized; no path traversal). Admin only.
+
+- **200:** the `.db` file as an attachment.
+- **404:** `{ "error": "Backup not found" }`
+- **Example:** `GET http://localhost:3000/api/system/backup/app-0.15.2-1752800000000.db/download`
+
+### GET `/api/system/preflight`
+Run pre-update validation checks. Admin only.
+
+- **200:**
+  ```json
+  { "checks": [
+    { "id": "integrity", "label": "Metadata database integrity", "status": "pass", "detail": "No corruption detected" },
+    { "id": "disk", "label": "Free disk for snapshot", "status": "pass", "detail": "12040 MB free" },
+    { "id": "apply", "label": "Update apply method", "status": "warn", "detail": "No webhook — a manual pull will be required" }
+  ] }
+  ```
+  `status` is `pass` | `warn` | `fail`. A `fail` (e.g. corrupt DB, or `upgradeBlocked`) should block Apply.
+- **Example:** `GET http://localhost:3000/api/system/preflight`
+
+### POST `/api/system/update/apply`
+Trigger the update using the auto-detected `applyMethod` (docker → manual). Admin only.
+
+- **Body (optional):** `{ "tag": "0.16.0" }` — defaults to the latest known version.
+- **200 (docker):** `{ "ok": true, "method": "docker", "message": "Pulling the new image and recreating the container — this will restart shortly.", "newContainerId": "…" }`
+- **200 (manual):** `{ "ok": false, "method": "manual", "command": "docker compose pull && docker compose up -d", "image": "ghcr.io/aidapedia/tabletsgo:0.16.0" }`
+- **500 (docker self-update failed):** `{ "error": "Docker self-update failed: …" }`
+- **Example:** `POST http://localhost:3000/api/system/update/apply`
+
+---
+
 ## Health
 
 ### GET `/api/health`
-Liveness probe.
+Liveness probe. Also reports boot readiness and the running identity.
 
-- **200:** `{ "status": "ok" }`
+- **200:** `{ "status": "ok", "ready": true, "version": "0.15.2", "sha": "20f10b5" }` (`status` is `starting` until migrations finish).
 - **Example:** `GET http://localhost:3000/api/health`
 
 ---
@@ -1295,4 +1385,10 @@ Liveness probe.
 | DELETE | `/api/connections/:id/backup/runs/:runId/uploads/:destinationId` | Delete a backup version |
 | GET    | `/api/connections/:id/backup/runs/:runId/uploads/:destinationId/download` | Download a backup version |
 | POST   | `/api/connections/:id/backup/restore`     | Restore a backup version        |
-| GET    | `/api/health`                             | Health check                    |
+| GET    | `/api/system/version`                     | Running app identity (version/sha) |
+| GET    | `/api/system/update/check`                | Check for a newer release       |
+| POST   | `/api/system/backup`                      | Snapshot the metadata DB (admin) |
+| GET    | `/api/system/backup/:file/download`       | Download a meta-DB snapshot (admin) |
+| GET    | `/api/system/preflight`                   | Pre-update validation checks (admin) |
+| POST   | `/api/system/update/apply`                | Trigger the update (admin)      |
+| GET    | `/api/health`                             | Health check + readiness/identity |

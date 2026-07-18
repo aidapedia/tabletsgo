@@ -12,5 +12,7 @@ export {
   updateDashboard,
   deleteDashboard,
 } from '@/features/dashboard/lib/api'
+// Generic markdown renderer (headings/lists/inline) — reused for release notes.
+export { default as MarkdownText } from '@/features/dashboard/components/MarkdownText'
 export { sanitizeConfig } from '@/features/dashboard/types'
 export type { Dashboard, DashboardSummary, DashboardConfig, DashboardExport, Widget, DashboardVariable } from '@/features/dashboard/types'

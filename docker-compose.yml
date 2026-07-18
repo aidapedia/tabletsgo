@@ -1,10 +1,15 @@
 services:
   tabletsgo:
-    build:
-      context: .
-      args:
-        # Baked into the static frontend build. Same-origin `/api` by default.
-        VITE_API_URL: ${VITE_API_URL:-/api}
+    # Run the published image so `docker compose pull && up -d` upgrades in place
+    # (this is what the in-app update flow drives). Pin a version with TABLETSGO_TAG.
+    image: ghcr.io/aidapedia/tabletsgo:${TABLETSGO_TAG:-latest}
+    # For local development against your working tree, comment out `image:` above
+    # and uncomment this build block instead:
+    # build:
+    #   context: .
+    #   args:
+    #     # Baked into the static frontend build. Same-origin `/api` by default.
+    #     VITE_API_URL: ${VITE_API_URL:-/api}
     ports:
       - "${PORT:-3000}:3000"
     environment:
@@ -26,10 +31,23 @@ services:
       - SMTP_PASS=${SMTP_PASS:-}
       - SMTP_FROM=${SMTP_FROM:-}
       - SMTP_SECURE=${SMTP_SECURE:-}
+      # In-app update checker. UPDATE_IMAGE/UPDATE_REPO default to the official
+      # image + repo; override only for a fork. One-click apply needs the Docker
+      # socket mounted (see the volumes section) — otherwise the wizard shows the
+      # manual `docker compose pull` command.
+      - UPDATE_IMAGE=${UPDATE_IMAGE:-}
+      - UPDATE_REPO=${UPDATE_REPO:-}
     volumes:
       # Persist app metadata (users / connections / saved queries) across
       # container restarts. The demo SQLite DB re-seeds itself on a fresh start.
       - tabletsgo-data:/app/data
+      # OPTIONAL — one-click in-app updates. Mounting the Docker socket lets
+      # Tabletsgo pull the new image and recreate its own container from the
+      # Settings > Updates wizard (no Watchtower, no env config). SECURITY: the
+      # socket grants root-equivalent control of the host, and update actions are
+      # already restricted to workspace admins. Leave commented to keep updates
+      # manual (the wizard then shows a `docker compose pull` command instead).
+      # - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
 
 volumes:

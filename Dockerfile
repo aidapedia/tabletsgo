@@ -32,13 +32,26 @@ ENV VITE_API_URL=${VITE_API_URL}
 COPY . .
 RUN npm run build
 
+# Image identity, baked in so the running app can report what it is and compare
+# itself against the latest published release (the in-app update checker). CI
+# passes these; they default to package.json/"dev" for local builds.
+ARG APP_VERSION=
+ARG GIT_SHA=dev
+ENV APP_VERSION=${APP_VERSION}
+ENV GIT_SHA=${GIT_SHA}
+LABEL org.opencontainers.image.title="tabletsgo" \
+      org.opencontainers.image.version="${APP_VERSION}" \
+      org.opencontainers.image.revision="${GIT_SHA}" \
+      org.opencontainers.image.source="https://github.com/aidapedia/tabletsgo"
+
 ENV NODE_ENV=production
 ENV PORT=3000
 # Persist app metadata (users, workspaces, connections, saved queries) outside the image.
 ENV META_DB=/app/data/app.db
 # NOTE: no default admin is baked in — a fresh instance shows the first-run
 # setup wizard. Set ADMIN_USERNAME + ADMIN_PASSWORD (+ optional WORKSPACE_NAME)
-# to pre-seed and skip the wizard. SMTP_* enable invite emails. See .env.example.
+# to pre-seed and skip the wizard. SMTP_* enable invite emails. UPDATE_* wire the
+# in-app update checker (Docker-socket self-update). See .env.example.
 
 EXPOSE 3000
 CMD ["node", "server.js"]
