@@ -1349,26 +1349,29 @@ export default function Workspace() {
               <MenuIcon />
             </IconButton>
           </div>
-          <Tooltip label="New SQL query" placement="bottom">
-            <IconButton size="toolbar" onClick={() => openQuery()} aria-label="New SQL query">
-              <CodeIcon width={16} height={16} />
-            </IconButton>
-          </Tooltip>
-          <Tooltip label="New Schema diagram" placement="bottom">
-            <IconButton size="toolbar" onClick={openSchemaEditor} aria-label="New Schema diagram">
-              <DiagramIcon width={16} height={16} />
-            </IconButton>
-          </Tooltip>
-          <Tooltip label="New workflow" placement="bottom">
-            <IconButton size="toolbar" onClick={newWorkflow} aria-label="New workflow">
-              <WorkflowIcon width={16} height={16} />
-            </IconButton>
-          </Tooltip>
-          <Tooltip label="New dashboard" placement="bottom">
-            <IconButton size="toolbar" onClick={newDashboard} aria-label="New dashboard">
-              <GridIcon width={16} height={16} />
-            </IconButton>
-          </Tooltip>
+          {/* "New …" creators — folded into the ⋮ menu on mobile (see below). */}
+          <div className="flex items-center gap-3 max-[720px]:hidden">
+            <Tooltip label="New SQL query" placement="bottom">
+              <IconButton size="toolbar" onClick={() => openQuery()} aria-label="New SQL query">
+                <CodeIcon width={16} height={16} />
+              </IconButton>
+            </Tooltip>
+            <Tooltip label="New Schema diagram" placement="bottom">
+              <IconButton size="toolbar" onClick={openSchemaEditor} aria-label="New Schema diagram">
+                <DiagramIcon width={16} height={16} />
+              </IconButton>
+            </Tooltip>
+            <Tooltip label="New workflow" placement="bottom">
+              <IconButton size="toolbar" onClick={newWorkflow} aria-label="New workflow">
+                <WorkflowIcon width={16} height={16} />
+              </IconButton>
+            </Tooltip>
+            <Tooltip label="New dashboard" placement="bottom">
+              <IconButton size="toolbar" onClick={newDashboard} aria-label="New dashboard">
+                <GridIcon width={16} height={16} />
+              </IconButton>
+            </Tooltip>
+          </div>
           <input
             ref={dashboardFileRef}
             type="file"
@@ -1380,31 +1383,69 @@ export default function Workspace() {
               e.target.value = ''
             }}
           />
-          <div className="relative flex max-w-[560px] flex-1 items-center">
+          <div className="relative flex min-w-0 max-w-[560px] flex-1 items-center">
             <SearchIcon width={16} height={16} className="absolute left-3.5 text-ink-faint" />
             <input
               placeholder="Search or run commands…"
               className="w-full rounded-[10px] border border-edge bg-elevated py-[9px] pl-10 pr-3.5 text-xs text-ink outline-none"
             />
-            <kbd className="absolute right-3 rounded-[5px] border border-edge bg-card px-1.5 py-px text-[11px] text-ink-faint">⌘K</kbd>
+            <kbd className="absolute right-3 rounded-[5px] border border-edge bg-card px-1.5 py-px text-[11px] text-ink-faint max-[720px]:hidden">⌘K</kbd>
           </div>
           <div className="ml-auto flex items-center gap-2">
-            <Tooltip label="Schema version history" placement="bottom">
-              <button
-                type="button"
-                onClick={openSchemaHistory}
-                className="rounded-[20px] border border-edge bg-elevated px-[9px] py-1 text-[11px] font-medium text-ink-faint transition-colors hover:border-edge-strong hover:text-ink"
+            <div className="flex items-center gap-2 max-[720px]:hidden">
+              <Tooltip label="Schema version history" placement="bottom">
+                <button
+                  type="button"
+                  onClick={openSchemaHistory}
+                  className="rounded-[20px] border border-edge bg-elevated px-[9px] py-1 text-[11px] font-medium text-ink-faint transition-colors hover:border-edge-strong hover:text-ink"
+                >
+                  v{conn.schemaVersion ?? 1}
+                </button>
+              </Tooltip>
+              <Tooltip label="Query history" placement="bottom">
+                <IconButton size="toolbar" onClick={openHistory} aria-label="Query history">
+                  <HistoryIcon width={16} height={16} />
+                </IconButton>
+              </Tooltip>
+            </div>
+            {/* Mobile overflow: the creators + history/version that are hidden above. */}
+            <div className="hidden max-[720px]:block">
+              <Popover
+                align="right"
+                width={210}
+                trigger={({ open, toggle }) => (
+                  <IconButton size="toolbar" active={open} onClick={toggle} aria-label="More actions">
+                    <MoreVerticalIcon width={16} height={16} />
+                  </IconButton>
+                )}
               >
-                v{conn.schemaVersion ?? 1}
-              </button>
-            </Tooltip>
-            <Tooltip label="Query history" placement="bottom">
-              <IconButton size="toolbar" onClick={openHistory} aria-label="Query history">
-                <HistoryIcon width={16} height={16} />
-              </IconButton>
-            </Tooltip>
+                {({ close }) => (
+                  <div className="p-1">
+                    <MenuItem onClick={() => { openQuery(); close() }}>
+                      <CodeIcon width={14} height={14} /> New SQL query
+                    </MenuItem>
+                    <MenuItem onClick={() => { openSchemaEditor(); close() }}>
+                      <DiagramIcon width={14} height={14} /> New schema diagram
+                    </MenuItem>
+                    <MenuItem onClick={() => { newWorkflow(); close() }}>
+                      <WorkflowIcon width={14} height={14} /> New workflow
+                    </MenuItem>
+                    <MenuItem onClick={() => { newDashboard(); close() }}>
+                      <GridIcon width={14} height={14} /> New dashboard
+                    </MenuItem>
+                    <div className="my-1 h-px bg-edge" />
+                    <MenuItem onClick={() => { openHistory(); close() }}>
+                      <HistoryIcon width={14} height={14} /> Query history
+                    </MenuItem>
+                    <MenuItem onClick={() => { openSchemaHistory(); close() }}>
+                      <TagIcon width={14} height={14} /> Schema history (v{conn.schemaVersion ?? 1})
+                    </MenuItem>
+                  </div>
+                )}
+              </Popover>
+            </div>
             <Button variant="ghost" onClick={() => setChangesOpen(true)} title="View changes">
-              Changes
+              <span className="max-[720px]:hidden">Changes</span>
               <span
                 className={`rounded-[20px] px-[7px] text-xs ${
                   changes.length > 0 ? 'bg-green text-white' : 'bg-edge text-ink-faint'

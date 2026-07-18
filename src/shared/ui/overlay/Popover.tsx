@@ -5,7 +5,7 @@ import useDismiss from './useDismiss'
 // Shared panel shell — every dropdown/action menu in the app (this Popover's
 // panel, and the mouse-anchored ContextMenu) renders on this same surface.
 export const MENU_PANEL_CLASS =
-  'rounded-soft border border-edge-strong bg-elevated'
+  'rounded-soft border border-edge-strong bg-card'
 
 /**
  * Anchored popover. `trigger` is a render-prop receiving { open, toggle }.

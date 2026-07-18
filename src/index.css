@@ -138,6 +138,39 @@ html.light {
   fill: var(--color-ink-dim);
 }
 
+/* ---------- react-grid-layout (dashboard widget grid) theming ---------- */
+/* Drop preview: hidden. RGL still tracks the placeholder internally for
+   positioning, but we suppress its visual (default red fill) entirely — the
+   live drag outline is feedback enough. (Its selector has equal specificity and
+   loads after ours, so we out-specify it here.) */
+.widget-grid .react-grid-item.react-grid-placeholder {
+  background: transparent;
+  border: none;
+  opacity: 0;
+}
+/* Lift + outline the tile being dragged/resized. RGL merges .react-grid-item
+   onto the same element as .widget-grid-item, so outline the item itself. */
+.widget-grid .react-grid-item.react-draggable-dragging,
+.widget-grid .react-grid-item.resizing {
+  z-index: 20;
+  outline: 2px solid var(--color-green);
+  outline-offset: -2px;
+  border-radius: var(--radius-card);
+}
+/* SE resize handle: themed chevron, revealed on hover (matches the old design). */
+.widget-grid .react-grid-item > .react-resizable-handle {
+  opacity: 0;
+  background-image: none;
+  transition: opacity 0.15s ease;
+}
+.widget-grid .react-grid-item:hover > .react-resizable-handle {
+  opacity: 1;
+}
+.widget-grid .react-grid-item > .react-resizable-handle::after {
+  border-right-color: var(--color-ink-faint);
+  border-bottom-color: var(--color-ink-faint);
+}
+
 /* ---------- Login hero grid backdrop (not expressible as utilities) ---------- */
 @utility login-grid {
   background-image:

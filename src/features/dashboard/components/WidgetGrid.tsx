@@ -1,138 +1,194 @@
-import { useRef, useState, type ReactNode } from 'react'
-import type { Widget, WidgetLayout } from '../types'
-import { GRID_COLS, GRID_GAP, GRID_ROW_H, fits } from '../lib/grid'
-import { useSize } from '../lib/useSize'
+import { useRef, type ReactNode } from 'react'
+import { Responsive, WidthProvider, type Layout } from 'react-grid-layout'
+import 'react-grid-layout/css/styles.css'
+import 'react-resizable/css/styles.css'
+import type { Breakpoint, Widget, WidgetLayout } from '../types'
+import { BREAKPOINTS, GRID_COLS_BP, GRID_GAP, GRID_PAD, GRID_ROW_H, fits, isStoredBp, type RglBreakpoint } from '../lib/grid'
 
-const PAD = 10 // container padding
+const ResponsiveGridLayout = WidthProvider(Responsive)
+
+const PAD = GRID_PAD // container padding
 const MIN_W = 2
 const MIN_H = 2
 
-type Interaction = {
-  mode: 'move' | 'resize'
-  id: string
-  startX: number // pointer px at start
-  startY: number
-  origin: WidgetLayout // layout at start
-  layout: WidgetLayout // last valid layout during the interaction
+export type LayoutUpdate = { id: string; layout: WidgetLayout }
+
+// The layout to seed react-grid-layout with for a given breakpoint: an explicit
+// per-breakpoint override if the user has dragged this widget at that size,
+// otherwise the `lg` base (which RGL bounds-corrects to fit the breakpoint's
+// column count).
+const bpLayout = (w: Widget, bp: Breakpoint): WidgetLayout => (bp === 'lg' ? w.layout : w.layouts?.[bp] ?? w.layout)
+
+const toItems = (widgets: Widget[], bp: Breakpoint): Layout[] =>
+  widgets.map((w) => ({ i: w.id, ...bpLayout(w, bp), minW: MIN_W, minH: MIN_H }))
+
+const clientPoint = (e: MouseEvent | TouchEvent): { x: number; y: number } | null => {
+  if ('clientX' in e && typeof e.clientX === 'number') return { x: e.clientX, y: e.clientY }
+  const t = (e as TouchEvent).changedTouches?.[0]
+  return t ? { x: t.clientX, y: t.clientY } : null
 }
 
-// Free-placement 12-column widget grid (New Relic style) with drag-to-move and
-// corner drag-to-resize, both driven by pointer events. Collisions are hard-
-// blocked: a widget only follows the pointer through positions where it fits,
-// so two widgets can never overlap. Commits the final layout on pointer-up.
+// The id of the widget sitting under the drop point (the one visually beneath
+// the dragged card), or null when over empty space. `elementsFromPoint` returns
+// painted elements top-to-bottom; the dragged card is on top (z-20), so the
+// first `[data-widget-id]` that isn't the dragged one is the swap target. The
+// preview only translates a target's inner card — the positioned grid cell
+// (which carries data-widget-id) stays put — so detection stays stable mid-drag.
+const targetUnderPoint = (e: MouseEvent | TouchEvent, draggedId: string): string | null => {
+  const p = clientPoint(e)
+  if (!p) return null
+  for (const el of document.elementsFromPoint(p.x, p.y)) {
+    const item = (el as HTMLElement).closest?.('[data-widget-id]')
+    const id = item?.getAttribute('data-widget-id')
+    if (id && id !== draggedId) return id
+  }
+  return null
+}
+
+// Would swapping `dragged` (at oldItem) with `target` keep the layout legal?
+const swapFits = (widgets: Widget[], oldItem: Layout, target: Widget, bp: Breakpoint, cols: number) => {
+  const tO = bpLayout(target, bp)
+  const draggedNew: WidgetLayout = { x: tO.x, y: tO.y, w: oldItem.w, h: oldItem.h }
+  const targetNew: WidgetLayout = { x: oldItem.x, y: oldItem.y, w: tO.w, h: tO.h }
+  const others = widgets.filter((w) => w.id !== oldItem.i && w.id !== target.id).map((w) => bpLayout(w, bp))
+  const ok = fits(draggedNew, [targetNew, ...others], cols) && fits(targetNew, [draggedNew, ...others], cols)
+  return ok ? { draggedNew, targetNew } : null
+}
+
+// Responsive 12-column widget grid backed by react-grid-layout. Free placement
+// (compactType=null): widgets stay exactly where they're dropped, gaps allowed,
+// and preventCollision stops overlap. Dragging a widget over another previews a
+// swap live — the target card slides into the dragged widget's slot — and the
+// swap commits on release (each widget keeps its own size); mirrors the old
+// hand-rolled grid. Dragging uses the widget header (`.widget-drag-handle`); the
+// bottom-right corner resizes. Layout changes commit on drag/resize end, scoped
+// to the currently active breakpoint so smaller-screen tweaks don't clobber `lg`.
 export default function WidgetGrid({
   widgets,
   editable = true,
-  onLayoutCommit,
+  onLayoutsCommit,
   renderWidget,
 }: {
   widgets: Widget[]
   editable?: boolean
-  onLayoutCommit: (id: string, layout: WidgetLayout) => void
+  onLayoutsCommit: (updates: LayoutUpdate[], breakpoint: Breakpoint) => void
   renderWidget: (w: Widget) => ReactNode
 }) {
-  const { ref, width } = useSize<HTMLDivElement>()
-  const [action, setAction] = useState<Interaction | null>(null)
-  const actionRef = useRef<Interaction | null>(null)
+  // Current RGL breakpoint (may be a phone breakpoint xs/xxs that isn't stored).
+  const bpRef = useRef<RglBreakpoint>('lg')
+  // The target card currently shifted for the live swap preview, so we can put
+  // it back when the cursor leaves it or the drag ends.
+  const previewRef = useRef<{ id: string; el: HTMLElement } | null>(null)
 
-  const colW = width > 0 ? (width - 2 * PAD - (GRID_COLS - 1) * GRID_GAP) / GRID_COLS : 0
-  const toPx = (l: WidgetLayout) => ({
-    left: PAD + l.x * (colW + GRID_GAP),
-    top: PAD + l.y * (GRID_ROW_H + GRID_GAP),
-    width: l.w * colW + (l.w - 1) * GRID_GAP,
-    height: l.h * GRID_ROW_H + (l.h - 1) * GRID_GAP,
-  })
+  const layouts: Record<Breakpoint, Layout[]> = {
+    lg: toItems(widgets, 'lg'),
+    md: toItems(widgets, 'md'),
+    sm: toItems(widgets, 'sm'),
+  }
 
-  const layoutOf = (w: Widget) => (action?.id === w.id ? action.layout : w.layout)
-  const rows = widgets.reduce((m, w) => Math.max(m, layoutOf(w).y + layoutOf(w).h), 0)
+  const clearPreview = () => {
+    const p = previewRef.current
+    if (!p) return
+    p.el.style.transform = ''
+    p.el.style.transition = ''
+    previewRef.current = null
+  }
 
-  const startInteraction = (e: React.PointerEvent, widget: Widget, mode: Interaction['mode']) => {
-    if (!editable || e.button !== 0) return
-    e.preventDefault()
-    const start: Interaction = {
-      mode,
-      id: widget.id,
-      startX: e.clientX,
-      startY: e.clientY,
-      origin: widget.layout,
-      layout: widget.layout,
+  // Persist every item RGL reports — free placement never moves siblings, but
+  // committing the full set keeps the draft in sync in one shot. Phone
+  // breakpoints (xs/xxs) are view-only: their layouts derive from `sm` and
+  // aren't stored, so edits there are ignored.
+  const commitAll = (layout: Layout[]) => {
+    const bp = bpRef.current
+    if (!isStoredBp(bp)) return
+    onLayoutsCommit(
+      layout.map((l) => ({ id: l.i, layout: { x: l.x, y: l.y, w: l.w, h: l.h } })),
+      bp
+    )
+  }
+
+  // Live swap preview: while dragging over a valid swap target, slide that
+  // target's card into the dragged widget's original slot so the user sees the
+  // outcome before releasing. Purely visual (imperative transform on the inner
+  // card) because RGL ignores layout prop changes during an active drag.
+  const onDrag = (_layout: Layout[], oldItem: Layout, _n: Layout, _p: Layout, e: MouseEvent, element: HTMLElement) => {
+    const bp = bpRef.current
+    if (!isStoredBp(bp)) return clearPreview()
+    const cols = GRID_COLS_BP[bp]
+    const targetId = targetUnderPoint(e, oldItem.i)
+    const target = targetId ? widgets.find((w) => w.id === targetId) : undefined
+    const swap = target && swapFits(widgets, oldItem, target, bp, cols)
+
+    if (!target || !swap) return clearPreview()
+    if (previewRef.current?.id === target.id) return // already previewing this target
+
+    clearPreview()
+    const container = element.closest('.widget-grid') as HTMLElement | null
+    const item = container?.querySelector(`[data-widget-id="${target.id}"]`) as HTMLElement | null
+    const inner = item?.firstElementChild as HTMLElement | null
+    if (!container || !inner) return
+
+    const colW = (container.clientWidth - 2 * PAD - (cols - 1) * GRID_GAP) / cols
+    const tO = bpLayout(target, bp)
+    const dx = (oldItem.x - tO.x) * (colW + GRID_GAP)
+    const dy = (oldItem.y - tO.y) * (GRID_ROW_H + GRID_GAP)
+    inner.style.transition = 'transform 120ms ease'
+    inner.style.transform = `translate(${dx}px, ${dy}px)`
+    previewRef.current = { id: target.id, el: inner }
+  }
+
+  // On release, swap with the widget under the cursor when the swap is legal,
+  // otherwise accept RGL's (collision-free) drop position.
+  const onDragStop = (layout: Layout[], oldItem: Layout, _n: Layout, _p: Layout, e: MouseEvent) => {
+    clearPreview()
+    const bp = bpRef.current
+    if (!isStoredBp(bp)) return
+    const cols = GRID_COLS_BP[bp]
+    const targetId = targetUnderPoint(e, oldItem.i)
+    const target = targetId ? widgets.find((w) => w.id === targetId) : undefined
+    const swap = target && swapFits(widgets, oldItem, target, bp, cols)
+
+    if (target && swap) {
+      onLayoutsCommit([{ id: oldItem.i, layout: swap.draggedNew }, { id: target.id, layout: swap.targetNew }], bp)
+      return
     }
-    actionRef.current = start
-    setAction(start)
-
-    const others = widgets.filter((w) => w.id !== widget.id).map((w) => w.layout)
-    const onMove = (ev: PointerEvent) => {
-      const a = actionRef.current
-      if (!a) return
-      const dx = Math.round((ev.clientX - a.startX) / (colW + GRID_GAP))
-      const dy = Math.round((ev.clientY - a.startY) / (GRID_ROW_H + GRID_GAP))
-      let candidate: WidgetLayout
-      if (a.mode === 'move') {
-        candidate = {
-          ...a.origin,
-          x: Math.min(GRID_COLS - a.origin.w, Math.max(0, a.origin.x + dx)),
-          y: Math.max(0, a.origin.y + dy),
-        }
-      } else {
-        candidate = {
-          ...a.origin,
-          w: Math.min(GRID_COLS - a.origin.x, Math.max(MIN_W, a.origin.w + dx)),
-          h: Math.max(MIN_H, a.origin.h + dy),
-        }
-      }
-      const same = candidate.x === a.layout.x && candidate.y === a.layout.y && candidate.w === a.layout.w && candidate.h === a.layout.h
-      if (same || !fits(candidate, others)) return
-      const next = { ...a, layout: candidate }
-      actionRef.current = next
-      setAction(next)
+    if (target) {
+      // Over a widget but the swap doesn't fit — revert to the original slot.
+      onLayoutsCommit([{ id: oldItem.i, layout: { x: oldItem.x, y: oldItem.y, w: oldItem.w, h: oldItem.h } }], bp)
+      return
     }
-    const onUp = () => {
-      window.removeEventListener('pointermove', onMove)
-      window.removeEventListener('pointerup', onUp)
-      const a = actionRef.current
-      actionRef.current = null
-      setAction(null)
-      if (!a) return
-      const l = a.layout
-      const o = a.origin
-      if (l.x !== o.x || l.y !== o.y || l.w !== o.w || l.h !== o.h) onLayoutCommit(a.id, l)
-    }
-    window.addEventListener('pointermove', onMove)
-    window.addEventListener('pointerup', onUp)
+    commitAll(layout)
   }
 
   return (
-    <div ref={ref} className="relative" style={{ height: PAD * 2 + rows * GRID_ROW_H + Math.max(0, rows - 1) * GRID_GAP }}>
-      {width > 0 &&
-        widgets.map((w) => {
-          const active = action?.id === w.id
-          return (
-            <div
-              key={w.id}
-              className={`absolute ${active ? 'z-20' : 'transition-[left,top,width,height] duration-150 ease-out'}`}
-              style={toPx(layoutOf(w))}
-              onPointerDown={(e) => {
-                const t = e.target as HTMLElement
-                // Buttons/menus inside the handle (widget actions) never start a drag.
-                if (t.closest('button, [role="button"], input, a')) return
-                if (t.closest('.widget-drag-handle')) startInteraction(e, w, 'move')
-              }}
-            >
-              <div className={`h-full ${active ? 'opacity-90 shadow-2xl' : ''}`}>{renderWidget(w)}</div>
-              {editable && (
-                <div
-                  className="absolute bottom-0 right-0 h-4 w-4 cursor-nwse-resize opacity-0 transition-opacity hover:opacity-100"
-                  onPointerDown={(e) => {
-                    e.stopPropagation()
-                    startInteraction(e, w, 'resize')
-                  }}
-                >
-                  <span className="absolute bottom-[5px] right-[5px] h-1.5 w-1.5 border-b-2 border-r-2 border-ink-faint" />
-                </div>
-              )}
-            </div>
-          )
-        })}
-    </div>
+    <ResponsiveGridLayout
+      className="widget-grid"
+      layouts={layouts}
+      breakpoints={BREAKPOINTS}
+      cols={GRID_COLS_BP}
+      rowHeight={GRID_ROW_H}
+      margin={[GRID_GAP, GRID_GAP]}
+      containerPadding={[PAD, PAD]}
+      compactType={null}
+      preventCollision
+      isDraggable={editable}
+      isResizable={editable}
+      draggableHandle=".widget-drag-handle"
+      draggableCancel="button,[role='button'],input,a,select,textarea"
+      resizeHandles={['se']}
+      onBreakpointChange={(bp) => {
+        bpRef.current = bp as RglBreakpoint
+      }}
+      onDragStart={clearPreview}
+      onDrag={onDrag}
+      onDragStop={onDragStop}
+      onResizeStop={commitAll}
+    >
+      {widgets.map((w) => (
+        <div key={w.id} data-widget-id={w.id} className="widget-grid-item">
+          {renderWidget(w)}
+        </div>
+      ))}
+    </ResponsiveGridLayout>
   )
 }

@@ -4,8 +4,14 @@
 
 export type WidgetType = 'area' | 'line' | 'bar' | 'pie' | 'table' | 'metric' | 'text' | 'sankey'
 
-// Grid units: 12 columns wide, rows are fixed-height units (see WidgetGrid).
+// Grid units: rows are fixed-height units (see WidgetGrid). Column count is
+// per-breakpoint (see grid.ts GRID_COLS_BP); `lg` is the 12-column base.
 export type WidgetLayout = { x: number; y: number; w: number; h: number }
+
+// Responsive breakpoints for the widget grid (react-grid-layout). `lg` is the
+// base layout stored in `Widget.layout`; smaller breakpoints keep optional
+// overrides in `Widget.layouts` and otherwise inherit/derive from `lg`.
+export type Breakpoint = 'lg' | 'md' | 'sm'
 
 export type Widget = {
   id: string
@@ -19,7 +25,10 @@ export type Widget = {
   unit?: string
   /** Per-series/slice color overrides (area/line/bar/pie), in series order. Falls back to the theme palette where unset. */
   colors?: string[]
+  /** Base (`lg`) layout — the 12-column grid position. */
   layout: WidgetLayout
+  /** Optional per-breakpoint overrides for smaller screens; absent breakpoints derive from `layout`. */
+  layouts?: Partial<Record<Exclude<Breakpoint, 'lg'>, WidgetLayout>>
 }
 
 export type VariableSource = 'query' | 'static'
@@ -79,12 +88,8 @@ export function sanitizeConfig(raw: any): DashboardConfig {
         colors: Array.isArray(w.colors)
           ? w.colors.map((c: any) => (typeof c === 'string' && /^#[0-9a-fA-F]{6}$/.test(c) ? c : ''))
           : undefined,
-        layout: {
-          x: clampInt(w.layout?.x, 0, 11, 0),
-          y: clampInt(w.layout?.y, 0, 10000, 0),
-          w: clampInt(w.layout?.w, 1, 12, 4),
-          h: clampInt(w.layout?.h, 1, 100, 3),
-        },
+        layout: sanitizeLayout(w.layout, 4, 3),
+        layouts: sanitizeLayouts(w.layouts),
       })),
     variables: variables
       .filter((v: any) => v && typeof v === 'object' && typeof v.name === 'string' && v.name.trim())
@@ -104,4 +109,24 @@ function clampInt(v: any, min: number, max: number, fallback: number) {
   const n = Math.round(Number(v))
   if (!Number.isFinite(n)) return fallback
   return Math.min(max, Math.max(min, n))
+}
+
+// Bounds match the 12-column `lg` base; react-grid-layout corrects/compacts to
+// each smaller breakpoint's column count on render, so clamping to 12 is safe.
+function sanitizeLayout(l: any, defW: number, defH: number): WidgetLayout {
+  return {
+    x: clampInt(l?.x, 0, 11, 0),
+    y: clampInt(l?.y, 0, 10000, 0),
+    w: clampInt(l?.w, 1, 12, defW),
+    h: clampInt(l?.h, 1, 100, defH),
+  }
+}
+
+function sanitizeLayouts(raw: any): Widget['layouts'] | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const out: NonNullable<Widget['layouts']> = {}
+  for (const bp of ['md', 'sm'] as const) {
+    if (raw[bp] && typeof raw[bp] === 'object') out[bp] = sanitizeLayout(raw[bp], 4, 3)
+  }
+  return Object.keys(out).length ? out : undefined
 }

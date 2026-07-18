@@ -5,8 +5,11 @@ import Tooltip from '@/shared/ui/overlay/Tooltip'
 import ConfirmDialog from '@/shared/ui/feedback/ConfirmDialog'
 import LoadingState from '@/shared/ui/feedback/LoadingState'
 import { useToast } from '@/shared/ui/feedback/Toast'
+import ContextMenu from '@/shared/ui/overlay/ContextMenu'
+import MenuItem from '@/shared/ui/navigation/MenuItem'
 import {
   CloseIcon,
+  CopyIcon,
   DownloadIcon,
   EditIcon,
   MaximizeIcon,
@@ -15,27 +18,28 @@ import {
   RefreshIcon,
   SaveIcon,
   SettingsIcon,
+  TrashIcon,
   UploadIcon,
 } from '@/shared/ui/icons'
 import { getSchema } from '@/shared/api/database'
 import { getDashboard, updateDashboard } from '../lib/api'
-import type { Dashboard, DashboardConfig, DashboardExport, Widget, WidgetLayout } from '../types'
+import type { Breakpoint, Dashboard, DashboardConfig, DashboardExport, Widget } from '../types'
 import { emptyConfig, sanitizeConfig } from '../types'
-import { findFreeSlot } from '../lib/grid'
+import { GRID_COLS, cellFromPoint, findFreeSlot, slotAtOrFree } from '../lib/grid'
 import VariableBar from './VariableBar'
-import WidgetGrid from './WidgetGrid'
+import WidgetGrid, { type LayoutUpdate } from './WidgetGrid'
 import WidgetCard from './WidgetCard'
 import WidgetEditor from './WidgetEditor'
 import DashboardSettings from './DashboardSettings'
 
 const DIALECT = { postgresql: 'PostgreSQL', sqlite: 'SQLite', redis: 'Redis' }
 
-const newWidget = (config: DashboardConfig): Widget => ({
+const newWidget = (config: DashboardConfig, cell?: { x: number; y: number }): Widget => ({
   id: `w${Date.now()}`,
   type: 'bar',
   title: '',
   query: '',
-  layout: findFreeSlot(config.widgets, 4, 4),
+  layout: cell ? slotAtOrFree(config.widgets, 4, 4, cell.x, cell.y) : findFreeSlot(config.widgets, 4, 4),
 })
 
 // One dashboard tab: variable bar + collision-free widget grid, with settings,
@@ -67,7 +71,13 @@ export default function DashboardView({
   const [deletingWidget, setDeletingWidget] = useState<Widget | null>(null)
   const [pendingImport, setPendingImport] = useState<DashboardExport | null>(null)
   const [fullscreen, setFullscreen] = useState(false)
+  const [menu, setMenu] = useState<
+    | { x: number; y: number; kind: 'empty'; cell: { x: number; y: number } }
+    | { x: number; y: number; kind: 'widget'; widget: Widget }
+    | null
+  >(null)
   const rootRef = useRef<HTMLDivElement>(null)
+  const gridWrapRef = useRef<HTMLDivElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
 
   const saved = dashboard?.config ?? emptyConfig()
@@ -126,8 +136,34 @@ export default function DashboardView({
   }
 
   // ---- Grid layout ----
-  const commitLayout = (id: string, layout: WidgetLayout) => {
-    patchDraft({ ...config, widgets: config.widgets.map((w) => (w.id === id ? { ...w, layout } : w)) })
+  // `lg` edits update the base layout; smaller breakpoints keep their tweaks in
+  // `layouts[bp]` so they never overwrite the desktop layout.
+  const commitLayouts = (updates: LayoutUpdate[], breakpoint: Breakpoint) => {
+    const byId = new Map(updates.map((u) => [u.id, u.layout]))
+    patchDraft({
+      ...config,
+      widgets: config.widgets.map((w) => {
+        const next = byId.get(w.id)
+        if (!next) return w
+        return breakpoint === 'lg' ? { ...w, layout: next } : { ...w, layouts: { ...w.layouts, [breakpoint]: next } }
+      }),
+    })
+  }
+
+  // ---- Right-click menu (edit mode) ----
+  // Empty space → "Add widget" (placed where clicked); a widget → its actions.
+  const onGridContextMenu = (e: React.MouseEvent) => {
+    if (!editMode) return
+    const widgetEl = (e.target as HTMLElement).closest('[data-widget-id]')
+    e.preventDefault()
+    if (widgetEl) {
+      const w = config.widgets.find((x) => x.id === widgetEl.getAttribute('data-widget-id'))
+      if (w) setMenu({ x: e.clientX, y: e.clientY, kind: 'widget', widget: w })
+      return
+    }
+    const gridEl = gridWrapRef.current?.querySelector('.widget-grid') as HTMLElement | null
+    const cell = gridEl ? cellFromPoint(gridEl, e.clientX, e.clientY, GRID_COLS) : { x: 0, y: 0 }
+    setMenu({ x: e.clientX, y: e.clientY, kind: 'empty', cell })
   }
 
   // ---- Widget CRUD ----
@@ -217,8 +253,8 @@ export default function DashboardView({
 
   return (
     <div ref={rootRef} className="flex min-h-0 min-w-0 flex-1 flex-col bg-bg">
-      {/* Toolbar */}
-      <div className="flex items-center gap-2 border-b border-edge px-4 py-2.5">
+      {/* Toolbar — wraps to a second row on narrow screens instead of overflowing. */}
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-2 border-b border-edge px-4 py-2.5 max-[720px]:px-3">
         <span className="min-w-0 truncate text-xs font-semibold text-ink">{dashboard.name}</span>
         <span className="text-[10px] text-ink-faint">{saving ? 'Saving…' : editMode && dirty ? 'Unsaved changes' : ''}</span>
         <div className="ml-auto flex items-center gap-1.5">
@@ -235,25 +271,25 @@ export default function DashboardView({
             onAddVariable={openAddVariable}
             refreshKey={refreshKey}
           />
-          <Tooltip label="Export structure as JSON" placement="bottom">
-            <IconButton size="toolbar" aria-label="Export JSON" onClick={exportJson}>
-              <DownloadIcon width={15} height={15} />
-            </IconButton>
-          </Tooltip>
           {editMode && (
             <>
-              <Tooltip label="Import structure from JSON" placement="bottom">
-                <IconButton size="toolbar" aria-label="Import JSON" onClick={() => fileRef.current?.click()}>
-                  <UploadIcon width={15} height={15} />
-                </IconButton>
-              </Tooltip>
               <Tooltip label="Dashboard settings" placement="bottom">
                 <IconButton size="toolbar" aria-label="Dashboard settings" onClick={openSettings}>
                   <SettingsIcon width={15} height={15} />
                 </IconButton>
               </Tooltip>
+              <Tooltip label="Import structure from JSON" placement="bottom">
+                <IconButton size="toolbar" aria-label="Import JSON" onClick={() => fileRef.current?.click()}>
+                  <UploadIcon width={15} height={15} />
+                </IconButton>
+              </Tooltip>
             </>
           )}
+          <Tooltip label="Export structure as JSON" placement="bottom">
+            <IconButton size="toolbar" aria-label="Export JSON" onClick={exportJson}>
+              <DownloadIcon width={15} height={15} />
+            </IconButton>
+          </Tooltip>
           <Tooltip label={fullscreen ? 'Exit fullscreen' : 'Fullscreen'} placement="bottom">
             <IconButton size="toolbar" aria-label="Toggle fullscreen" onClick={toggleFullscreen}>
               {fullscreen ? <MinimizeIcon width={15} height={15} /> : <MaximizeIcon width={15} height={15} />}
@@ -261,9 +297,6 @@ export default function DashboardView({
           </Tooltip>
           {editMode ? (
             <>
-              <Button variant="primary" size="sm" icon={PlusIcon} onClick={() => setEditingWidget(newWidget(config))}>
-                Add widget
-              </Button>
               <Button variant="subtle" size="sm" icon={CloseIcon} onClick={cancelEdit} disabled={saving}>
                 Cancel
               </Button>
@@ -280,14 +313,14 @@ export default function DashboardView({
       </div>
 
       {/* Grid */}
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div ref={gridWrapRef} className="min-h-0 flex-1 overflow-y-auto" onContextMenu={onGridContextMenu}>
         {config.widgets.length === 0 ? (
           <div className="flex h-full items-center justify-center">
             <div className="text-center">
               <p className="text-sm font-semibold text-ink">This dashboard is empty</p>
               <p className="mx-auto mt-2 max-w-[340px] text-xs leading-relaxed text-ink-dim">
                 {editMode
-                  ? 'Add a widget and power it with a SQL query — charts, tables, metrics and text.'
+                  ? 'Add a widget and power it with a SQL query — charts, tables, metrics and text. Tip: right-click the grid to add one where you click.'
                   : "You don't have any widgets yet — click Edit to add one."}
               </p>
               {editMode && (
@@ -307,7 +340,7 @@ export default function DashboardView({
           <WidgetGrid
             widgets={config.widgets}
             editable={editMode}
-            onLayoutCommit={commitLayout}
+            onLayoutsCommit={commitLayouts}
             renderWidget={(w) => (
               <WidgetCard
                 conn={conn}
@@ -335,6 +368,29 @@ export default function DashboardView({
           e.target.value = ''
         }}
       />
+
+      {menu && (
+        <ContextMenu x={menu.x} y={menu.y} width={180} onClose={() => setMenu(null)}>
+          {menu.kind === 'empty' ? (
+            <MenuItem onClick={() => { setEditingWidget(newWidget(config, menu.cell)); setMenu(null) }}>
+              <PlusIcon width={14} height={14} /> Add widget
+            </MenuItem>
+          ) : (
+            <>
+              <MenuItem onClick={() => { setEditingWidget(menu.widget); setMenu(null) }}>
+                <EditIcon width={14} height={14} /> Edit
+              </MenuItem>
+              <MenuItem onClick={() => { duplicateWidget(menu.widget); setMenu(null) }}>
+                <CopyIcon width={14} height={14} /> Duplicate
+              </MenuItem>
+              <div className="my-1 h-px bg-edge" />
+              <MenuItem danger onClick={() => { setDeletingWidget(menu.widget); setMenu(null) }}>
+                <TrashIcon width={14} height={14} /> Delete
+              </MenuItem>
+            </>
+          )}
+        </ContextMenu>
+      )}
 
       {editingWidget && (
         <WidgetEditor
