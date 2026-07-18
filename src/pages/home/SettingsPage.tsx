@@ -1,5 +1,5 @@
 import { useNavigate, useParams } from 'react-router-dom'
-import { AppearanceSetting, DataSetting } from '@/features/settings'
+import { AppearanceSetting, DensitySetting, DataSetting } from '@/features/settings'
 import { KeymapSetting } from '@/features/keymap'
 import { UpdatePanel } from '@/features/system-update'
 import { SubHead, TabbedSection } from './ui'
@@ -15,8 +15,11 @@ export default function SettingsPage() {
       label: 'Theme',
       body: (
         <div>
-          <SubHead title="Theme" desc="Choose how Tabletsgo looks to you." />
           <AppearanceSetting />
+          <div className="mt-8">
+            <SubHead title="Density" desc="Adjust spacing and text size across the app." />
+            <DensitySetting />
+          </div>
         </div>
       ),
     },

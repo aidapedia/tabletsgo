@@ -12,9 +12,13 @@
   --color-ink: #f4f4f5;
   --color-ink-dim: #a1a1aa;
   --color-ink-faint: #6b6b72;
-  --color-green: #6fcf6a;
-  --color-green-bright: #8fe08a;
-  --color-green-dim: #143618;
+  /* Primary accent derives from --accent (set inline on <html> by ThemeContext),
+     so any accent works on any background. --accent-tint is the color the
+     "bright" shade blends toward — white on dark bases, black on light. */
+  --accent-tint: #ffffff;
+  --color-green: var(--accent, #6fcf6a);
+  --color-green-bright: color-mix(in oklab, var(--accent, #6fcf6a) 72%, var(--accent-tint));
+  --color-green-dim: color-mix(in oklab, var(--accent, #6fcf6a) 22%, var(--color-bg));
   --color-red: #ef4444;
   --color-amber: #d6a73a;
 
@@ -57,8 +61,12 @@
   }
 }
 
-/* ---------- Light theme (applied via .light on <html>) ---------- */
-html.light {
+/* ---------- Backgrounds ----------
+   The default @theme palette above is the dark base (needs no class). The light
+   base only overrides neutral surfaces/ink — the accent is independent and
+   comes from --accent (see @theme). --accent-tint flips to black so the "bright"
+   shade darkens (rather than lightens) against a light background. */
+html.theme-light {
   --color-bg: #ffffff;
   --color-panel: #f6f7f6;
   --color-elevated: #eef0ee;
@@ -69,11 +77,9 @@ html.light {
   --color-ink: #16181c;
   --color-ink-dim: #555b63;
   --color-ink-faint: #939aa1;
-  --color-green: #2f9e44;
-  --color-green-bright: #2b8a3e;
-  --color-green-dim: #d3f0d6;
   --color-red: #e03131;
   --color-amber: #b8860b;
+  --accent-tint: #000000;
 }
 
 /* ---------- Base ---------- */
@@ -82,6 +88,17 @@ html.light {
   body,
   #root {
     height: 100%;
+  }
+
+  /* Density scale: the root font-size is the single knob every rem-based
+     Tailwind utility (text, padding, gap, width) scales off, so shrinking it
+     makes the whole UI denser + smaller-texted at once. Toggled via a class on
+     <html> by ThemeContext; default (no class) is the 16px browser baseline. */
+  html.density-compact {
+    font-size: 14px;
+  }
+  html.density-condensed {
+    font-size: 13px;
   }
 
   body {
