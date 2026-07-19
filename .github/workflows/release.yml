@@ -1,0 +1,86 @@
+name: Release
+
+# Step 1 of the release: open a version-bump PR. Branch protection on v0.x.x
+# means we can't push the bump directly, so this raises a PR you review + merge.
+# Merging it triggers release-publish.yml, which tags the merged commit and
+# builds the image — so the tag and the version-synced files are the SAME commit.
+#
+# Trigger from the Actions tab (Run workflow) or:
+#   gh workflow run release.yml -f version=0.16.5
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, no leading v (e.g. 0.16.5)'
+        required: true
+        type: string
+
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  open-pr:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write        # push the release/* branch
+      pull-requests: write    # open the PR
+    steps:
+      - name: Checkout default branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+
+      - name: Normalize + validate version
+        id: norm
+        run: |
+          V="${{ inputs.version }}"
+          V="${V#v}"
+          echo "$V" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
+            || { echo "::error::Invalid semver: '$V' (expected X.Y.Z)"; exit 1; }
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+
+      - name: Refuse if already released
+        env:
+          VERSION: ${{ steps.norm.outputs.version }}
+        run: |
+          if git ls-remote --tags --exit-code origin "refs/tags/v${VERSION}" >/dev/null 2>&1; then
+            echo "::error::Tag v${VERSION} already exists"; exit 1
+          fi
+
+      - name: Bump package.json + README badge
+        env:
+          VERSION: ${{ steps.norm.outputs.version }}
+        run: |
+          # package.json "version" (npm pkg set edits in place, no git tag).
+          npm pkg set "version=${VERSION}"
+          # README badge: version-<X>-<6-hex-color> — keep the color, swap version.
+          sed -i -E "s|badge/version-[^-]*-([0-9A-Fa-f]{6})|badge/version-${VERSION}-\1|" README.md
+          if git diff --quiet -- package.json README.md; then
+            echo "::error::Nothing to bump — files already show v${VERSION}"; exit 1
+          fi
+
+      - name: Push release branch + open PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.norm.outputs.version }}
+          BASE: ${{ github.event.repository.default_branch }}
+        run: |
+          BR="release/v${VERSION}"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BR"
+          git add package.json README.md
+          git commit -m "release: v${VERSION}"
+          git push -f origin "$BR"
+          # Reuse an open PR for this branch if one exists, else open a new one.
+          if [ -n "$(gh pr list --head "$BR" --state open --json number -q '.[0].number')" ]; then
+            echo "PR already open for $BR."
+          else
+            gh pr create \
+              --base "$BASE" \
+              --head "$BR" \
+              --title "release: v${VERSION}" \
+              --body "Automated version bump to \`v${VERSION}\` (package.json + README badge). Merge this PR to tag the merged commit, build the multi-arch image, and publish the GitHub Release."
+          fi
