@@ -23,7 +23,7 @@ import {
 } from '@/shared/ui/icons'
 import { getSchema } from '@/shared/api/database'
 import { getDashboard, updateDashboard } from '../lib/api'
-import type { Breakpoint, Dashboard, DashboardConfig, DashboardExport, Widget } from '../types'
+import type { Breakpoint, Dashboard, DashboardConfig, DashboardExport, VariableValues, Widget } from '../types'
 import { emptyConfig, sanitizeConfig } from '../types'
 import { GRID_COLS, cellFromPoint, findFreeSlot, slotAtOrFree } from '../lib/grid'
 import VariableBar from './VariableBar'
@@ -60,7 +60,7 @@ export default function DashboardView({
   const [dashboard, setDashboard] = useState<Dashboard | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [schema, setSchema] = useState<Record<string, string[]>>({})
-  const [varValues, setVarValues] = useState<Record<string, string>>({})
+  const [varValues, setVarValues] = useState<VariableValues>({})
   const [refreshKey, setRefreshKey] = useState(0)
   const [saving, setSaving] = useState(false)
   const [editMode, setEditMode] = useState(false)
@@ -254,44 +254,47 @@ export default function DashboardView({
   return (
     <div ref={rootRef} className="flex min-h-0 min-w-0 flex-1 flex-col bg-bg">
       {/* Toolbar — wraps to a second row on narrow screens instead of overflowing. */}
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-2 border-b border-edge px-4 py-2.5 max-[720px]:px-3">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-2 border-b border-edge px-3 py-2">
         <span className="min-w-0 truncate text-xs font-semibold text-ink">{dashboard.name}</span>
         <span className="text-[10px] text-ink-faint">{saving ? 'Saving…' : editMode && dirty ? 'Unsaved changes' : ''}</span>
+        {/* Left cluster: viewing controls (refresh + filters) that make sense in both modes. */}
+        <Tooltip label="Refresh all widgets" placement="bottom">
+          <IconButton aria-label="Refresh" onClick={() => setRefreshKey((k) => k + 1)}>
+            <RefreshIcon width={15} height={15} />
+          </IconButton>
+        </Tooltip>
+        <VariableBar
+          conn={conn}
+          variables={config.variables}
+          values={varValues}
+          onChange={(name, value) => setVarValues((v) => ({ ...v, [name]: value }))}
+          onAddVariable={openAddVariable}
+          refreshKey={refreshKey}
+        />
+        {/* Right cluster: structure (edit-only) + mode controls. */}
         <div className="ml-auto flex items-center gap-1.5">
-          <Tooltip label="Refresh all widgets" placement="bottom">
-            <IconButton size="toolbar" aria-label="Refresh" onClick={() => setRefreshKey((k) => k + 1)}>
-              <RefreshIcon width={15} height={15} />
-            </IconButton>
-          </Tooltip>
-          <VariableBar
-            conn={conn}
-            variables={config.variables}
-            values={varValues}
-            onChange={(name, value) => setVarValues((v) => ({ ...v, [name]: value }))}
-            onAddVariable={openAddVariable}
-            refreshKey={refreshKey}
-          />
           {editMode && (
             <>
               <Tooltip label="Dashboard settings" placement="bottom">
-                <IconButton size="toolbar" aria-label="Dashboard settings" onClick={openSettings}>
+                <IconButton aria-label="Dashboard settings" onClick={openSettings}>
                   <SettingsIcon width={15} height={15} />
                 </IconButton>
               </Tooltip>
               <Tooltip label="Import structure from JSON" placement="bottom">
-                <IconButton size="toolbar" aria-label="Import JSON" onClick={() => fileRef.current?.click()}>
+                <IconButton aria-label="Import JSON" onClick={() => fileRef.current?.click()}>
                   <UploadIcon width={15} height={15} />
                 </IconButton>
               </Tooltip>
+              <Tooltip label="Export structure as JSON" placement="bottom">
+                <IconButton aria-label="Export JSON" onClick={exportJson}>
+                  <DownloadIcon width={15} height={15} />
+                </IconButton>
+              </Tooltip>
+              <div className="mx-0.5 h-5 w-px bg-edge" />
             </>
           )}
-          <Tooltip label="Export structure as JSON" placement="bottom">
-            <IconButton size="toolbar" aria-label="Export JSON" onClick={exportJson}>
-              <DownloadIcon width={15} height={15} />
-            </IconButton>
-          </Tooltip>
           <Tooltip label={fullscreen ? 'Exit fullscreen' : 'Fullscreen'} placement="bottom">
-            <IconButton size="toolbar" aria-label="Toggle fullscreen" onClick={toggleFullscreen}>
+            <IconButton aria-label="Toggle fullscreen" onClick={toggleFullscreen}>
               {fullscreen ? <MinimizeIcon width={15} height={15} /> : <MaximizeIcon width={15} height={15} />}
             </IconButton>
           </Tooltip>
@@ -305,7 +308,7 @@ export default function DashboardView({
               </Button>
             </>
           ) : (
-            <Button variant="subtle" size="sm" icon={EditIcon} onClick={startEdit}>
+            <Button variant="primary" size="sm" icon={EditIcon} onClick={startEdit}>
               Edit
             </Button>
           )}

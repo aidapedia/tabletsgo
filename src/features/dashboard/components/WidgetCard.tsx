@@ -8,8 +8,8 @@ import IconButton from '@/shared/ui/buttons/IconButton'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
 import Popover from '@/shared/ui/overlay/Popover'
 import { ChevronLeft, ChevronRight, CopyIcon, EditIcon, MoreVerticalIcon, TrashIcon } from '@/shared/ui/icons'
-import { widgetRowActions, type Widget } from '../types'
-import { referencedVariables, substituteVariables } from '../lib/variables'
+import { widgetRowActions, type Widget, type VariableValues } from '../types'
+import { referencedVariables, substituteVariables, isVariableSet } from '../lib/variables'
 import type { QueryResult } from '../lib/queryData'
 import WidgetChart from './WidgetChart'
 import MarkdownText from './MarkdownText'
@@ -29,7 +29,7 @@ export default function WidgetCard({
 }: {
   conn: any
   widget: Widget
-  values: Record<string, string>
+  values: VariableValues
   refreshKey?: number
   editable?: boolean
   onEdit?: () => void
@@ -40,7 +40,7 @@ export default function WidgetCard({
   // value yet — run the query once every one of them does, not before (an
   // unresolved placeholder would just fail as bad SQL).
   const missingVars = useMemo(
-    () => referencedVariables(widget.query).filter((name) => !values[name]),
+    () => referencedVariables(widget.query).filter((name) => !isVariableSet(values[name])),
     [widget.query, values]
   )
 

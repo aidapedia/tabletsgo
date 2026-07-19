@@ -15,6 +15,7 @@ import { runQuery } from '@/shared/api/database'
 import IconButton from '@/shared/ui/buttons/IconButton'
 import type {
   DashboardVariable,
+  VariableValues,
   Widget,
   WidgetRowAction,
   WidgetRowActionCondition,
@@ -24,7 +25,7 @@ import type {
 } from '../types'
 import { MAX_TABLE_ROW_ACTIONS, ROW_ACTION_OPERATORS, ROW_ACTION_VARIANTS, WIDGET_TYPE_LABEL, widgetRowActions } from '../types'
 import { ROW_ACTION_ICONS, ROW_ACTION_ICON_KEYS, rowActionIcon } from '../lib/rowActionIcons'
-import { referencedVariables, substituteVariables } from '../lib/variables'
+import { referencedVariables, substituteVariables, isVariableSet } from '../lib/variables'
 import { sampleResult } from '../lib/sampleData'
 import { WIDGET_GUIDE } from '../lib/widgetGuide'
 import { toXYSeries, toPieData, type QueryResult } from '../lib/queryData'
@@ -168,7 +169,7 @@ export default function WidgetEditor({
   schema?: Record<string, string[]>
   widget: Widget
   variables: DashboardVariable[]
-  variableValues: Record<string, string>
+  variableValues: VariableValues
   onSave: (w: Widget) => void
   onClose: () => void
 }) {
@@ -220,7 +221,7 @@ export default function WidgetEditor({
     const q = draft.query?.trim()
     if (!q) return
     // Same rule as WidgetCard: don't run until every referenced {{variable}} is resolved.
-    if (referencedVariables(draft.query).some((n) => !variableValues[n])) return
+    if (referencedVariables(draft.query).some((n) => !isVariableSet(variableValues[n]))) return
     let alive = true
     const sql = `SELECT * FROM (${substituteVariables(q, variableValues).replace(/;+\s*$/, '')}) AS _cols LIMIT 1`
     runQuery(conn, sql).then((r: QueryResult) => {

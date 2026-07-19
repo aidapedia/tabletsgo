@@ -2,7 +2,7 @@
 // options, and substitute `{{name}}` placeholders into widget SQL.
 
 import { runQuery } from '@/shared/api/database'
-import type { DashboardVariable } from '../types'
+import type { DashboardVariable, VariableValues } from '../types'
 import { firstRows, type QueryResult } from './queryData'
 
 export type VariableOption = { value: string; label: string }
@@ -42,9 +42,32 @@ function cell(row: any, columns: string[], idx: number) {
   return Array.isArray(row) ? row[idx] : row[columns[idx]]
 }
 
-/** Replace every `{{name}}` (whitespace-tolerant) with its selected value. */
-export function substituteVariables(sql: string, values: Record<string, string>): string {
-  return sql.replace(/\{\{\s*([\w-]+)\s*\}\}/g, (match, name) => (name in values ? values[name] : match))
+/** Is a variable's selection present? Guards SQL from running with an unresolved
+ *  `{{name}}`. An empty string or empty multi-select array both count as unset. */
+export function isVariableSet(value: string | string[] | undefined): boolean {
+  if (Array.isArray(value)) return value.length > 0
+  return value !== undefined && value !== ''
+}
+
+// Render one selected value as a SQL literal: bare for numbers, single-quoted
+// (with '' escaping) otherwise. Matches the dialect-agnostic literal rules used
+// across the roadmap dialects (SQLite/PostgreSQL/…).
+function sqlLiteral(v: string): string {
+  return /^-?\d+(\.\d+)?$/.test(v.trim()) ? v.trim() : `'${v.replace(/'/g, "''")}'`
+}
+
+/**
+ * Replace every `{{name}}` (whitespace-tolerant) with its selected value.
+ * A single value is inserted raw (unchanged, backwards-compatible). A multi-select
+ * array becomes a comma-separated SQL list of literals for use inside `IN (...)` —
+ * e.g. `WHERE status IN ({{status}})` → `IN ('active','pending')`.
+ */
+export function substituteVariables(sql: string, values: VariableValues): string {
+  return sql.replace(/\{\{\s*([\w-]+)\s*\}\}/g, (match, name) => {
+    if (!(name in values)) return match
+    const v = values[name]
+    return Array.isArray(v) ? v.map(sqlLiteral).join(',') : v
+  })
 }
 
 /** Variable names referenced by a piece of SQL (for the editor hint). */
