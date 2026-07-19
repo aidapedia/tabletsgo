@@ -1,7 +1,7 @@
 {
   "name": "tabletsgo",
   "private": true,
-  "version": "0.17.0",
+  "version": "0.17.1",
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
