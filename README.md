@@ -45,7 +45,8 @@ Self‑hosted, single Docker image, your data stays yours.
 | 📊 | **Data browser** | Fast, spreadsheet‑style data grid — filter, sort, edit rows inline, insert & delete, with a staged **Changes** panel before you commit. |
 | 🧮 | **SQL editor** | CodeMirror‑powered editor with SQL highlighting, formatting, query history, and reusable **saved queries**. |
 | 🎨 | **Schema designer** | Visual ERD (React Flow) to create/edit tables and columns; staged DDL with a **schema version** audit trail and best‑effort rollback SQL. |
-| ⚙️ | **Workflows** | Drag‑and‑drop automation builder: `Manual`/`Schedule` triggers → `Run query`, `HTTP Request`, `Run JavaScript`, `Switch`, `Loop`, `Export SQL`, `Store to Storage`. Real hourly/daily scheduling + run logs. |
+| ⚙️ | **Workflows** | Drag‑and‑drop automation builder: `Manual`/`Schedule` triggers → `Run query`, `HTTP Request`, `Run JavaScript`, `Switch`, `Loop`, `Export SQL`, `Store to Storage`. Real hourly/daily scheduling + run logs. Runs can carry an input payload; query nodes inline it as `{{input.field}}`. |
+| 📈 | **Dashboards** | Per‑connection query dashboards with dynamic `{{variables}}`, drag/resize grid, and JSON export/import. Table widgets support server‑side pagination and per‑row **action buttons** that run a workflow with the clicked row as its input. |
 | 💾 | **Backups & restore** | S3‑compatible storage destinations + per‑connection scheduled backups. Calendar heatmap of runs and point‑in‑time restore — from a tracked backup version, any file browsed out of a storage destination, or a backup file uploaded from your computer. |
 | 👥 | **Workspaces & teams** | Multi‑workspace (org/tenant) model with members, teams, and `admin`/`member` roles. Email invites (SMTP optional — always get a copyable link). |
 | 🔑 | **Auth & security** | First‑run setup wizard, token‑based auth, per‑workspace roles, and membership‑guarded connection routes. |

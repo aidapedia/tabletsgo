@@ -1,16 +1,28 @@
 name: Docker release
 
-# Build and publish the Tabletsgo image whenever a semver tag is pushed
-# (e.g. v0.11.1). Push a tag with: git tag v0.11.1 && git push origin v0.11.1
+# Build and publish the Tabletsgo image for a release. Two entry points:
+#   1. push a semver tag by hand (e.g. v0.11.1) — builds from that tag as-is.
+#   2. called by release.yml (workflow_call) after it bumps + commits + tags,
+#      so the image is built from the version-synced commit.
 on:
   push:
     tags:
       - 'v*.*.*'
+  workflow_call:
+    inputs:
+      version:
+        description: 'Version without leading v, e.g. 0.16.2'
+        required: true
+        type: string
+      ref:
+        description: 'Commit SHA to build (the version-synced commit)'
+        required: true
+        type: string
 
-# A re-pushed/moved tag (e.g. re-tagging after a merge) cancels the older
+# A re-pushed/moved tag (or a re-run of the same version) cancels the older
 # in-progress build instead of running two builds of the same version.
 concurrency:
-  group: docker-release-${{ github.ref }}
+  group: docker-release-${{ inputs.version || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -26,8 +38,12 @@ jobs:
       packages: write
 
     steps:
+      # For a manual tag push this is the tag; when called by release.yml it is
+      # the exact version-synced commit that release.yml just created + tagged.
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
 
       - name: Set up QEMU (multi-arch emulation)
         uses: docker/setup-qemu-action@v3
@@ -42,24 +58,23 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Derives tags/labels from the git ref, e.g. tag v0.11.1 ->
-      #   ghcr.io/<owner>/<repo>:0.11.1
-      #   ghcr.io/<owner>/<repo>:0.11
-      #   ghcr.io/<owner>/<repo>:latest
-      - name: Extract Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest
-
-      # Version = the tag without the leading "v" (e.g. v0.16.0 -> 0.16.0).
-      - name: Derive version
+      # Version = the workflow_call input, or the tag without the leading "v"
+      # (e.g. v0.16.2 -> 0.16.2). Tags: <version>, <major>.<minor>, latest.
+      - name: Derive version and image tags
         id: ver
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        run: |
+          V="${{ inputs.version }}"
+          if [ -z "$V" ]; then V="${GITHUB_REF_NAME#v}"; fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          IMAGE=$(echo "${REGISTRY}/${IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')
+          MM="${V%.*}"
+          {
+            echo "tags<<EOF"
+            echo "${IMAGE}:${V}"
+            echo "${IMAGE}:${MM}"
+            echo "${IMAGE}:latest"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Build and push
         uses: docker/build-push-action@v6
@@ -67,13 +82,12 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.ver.outputs.tags }}
           # Baked into the image so the running app reports its own identity and
           # the in-app update checker can compare (version, sha).
           build-args: |
             APP_VERSION=${{ steps.ver.outputs.version }}
-            GIT_SHA=${{ github.sha }}
+            GIT_SHA=${{ inputs.ref || github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -87,9 +101,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.ver.outputs.version }}
-          SHA: ${{ github.sha }}
+          SHA: ${{ inputs.ref || github.sha }}
           MIN_UPGRADE_FROM: ${{ vars.MIN_UPGRADE_FROM }}
         run: |
+          TAG="v${VERSION}"
           cat > release.json <<EOF
           {
             "version": "${VERSION}",
@@ -100,5 +115,5 @@ jobs:
             "minUpgradeFrom": "${MIN_UPGRADE_FROM}"
           }
           EOF
-          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --generate-notes
-          gh release upload "$GITHUB_REF_NAME" release.json --clobber
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --generate-notes
+          gh release upload "$TAG" release.json --clobber

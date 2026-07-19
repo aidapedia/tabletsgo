@@ -57,9 +57,18 @@ export async function deleteWorkflow(connectionId: string, wid: string): Promise
 }
 
 // Run the posted graph (so unsaved edits execute) — omit graph to run the stored one.
-export async function runWorkflow(connectionId: string, wid: string, graph?: WorkflowGraph): Promise<RunResult> {
+// `input` seeds the trigger node (e.g. a dashboard table row): JS nodes receive it
+// as `input`, query nodes can inline scalars with {{input.field}}. `trigger` tags
+// the run in the audit trail ('manual' default).
+export async function runWorkflow(
+  connectionId: string,
+  wid: string,
+  graph?: WorkflowGraph,
+  input?: unknown,
+  trigger?: 'manual' | 'dashboard'
+): Promise<RunResult> {
   return request(`/connections/${connectionId}/workflows/${wid}/run`, {
     method: 'POST',
-    body: { graph },
+    body: { graph, input, trigger },
   })
 }

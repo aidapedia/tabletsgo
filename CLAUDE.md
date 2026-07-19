@@ -79,6 +79,11 @@ src/
 │   │   │                         #   ({{name}} in widget SQL, query-backed or static lists), free-placement
 │   │   │                         #   12-col drag/resize grid (hard collision blocking), fullscreen, JSON
 │   │   │                         #   export/import. Charts are hand-rolled SVG (no chart/grid deps).
+│   │   │                         #   Table widgets: optional server-side pagination (LIMIT/OFFSET wrap,
+│   │   │                         #   N+1 has-more probe) + per-row action buttons (up to 3, styled via
+│   │   │                         #   variant/icon, optional per-row condition that disables/hides by a
+│   │   │                         #   column value) that run a workflow with the clicked row as its trigger
+│   │   │                         #   input (Widget.pageSize/rowActions; icons in lib/rowActionIcons).
 │   │   ├── components/           #   DashboardView (tab content: toolbar + VariableBar + WidgetGrid),
 │   │   │                         #     DashboardsPanel (rail list), WidgetCard (runs its query), WidgetChart,
 │   │   │                         #     WidgetEditor + DashboardSettings (modals), MarkdownText,

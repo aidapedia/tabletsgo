@@ -13,6 +13,73 @@ export type WidgetLayout = { x: number; y: number; w: number; h: number }
 // overrides in `Widget.layouts` and otherwise inherit/derive from `lg`.
 export type Breakpoint = 'lg' | 'md' | 'sm'
 
+/** Button style for a row action; maps to a subset of the shared Button variants. */
+export type WidgetRowActionVariant = 'primary' | 'ghost' | 'danger'
+export const ROW_ACTION_VARIANTS: WidgetRowActionVariant[] = ['ghost', 'primary', 'danger']
+
+/** Comparison operators for a row-action condition. `empty`/`notEmpty` ignore `value`. */
+export type WidgetRowActionOperator = 'eq' | 'ne' | 'empty' | 'notEmpty'
+export const ROW_ACTION_OPERATORS: { value: WidgetRowActionOperator; label: string; needsValue: boolean }[] = [
+  { value: 'eq', label: 'equals', needsValue: true },
+  { value: 'ne', label: 'does not equal', needsValue: true },
+  { value: 'empty', label: 'is empty', needsValue: false },
+  { value: 'notEmpty', label: 'is not empty', needsValue: false },
+]
+
+/** Enable/visibility rule evaluated per row against a column value. When the
+ * comparison matches, `effect` is applied to the button; otherwise it stays active. */
+export type WidgetRowActionCondition = {
+  /** Column name read from the row (as returned by the widget query). */
+  column: string
+  operator: WidgetRowActionOperator
+  /** Compared value for `eq`/`ne`; ignored otherwise. */
+  value?: string
+  /** What happens when the comparison matches. Defaults to 'disable'. */
+  effect: 'disable' | 'hide'
+}
+
+/** One per-row "run workflow" button on a `table` widget. The clicked row (as a
+ * column→value object) is sent as the workflow's trigger input. */
+export type WidgetRowAction = {
+  workflowId: string
+  /** Snapshot of the workflow's name — display fallback when the id doesn't resolve (import, deleted workflow). */
+  workflowName?: string
+  /** Button text; defaults to "Run". */
+  label?: string
+  /** Button style; defaults to 'ghost'. */
+  variant?: WidgetRowActionVariant
+  /** Icon key into ROW_ACTION_ICONS (lib/rowActionIcons). Omitted = text-only button. */
+  icon?: string
+  /** Optional per-row enable/visibility rule. Unset = always active. */
+  condition?: WidgetRowActionCondition
+}
+
+/** Per-row button state from its condition. `row` is the column→value object. */
+export function rowActionState(action: WidgetRowAction, row: Record<string, unknown>): { hidden: boolean; disabled: boolean } {
+  const c = action.condition
+  if (!c || !c.column) return { hidden: false, disabled: false }
+  const raw = row[c.column]
+  const isEmpty = raw === null || raw === undefined || String(raw) === ''
+  let matched: boolean
+  switch (c.operator) {
+    case 'eq': matched = String(raw ?? '') === (c.value ?? ''); break
+    case 'ne': matched = String(raw ?? '') !== (c.value ?? ''); break
+    case 'empty': matched = isEmpty; break
+    case 'notEmpty': matched = !isEmpty; break
+    default: matched = false
+  }
+  if (!matched) return { hidden: false, disabled: false }
+  return { hidden: c.effect === 'hide', disabled: c.effect === 'disable' }
+}
+
+/** Cap on row-action buttons per table widget — row width and sanity, not a hard server limit. */
+export const MAX_TABLE_ROW_ACTIONS = 3
+
+/** A table widget's row actions, tolerating the pre-list `rowAction` (single object) shape. */
+export function widgetRowActions(w: Widget): WidgetRowAction[] {
+  return w.rowActions ?? ((w as any).rowAction ? [(w as any).rowAction as WidgetRowAction] : [])
+}
+
 export type Widget = {
   id: string
   type: WidgetType
@@ -23,6 +90,10 @@ export type Widget = {
   text?: string
   /** Optional suffix rendered after a `metric` value (e.g. "ms", "%"). */
   unit?: string
+  /** `table` only: rows per page. Unset = no pagination (all rows at once, current behavior). */
+  pageSize?: number
+  /** `table` only: per-row workflow buttons (max MAX_TABLE_ROW_ACTIONS). */
+  rowActions?: WidgetRowAction[]
   /** Per-series/slice color overrides (area/line/bar/pie), in series order. Falls back to the theme palette where unset. */
   colors?: string[]
   /** Base (`lg`) layout — the 12-column grid position. */
@@ -91,6 +162,8 @@ export function sanitizeConfig(raw: any): DashboardConfig {
         query: typeof w.query === 'string' ? w.query : undefined,
         text: typeof w.text === 'string' ? w.text : undefined,
         unit: typeof w.unit === 'string' ? w.unit : undefined,
+        pageSize: Number.isFinite(Number(w.pageSize)) && Number(w.pageSize) > 0 ? clampInt(w.pageSize, 1, 500, 25) : undefined,
+        rowActions: sanitizeRowActions(w.rowActions ?? w.rowAction),
         // Kept index-aligned with the series it colors — invalid/missing slots become '' (falls back to the palette), never removed.
         colors: Array.isArray(w.colors)
           ? w.colors.map((c: any) => (typeof c === 'string' && /^#[0-9a-fA-F]{6}$/.test(c) ? c : ''))
@@ -110,6 +183,35 @@ export function sanitizeConfig(raw: any): DashboardConfig {
         defaultValue: typeof v.defaultValue === 'string' ? v.defaultValue : undefined,
       })),
   }
+}
+
+function sanitizeRowActionCondition(raw: any): WidgetRowActionCondition | undefined {
+  if (!raw || typeof raw !== 'object' || typeof raw.column !== 'string' || !raw.column.trim()) return undefined
+  const operator = ROW_ACTION_OPERATORS.some((o) => o.value === raw.operator) ? raw.operator : 'eq'
+  return {
+    column: raw.column,
+    operator,
+    value: typeof raw.value === 'string' ? raw.value : undefined,
+    effect: raw.effect === 'hide' ? 'hide' : 'disable',
+  }
+}
+
+// Accepts a list or the legacy single-object `rowAction` shape.
+function sanitizeRowActions(raw: any): WidgetRowAction[] | undefined {
+  const list = Array.isArray(raw) ? raw : raw && typeof raw === 'object' ? [raw] : []
+  const out = list
+    .filter((a: any) => a && typeof a === 'object' && typeof a.workflowId === 'string' && a.workflowId.trim())
+    .slice(0, MAX_TABLE_ROW_ACTIONS)
+    .map((a: any) => ({
+      workflowId: a.workflowId,
+      workflowName: typeof a.workflowName === 'string' ? a.workflowName : undefined,
+      label: typeof a.label === 'string' ? a.label : undefined,
+      variant: ROW_ACTION_VARIANTS.includes(a.variant) ? a.variant : undefined,
+      // Any string is kept; an unknown key just renders text-only (see rowActionIcon).
+      icon: typeof a.icon === 'string' && a.icon ? a.icon : undefined,
+      condition: sanitizeRowActionCondition(a.condition),
+    }))
+  return out.length ? out : undefined
 }
 
 function clampInt(v: any, min: number, max: number, fallback: number) {

@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
 import { runQuery } from '@/shared/api/database'
+import { runWorkflow } from '@/features/workflow'
 import LoadingState from '@/shared/ui/feedback/LoadingState'
 import EmptyState from '@/shared/ui/feedback/EmptyState'
+import { useToast } from '@/shared/ui/feedback/Toast'
 import IconButton from '@/shared/ui/buttons/IconButton'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
 import Popover from '@/shared/ui/overlay/Popover'
-import { CopyIcon, EditIcon, MoreVerticalIcon, TrashIcon } from '@/shared/ui/icons'
-import type { Widget } from '../types'
+import { ChevronLeft, ChevronRight, CopyIcon, EditIcon, MoreVerticalIcon, TrashIcon } from '@/shared/ui/icons'
+import { widgetRowActions, type Widget } from '../types'
 import { referencedVariables, substituteVariables } from '../lib/variables'
 import type { QueryResult } from '../lib/queryData'
 import WidgetChart from './WidgetChart'
@@ -42,13 +44,28 @@ export default function WidgetCard({
     [widget.query, values]
   )
 
-  const sql = useMemo(
+  const baseSql = useMemo(
     () => (widget.type === 'text' || !widget.query || missingVars.length > 0 ? '' : substituteVariables(widget.query, values)),
     [widget.type, widget.query, values, missingVars.length]
   )
 
+  // Server-side pagination for table widgets: wrap the query in LIMIT/OFFSET
+  // (valid on every roadmap dialect) and fetch pageSize+1 rows — the extra row
+  // only signals that a next page exists, without a costly COUNT(*).
+  const pageSize = widget.type === 'table' && widget.pageSize ? widget.pageSize : 0
+  const [page, setPage] = useState(0)
+  useEffect(() => setPage(0), [baseSql, pageSize])
+
+  const sql = useMemo(() => {
+    if (!baseSql.trim() || !pageSize) return baseSql
+    return `SELECT * FROM (${baseSql.replace(/;+\s*$/, '')}) AS _page LIMIT ${pageSize + 1} OFFSET ${page * pageSize}`
+  }, [baseSql, pageSize, page])
+
   const [result, setResult] = useState<QueryResult | null>(null)
   const [loading, setLoading] = useState(false)
+  // Bumped after a successful row-action run so the widget re-queries (the
+  // workflow likely changed the rows it displays).
+  const [actionRefresh, setActionRefresh] = useState(0)
 
   useEffect(() => {
     if (!sql.trim()) {
@@ -66,7 +83,38 @@ export default function WidgetCard({
       alive = false
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sql, refreshKey, conn?.id, conn?.ns?.database, conn?.ns?.schema])
+  }, [sql, refreshKey, actionRefresh, conn?.id, conn?.ns?.database, conn?.ns?.schema])
+
+  // Trim the has-more probe row before rendering.
+  const hasMore = !!pageSize && (result?.rows?.length ?? 0) > pageSize
+  const display = useMemo(
+    () => (result && hasMore ? { ...result, rows: result.rows!.slice(0, pageSize) } : result),
+    [result, hasMore, pageSize]
+  )
+
+  const toast = useToast()
+  const [running, setRunning] = useState<{ row: number; action: number } | null>(null)
+
+  const runRowAction = async (row: Record<string, unknown>, rowIndex: number, actionIndex: number) => {
+    const action = widgetRowActions(widget)[actionIndex]
+    if (!action || running !== null) return
+    const name = action.workflowName || 'Workflow'
+    setRunning({ row: rowIndex, action: actionIndex })
+    try {
+      const res = await runWorkflow(conn.id, action.workflowId, undefined, row, 'dashboard')
+      if (res.ok) {
+        toast.success(`${name} finished.`)
+        setActionRefresh((n) => n + 1)
+      } else {
+        toast.error(`${name} failed: ${res.error}`)
+      }
+    } catch (e: any) {
+      // 404 here usually means the workflow was deleted (or the dashboard was imported from elsewhere).
+      toast.error(`Couldn't run ${name}: ${e.message}`)
+    } finally {
+      setRunning(null)
+    }
+  }
 
   return (
     <div className="flex h-full flex-col overflow-hidden rounded-card border border-edge bg-card">
@@ -114,11 +162,24 @@ export default function WidgetCard({
           <EmptyState>Pick a value for {missingVars.map((v) => `{{${v}}}`).join(', ')} in Filters to run this widget.</EmptyState>
         ) : loading && !result ? (
           <LoadingState className="py-6 text-center" />
-        ) : result?.error ? (
-          <div className="overflow-y-auto whitespace-pre-wrap break-words px-1 py-2 text-[11px] text-red">{result.error}</div>
-        ) : result ? (
-          <div className={`h-full ${loading ? 'opacity-60 transition-opacity' : ''}`}>
-            <WidgetChart widget={widget} result={result} />
+        ) : display?.error ? (
+          <div className="overflow-y-auto whitespace-pre-wrap break-words px-1 py-2 text-[11px] text-red">{display.error}</div>
+        ) : display ? (
+          <div className={`flex h-full flex-col ${loading ? 'opacity-60 transition-opacity' : ''}`}>
+            <div className="min-h-0 flex-1">
+              <WidgetChart widget={widget} result={display} running={running} onRowAction={runRowAction} />
+            </div>
+            {pageSize > 0 && (
+              <div className="flex shrink-0 items-center justify-end gap-1 pt-1.5">
+                <span className="mr-1 text-[11px] tabular-nums text-ink-faint">Page {page + 1}</span>
+                <IconButton size="sm" className="disabled:opacity-40" aria-label="Previous page" disabled={page === 0 || loading} onClick={() => setPage((p) => Math.max(0, p - 1))}>
+                  <ChevronLeft width={14} height={14} />
+                </IconButton>
+                <IconButton size="sm" className="disabled:opacity-40" aria-label="Next page" disabled={!hasMore || loading} onClick={() => setPage((p) => p + 1)}>
+                  <ChevronRight width={14} height={14} />
+                </IconButton>
+              </div>
+            )}
           </div>
         ) : null}
       </div>

@@ -58,7 +58,7 @@ LIMIT 50`,
   },
   metric: {
     hint: 'The first cell of the first row is shown; other cells are ignored.',
-    columns: [{ label: 'Row 1, column 1', role: 'The number shown (add a unit in the field above)' }],
+    columns: [{ label: 'Row 1, column 1', role: 'The number shown (set a unit in the Format tab)' }],
     example: `-- A single aggregate value
 SELECT COUNT(*) AS total
 FROM notifications

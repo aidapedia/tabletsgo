@@ -1,6 +1,8 @@
 import { useMemo } from 'react'
 import EmptyState from '@/shared/ui/feedback/EmptyState'
-import type { Widget } from '../types'
+import Button from '@/shared/ui/buttons/Button'
+import { rowActionState, widgetRowActions, type Widget, type WidgetRowAction } from '../types'
+import { rowActionIcon } from '../lib/rowActionIcons'
 import { toMetric, toPieData, toSankeyData, toXYSeries, firstRows, cellAt, type QueryResult } from '../lib/queryData'
 import { useChartPalette, MAX_SERIES } from '../lib/palette'
 import XYChart from './charts/XYChart'
@@ -12,10 +14,24 @@ import { fmtNum, useMountAnimation } from './charts/chrome'
 // live in lib/queryData.ts; colors come from the validated palette (assigned
 // to series in fixed slot order, capped at MAX_SERIES — never cycled).
 
-function TableWidget({ result }: { result: QueryResult }) {
+function TableWidget({
+  result,
+  rowActions,
+  running,
+  onRowAction,
+}: {
+  result: QueryResult
+  rowActions?: WidgetRowAction[]
+  running?: { row: number; action: number } | null
+  onRowAction?: (row: Record<string, unknown>, rowIndex: number, actionIndex: number) => void
+}) {
   const { columns, rows } = firstRows(result)
   const ready = useMountAnimation(result)
   if (!columns.length) return <EmptyState>Query returned no rows.</EmptyState>
+  // Normalize a row (array or object depending on dialect) into a stable
+  // column→value object — the shape the workflow receives as its input.
+  const rowObject = (row: any): Record<string, unknown> =>
+    Object.fromEntries(columns.map((c, j) => [c, cellAt(row, columns, j)]))
   return (
     <div className="h-full overflow-auto">
       <table className="w-full border-collapse text-left text-[11px]">
@@ -26,6 +42,7 @@ function TableWidget({ result }: { result: QueryResult }) {
                 {c}
               </th>
             ))}
+            {!!rowActions?.length && <th className="w-px border-b border-edge px-2.5 py-1.5" aria-label="Actions" />}
           </tr>
         </thead>
         <tbody>
@@ -46,6 +63,34 @@ function TableWidget({ result }: { result: QueryResult }) {
                   </td>
                 )
               })}
+              {!!rowActions?.length && (() => {
+                // One row object drives both the condition checks and the workflow payload.
+                const ro = rowObject(row)
+                return (
+                  <td className="border-b border-edge/60 px-2.5 py-1">
+                    <div className="flex items-center gap-1.5 whitespace-nowrap">
+                      {rowActions.map((action, a) => {
+                        const { hidden, disabled } = rowActionState(action, ro)
+                        if (hidden) return null
+                        const isRunning = running?.row === i && running?.action === a
+                        return (
+                          <Button
+                            key={a}
+                            size="sm"
+                            variant={action.variant ?? 'ghost'}
+                            icon={isRunning ? undefined : rowActionIcon(action.icon)}
+                            className="!rounded-[6px] !py-0.5"
+                            disabled={!onRowAction || running != null || disabled}
+                            onClick={() => onRowAction?.(ro, i, a)}
+                          >
+                            {isRunning ? 'Running…' : action.label?.trim() || 'Run'}
+                          </Button>
+                        )
+                      })}
+                    </div>
+                  </td>
+                )
+              })()}
             </tr>
           ))}
         </tbody>
@@ -75,7 +120,18 @@ function MetricWidget({ result, unit }: { result: QueryResult; unit?: string }) 
   )
 }
 
-export default function WidgetChart({ widget, result }: { widget: Widget; result: QueryResult }) {
+export default function WidgetChart({
+  widget,
+  result,
+  running,
+  onRowAction,
+}: {
+  widget: Widget
+  result: QueryResult
+  /** table row-action state/handler — owned by WidgetCard; absent in previews (buttons render disabled). */
+  running?: { row: number; action: number } | null
+  onRowAction?: (row: Record<string, unknown>, rowIndex: number, actionIndex: number) => void
+}) {
   const base = useChartPalette()
   // Per-widget color overrides replace individual palette slots; unset slots keep the theme default.
   const palette = useMemo(
@@ -117,7 +173,7 @@ export default function WidgetChart({ widget, result }: { widget: Widget; result
       }
       return <SankeyChart data={sankey!} palette={palette} />
     case 'table':
-      return <TableWidget result={result} />
+      return <TableWidget result={result} rowActions={widgetRowActions(widget)} running={running} onRowAction={onRowAction} />
     case 'metric':
       return <MetricWidget result={result} unit={widget.unit} />
     default:
