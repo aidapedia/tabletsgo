@@ -100,6 +100,24 @@ function ensureBaseSchema(db) {
       name TEXT NOT NULL,
       config TEXT,                 -- JSON { variables, widgets }
       ts INTEGER
+      -- folder_id (folders.id, NULL = root) is added by migration v3 via ALTER;
+      -- it is intentionally NOT inlined here so v3's plain ALTER doesn't collide
+      -- on fresh installs (which also run v3).
+    );
+    -- Generic, polymorphic folders: one tree per (connection, type). The type
+    -- discriminates what the folder groups ('query' | 'dashboard' | future);
+    -- items point back via their own folder_id (saved_queries, dashboards, …).
+    -- parent_id builds the tree (NULL = root); nesting caps are per-type and
+    -- enforced in server.js. Supersedes the legacy saved_folders table, whose
+    -- rows migration v3 copies in as type='query'. CREATE ... IF NOT EXISTS is
+    -- idempotent with v3, so fresh + existing installs agree.
+    CREATE TABLE IF NOT EXISTS folders (
+      id TEXT PRIMARY KEY,
+      connection_id TEXT NOT NULL,
+      type TEXT NOT NULL,          -- 'query' | 'dashboard' | future
+      name TEXT NOT NULL,
+      parent_id TEXT,
+      ts INTEGER
     );
     CREATE TABLE IF NOT EXISTS storage_destinations (
       id TEXT PRIMARY KEY,
@@ -366,14 +384,50 @@ export const MIGRATIONS = [
       ensureColumns(db)
     },
   },
-  // v3+: append plain, run-exactly-once steps here, e.g.
+  {
+    version: 3,
+    name: 'unified polymorphic folders (folders + dashboards.folder_id; backfill saved_folders)',
+    up(db) {
+      // Generic folders tree shared by every folderable resource, keyed by type.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS folders (
+          id TEXT PRIMARY KEY,
+          connection_id TEXT NOT NULL,
+          type TEXT NOT NULL,
+          name TEXT NOT NULL,
+          parent_id TEXT,
+          ts INTEGER
+        );
+      `)
+      // Fold the legacy saved-query folders in as type='query'. Ids are
+      // preserved, so saved_queries.folder_id keeps resolving without a repoint.
+      // OR IGNORE keeps this safe if a partial run ever left rows behind. The
+      // old saved_folders table is left in place (additive-only / rollback).
+      db.exec(`
+        INSERT OR IGNORE INTO folders (id, connection_id, type, name, parent_id, ts)
+        SELECT id, connection_id, 'query', name, parent_id, ts FROM saved_folders
+      `)
+      // Dashboards can now live in a folder too.
+      db.exec(`ALTER TABLE dashboards ADD COLUMN folder_id TEXT`)
+    },
+  },
+  // v4+: append plain, run-exactly-once steps here, e.g.
   // {
-  //   version: 3,
+  //   version: 4,
   //   name: 'connections: last_used_at',
   //   up(db) {
   //     db.exec(`ALTER TABLE connections ADD COLUMN last_used_at INTEGER`)
   //   },
   // },
+]
+
+// Tables kept only so an older image can still open a newer DB (rollback
+// compat) — the live code must never read or write them. Add an entry here
+// whenever a step supersedes a table instead of dropping it; this is the
+// shopping list for an eventual cleanup step once the release floor has
+// moved past every image that still used the table.
+export const DEPRECATED_TABLES = [
+  { table: 'saved_folders', supersededBy: 'folders', sinceStep: 3 },
 ]
 
 export const LATEST_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version

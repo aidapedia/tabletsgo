@@ -16,6 +16,7 @@ import vm from 'node:vm'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { pipeline } from 'stream/promises'
+import { Transform } from 'stream'
 import Database from 'better-sqlite3'
 import nodemailer from 'nodemailer'
 import cron from 'node-cron'
@@ -1449,6 +1450,38 @@ async function execStoreToStorage(conn, input, destinationIds, opts = {}) {
   return { uploaded }
 }
 
+// Connection types a backup can be restored into.
+const RESTORABLE_TYPES = new Set(['sqlite', 'postgresql'])
+
+// True if the file starts with the SQLite magic header — keeps restore from
+// overwriting a live database with a file that isn't a SQLite database at all.
+function isSqliteFile(filePath) {
+  const buf = Buffer.alloc(16)
+  const fd = fs.openSync(filePath, 'r')
+  const n = fs.readSync(fd, buf, 0, 16, 0)
+  fs.closeSync(fd)
+  return n === 16 && buf.toString('utf8', 0, 15) === 'SQLite format 3'
+}
+
+// Overwrites a connection's live data with the dump file at `dumpPath`.
+// Shared by every restore path (backup run, storage browse, file upload) —
+// the caller has already validated the target, its type, and the confirmation.
+async function restoreDumpIntoConnection(targetConn, dumpPath) {
+  if (targetConn.type === 'sqlite') {
+    if (!isSqliteFile(dumpPath)) throw new Error('The file is not a SQLite database — refusing to overwrite the live database with it.')
+    sqliteConnections.delete(targetConn.filepath)
+    const swap = `${targetConn.filepath}.tmp`
+    fs.copyFileSync(dumpPath, swap)
+    fs.renameSync(swap, targetConn.filepath) // atomic replace of the live file
+  } else if (targetConn.type === 'postgresql') {
+    closePostgresPools(targetConn.id)
+    const { args, env } = pgToolConn(targetConn)
+    await execPgTool('pg_restore', ['--clean', '--if-exists', '--no-owner', ...args, dumpPath], { env })
+  } else {
+    throw new Error(`Restore not supported for connection type: ${targetConn.type}`)
+  }
+}
+
 // Reads a stored object (S3 or local disk) into a local temp file. Shared by
 // download/restore so neither has to know which kind of destination it is.
 async function fetchStorageObjectToFile(dest, key, destPath) {
@@ -1458,6 +1491,39 @@ async function fetchStorageObjectToFile(dest, key, destPath) {
     const obj = await getS3Client(dest).send(new GetObjectCommand({ Bucket: dest.bucket, Key: key }))
     await pipeline(obj.Body, fs.createWriteStream(destPath))
   }
+}
+
+// Lists a destination's stored files (newest first, capped) so the
+// restore-from-storage picker can browse what's actually in the bucket/folder.
+async function listStorageObjects(dest, limit = 500) {
+  const objects = []
+  if (dest.local) {
+    const walk = (dir, rel) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const key = rel ? `${rel}/${entry.name}` : entry.name
+        if (entry.isDirectory()) walk(path.join(dir, entry.name), key)
+        else {
+          const st = fs.statSync(path.join(dir, entry.name))
+          objects.push({ key, sizeBytes: st.size, lastModified: Math.round(st.mtimeMs) })
+        }
+      }
+    }
+    walk(LOCAL_BACKUP_DIR, '')
+  } else {
+    const client = getS3Client(dest)
+    const prefix = dest.pathPrefix ? `${dest.pathPrefix.replace(/^\/+|\/+$/g, '')}/` : ''
+    let ContinuationToken
+    do {
+      const page = await client.send(new ListObjectsV2Command({ Bucket: dest.bucket, Prefix: prefix, ContinuationToken }))
+      for (const obj of page.Contents || []) {
+        if (obj.Key && !obj.Key.endsWith('/'))
+          objects.push({ key: obj.Key, sizeBytes: obj.Size ?? 0, lastModified: obj.LastModified ? new Date(obj.LastModified).getTime() : null })
+      }
+      ContinuationToken = page.IsTruncated ? page.NextContinuationToken : undefined
+    } while (ContinuationToken && objects.length < 5000)
+  }
+  objects.sort((a, b) => (b.lastModified || 0) - (a.lastModified || 0))
+  return objects.slice(0, limit)
 }
 
 // Deletes stored objects (S3 or local disk) by key.
@@ -2026,10 +2092,11 @@ app.delete('/api/workspaces/:id', (req, res) => {
     if (JSON.parse(row.data).workspaceId === req.params.id) {
       deleteConnectionRow(row.id)
       meta.prepare('DELETE FROM saved_queries WHERE connection_id = ?').run(row.id)
-      meta.prepare('DELETE FROM saved_folders WHERE connection_id = ?').run(row.id)
       meta.prepare('DELETE FROM domains WHERE connection_id = ?').run(row.id)
       meta.prepare('DELETE FROM table_domains WHERE connection_id = ?').run(row.id)
       meta.prepare('DELETE FROM workflows WHERE connection_id = ?').run(row.id)
+      meta.prepare('DELETE FROM dashboards WHERE connection_id = ?').run(row.id)
+      meta.prepare('DELETE FROM folders WHERE connection_id = ?').run(row.id)
       meta.prepare('DELETE FROM query_history WHERE connection_id = ?').run(row.id)
       meta.prepare('DELETE FROM connection_access WHERE connection_id = ?').run(row.id)
     }
@@ -2440,11 +2507,12 @@ app.delete('/api/connections/:id', (req, res) => {
 
   deleteConnectionRow(req.params.id)
   meta.prepare('DELETE FROM saved_queries WHERE connection_id = ?').run(req.params.id)
-  meta.prepare('DELETE FROM saved_folders WHERE connection_id = ?').run(req.params.id)
+  meta.prepare('DELETE FROM folders WHERE connection_id = ?').run(req.params.id)
   meta.prepare('DELETE FROM domains WHERE connection_id = ?').run(req.params.id)
   meta.prepare('DELETE FROM table_domains WHERE connection_id = ?').run(req.params.id)
   meta.prepare('DELETE FROM workflows WHERE connection_id = ?').run(req.params.id)
   meta.prepare('DELETE FROM workflow_runs WHERE connection_id = ?').run(req.params.id)
+  meta.prepare('DELETE FROM dashboards WHERE connection_id = ?').run(req.params.id)
   meta.prepare('DELETE FROM query_history WHERE connection_id = ?').run(req.params.id)
   meta.prepare('DELETE FROM connection_access WHERE connection_id = ?').run(req.params.id)
   res.json({ ok: true })
@@ -2476,19 +2544,55 @@ app.get('/api/connections/:id/saved', (req, res) => {
   res.json(rows.map((r) => ({ ...r, kind: r.kind || 'query', folderId: r.folder_id || null })))
 })
 
-// ---- Saved folders (per connection) ----
-// Folders form a tree via `parent_id` (NULL = root); queries hang off any folder.
+// ---- Folders (per connection, polymorphic by `type`) ----
+// One tree per (connection, type): 'query' groups saved queries, 'dashboard'
+// groups dashboards. Each item points back via its own `folder_id` column, and
+// `parent_id` builds the tree (NULL = root). Nesting caps are per type (queries
+// uncapped for back-compat; dashboards capped at 3) and enforced here. Adding a
+// new folderable resource = one entry in FOLDER_TYPES + a `folder_id` column.
+const FOLDER_TYPES = {
+  query: { itemTable: 'saved_queries', maxDepth: Infinity },
+  dashboard: { itemTable: 'dashboards', maxDepth: 3 },
+}
+// Coerce an untrusted `type` to a known one (defaults to 'query' for older
+// clients that predate the `type` param). Guards the itemTable interpolation.
+const folderTypeOf = (t) => (t && FOLDER_TYPES[t] ? t : 'query')
 
-// True if `folderId` is `candidateAncestor` or nested somewhere beneath it —
-// used to reject reparenting a folder into its own subtree (which would orphan
-// a cycle). Walks up from `folderId` following parent_id within this connection.
-function folderHasAncestor(connectionId, folderId, candidateAncestor) {
-  const parentOf = new Map(
+// parent_id lookup for one connection's folders of a given type.
+function folderParents(connectionId, type) {
+  return new Map(
     meta
-      .prepare('SELECT id, parent_id FROM saved_folders WHERE connection_id = ?')
-      .all(connectionId)
+      .prepare('SELECT id, parent_id FROM folders WHERE connection_id = ? AND type = ?')
+      .all(connectionId, type)
       .map((r) => [r.id, r.parent_id || null])
   )
+}
+// Levels from the root down to `folderId` (root folder = 1, NULL = 0).
+function folderDepth(connectionId, type, folderId, parentOf = folderParents(connectionId, type)) {
+  let depth = 0
+  let cur = folderId
+  const seen = new Set()
+  while (cur && !seen.has(cur)) {
+    depth++
+    seen.add(cur)
+    cur = parentOf.get(cur) || null
+  }
+  return depth
+}
+// Height of the subtree rooted at `folderId` (the folder itself = 1).
+function folderHeight(connectionId, type, folderId) {
+  const children = new Map()
+  for (const r of meta.prepare('SELECT id, parent_id FROM folders WHERE connection_id = ? AND type = ?').all(connectionId, type)) {
+    const p = r.parent_id || null
+    if (!children.has(p)) children.set(p, [])
+    children.get(p).push(r.id)
+  }
+  const heightFrom = (fid) => 1 + (children.get(fid) || []).reduce((m, c) => Math.max(m, heightFrom(c)), 0)
+  return heightFrom(folderId)
+}
+// True if `folderId` is `candidateAncestor` or nested somewhere beneath it —
+// used to reject reparenting a folder into its own subtree (a cycle).
+function folderHasAncestor(connectionId, type, folderId, candidateAncestor, parentOf = folderParents(connectionId, type)) {
   let cur = folderId
   const seen = new Set()
   while (cur && !seen.has(cur)) {
@@ -2500,30 +2604,39 @@ function folderHasAncestor(connectionId, folderId, candidateAncestor) {
 }
 
 app.get('/api/connections/:id/folders', (req, res) => {
+  const type = folderTypeOf(req.query.type)
   const rows = meta
-    .prepare('SELECT id, name, parent_id, ts FROM saved_folders WHERE connection_id = ? ORDER BY ts ASC')
-    .all(req.params.id)
-  res.json(rows.map((r) => ({ id: r.id, name: r.name, parentId: r.parent_id || null, ts: r.ts })))
+    .prepare('SELECT id, name, parent_id, ts FROM folders WHERE connection_id = ? AND type = ? ORDER BY ts ASC')
+    .all(req.params.id, type)
+  res.json(rows.map((r) => ({ id: r.id, name: r.name, parentId: r.parent_id || null, type, ts: r.ts })))
 })
 
 app.post('/api/connections/:id/folders', (req, res) => {
   const { name, parentId } = req.body || {}
+  const type = folderTypeOf(req.body?.type)
   if (!name?.trim()) return res.status(400).json({ error: 'A folder name is required' })
   if (parentId) {
     const parent = meta
-      .prepare('SELECT id FROM saved_folders WHERE id = ? AND connection_id = ?')
-      .get(parentId, req.params.id)
+      .prepare('SELECT id FROM folders WHERE id = ? AND connection_id = ? AND type = ?')
+      .get(parentId, req.params.id, type)
     if (!parent) return res.status(400).json({ error: 'Parent folder not found' })
+    if (folderDepth(req.params.id, type, parentId) >= FOLDER_TYPES[type].maxDepth)
+      return res.status(400).json({ error: `Folders can only nest ${FOLDER_TYPES[type].maxDepth} levels deep` })
   }
-  const entry = { id: randomUUID(), name: name.trim(), parentId: parentId || null, ts: Date.now() }
+  const entry = { id: randomUUID(), name: name.trim(), parentId: parentId || null, type, ts: Date.now() }
   meta
-    .prepare('INSERT INTO saved_folders (id, connection_id, name, parent_id, ts) VALUES (?, ?, ?, ?, ?)')
-    .run(entry.id, req.params.id, entry.name, entry.parentId, entry.ts)
+    .prepare('INSERT INTO folders (id, connection_id, type, name, parent_id, ts) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(entry.id, req.params.id, entry.type, entry.name, entry.parentId, entry.ts)
   res.json(entry)
 })
 
 app.put('/api/connections/:id/folders/:fid', (req, res) => {
   const body = req.body || {}
+  const folder = meta
+    .prepare('SELECT type FROM folders WHERE id = ? AND connection_id = ?')
+    .get(req.params.fid, req.params.id)
+  if (!folder) return res.status(404).json({ error: 'Not found' })
+  const type = folderTypeOf(folder.type)
   const { name } = body
   const sets = []
   const vals = []
@@ -2538,18 +2651,22 @@ app.put('/api/connections/:id/folders/:fid', (req, res) => {
     if (parentId) {
       if (parentId === req.params.fid) return res.status(400).json({ error: "A folder can't be its own parent" })
       const parent = meta
-        .prepare('SELECT id FROM saved_folders WHERE id = ? AND connection_id = ?')
-        .get(parentId, req.params.id)
+        .prepare('SELECT id FROM folders WHERE id = ? AND connection_id = ? AND type = ?')
+        .get(parentId, req.params.id, type)
       if (!parent) return res.status(400).json({ error: 'Parent folder not found' })
-      if (folderHasAncestor(req.params.id, parentId, req.params.fid))
+      if (folderHasAncestor(req.params.id, type, parentId, req.params.fid))
         return res.status(400).json({ error: "Can't move a folder into its own subfolder" })
+      // The moved subtree's deepest leaf must still fit within the depth cap.
+      const newDepth = folderDepth(req.params.id, type, parentId) + folderHeight(req.params.id, type, req.params.fid)
+      if (newDepth > FOLDER_TYPES[type].maxDepth)
+        return res.status(400).json({ error: `Folders can only nest ${FOLDER_TYPES[type].maxDepth} levels deep` })
     }
     sets.push('parent_id = ?')
     vals.push(parentId)
   }
   if (!sets.length) return res.status(400).json({ error: 'Nothing to update' })
   const r = meta
-    .prepare(`UPDATE saved_folders SET ${sets.join(', ')} WHERE id = ? AND connection_id = ?`)
+    .prepare(`UPDATE folders SET ${sets.join(', ')} WHERE id = ? AND connection_id = ?`)
     .run(...vals, req.params.fid, req.params.id)
   if (!r.changes) return res.status(404).json({ error: 'Not found' })
   res.json({ ok: true })
@@ -2557,18 +2674,20 @@ app.put('/api/connections/:id/folders/:fid', (req, res) => {
 
 app.delete('/api/connections/:id/folders/:fid', (req, res) => {
   // Reparent the folder's contents up one level (to its own parent) rather than
-  // deleting them: child folders and queries move to the deleted folder's parent.
+  // deleting them: child folders and items move to the deleted folder's parent.
   const row = meta
-    .prepare('SELECT parent_id FROM saved_folders WHERE id = ? AND connection_id = ?')
+    .prepare('SELECT type, parent_id FROM folders WHERE id = ? AND connection_id = ?')
     .get(req.params.fid, req.params.id)
+  const type = folderTypeOf(row?.type)
   const parentId = row?.parent_id || null
   meta
-    .prepare('UPDATE saved_folders SET parent_id = ? WHERE parent_id = ? AND connection_id = ?')
+    .prepare('UPDATE folders SET parent_id = ? WHERE parent_id = ? AND connection_id = ?')
     .run(parentId, req.params.fid, req.params.id)
+  // itemTable comes from the FOLDER_TYPES allowlist (via folderTypeOf) — safe to interpolate.
   meta
-    .prepare('UPDATE saved_queries SET folder_id = ? WHERE folder_id = ? AND connection_id = ?')
+    .prepare(`UPDATE ${FOLDER_TYPES[type].itemTable} SET folder_id = ? WHERE folder_id = ? AND connection_id = ?`)
     .run(parentId, req.params.fid, req.params.id)
-  meta.prepare('DELETE FROM saved_folders WHERE id = ? AND connection_id = ?').run(req.params.fid, req.params.id)
+  meta.prepare('DELETE FROM folders WHERE id = ? AND connection_id = ?').run(req.params.fid, req.params.id)
   res.json({ ok: true })
 })
 
@@ -2783,26 +2902,34 @@ app.delete('/api/connections/:id/workflows/:wid', (req, res) => {
 // A dashboard is a name + one JSON config: { variables: [...], widgets: [...] }.
 // The config shape is owned by the frontend (src/features/dashboard/types.ts);
 // the server just stores and returns it, so it stays database-agnostic.
+// Dashboards can live in a folder (folders table, type='dashboard').
 
 app.get('/api/connections/:id/dashboards', (req, res) => {
   const rows = meta
-    .prepare('SELECT id, name, ts FROM dashboards WHERE connection_id = ? ORDER BY ts DESC')
+    .prepare('SELECT id, name, folder_id, ts FROM dashboards WHERE connection_id = ? ORDER BY ts DESC')
     .all(req.params.id)
-  res.json(rows)
+  res.json(rows.map((r) => ({ id: r.id, name: r.name, folderId: r.folder_id || null, ts: r.ts })))
 })
 
 app.post('/api/connections/:id/dashboards', (req, res) => {
-  const { name, config } = req.body || {}
+  const { name, config, folderId } = req.body || {}
   if (!name?.trim()) return res.status(400).json({ error: 'A dashboard name is required' })
+  if (folderId) {
+    const parent = meta
+      .prepare("SELECT id FROM folders WHERE id = ? AND connection_id = ? AND type = 'dashboard'")
+      .get(folderId, req.params.id)
+    if (!parent) return res.status(400).json({ error: 'Folder not found' })
+  }
   const entry = {
     id: randomUUID(),
     name: name.trim(),
     config: config && typeof config === 'object' ? config : { variables: [], widgets: [] },
+    folderId: folderId || null,
     ts: Date.now(),
   }
   meta
-    .prepare('INSERT INTO dashboards (id, connection_id, name, config, ts) VALUES (?, ?, ?, ?, ?)')
-    .run(entry.id, req.params.id, entry.name, JSON.stringify(entry.config), entry.ts)
+    .prepare('INSERT INTO dashboards (id, connection_id, name, config, folder_id, ts) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(entry.id, req.params.id, entry.name, JSON.stringify(entry.config), entry.folderId, entry.ts)
   res.json(entry)
 })
 
@@ -2827,6 +2954,18 @@ app.put('/api/connections/:id/dashboards/:did', (req, res) => {
     if (typeof body.config !== 'object') return res.status(400).json({ error: 'config must be an object' })
     sets.push('config = ?')
     vals.push(JSON.stringify(body.config))
+  }
+  // folderId is explicitly settable (null moves the dashboard back to the root).
+  if ('folderId' in body) {
+    const folderId = body.folderId || null
+    if (folderId) {
+      const parent = meta
+        .prepare("SELECT id FROM folders WHERE id = ? AND connection_id = ? AND type = 'dashboard'")
+        .get(folderId, req.params.id)
+      if (!parent) return res.status(400).json({ error: 'Folder not found' })
+    }
+    sets.push('folder_id = ?')
+    vals.push(folderId)
   }
   if (!sets.length) return res.status(400).json({ error: 'Nothing to update' })
   const r = meta
@@ -3151,6 +3290,7 @@ app.post('/api/connections/:id/backup/restore', async (req, res) => {
   if (!targetConn) return res.status(404).json({ error: 'Target connection not found' })
   if (targetConn.workspaceId !== sourceConn.workspaceId) return res.status(400).json({ error: 'Target connection must be in the same workspace' })
   if (targetConn.type !== sourceConn.type) return res.status(400).json({ error: 'Target connection must be the same database type' })
+  if (!RESTORABLE_TYPES.has(targetConn.type)) return res.status(400).json({ error: `Restore not supported for connection type: ${targetConn.type}` })
   if (confirmName !== targetConn.name) return res.status(400).json({ error: "Confirmation text doesn't match the target connection's name." })
 
   const run = meta.prepare('SELECT * FROM backup_runs WHERE id = ? AND connection_id = ?').get(runId, req.params.id)
@@ -3166,19 +3306,103 @@ app.post('/api/connections/:id/backup/restore', async (req, res) => {
   try {
     await fetchStorageObjectToFile(dest, upload.key, tmpPath)
     const dumpPath = upload.encrypted ? (decPath = await decryptFileToFile(tmpPath)) : tmpPath
+    await restoreDumpIntoConnection(targetConn, dumpPath)
+    res.json({ ok: true })
+  } catch (err) {
+    res.status(500).json({ ok: false, error: describeError(err) })
+  } finally {
+    fs.rm(tmpPath, { force: true }, () => {})
+    if (decPath) fs.rm(decPath, { force: true }, () => {})
+  }
+})
 
-    if (targetConn.type === 'sqlite') {
-      sqliteConnections.delete(targetConn.filepath)
-      const swap = `${targetConn.filepath}.tmp`
-      fs.copyFileSync(dumpPath, swap)
-      fs.renameSync(swap, targetConn.filepath) // atomic replace of the live file
-    } else if (targetConn.type === 'postgresql') {
-      closePostgresPools(targetConn.id)
-      const { args, env } = pgToolConn(targetConn)
-      await execPgTool('pg_restore', ['--clean', '--if-exists', '--no-owner', ...args, dumpPath], { env })
-    } else {
-      return res.status(400).json({ error: `Restore not supported for connection type: ${targetConn.type}` })
-    }
+// ---- Restore from arbitrary sources (storage browse / file upload) ----
+// Unlike the run-based restore above, these restore into connection `:id`
+// itself (the route param is the target), gated by typing its name. Encrypted
+// artifacts (*.enc, written by the schedule's Encrypt option) are decrypted
+// server-side with this server's key.
+
+// A storage destination this connection may restore from: the built-in local
+// disk, or an S3 destination belonging to the connection's workspace.
+function storageForRestore(conn, destinationId) {
+  const dest = destinationId ? getStorage(destinationId) : null
+  if (!dest) return null
+  if (!dest.local && dest.workspaceId !== conn.workspaceId) return null
+  return dest
+}
+
+// Browse a destination's stored files so the user can pick one to restore.
+app.get('/api/connections/:id/restore/storage-objects', async (req, res) => {
+  const conn = getConnection(req.params.id)
+  if (!conn) return res.status(404).json({ error: 'Connection not found' })
+  const dest = storageForRestore(conn, req.query.destinationId)
+  if (!dest) return res.status(404).json({ error: 'Storage destination not found' })
+  try {
+    res.json({ objects: await listStorageObjects(dest) })
+  } catch (err) {
+    res.status(500).json({ error: describeError(err) })
+  }
+})
+
+// Restore from a picked storage object.
+app.post('/api/connections/:id/restore/from-storage', async (req, res) => {
+  const conn = getConnection(req.params.id)
+  if (!conn) return res.status(404).json({ error: 'Connection not found' })
+  const { destinationId, key, confirmName } = req.body || {}
+  if (!RESTORABLE_TYPES.has(conn.type)) return res.status(400).json({ error: `Restore not supported for connection type: ${conn.type}` })
+  if (confirmName !== conn.name) return res.status(400).json({ error: "Confirmation text doesn't match the connection's name." })
+  if (typeof key !== 'string' || !key) return res.status(400).json({ error: 'An object key is required' })
+  const dest = storageForRestore(conn, destinationId)
+  if (!dest) return res.status(404).json({ error: 'Storage destination not found' })
+  // Local keys must resolve inside LOCAL_BACKUP_DIR — no path traversal.
+  if (dest.local && !path.resolve(LOCAL_BACKUP_DIR, key).startsWith(LOCAL_BACKUP_DIR + path.sep)) {
+    return res.status(400).json({ error: 'Invalid object key' })
+  }
+
+  const tmpPath = path.join(BACKUP_TMP_DIR, `${randomUUID()}-restore`)
+  let decPath = null
+  try {
+    await fetchStorageObjectToFile(dest, key, tmpPath)
+    const dumpPath = key.endsWith('.enc') ? (decPath = await decryptFileToFile(tmpPath)) : tmpPath
+    await restoreDumpIntoConnection(conn, dumpPath)
+    res.json({ ok: true })
+  } catch (err) {
+    res.status(500).json({ ok: false, error: describeError(err) })
+  } finally {
+    fs.rm(tmpPath, { force: true }, () => {})
+    if (decPath) fs.rm(decPath, { force: true }, () => {})
+  }
+})
+
+// Restore from an uploaded backup file. The file streams straight from the
+// request body (Content-Type: application/octet-stream, which express.json
+// ignores) into a temp file — no multipart parser needed. `filename` and
+// `confirmName` ride the query string.
+const UPLOAD_RESTORE_MAX_BYTES = 2 * 1024 * 1024 * 1024 // 2 GB
+
+app.post('/api/connections/:id/restore/upload', async (req, res) => {
+  const conn = getConnection(req.params.id)
+  if (!conn) return res.status(404).json({ error: 'Connection not found' })
+  if (!RESTORABLE_TYPES.has(conn.type)) return res.status(400).json({ error: `Restore not supported for connection type: ${conn.type}` })
+  if (req.query.confirmName !== conn.name) return res.status(400).json({ error: "Confirmation text doesn't match the connection's name." })
+  const declared = parseInt(req.headers['content-length'])
+  if (declared > UPLOAD_RESTORE_MAX_BYTES) return res.status(413).json({ error: 'Upload exceeds the 2 GB restore limit' })
+
+  const filename = String(req.query.filename || '')
+  const tmpPath = path.join(BACKUP_TMP_DIR, `${randomUUID()}-upload`)
+  let decPath = null
+  try {
+    let received = 0
+    const counter = new Transform({
+      transform(chunk, _enc, cb) {
+        received += chunk.length
+        cb(received > UPLOAD_RESTORE_MAX_BYTES ? new Error('Upload exceeds the 2 GB restore limit') : null, chunk)
+      },
+    })
+    await pipeline(req, counter, fs.createWriteStream(tmpPath))
+    if (received === 0) return res.status(400).json({ error: 'The uploaded file is empty' })
+    const dumpPath = filename.endsWith('.enc') ? (decPath = await decryptFileToFile(tmpPath)) : tmpPath
+    await restoreDumpIntoConnection(conn, dumpPath)
     res.json({ ok: true })
   } catch (err) {
     res.status(500).json({ ok: false, error: describeError(err) })

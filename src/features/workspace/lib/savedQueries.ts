@@ -25,25 +25,29 @@ export async function deleteSaved(connectionId, savedId) {
 }
 
 // ---- Folders ----
+// Query folders are the generic, polymorphic folders (shared/api/folders) bound
+// to type='query'. Re-exported here with the queries feature's signatures so
+// callers don't need to know about the discriminator.
 
-export async function fetchFolders(connectionId) {
-  if (!connectionId) return []
-  return safeRequest(`/connections/${connectionId}/folders`, [])
+import * as folders from '@/shared/api/folders'
+
+export function fetchFolders(connectionId) {
+  return folders.fetchFolders(connectionId, 'query')
 }
 
-export async function createFolder(connectionId, name, parentId = null) {
-  return request(`/connections/${connectionId}/folders`, { method: 'POST', body: { name, parentId: parentId || null } })
+export function createFolder(connectionId, name, parentId = null) {
+  return folders.createFolder(connectionId, 'query', name, parentId)
 }
 
-export async function renameFolder(connectionId, folderId, name) {
-  await request(`/connections/${connectionId}/folders/${folderId}`, { method: 'PUT', body: { name } })
+export function renameFolder(connectionId, folderId, name) {
+  return folders.renameFolder(connectionId, folderId, name)
 }
 
 // Move a folder under a new parent (null = root). Nesting builds subdirectories.
-export async function moveFolder(connectionId, folderId, parentId) {
-  await request(`/connections/${connectionId}/folders/${folderId}`, { method: 'PUT', body: { parentId: parentId || null } })
+export function moveFolder(connectionId, folderId, parentId) {
+  return folders.moveFolder(connectionId, folderId, parentId)
 }
 
-export async function deleteFolder(connectionId, folderId) {
-  await request(`/connections/${connectionId}/folders/${folderId}`, { method: 'DELETE' })
+export function deleteFolder(connectionId, folderId) {
+  return folders.deleteFolder(connectionId, folderId)
 }

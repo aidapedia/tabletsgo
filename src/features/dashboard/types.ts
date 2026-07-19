@@ -49,8 +49,15 @@ export type DashboardVariable = {
 
 export type DashboardConfig = { variables: DashboardVariable[]; widgets: Widget[] }
 
-export type DashboardSummary = { id: string; name: string; ts: number }
+export type DashboardSummary = { id: string; name: string; ts: number; folderId?: string | null }
 export type Dashboard = DashboardSummary & { config: DashboardConfig }
+
+// A folder in the dashboards rail. `parentId` builds the tree (null = root);
+// nesting is capped at 3 levels (enforced server-side).
+export type DashboardFolder = { id: string; name: string; parentId: string | null; ts: number }
+
+// Max folder nesting depth surfaced in the UI (matches the server cap).
+export const MAX_DASHBOARD_FOLDER_DEPTH = 3
 
 /** The JSON export/import document (config + name, no ids tied to a server). */
 export type DashboardExport = { kind: 'dashboard'; version: 1; name: string; config: DashboardConfig }

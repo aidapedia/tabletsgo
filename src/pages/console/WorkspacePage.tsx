@@ -54,7 +54,19 @@ import SavedQueriesPanel from '@/features/workspace/components/SavedQueriesPanel
 import AnalyzePanel from '@/features/workspace/components/AnalyzePanel'
 import AnalyzeFolderPanel from '@/features/workspace/components/AnalyzeFolderPanel'
 import { WorkflowsPanel, listWorkflows, createWorkflow, deleteWorkflow, updateWorkflow } from '@/features/workflow'
-import { DashboardsPanel, listDashboards, createDashboard, deleteDashboard, updateDashboard, sanitizeConfig } from '@/features/dashboard'
+import {
+  DashboardsPanel,
+  listDashboards,
+  createDashboard,
+  deleteDashboard,
+  updateDashboard,
+  sanitizeConfig,
+  fetchDashboardFolders,
+  createDashboardFolder,
+  renameDashboardFolder,
+  moveDashboardFolder,
+  deleteDashboardFolder,
+} from '@/features/dashboard'
 import QueryHistoryView from '@/features/workspace/components/QueryHistoryView'
 import SchemaHistoryView from '@/features/schema-designer/components/SchemaHistoryView'
 import { fetchHistory, recordHistory, clearHistory, deleteHistory } from '@/features/workspace/lib/queryHistory'
@@ -141,6 +153,7 @@ export default function Workspace() {
   const [folders, setFolders] = useState([])
   const [workflows, setWorkflows] = useState([])
   const [dashboards, setDashboards] = useState([])
+  const [dashboardFolders, setDashboardFolders] = useState([])
   const [tabMenu, setTabMenu] = useState(null) // { x, y, key } | null
   const [savingQuery, setSavingQuery] = useState(null) // sql string being saved | null
   const [analyzeSql, setAnalyzeSql] = useState(null) // sql string being analyzed | null
@@ -291,6 +304,7 @@ export default function Workspace() {
     fetchFolders(id).then((list) => alive && setFolders(list))
     listWorkflows(id).then((list) => alive && setWorkflows(list))
     listDashboards(id).then((list) => alive && setDashboards(list))
+    fetchDashboardFolders(id).then((list) => alive && setDashboardFolders(list))
     fetchDomains(id).then((list) => alive && setDomains(list))
     return () => {
       alive = false
@@ -628,10 +642,10 @@ export default function Workspace() {
     setActiveTab(key)
     setSidebarOpen(false)
   }
-  const newDashboard = async () => {
+  const newDashboard = async (folderId = null) => {
     try {
-      const d = await createDashboard(id, `Dashboard ${dashboards.length + 1}`)
-      setDashboards((prev) => [{ id: d.id, name: d.name, ts: d.ts }, ...prev])
+      const d = await createDashboard(id, `Dashboard ${dashboards.length + 1}`, undefined, folderId)
+      setDashboards((prev) => [{ id: d.id, name: d.name, ts: d.ts, folderId: d.folderId ?? null }, ...prev])
       openDashboard(d)
     } catch (e) {
       toast.error(`Couldn't create dashboard: ${e.message}`)
@@ -667,10 +681,71 @@ export default function Workspace() {
       const doc = JSON.parse(await file.text())
       if (doc?.kind !== 'dashboard' || !doc.config) throw new Error('Not a dashboard export file.')
       const d = await createDashboard(id, doc.name || 'Imported dashboard', sanitizeConfig(doc.config))
-      setDashboards((prev) => [{ id: d.id, name: d.name, ts: d.ts }, ...prev])
+      setDashboards((prev) => [{ id: d.id, name: d.name, ts: d.ts, folderId: d.folderId ?? null }, ...prev])
       openDashboard(d)
     } catch (e) {
       toast.error(`Import failed: ${e.message}`)
+    }
+  }
+
+  // ---- Dashboard folders (nesting capped at 3 levels, enforced server-side) ----
+  const addDashboardFolder = async (name, parentId = null) => {
+    const next = name?.trim()
+    if (!next) return
+    try {
+      const folder = await createDashboardFolder(id, next, parentId)
+      setDashboardFolders((prev) => [...prev, folder])
+    } catch (e) {
+      toast.error(`Couldn't create folder: ${e.message}`)
+    }
+  }
+  const renameDashboardFolderById = async (fid, name) => {
+    const next = name?.trim()
+    if (!next) return
+    setDashboardFolders((prev) => prev.map((f) => (f.id === fid ? { ...f, name: next } : f)))
+    try {
+      await renameDashboardFolder(id, fid, next)
+    } catch (e) {
+      toast.error(`Rename failed: ${e.message}`)
+    }
+  }
+  const removeDashboardFolder = async (fid) => {
+    // Reparent this folder's contents up one level locally, mirroring the server:
+    // its subfolders and dashboards move to its own parent (root for a top-level folder).
+    const parentId = dashboardFolders.find((f) => f.id === fid)?.parentId || null
+    setDashboardFolders((prev) =>
+      prev.filter((f) => f.id !== fid).map((f) => (f.parentId === fid ? { ...f, parentId } : f))
+    )
+    setDashboards((prev) => prev.map((d) => (d.folderId === fid ? { ...d, folderId: parentId } : d)))
+    try {
+      await deleteDashboardFolder(id, fid)
+    } catch (e) {
+      toast.error(`Delete failed: ${e.message}`)
+    }
+  }
+  const moveDashboardFolderToParent = async (fid, parentId) => {
+    const target = parentId || null
+    if (fid === target) return
+    // Guard against cycles: refuse to nest a folder under its own descendant.
+    const parentOf = new Map(dashboardFolders.map((f) => [f.id, f.parentId || null]))
+    for (let cur = target; cur; cur = parentOf.get(cur)) {
+      if (cur === fid) return
+    }
+    setDashboardFolders((prev) => prev.map((f) => (f.id === fid ? { ...f, parentId: target } : f)))
+    try {
+      await moveDashboardFolder(id, fid, target)
+    } catch (e) {
+      // Depth-cap or cycle rejection — refresh to resync with the server truth.
+      toast.error(`Move failed: ${e.message}`)
+      fetchDashboardFolders(id).then(setDashboardFolders)
+    }
+  }
+  const moveDashboardToFolder = async (did, folderId) => {
+    setDashboards((prev) => prev.map((d) => (d.id === did ? { ...d, folderId: folderId || null } : d)))
+    try {
+      await updateDashboard(id, did, { folderId: folderId || null })
+    } catch (e) {
+      toast.error(`Move failed: ${e.message}`)
     }
   }
 
@@ -1105,7 +1180,7 @@ export default function Workspace() {
     { id: 'new-query', group: 'Create', label: 'New SQL query', keywords: 'sql add query tab', icon: <CodeIcon width={15} height={15} />, hint: formatCombo(bindings['general.newTab']), run: () => openQuery() },
     { id: 'new-schema', group: 'Create', label: 'New schema diagram', keywords: 'erd designer table diagram', icon: <DiagramIcon width={15} height={15} />, run: openSchemaEditor },
     { id: 'new-workflow', group: 'Create', label: 'New workflow', keywords: 'automation flow', icon: <WorkflowIcon width={15} height={15} />, run: newWorkflow },
-    { id: 'new-dashboard', group: 'Create', label: 'New dashboard', keywords: 'charts widgets analytics', icon: <GridIcon width={15} height={15} />, run: newDashboard },
+    { id: 'new-dashboard', group: 'Create', label: 'New dashboard', keywords: 'charts widgets analytics', icon: <GridIcon width={15} height={15} />, run: () => newDashboard() },
     { id: 'new-table', group: 'Create', label: 'New table', keywords: 'create table ddl', icon: <PlusIcon width={15} height={15} />, run: () => setCreatingTable(true) },
 
     { id: 'go-browser', group: 'Navigate', label: 'Browser', keywords: 'tables data browse', icon: <TableIcon width={15} height={15} />, hint: formatCombo(bindings['workspace.panelBrowser']), run: () => selectPanel('browser') },
@@ -1311,13 +1386,22 @@ export default function Workspace() {
         ) : panel === 'dashboards' ? (
           <DashboardsPanel
             dashboards={dashboards}
+            folders={dashboardFolders}
             activeId={current?.kind === 'dashboard' ? current.dashboardId : null}
             onOpen={openDashboard}
             onNew={newDashboard}
             onImport={() => dashboardFileRef.current?.click()}
             onRename={renameDashboard}
             onDelete={removeDashboard}
-            onRefresh={() => listDashboards(id).then(setDashboards)}
+            onCreateFolder={addDashboardFolder}
+            onRenameFolder={renameDashboardFolderById}
+            onDeleteFolder={removeDashboardFolder}
+            onMoveToFolder={moveDashboardToFolder}
+            onMoveFolder={moveDashboardFolderToParent}
+            onRefresh={() => {
+              listDashboards(id).then(setDashboards)
+              fetchDashboardFolders(id).then(setDashboardFolders)
+            }}
           />
         ) : panel === 'schema' ? (
           <SchemaPanel
@@ -1384,7 +1468,7 @@ export default function Workspace() {
               </IconButton>
             </Tooltip>
             <Tooltip label="New dashboard" placement="bottom">
-              <IconButton size="toolbar" onClick={newDashboard} aria-label="New dashboard">
+              <IconButton size="toolbar" onClick={() => newDashboard()} aria-label="New dashboard">
                 <GridIcon width={16} height={16} />
               </IconButton>
             </Tooltip>

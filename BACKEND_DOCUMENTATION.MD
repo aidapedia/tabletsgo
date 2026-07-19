@@ -787,19 +787,23 @@ runs no SQL itself — widget queries execute through the existing
 `POST /api/connections/:id/query`, so dashboards work with every database type
 the query endpoint supports (SQLite, PostgreSQL, future dialects).
 
+Dashboards can be organized into folders (see **Dashboard folders** below); each
+dashboard carries an optional `folderId` (`null` = root).
+
 ### GET `/api/connections/:id/dashboards`
 List dashboards for a connection (newest first; no config body).
 
-- **200:** `[{ "id", "name", "ts" }]`
+- **200:** `[{ "id", "name", "folderId", "ts" }]`
 - **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/dashboards`
 
 ### POST `/api/connections/:id/dashboards`
 Create a dashboard. `config` is optional (e.g. importing a JSON export);
-defaults to `{ "variables": [], "widgets": [] }`.
+defaults to `{ "variables": [], "widgets": [] }`. `folderId` is optional
+(`null` = root; must reference an existing folder).
 
-- **Body:** `{ "name": "Notifications", "config"?: { "variables": [...], "widgets": [...] } }`
-- **200:** `{ "id", "name", "config", "ts" }`
-- **400:** `{ "error": "A dashboard name is required" }`
+- **Body:** `{ "name": "Notifications", "config"?: { "variables": [...], "widgets": [...] }, "folderId"?: "fd-1" }`
+- **200:** `{ "id", "name", "config", "folderId", "ts" }`
+- **400:** `{ "error": "A dashboard name is required" }` / `{ "error": "Folder not found" }`
 - **Example:** `POST http://localhost:3000/api/connections/demo-sqlite/dashboards`
 
 ### GET `/api/connections/:id/dashboards/:did`
@@ -811,13 +815,15 @@ Fetch one dashboard with its full config.
 
 ### PUT `/api/connections/:id/dashboards/:did`
 Update a dashboard. Any subset of `name`, `config` (`config` replaces the whole
-blob — the frontend always saves the full object).
+blob — the frontend always saves the full object), `folderId` (`null` moves the
+dashboard back to the root).
 
 - **Body examples:**
   - Rename: `{ "name": "Renamed" }`
   - Save layout/widgets/variables: `{ "config": { "variables": [...], "widgets": [...] } }`
+  - Move to a folder: `{ "folderId": "fd-1" }`
 - **200:** `{ "ok": true }`
-- **400:** `{ "error": "Nothing to update" }` (or name/config validation)
+- **400:** `{ "error": "Nothing to update" }` / `{ "error": "Folder not found" }` (or name/config validation)
 - **404:** `{ "error": "Not found" }`
 - **Example:** `PUT http://localhost:3000/api/connections/demo-sqlite/dashboards/db-1`
 
@@ -827,6 +833,45 @@ Delete a dashboard.
 - **200:** `{ "ok": true }`
 - **404:** `{ "error": "Not found" }`
 - **Example:** `DELETE http://localhost:3000/api/connections/demo-sqlite/dashboards/db-1`
+
+---
+
+## Dashboard folders (per connection)
+
+Named folders that organize a connection's dashboards into a tree, mirroring the
+saved-query folders. A folder has a `parentId` (`null` = root); nesting is capped
+at **3 levels deep** (enforced server-side on create and move). Deleting a folder
+reparents its subfolders and dashboards up one level rather than deleting them.
+
+### GET `/api/connections/:id/dashboard-folders`
+List all dashboard folders for a connection (oldest first).
+
+- **200:** `[{ "id", "name", "parentId", "ts" }]`
+- **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/dashboard-folders`
+
+### POST `/api/connections/:id/dashboard-folders`
+Create a folder. `parentId` is optional (`null` = root).
+
+- **Body:** `{ "name": "Ops", "parentId"?: "fd-1" }`
+- **200:** `{ "id", "name", "parentId", "ts" }`
+- **400:** `{ "error": "A folder name is required" }` / `{ "error": "Parent folder not found" }` / `{ "error": "Folders can only nest 3 levels deep" }`
+- **Example:** `POST http://localhost:3000/api/connections/demo-sqlite/dashboard-folders`
+
+### PUT `/api/connections/:id/dashboard-folders/:fid`
+Rename (`name`) and/or reparent (`parentId`, `null` = root) a folder. Moves are
+rejected if they create a cycle or push the subtree past the 3-level cap.
+
+- **Body examples:** `{ "name": "Renamed" }` / `{ "parentId": "fd-2" }`
+- **200:** `{ "ok": true }`
+- **400:** `{ "error": "Can't move a folder into its own subfolder" }` / `{ "error": "Folders can only nest 3 levels deep" }` (or name/parent validation)
+- **404:** `{ "error": "Not found" }`
+- **Example:** `PUT http://localhost:3000/api/connections/demo-sqlite/dashboard-folders/fd-1`
+
+### DELETE `/api/connections/:id/dashboard-folders/:fid`
+Delete a folder; its subfolders and dashboards move up to the folder's own parent.
+
+- **200:** `{ "ok": true }`
+- **Example:** `DELETE http://localhost:3000/api/connections/demo-sqlite/dashboard-folders/fd-1`
 
 ---
 
@@ -985,6 +1030,46 @@ upload was `encrypted`, it's decrypted automatically first.
 - **404:** connection/run/destination not found
 - **500:** `{ "ok": false, "error": "<message>" }` (download/dialect-restore failure)
 - **Example:** `POST http://localhost:3000/api/connections/demo-sqlite/backup/restore`
+
+### GET `/api/connections/:id/restore/storage-objects?destinationId=`
+Lists a storage destination's stored files (newest first, capped at 500) so
+the restore-from-storage picker can browse what's actually in the bucket (or
+under `data/backups/` for `destinationId=local`). The destination must be the
+built-in local disk or belong to the connection's workspace. S3 listings are
+scoped to the destination's `pathPrefix`.
+
+- **200:** `{ "objects": [{ "key": "myconn/2026-07-18/abc.dump.enc", "sizeBytes": 12345, "lastModified": 1752800000000|null }] }`
+- **404:** connection or storage destination not found
+- **500:** `{ "error": "<message>" }` (S3 listing failure)
+- **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/restore/storage-objects?destinationId=storage-1`
+
+### POST `/api/connections/:id/restore/from-storage`
+Restores connection `:id` from any object in a storage destination — not just
+tracked backup runs (use `POST .../backup/restore` for those). Keys ending in
+`.enc` are decrypted server-side with this server's `ENCRYPTION_KEY` first.
+SQLite targets are validated against the SQLite file header before the live
+file is overwritten. Gated by typing the connection's name.
+
+- **Body:** `{ "destinationId", "key", "confirmName": "<must equal the connection's name>" }`
+- **200:** `{ "ok": true }`
+- **400:** confirmation mismatch, missing key, unsupported connection type, or invalid local key
+- **404:** connection or storage destination not found
+- **500:** `{ "ok": false, "error": "<message>" }` (fetch/decrypt/restore failure)
+- **Example:** `POST http://localhost:3000/api/connections/demo-sqlite/restore/from-storage`
+
+### POST `/api/connections/:id/restore/upload?filename=&confirmName=`
+Restores connection `:id` from a backup file uploaded by the client. The file
+is the **raw request body** (`Content-Type: application/octet-stream` — not
+multipart), streamed to a temp file; `filename` and `confirmName` ride the
+query string (URL-encoded). Max 2 GB. A `filename` ending in `.enc` is
+decrypted server-side first; SQLite targets are header-validated as above.
+
+- **Body:** raw file bytes
+- **200:** `{ "ok": true }`
+- **400:** confirmation mismatch, unsupported connection type, or empty upload
+- **413:** upload exceeds the 2 GB limit
+- **500:** `{ "ok": false, "error": "<message>" }` (decrypt/restore failure)
+- **Example:** `POST http://localhost:3000/api/connections/demo-sqlite/restore/upload?filename=backup.sqlite&confirmName=Demo%20SQLite`
 
 ---
 
@@ -1397,6 +1482,9 @@ Liveness probe. Also reports boot readiness and the running identity.
 | DELETE | `/api/connections/:id/backup/runs/:runId/uploads/:destinationId` | Delete a backup version |
 | GET    | `/api/connections/:id/backup/runs/:runId/uploads/:destinationId/download` | Download a backup version |
 | POST   | `/api/connections/:id/backup/restore`     | Restore a backup version        |
+| GET    | `/api/connections/:id/restore/storage-objects` | Browse a storage destination's files |
+| POST   | `/api/connections/:id/restore/from-storage` | Restore from a picked storage object |
+| POST   | `/api/connections/:id/restore/upload`     | Restore from an uploaded file   |
 | GET    | `/api/system/version`                     | Running app identity (version/sha) |
 | GET    | `/api/system/update/check`                | Check for a newer release       |
 | POST   | `/api/system/backup`                      | Snapshot the metadata DB (admin) |

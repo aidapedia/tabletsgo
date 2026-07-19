@@ -47,4 +47,7 @@ export type BackupRun = {
 
 export type BackupRunsPage = { runs: BackupRun[]; total: number }
 
+// A file sitting in a storage destination, as listed by the restore browser.
+export type StorageObject = { key: string; sizeBytes: number; lastModified: number | null }
+
 export type BackupCalendarDay = { day: string; runs: number; success: number; failed: number }

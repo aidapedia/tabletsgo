@@ -4,9 +4,25 @@ import { TYPE_LABEL } from './DbTypePickerModal'
 import { BackupPanel } from '@/features/backup'
 import { listTables, pingConnection } from '@/shared/api/database'
 import Button from '@/shared/ui/buttons/Button'
+import IconButton from '@/shared/ui/buttons/IconButton'
 import TextButton from '@/shared/ui/buttons/TextButton'
 import Tab from '@/shared/ui/navigation/Tab'
-import { ChevronLeft, DatabaseIcon, DbLogo, EditIcon, ExternalLinkIcon, RefreshIcon, TableIcon } from '@/shared/ui/icons'
+import Badge from '@/shared/ui/Badge'
+import MenuItem from '@/shared/ui/navigation/MenuItem'
+import Popover from '@/shared/ui/overlay/Popover'
+import { useToast } from '@/shared/ui/feedback/Toast'
+import {
+  ChevronLeft,
+  CopyIcon,
+  DatabaseIcon,
+  DbLogo,
+  EditIcon,
+  ExternalLinkIcon,
+  MoreVerticalIcon,
+  RefreshIcon,
+  TableIcon,
+  TrashIcon,
+} from '@/shared/ui/icons'
 
 const STATUS = {
   checking: { dot: 'bg-ink-faint animate-pulse', text: 'text-ink-faint', label: 'Checking…' },
@@ -45,8 +61,10 @@ function DetailRow({ label, value }: { label: string; value?: string }) {
   )
 }
 
-// Full-page connection detail: Data Connection / Access / Backup tabs.
-export default function ConnectionDetail({ conn, onBack, onOpen, onEdit }) {
+// Full-page connection detail: Data Connection / Access / Backup tabs, each laid
+// out as a main column + a context sidebar.
+export default function ConnectionDetail({ conn, onBack, onOpen, onEdit, onDelete }) {
+  const toast = useToast()
   const [tab, setTab] = useState<'data' | 'access' | 'backup'>('data')
   const [status, setStatus] = useState<'checking' | 'connected' | 'offline'>('checking')
   const [tableCount, setTableCount] = useState<number | null>(null)
@@ -66,39 +84,61 @@ export default function ConnectionDetail({ conn, onBack, onOpen, onEdit }) {
     }
   }, [conn.id])
 
-  const tabBtn = (id: 'data' | 'access' | 'backup', label: string, soon = false) => (
-    <Tab active={tab === id} onClick={() => setTab(id)}>
-      {label}
-      {soon && (
-        <span className="rounded-[5px] border border-edge bg-elevated px-1 py-0.5 text-[8px] font-bold uppercase tracking-wide text-ink-faint">
-          Soon
-        </span>
-      )}
-    </Tab>
-  )
+  const copyUrl = () => {
+    navigator.clipboard?.writeText(connectionUrl(conn))
+    toast.success('Connection URL copied to clipboard.')
+  }
+
+  const tags: string[] = Array.isArray(conn.tags) ? conn.tags : conn.tags ? String(conn.tags).split(',').map((t) => t.trim()).filter(Boolean) : []
+  const subtitleParts = [TYPE_LABEL[conn.type] || conn.type, conn.environment, conn.folder].filter(Boolean)
 
   return (
     <div className="w-full">
-      <TextButton onClick={onBack} className="mb-5">
+      <TextButton onClick={onBack} className="mb-4">
         <ChevronLeft width={16} height={16} /> All connections
       </TextButton>
 
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex min-w-0 items-center gap-3">
-          <DbLogo type={conn.type} className="h-12 w-12 shrink-0" />
+      {/* Header */}
+      <div className="flex items-center justify-between gap-4 rounded-card border border-edge bg-card p-5">
+        <div className="flex min-w-0 items-center gap-4">
+          <DbLogo type={conn.type} className="h-12 w-12 shrink-0 rounded-[12px]" />
           <div className="min-w-0">
-            <h1 className="truncate text-[22px] font-bold tracking-[-0.4px]">{conn.name}</h1>
-            <div className="mt-0.5 flex items-center gap-2">
+            <div className="flex items-center gap-2.5">
+              <h1 className="truncate text-[20px] font-bold tracking-[-0.3px]">{conn.name}</h1>
               <StatusBadge status={status} />
-              <span className="text-ink-faint">·</span>
-              <span className="text-[12px] text-ink-dim">{TYPE_LABEL[conn.type] || conn.type}</span>
             </div>
+            <div className="mt-0.5 truncate text-[12px] text-ink-dim">{subtitleParts.join(' · ')}</div>
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <Button variant="subtle" size="sm" icon={EditIcon} onClick={() => onEdit(conn)}>
             Edit
           </Button>
+          <Popover
+            align="right"
+            width={180}
+            trigger={({ open, toggle }) => (
+              <IconButton onClick={toggle} active={open} aria-label="Connection actions">
+                <MoreVerticalIcon width={16} height={16} />
+              </IconButton>
+            )}
+          >
+            {({ close }) => (
+              <div className="p-1">
+                <MenuItem onClick={() => { copyUrl(); close() }}>
+                  <CopyIcon width={14} height={14} /> Copy as URL
+                </MenuItem>
+                {onDelete && (
+                  <>
+                    <div className="my-1 h-px bg-edge" />
+                    <MenuItem danger onClick={() => { close(); onDelete(conn) }}>
+                      <TrashIcon width={14} height={14} /> Delete
+                    </MenuItem>
+                  </>
+                )}
+              </div>
+            )}
+          </Popover>
           <Button variant="primary" size="sm" icon={ExternalLinkIcon} onClick={() => onOpen(conn)}>
             Connect
           </Button>
@@ -106,56 +146,78 @@ export default function ConnectionDetail({ conn, onBack, onOpen, onEdit }) {
       </div>
 
       {/* Tabs */}
-      <div className="mt-7 flex items-center gap-5 border-b border-edge">
-        {tabBtn('data', 'Data Connection')}
-        {tabBtn('access', 'Access')}
-        {tabBtn('backup', 'Backup')}
+      <div className="mt-5 flex items-center gap-5 border-b border-edge">
+        <Tab active={tab === 'data'} onClick={() => setTab('data')}>Data Connection</Tab>
+        <Tab active={tab === 'access'} onClick={() => setTab('access')}>Access</Tab>
+        <Tab active={tab === 'backup'} onClick={() => setTab('backup')}>Backup</Tab>
       </div>
 
       <div className="mt-6">
         {tab === 'data' ? (
-          <div className="flex flex-col gap-5">
-            {/* Stats */}
-            <div className="grid grid-cols-3 gap-3 max-[560px]:grid-cols-1">
-              <div className="rounded-card border border-edge bg-card p-4">
-                <div className="flex items-center gap-2 text-[11px] text-ink-dim">
-                  <TableIcon width={14} height={14} /> Tables
-                </div>
-                <div className="mt-1.5 text-[22px] font-bold tabular-nums">{tableCount ?? '—'}</div>
+          <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
+            {/* Main */}
+            <div className="flex flex-col gap-5">
+              <div className="grid grid-cols-3 gap-3 max-[560px]:grid-cols-1">
+                <MiniStat icon={TableIcon} label="Tables" value={tableCount ?? '—'} />
+                <MiniStat icon={DatabaseIcon} label="Type" value={TYPE_LABEL[conn.type] || conn.type} />
+                <MiniStat icon={RefreshIcon} label="Status" value={STATUS[status].label} />
               </div>
-              <div className="rounded-card border border-edge bg-card p-4">
-                <div className="flex items-center gap-2 text-[11px] text-ink-dim">
-                  <DatabaseIcon width={14} height={14} /> Type
+
+              <div className="rounded-card border border-edge bg-card p-5">
+                <div className="mb-1 text-[13px] font-bold">Connection details</div>
+                <div className="mt-2">
+                  {conn.type === 'sqlite' ? (
+                    <DetailRow label="File path" value={conn.filepath} />
+                  ) : (
+                    <>
+                      <DetailRow label="Host" value={conn.host} />
+                      <DetailRow label="Port" value={conn.port ? String(conn.port) : undefined} />
+                      <DetailRow label="Database" value={conn.database} />
+                      <DetailRow label="Username" value={conn.username} />
+                      <DetailRow label="SSL mode" value={conn.sslmode} />
+                    </>
+                  )}
+                  {conn.folder && <DetailRow label="Folder" value={conn.folder} />}
+                  <DetailRow label="Owner" value={conn.ownerName || conn.ownerEmail} />
                 </div>
-                <div className="mt-1.5 text-[15px] font-semibold">{TYPE_LABEL[conn.type] || conn.type}</div>
-              </div>
-              <div className="rounded-card border border-edge bg-card p-4">
-                <div className="flex items-center gap-2 text-[11px] text-ink-dim">
-                  <RefreshIcon width={14} height={14} /> Status
-                </div>
-                <div className="mt-1.5 text-[15px] font-semibold capitalize">{status}</div>
               </div>
             </div>
 
-            {/* Connection info */}
-            <div className="rounded-card border border-edge bg-card p-5">
-              <div className="mb-1 text-[13px] font-bold">Connection details</div>
-              <div className="mt-2">
-                {conn.type === 'sqlite' ? (
-                  <DetailRow label="File path" value={conn.filepath} />
-                ) : (
-                  <>
-                    <DetailRow label="Host" value={conn.host} />
-                    <DetailRow label="Port" value={conn.port ? String(conn.port) : undefined} />
-                    <DetailRow label="Database" value={conn.database} />
-                    <DetailRow label="Username" value={conn.username} />
-                    <DetailRow label="SSL mode" value={conn.sslmode} />
-                  </>
-                )}
-                {conn.folder && <DetailRow label="Folder" value={conn.folder} />}
-                <DetailRow label="Owner" value={conn.ownerName || conn.ownerEmail} />
+            {/* Context sidebar */}
+            <aside className="flex flex-col gap-5">
+              <div className="rounded-card border border-edge bg-card p-5">
+                <div className="text-[13px] font-bold">Quick actions</div>
+                <div className="mt-3 flex flex-col gap-2">
+                  <Button variant="primary" size="md" className="w-full" icon={ExternalLinkIcon} onClick={() => onOpen(conn)}>
+                    Open console
+                  </Button>
+                  <Button variant="ghost" size="md" className="w-full" icon={EditIcon} onClick={() => onEdit(conn)}>
+                    Edit connection
+                  </Button>
+                  <Button variant="ghost" size="md" className="w-full" icon={CopyIcon} onClick={copyUrl}>
+                    Copy connection URL
+                  </Button>
+                </div>
               </div>
-            </div>
+
+              <div className="rounded-card border border-edge bg-card p-5">
+                <div className="text-[13px] font-bold">Overview</div>
+                <div className="mt-2 divide-y divide-edge">
+                  <OverviewRow label="Type" value={TYPE_LABEL[conn.type] || conn.type} />
+                  {conn.environment && <OverviewRow label="Environment" value={conn.environment} />}
+                  {conn.folder && <OverviewRow label="Folder" value={conn.folder} />}
+                  <OverviewRow label="Owner" value={conn.ownerName || conn.ownerEmail || '—'} />
+                  {typeof conn.schemaVersion === 'number' && <OverviewRow label="Schema version" value={`v${conn.schemaVersion}`} />}
+                </div>
+                {tags.length > 0 && (
+                  <div className="mt-3 flex flex-wrap gap-1.5">
+                    {tags.map((t) => (
+                      <Badge key={t} tone="neutral">{t}</Badge>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </aside>
           </div>
         ) : tab === 'access' ? (
           <ConnectionAccessPanel conn={conn} />
@@ -168,6 +230,26 @@ export default function ConnectionDetail({ conn, onBack, onOpen, onEdit }) {
           />
         )}
       </div>
+    </div>
+  )
+}
+
+function MiniStat({ icon: Icon, label, value }: { icon: any; label: string; value: React.ReactNode }) {
+  return (
+    <div className="rounded-card border border-edge bg-card p-4">
+      <div className="flex items-center gap-2 text-[11px] text-ink-dim">
+        <Icon width={14} height={14} /> {label}
+      </div>
+      <div className="mt-1.5 truncate text-[17px] font-bold">{value}</div>
+    </div>
+  )
+}
+
+function OverviewRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-3 py-2.5">
+      <span className="text-[12px] text-ink-dim">{label}</span>
+      <span className="min-w-0 truncate text-right text-[12px] font-medium text-ink">{value}</span>
     </div>
   )
 }

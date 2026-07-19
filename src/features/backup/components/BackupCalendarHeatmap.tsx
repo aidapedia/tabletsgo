@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import type { ReactNode } from 'react'
 import { getBackupCalendar } from '@/features/backup/lib/api'
 import type { BackupCalendarDay } from '@/features/backup/lib/types'
 
@@ -21,20 +22,29 @@ export default function BackupCalendarHeatmap({
   connectionId,
   selectedDay,
   onDayClick,
+  days: daysProp,
+  summary,
 }: {
   connectionId: string
   selectedDay?: string | null
   onDayClick?: (day: string) => void
+  // Pre-fetched calendar; when provided the component won't fetch its own (lets
+  // a parent share one fetch between the heatmap and its own stat computations).
+  days?: BackupCalendarDay[]
+  // Optional panel rendered to the right of the grid (e.g. a "Today" summary).
+  summary?: ReactNode
 }) {
-  const [days, setDays] = useState<BackupCalendarDay[]>([])
+  const [fetched, setFetched] = useState<BackupCalendarDay[]>([])
+  const days = daysProp ?? fetched
 
   useEffect(() => {
+    if (daysProp) return
     let alive = true
-    getBackupCalendar(connectionId).then((d) => alive && setDays(d))
+    getBackupCalendar(connectionId).then((d) => alive && setFetched(d))
     return () => {
       alive = false
     }
-  }, [connectionId])
+  }, [connectionId, daysProp])
 
   const byDay = useMemo(() => new Map(days.map((d) => [d.day, d])), [days])
 
@@ -55,8 +65,13 @@ export default function BackupCalendarHeatmap({
 
   return (
     <div className="rounded-card border border-edge bg-card p-5">
-      <div className="mb-1 text-[13px] font-bold">Backup activity</div>
-      <div className="mt-3 grid gap-[3px]" style={{ gridTemplateColumns: `repeat(${WEEKS}, minmax(0, 1fr))` }}>
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div className="text-[13px] font-bold">Backup activity</div>
+        <span className="rounded-[6px] border border-edge bg-elevated px-2 py-1 text-[10px] text-ink-faint">Last 365 days</span>
+      </div>
+      <div className="flex gap-5">
+        <div className="min-w-0 flex-1">
+      <div className="grid gap-[3px]" style={{ gridTemplateColumns: `repeat(${WEEKS}, minmax(0, 1fr))` }}>
         {columns.map((col, i) => {
           const showMonth = i === 0 || col[0].date.getUTCMonth() !== columns[i - 1][0].date.getUTCMonth()
           return (
@@ -93,7 +108,7 @@ export default function BackupCalendarHeatmap({
           )
         })}
       </div>
-      <div className="mt-3 flex items-center gap-4 text-[10px] text-ink-faint">
+      <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[10px] text-ink-faint">
         <span className="flex items-center gap-1.5">
           <span className="h-3 w-3 rounded-[2px] bg-elevated" /> No backups
         </span>
@@ -106,6 +121,9 @@ export default function BackupCalendarHeatmap({
         <span className="flex items-center gap-1.5">
           <span className={`h-3 w-3 rounded-[2px] ${FAILED_CLASS}`} /> Had a failure
         </span>
+      </div>
+        </div>
+        {summary && <div className="hidden w-[168px] shrink-0 border-l border-edge pl-5 lg:block">{summary}</div>}
       </div>
     </div>
   )

@@ -11,8 +11,13 @@ export {
   createDashboard,
   updateDashboard,
   deleteDashboard,
+  fetchDashboardFolders,
+  createDashboardFolder,
+  renameDashboardFolder,
+  moveDashboardFolder,
+  deleteDashboardFolder,
 } from '@/features/dashboard/lib/api'
 // Generic markdown renderer (headings/lists/inline) — reused for release notes.
 export { default as MarkdownText } from '@/features/dashboard/components/MarkdownText'
-export { sanitizeConfig } from '@/features/dashboard/types'
-export type { Dashboard, DashboardSummary, DashboardConfig, DashboardExport, Widget, DashboardVariable } from '@/features/dashboard/types'
+export { sanitizeConfig, MAX_DASHBOARD_FOLDER_DEPTH } from '@/features/dashboard/types'
+export type { Dashboard, DashboardSummary, DashboardConfig, DashboardExport, DashboardFolder, Widget, DashboardVariable } from '@/features/dashboard/types'

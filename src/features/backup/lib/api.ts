@@ -4,7 +4,7 @@
 
 import { request, safeRequest, getToken } from '@/shared/api/request'
 import { API_URL } from '@/shared/config'
-import type { BackupCalendarDay, BackupRun, BackupRunsPage, BackupSchedule, StorageDestination } from './types'
+import type { BackupCalendarDay, BackupRun, BackupRunsPage, BackupSchedule, StorageDestination, StorageObject } from './types'
 
 export async function listStorages(workspaceId: string): Promise<StorageDestination[]> {
   if (!workspaceId) return []
@@ -115,4 +115,38 @@ export async function restoreBackup(
   payload: { runId: string; destinationId: string; confirmName: string; targetConnectionId?: string }
 ): Promise<void> {
   await request(`/connections/${connectionId}/backup/restore`, { method: 'POST', body: payload })
+}
+
+// ---- Restore from arbitrary sources (storage browse / file upload) ----
+
+// Uses request (not safeRequest): a listing failure (bad credentials,
+// unreachable endpoint) must surface in the picker, not look like an empty bucket.
+export async function listStorageObjects(connectionId: string, destinationId: string): Promise<StorageObject[]> {
+  const res = await request<{ objects: StorageObject[] }>(
+    `/connections/${connectionId}/restore/storage-objects?destinationId=${encodeURIComponent(destinationId)}`
+  )
+  return res.objects
+}
+
+export async function restoreFromStorageObject(
+  connectionId: string,
+  payload: { destinationId: string; key: string; confirmName: string }
+): Promise<void> {
+  await request(`/connections/${connectionId}/restore/from-storage`, { method: 'POST', body: payload })
+}
+
+// Streams a local backup file to the server as the raw request body —
+// request() JSON-encodes bodies, so this uses fetch directly (like download).
+export async function restoreFromUpload(connectionId: string, file: File, confirmName: string): Promise<void> {
+  const token = getToken()
+  const params = new URLSearchParams({ filename: file.name, confirmName })
+  const res = await fetch(`${API_URL}/connections/${connectionId}/restore/upload?${params}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/octet-stream', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    body: file,
+  })
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}))
+    throw new Error(data?.error || `Restore failed (${res.status})`)
+  }
 }
