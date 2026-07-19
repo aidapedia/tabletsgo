@@ -11,7 +11,7 @@ import os from 'os'
 import http from 'http'
 import path from 'path'
 import { fileURLToPath } from 'url'
-import { randomUUID, createHash, randomBytes, createCipheriv, createDecipheriv, scryptSync } from 'crypto'
+import { randomUUID, createHash, createHmac, randomBytes, createCipheriv, createDecipheriv, scryptSync, timingSafeEqual } from 'crypto'
 import vm from 'node:vm'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
@@ -1319,12 +1319,34 @@ function jsonPreview(v, max = 800) {
   return s.length > max ? s.slice(0, max) + '… (truncated)' : v
 }
 
+// A curated crypto surface exposed to the JS node's sandbox. We deliberately do
+// NOT expose `require`/`node:crypto` wholesale (that would also reach fs, process,
+// child_process, …) — only these pure, allocation-bounded helpers, which cover the
+// common need of signing an outbound HTTP request (e.g. an HMAC-SHA256 header).
+// `data`/`key` are coerced to strings; digest encoding defaults to hex.
+const sandboxCrypto = {
+  hmac: (algo, key, data, enc = 'hex') => createHmac(String(algo), String(key)).update(String(data)).digest(enc),
+  hash: (algo, data, enc = 'hex') => createHash(String(algo)).update(String(data)).digest(enc),
+  randomUUID: () => randomUUID(),
+  base64: (s) => Buffer.from(String(s)).toString('base64'),
+  base64url: (s) => Buffer.from(String(s)).toString('base64url'),
+  hex: (s) => Buffer.from(String(s)).toString('hex'),
+  // Constant-time string compare, for verifying an incoming signature.
+  timingSafeEqual: (a, b) => {
+    const ba = Buffer.from(String(a))
+    const bb = Buffer.from(String(b))
+    return ba.length === bb.length && timingSafeEqual(ba, bb)
+  },
+}
+
 // Run a user JS snippet in a sandbox. `code` is a function body that receives
-// `input` and returns a value. 3s CPU timeout, no require/process/fs.
+// `input` and returns a value. 3s CPU timeout, no require/process/fs; `crypto`
+// is a curated helper (see sandboxCrypto) for hashing/HMAC signing.
 function runUserJs(code, input) {
   const logs = []
   const sandbox = {
     input,
+    crypto: sandboxCrypto,
     console: { log: (...a) => logs.push(a.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join(' ')) },
     __out: undefined,
   }
@@ -1627,7 +1649,7 @@ async function runWorkflow(conn, graph, initialInput = null) {
     try {
       const d = node.data || {}
       let output
-      if (node.type === 'schedule' || node.type === 'manual') {
+      if (node.type === 'schedule' || node.type === 'manual' || node.type === 'webhook') {
         output = input // trigger node — pass the initial input straight through
       } else if (node.type === 'query') {
         if (!d.sql?.trim()) throw new Error('No query configured')
@@ -3014,6 +3036,85 @@ app.post('/api/connections/:id/workflows/:wid/run', async (req, res) => {
   const trigger = req.body?.trigger === 'dashboard' ? 'dashboard' : 'manual'
   const result = await executeAndRecord(req.params.wid, req.params.id, conn, graph, trigger, req.body?.input ?? null)
   res.json(result)
+})
+
+// ---- Workflow run history (the "Activity" trail) ----
+// Every run (manual, dashboard, schedule, webhook) is persisted to workflow_runs
+// by executeAndRecord; these expose that trail. The list omits the (potentially
+// large) per-node log; fetch a single run to drill into it.
+app.get('/api/connections/:id/workflows/:wid/runs', (req, res) => {
+  const wf = meta.prepare('SELECT id FROM workflows WHERE id = ? AND connection_id = ?').get(req.params.wid, req.params.id)
+  if (!wf) return res.status(404).json({ error: 'Not found' })
+  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 200)
+  const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0)
+  const rows = meta
+    .prepare(
+      `SELECT id, trigger_kind, status, error, started_at, finished_at
+       FROM workflow_runs WHERE workflow_id = ? ORDER BY started_at DESC LIMIT ? OFFSET ?`
+    )
+    .all(req.params.wid, limit, offset)
+  res.json(
+    rows.map((r) => ({
+      id: r.id,
+      triggerKind: r.trigger_kind,
+      status: r.status,
+      error: r.error || null,
+      startedAt: r.started_at,
+      finishedAt: r.finished_at,
+      ms: r.finished_at && r.started_at ? r.finished_at - r.started_at : null,
+    }))
+  )
+})
+
+app.get('/api/connections/:id/workflows/:wid/runs/:runId', (req, res) => {
+  const row = meta
+    .prepare(
+      `SELECT id, trigger_kind, status, log, error, started_at, finished_at
+       FROM workflow_runs WHERE id = ? AND workflow_id = ? AND connection_id = ?`
+    )
+    .get(req.params.runId, req.params.wid, req.params.id)
+  if (!row) return res.status(404).json({ error: 'Not found' })
+  res.json({
+    id: row.id,
+    triggerKind: row.trigger_kind,
+    status: row.status,
+    ok: row.status === 'success',
+    log: safeJson(row.log) || [],
+    error: row.error || null,
+    startedAt: row.started_at,
+    finishedAt: row.finished_at,
+    ms: row.finished_at && row.started_at ? row.finished_at - row.started_at : null,
+  })
+})
+
+// ---- Public webhook trigger (unauthenticated, token-guarded) ----
+// The ONE workflow surface reachable without a session: an inbound HTTP call
+// fires a workflow whose trigger is a `webhook` node, with the request body as
+// the trigger input. Deliberately mounted OUTSIDE `/api/connections/:id` (whose
+// middleware requires auth+membership) — a per-webhook opaque token is the only
+// gate, so keep it secret. The SSRF/`vm` caveat above still applies: the run
+// executes with the same trust as any member-authored workflow.
+app.all('/api/hooks/wf/:wid/:token', async (req, res) => {
+  if (req.method !== 'POST' && req.method !== 'GET') return res.status(405).json({ error: 'Use GET or POST' })
+  const row = meta.prepare('SELECT id, connection_id, graph FROM workflows WHERE id = ?').get(req.params.wid)
+  if (!row) return res.status(404).json({ error: 'Not found' })
+  const graph = safeJson(row.graph)
+  const hook = (graph?.nodes || []).find((n) => n.type === 'webhook')
+  if (!hook) return res.status(404).json({ error: 'This workflow has no webhook trigger' })
+  const expected = String(hook.data?.token || '')
+  const provided = String(req.params.token || '')
+  const ok =
+    expected.length > 0 &&
+    expected.length === provided.length &&
+    timingSafeEqual(Buffer.from(expected), Buffer.from(provided))
+  if (!ok) return res.status(401).json({ error: 'Invalid webhook token' })
+  const conn = getConnection(row.connection_id)
+  if (!conn) return res.status(404).json({ error: 'Connection not found' })
+  // The request body seeds the trigger; query params are exposed too so simple
+  // GET pings can pass data without a body.
+  const input = { body: req.body ?? null, query: req.query || {}, headers: req.headers, method: req.method }
+  const result = await executeAndRecord(row.id, row.connection_id, conn, graph, 'webhook', input)
+  res.status(result.ok ? 200 : 500).json({ ok: result.ok, output: result.output, error: result.error || null })
 })
 
 // ---- Backup (standalone system: own schedule + run history, independent of

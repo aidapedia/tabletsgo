@@ -680,13 +680,22 @@ Clear all history for the connection.
 
 Node-graph automations (React Flow) run against the connection. A workflow's
 `graph` is `{ nodes, edges }` in React Flow shape; each node's `type` is one of
-`manual` (trigger), `schedule` (trigger), `query`, `http`, `js`, `switch`, `loop`,
-`export`, `storage`, and its config lives in `node.data`:
+`manual` (trigger), `schedule` (trigger), `webhook` (trigger), `query`, `http`,
+`js`, `switch`, `loop`, `export`, `storage`, and its config lives in `node.data`:
 - `query`: `{ sql }` — the SQL may inline scalar values from the node's input as
   `{{input.path}}` (dotted paths supported, e.g. `{{input.row.id}}`); values are
   rendered as SQL literals (strings quoted with `''` doubling, numbers bare,
   booleans `TRUE`/`FALSE`, missing → `NULL`; a non-scalar value fails the node).
   · `http`: `{ method, url, headers, body }` · `js`: `{ code }`
+- `js`: `{ code }` — the body receives `input`, returns the node output. Besides
+  `input`/`console`, a curated **`crypto`** helper is in scope (no `require`):
+  `crypto.hmac(algo, key, data, enc="hex")`, `crypto.hash(algo, data, enc="hex")`,
+  `crypto.base64(s)`, `crypto.base64url(s)`, `crypto.hex(s)`, `crypto.randomUUID()`,
+  `crypto.timingSafeEqual(a, b)`. Typical use: sign an outbound request, e.g.
+  `return { ...input, sig: crypto.hmac('sha256', 'secret', JSON.stringify(input.body)) }`,
+  then reference `input.sig` in a downstream `http` node's headers.
+- `webhook`: `{ token }` — a trigger fired by an inbound HTTP request to the public
+  hook route (see below). Passes the request as the run's initial input.
 - `switch`: `{ cases: [{ expr, label }] }` · `loop`: `{ itemsExpr }`
 - `schedule`: `{ frequency: "manual"|"hourly"|"daily", hourOfDay?: 0-23 }` — UTC.
   **Breaking change:** this replaces the old freeform `{ cron }` field, which is now inert.
@@ -702,9 +711,10 @@ Node-graph automations (React Flow) run against the connection. A workflow's
 
 Edges thread a single `input` (a node's output) to the next node; `sourceHandle`
 selects a branch (`out` default; `case-N`/`default` for switch; `body`/`done` for loop).
-Trigger nodes (`manual`/`schedule`) pass the run's initial input straight through —
-`null` normally, or the `input` posted to `/run` (e.g. a dashboard table row from a
-row-action button).
+Trigger nodes (`manual`/`schedule`/`webhook`) pass the run's initial input straight
+through — `null` normally, the `input` posted to `/run` (e.g. a dashboard table row
+from a row-action button), or the `{ body, query, headers, method }` of the inbound
+request for a webhook run.
 
 A workflow can be scheduled: set `workflows.schedule_enabled = 1` (via `PUT
 .../workflows/:wid { "scheduleEnabled": true }`) with a graph containing exactly
@@ -786,6 +796,42 @@ the stored graph when `graph` is omitted. Always records the outcome in `workflo
   - On a failed node: `{ "ok": false, "log": [...], "error": "<message>" }` (the failing node's `log` entry has `status: "error"`)
 - **404:** `{ "error": "Connection not found" }` or `{ "error": "Not found" }`
 - **Example:** `POST http://localhost:3000/api/connections/demo-sqlite/workflows/wf-1/run`
+
+### GET `/api/connections/:id/workflows/:wid/runs`
+The workflow's activity trail — recent runs (newest first), across every trigger
+(`manual` / `dashboard` / `schedule` / `webhook`). The per-node `log` is omitted here;
+fetch a single run for it.
+
+- **Query:** `limit` (1–200, default 50), `offset` (default 0).
+- **200:** `[{ "id", "triggerKind", "status": "success"|"failed", "error": string|null, "startedAt", "finishedAt", "ms": number|null }]`
+- **404:** `{ "error": "Not found" }` (unknown workflow)
+- **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/workflows/wf-1/runs?limit=20`
+
+### GET `/api/connections/:id/workflows/:wid/runs/:runId`
+One recorded run with its full per-node `log`.
+
+- **200:** `{ "id", "triggerKind", "status", "ok", "log": [{ "nodeId", "nodeType", "status", "ms", "output", "logs"?, "error"? }], "error": string|null, "startedAt", "finishedAt", "ms" }`
+- **404:** `{ "error": "Not found" }`
+- **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/workflows/wf-1/runs/run-abc`
+
+### POST `/api/hooks/wf/:wid/:token`  ·  GET (same path)
+**Public** (unauthenticated) webhook trigger — the one workflow route not behind
+auth. Fires a workflow whose graph contains a `webhook` trigger node, guarding on
+the node's opaque `token` (constant-time compared). The workflow runs with the
+inbound request as its initial input: `{ body, query, headers, method }`. Records
+the run in `workflow_runs` with `trigger_kind: "webhook"`.
+
+- **Body:** any JSON (exposed to the graph as `input.body`); query params as `input.query`.
+- **200:** `{ "ok": true, "output": <terminal output>, "error": null }`
+- **500:** `{ "ok": false, "output": ..., "error": "<message>" }` (a node failed)
+- **401:** `{ "error": "Invalid webhook token" }`
+- **404:** `{ "error": "Not found" }` (unknown workflow) · `{ "error": "This workflow has no webhook trigger" }` · `{ "error": "Connection not found" }`
+- **405:** `{ "error": "Use GET or POST" }`
+- **Example:** `POST http://localhost:3000/api/hooks/wf/wf-1/9f3c…e21a`
+
+> ⚠️ **Security:** the token is the *only* gate — anyone holding the URL can run the
+> workflow (which itself can run SQL / make server-side HTTP calls / eval JS, per the
+> warning above). Treat the URL as a secret; regenerate the token to revoke it.
 
 ---
 

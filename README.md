@@ -29,7 +29,7 @@ It's built for **teams**, not just a single power user. Everything is organized 
 What makes Tabletsgo more than a query tool:
 
 - 🎨 **Visual schema designer** — model tables and relationships on a React Flow canvas, then stage the DDL as reviewable changes.
-- ⚙️ **Workflow automations** — chain nodes (schedule → query → HTTP → JavaScript → export) to automate recurring database tasks.
+- ⚙️ **Workflow automations** — chain nodes (schedule/webhook → query → HTTP → JavaScript → export) to automate recurring database tasks, triggered on a schedule or by an inbound webhook.
 - 💾 **Scheduled backups to S3** — point a connection at any S3‑compatible bucket and let it export & upload on a schedule, with a calendar heatmap of runs and one‑click restore.
 - 🔐 **Credentials encrypted at rest** — connection secrets are stored AES‑256‑GCM encrypted; the server refuses to boot without an encryption key.
 
@@ -45,7 +45,7 @@ Self‑hosted, single Docker image, your data stays yours.
 | 📊 | **Data browser** | Fast, spreadsheet‑style data grid — filter, sort, edit rows inline, insert & delete, with a staged **Changes** panel before you commit. |
 | 🧮 | **SQL editor** | CodeMirror‑powered editor with SQL highlighting, formatting, query history, and reusable **saved queries**. |
 | 🎨 | **Schema designer** | Visual ERD (React Flow) to create/edit tables and columns; staged DDL with a **schema version** audit trail and best‑effort rollback SQL. |
-| ⚙️ | **Workflows** | Drag‑and‑drop automation builder: `Manual`/`Schedule` triggers → `Run query`, `HTTP Request`, `Run JavaScript`, `Switch`, `Loop`, `Export SQL`, `Store to Storage`. Real hourly/daily scheduling + run logs. Runs can carry an input payload; query nodes inline it as `{{input.field}}`. |
+| ⚙️ | **Workflows** | Drag‑and‑drop automation builder: `Manual`/`Schedule`/`Webhook` triggers → `Run query`, `HTTP Request`, `Run JavaScript`, `Switch`, `Loop`, `Export SQL`, `Store to Storage`. Real hourly/daily scheduling, a public **webhook** trigger URL, and an **Activity** trail of past runs (every trigger). The JavaScript node has a built‑in `crypto` helper for HMAC/hash signing (e.g. signed HTTP headers). Runs can carry an input payload; query nodes inline it as `{{input.field}}`. |
 | 📈 | **Dashboards** | Per‑connection query dashboards with dynamic `{{variables}}`, drag/resize grid, and JSON export/import. Table widgets support server‑side pagination and per‑row **action buttons** that run a workflow with the clicked row as its input. |
 | 💾 | **Backups & restore** | S3‑compatible storage destinations + per‑connection scheduled backups. Calendar heatmap of runs and point‑in‑time restore — from a tracked backup version, any file browsed out of a storage destination, or a backup file uploaded from your computer. |
 | 👥 | **Workspaces & teams** | Multi‑workspace (org/tenant) model with members, teams, and `admin`/`member` roles. Email invites (SMTP optional — always get a copyable link). |

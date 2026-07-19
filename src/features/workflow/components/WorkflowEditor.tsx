@@ -12,11 +12,12 @@ import Button from '@/shared/ui/buttons/Button'
 import IconButton from '@/shared/ui/buttons/IconButton'
 import TextButton from '@/shared/ui/buttons/TextButton'
 import Popover from '@/shared/ui/overlay/Popover'
+import Tooltip from '@/shared/ui/overlay/Tooltip'
 import { useToast } from '@/shared/ui/feedback/Toast'
-import { ClockIcon, PlayIcon, PlusIcon } from '@/shared/ui/icons'
+import { ClockIcon, HistoryIcon, PlayIcon, PlusIcon } from '@/shared/ui/icons'
 import { getSchema } from '@/shared/api/database'
 import type { SqlSchema } from '@/shared/ui/SqlEditor'
-import { getWorkflow, updateWorkflow, runWorkflow } from '@/features/workflow/lib/api'
+import { getWorkflow, updateWorkflow, runWorkflow, getWorkflowRun } from '@/features/workflow/lib/api'
 import type { RunResult } from '@/features/workflow/lib/api'
 import { NODE_SPECS, sourceHandles } from '@/features/workflow/lib/nodeSpec'
 import type { NodeType } from '@/features/workflow/lib/nodeSpec'
@@ -24,6 +25,7 @@ import WorkflowNode from '@/features/workflow/components/nodes/WorkflowNode'
 import NodePalette from '@/features/workflow/components/NodePalette'
 import NodeConfigPanel from '@/features/workflow/components/NodeConfigPanel'
 import RunLogPanel from '@/features/workflow/components/RunLogPanel'
+import ActivityPanel from '@/features/workflow/components/ActivityPanel'
 import { formatCombo, useKeymap, useShortcut } from '@/features/keymap'
 
 let nodeSeq = 0
@@ -47,6 +49,8 @@ export default function WorkflowEditor({ conn, workflowId }: any) {
   const [running, setRunning] = useState(false)
   const [result, setResult] = useState<RunResult | null>(null)
   const [logOpen, setLogOpen] = useState(false)
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [runToken, setRunToken] = useState(0) // bumped after each run to refresh Activity
   const [isProtected, setIsProtected] = useState(false)
   const [scheduleEnabled, setScheduleEnabled] = useState(false)
   // Right-click "add node" menu: screen coords for placement + flow coords for the node.
@@ -217,6 +221,7 @@ export default function WorkflowEditor({ conn, workflowId }: any) {
   const run = async () => {
     if (running) return
     setRunning(true)
+    setHistoryOpen(false)
     setLogOpen(true)
     setResult(null)
     try {
@@ -233,6 +238,19 @@ export default function WorkflowEditor({ conn, workflowId }: any) {
       setResult({ ok: false, log: [], error: e.message })
     } finally {
       setRunning(false)
+      setRunToken((t) => t + 1) // refresh the Activity list with this run
+    }
+  }
+
+  // Open a past run's stored per-node log in the run-log drawer.
+  const openRun = async (runId: string) => {
+    try {
+      const detail = await getWorkflowRun(conn.id, workflowId, runId)
+      setResult({ ok: detail.ok, log: detail.log, error: detail.error || undefined })
+      setHistoryOpen(false)
+      setLogOpen(true)
+    } catch (e: any) {
+      toast.error(`Couldn't load run: ${e.message}`)
     }
   }
 
@@ -279,14 +297,22 @@ export default function WorkflowEditor({ conn, workflowId }: any) {
           </Button>
         )}
         {isProtected && <span className="text-[10px] uppercase tracking-wide text-ink-faint">Protected</span>}
-        {result && !logOpen && (
-          <TextButton
-            className="ml-auto !text-[11px] underline-offset-2 hover:underline"
-            onClick={() => setLogOpen(true)}
-          >
-            Show run log
-          </TextButton>
-        )}
+        <div className="ml-auto flex items-center gap-2">
+          {result && !logOpen && !historyOpen && (
+            <TextButton className="!text-[11px] underline-offset-2 hover:underline" onClick={() => { setHistoryOpen(false); setLogOpen(true) }}>
+              Show run log
+            </TextButton>
+          )}
+          <Tooltip label="Activity" placement="bottom">
+            <IconButton
+              aria-label="Activity"
+              active={historyOpen}
+              onClick={() => { setHistoryOpen((v) => !v); setLogOpen(false) }}
+            >
+              <HistoryIcon width={16} height={16} />
+            </IconButton>
+          </Tooltip>
+        </div>
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col">
@@ -384,6 +410,15 @@ export default function WorkflowEditor({ conn, workflowId }: any) {
         {logOpen && (
           <RunLogPanel result={result} running={running} labelFor={labelFor} onClose={() => setLogOpen(false)} />
         )}
+        {historyOpen && (
+          <ActivityPanel
+            connectionId={conn.id}
+            workflowId={workflowId}
+            reloadToken={runToken}
+            onSelect={openRun}
+            onClose={() => setHistoryOpen(false)}
+          />
+        )}
       </div>
 
       {selectedNode && (
@@ -396,6 +431,7 @@ export default function WorkflowEditor({ conn, workflowId }: any) {
           schema={schema}
           dialect={conn.type}
           workspaceId={conn.workspaceId}
+          workflowId={workflowId}
           onDelete={deleteNode}
           onClose={deselect}
         />
