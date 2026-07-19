@@ -682,7 +682,11 @@ Node-graph automations (React Flow) run against the connection. A workflow's
 `graph` is `{ nodes, edges }` in React Flow shape; each node's `type` is one of
 `manual` (trigger), `schedule` (trigger), `query`, `http`, `js`, `switch`, `loop`,
 `export`, `storage`, and its config lives in `node.data`:
-- `query`: `{ sql }` · `http`: `{ method, url, headers, body }` · `js`: `{ code }`
+- `query`: `{ sql }` — the SQL may inline scalar values from the node's input as
+  `{{input.path}}` (dotted paths supported, e.g. `{{input.row.id}}`); values are
+  rendered as SQL literals (strings quoted with `''` doubling, numbers bare,
+  booleans `TRUE`/`FALSE`, missing → `NULL`; a non-scalar value fails the node).
+  · `http`: `{ method, url, headers, body }` · `js`: `{ code }`
 - `switch`: `{ cases: [{ expr, label }] }` · `loop`: `{ itemsExpr }`
 - `schedule`: `{ frequency: "manual"|"hourly"|"daily", hourOfDay?: 0-23 }` — UTC.
   **Breaking change:** this replaces the old freeform `{ cron }` field, which is now inert.
@@ -698,6 +702,9 @@ Node-graph automations (React Flow) run against the connection. A workflow's
 
 Edges thread a single `input` (a node's output) to the next node; `sourceHandle`
 selects a branch (`out` default; `case-N`/`default` for switch; `body`/`done` for loop).
+Trigger nodes (`manual`/`schedule`) pass the run's initial input straight through —
+`null` normally, or the `input` posted to `/run` (e.g. a dashboard table row from a
+row-action button).
 
 A workflow can be scheduled: set `workflows.schedule_enabled = 1` (via `PUT
 .../workflows/:wid { "scheduleEnabled": true }`) with a graph containing exactly
@@ -766,9 +773,15 @@ Delete a workflow.
 ### POST `/api/connections/:id/workflows/:wid/run`
 Execute a workflow. Runs the posted `graph` (so unsaved edits can be tested), or
 the stored graph when `graph` is omitted. Always records the outcome in `workflow_runs`
-(`trigger_kind: "manual"`).
+(`trigger_kind` from `trigger`).
 
-- **Body:** `{ "graph"?: { "nodes": [...], "edges": [...] } }`
+- **Body:** `{ "graph"?: { "nodes": [...], "edges": [...] }, "input"?: <any JSON>, "trigger"?: "manual" | "dashboard" }`
+  - `input` (optional) seeds the trigger node — it flows to downstream nodes as their
+    initial input (JS nodes read it as `input`, query nodes can inline scalars via
+    `{{input.field}}`). Dashboard table-widget row actions post the clicked row here
+    as a column→value object.
+  - `trigger` (optional) tags the run in `workflow_runs.trigger_kind` for auditing:
+    `"dashboard"` for dashboard row-action runs; anything else records `"manual"`.
 - **200:** `{ "ok": true, "log": [{ "nodeId", "nodeType", "status", "ms", "output", "logs"?, "error"? }], "output": <terminal output> }`
   - On a failed node: `{ "ok": false, "log": [...], "error": "<message>" }` (the failing node's `log` entry has `status: "error"`)
 - **404:** `{ "error": "Connection not found" }` or `{ "error": "Not found" }`

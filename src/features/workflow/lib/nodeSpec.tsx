@@ -52,7 +52,7 @@ export const NODE_SPECS: Record<NodeType, NodeSpec> = {
     type: 'query',
     category: 'Source',
     label: 'Run a query',
-    description: 'Run SQL against this connection. Output: { columns, rows }.',
+    description: 'Run SQL against this connection. Inline input values as {{input.field}}. Output: { columns, rows }.',
     icon: DatabaseIcon,
     accent: 'text-green-bright',
     hasInput: true,

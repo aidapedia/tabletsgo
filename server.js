@@ -1334,6 +1334,23 @@ function runUserJs(code, input) {
   return { out: sandbox.__out, logs }
 }
 
+// Substitute {{input.path}} placeholders in a query node's SQL with values
+// from the node's input (e.g. a dashboard table row), rendered as SQL literals.
+// Dialect-agnostic on purpose: single-quoted strings with '' doubling, bare
+// numeric literals, and NULL are valid in every roadmap dialect. Non-scalar
+// values are an error, not silently stringified.
+function substituteWorkflowInput(sql, input) {
+  return sql.replace(/\{\{\s*input((?:\.[A-Za-z_][A-Za-z0-9_]*)+)\s*\}\}/g, (_, path) => {
+    let v = input
+    for (const key of path.slice(1).split('.')) v = v?.[key]
+    if (v === null || v === undefined) return 'NULL'
+    if (typeof v === 'number' && Number.isFinite(v)) return String(v)
+    if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE'
+    if (typeof v === 'string') return `'${v.replace(/'/g, "''")}'`
+    throw new Error(`{{input${path}}} is not a scalar value (got ${Array.isArray(v) ? 'array' : typeof v})`)
+  })
+}
+
 // Run one query node against the connection (dialect-dispatched).
 async function execWorkflowQuery(conn, sql) {
   if (conn.type === 'sqlite') return runSqliteQuery(getSqliteDb(conn.filepath), sql)
@@ -1582,7 +1599,7 @@ async function pruneOldBackups(dest, folder, retentionDays) {
 
 // Execute a workflow graph. Threads each node's output to its successor(s).
 // Returns { ok, log, output, error? }.
-async function runWorkflow(conn, graph) {
+async function runWorkflow(conn, graph, initialInput = null) {
   const nodes = new Map((graph?.nodes || []).map((n) => [n.id, n]))
   const edges = graph?.edges || []
   const outgoing = (id, handle = 'out') => edges.filter((e) => e.source === id && (e.sourceHandle || 'out') === handle)
@@ -1614,7 +1631,7 @@ async function runWorkflow(conn, graph) {
         output = input // trigger node — pass the initial input straight through
       } else if (node.type === 'query') {
         if (!d.sql?.trim()) throw new Error('No query configured')
-        const r = await execWorkflowQuery(conn, d.sql)
+        const r = await execWorkflowQuery(conn, substituteWorkflowInput(d.sql, input))
         if (r.error) throw new Error(r.error)
         output = r.type === 'rows' ? { columns: r.columns, rows: r.rows } : { message: r.message }
       } else if (node.type === 'http') {
@@ -1740,7 +1757,7 @@ async function runWorkflow(conn, graph) {
     const roots = (graph?.nodes || []).filter((n) => !hasIncoming.has(n.id))
     if (!roots.length) return { ok: false, log, error: 'No start node (every node has an incoming connection).' }
     let output
-    for (const r of roots) output = await walk(r, null)
+    for (const r of roots) output = await walk(r, initialInput)
     return { ok: true, log, output: jsonPreview(output, 8000) }
   } catch (err) {
     return { ok: false, log, error: err.message }
@@ -1750,9 +1767,9 @@ async function runWorkflow(conn, graph) {
 // Run a workflow and persist the outcome to workflow_runs — shared by the
 // manual "Run" route and the scheduler tick, so both count toward a workflow's
 // run history (and, for the backup workflow, its monitoring calendar).
-async function executeAndRecord(workflowId, connectionId, conn, graph, triggerKind) {
+async function executeAndRecord(workflowId, connectionId, conn, graph, triggerKind, input = null) {
   const startedAt = Date.now()
-  const result = await runWorkflow(conn, graph)
+  const result = await runWorkflow(conn, graph, input)
   meta
     .prepare(
       `INSERT INTO workflow_runs (id, workflow_id, connection_id, trigger_kind, status, log, error, started_at, finished_at, ts)
@@ -2992,7 +3009,10 @@ app.post('/api/connections/:id/workflows/:wid/run', async (req, res) => {
     if (!row) return res.status(404).json({ error: 'Not found' })
     graph = safeJson(row.graph)
   }
-  const result = await executeAndRecord(req.params.wid, req.params.id, conn, graph, 'manual')
+  // `trigger` distinguishes dashboard row-action runs in the workflow_runs
+  // audit trail; anything unrecognized falls back to 'manual'.
+  const trigger = req.body?.trigger === 'dashboard' ? 'dashboard' : 'manual'
+  const result = await executeAndRecord(req.params.wid, req.params.id, conn, graph, trigger, req.body?.input ?? null)
   res.json(result)
 })
 
