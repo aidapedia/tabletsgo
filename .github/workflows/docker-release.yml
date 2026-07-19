@@ -89,7 +89,10 @@ jobs:
             APP_VERSION=${{ steps.ver.outputs.version }}
             GIT_SHA=${{ inputs.ref || github.sha }}
           cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # mode=min (only final layers) keeps the cache well under GitHub's 10GB
+          # per-repo limit for this multi-arch build; ignore-error=true means a
+          # cache-service hiccup can never fail an otherwise-successful release.
+          cache-to: type=gha,mode=min,ignore-error=true
 
       # Publish the machine-readable update contract onto the GitHub Release. The
       # in-app checker reads this to compare identity and drive the update wizard
