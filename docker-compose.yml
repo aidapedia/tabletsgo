@@ -37,6 +37,10 @@ services:
       # manual `docker compose pull` command.
       - UPDATE_IMAGE=${UPDATE_IMAGE:-}
       - UPDATE_REPO=${UPDATE_REPO:-}
+      # Default for the per-user "auto-check for updates" toggle (Settings >
+      # Updates). Off unless set truthy — handy to leave off when an orchestrator
+      # (e.g. Coolify) manages updates. Users can still override per browser.
+      - UPDATE_AUTO_CHECK=${UPDATE_AUTO_CHECK:-}
     volumes:
       # Persist app metadata (users / connections / saved queries) across
       # container restarts.

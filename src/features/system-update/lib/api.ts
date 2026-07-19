@@ -6,7 +6,7 @@ import { API_URL } from '@/shared/config'
 import type { AppIdentity, ApplyResult, BackupResult, PreflightCheck, UpdateInfo } from './types'
 
 export async function getVersion(): Promise<AppIdentity> {
-  return safeRequest<AppIdentity>('/system/version', { version: '0.0.0', sha: 'dev' })
+  return safeRequest<AppIdentity>('/system/version', { version: '0.0.0', sha: 'dev', autoCheckUpdates: false })
 }
 
 export async function checkForUpdate(refresh = false): Promise<UpdateInfo | null> {

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import Button from '@/shared/ui/buttons/Button'
 import Badge from '@/shared/ui/Badge'
+import Toggle from '@/shared/ui/form/Toggle'
 import { RefreshIcon } from '@/shared/ui/icons'
 import { MarkdownText } from '@/features/dashboard'
 import { useWorkspaces } from '@/features/workspaces'
@@ -10,7 +11,7 @@ import UpdateWizard from './UpdateWizard'
 // Settings > Updates: current vs latest, manual re-check, changelog, and the
 // entry point into the guided update wizard.
 export default function UpdatePanel() {
-  const { info, loading, lastChecked, check } = useUpdate()
+  const { info, loading, lastChecked, check, autoCheck, setAutoCheck } = useUpdate()
   const { current } = useWorkspaces()
   const isAdmin = current?.role === 'admin'
   const [wizardOpen, setWizardOpen] = useState(false)
@@ -42,6 +43,21 @@ export default function UpdatePanel() {
         <Button variant="ghost" size="sm" icon={RefreshIcon} onClick={() => check(true)} disabled={loading}>
           {loading ? 'Checking…' : 'Check for updates'}
         </Button>
+      </div>
+
+      <div className="flex items-center justify-between gap-4 rounded-[12px] border border-edge bg-elevated px-4 py-3.5">
+        <div className="min-w-0">
+          <div className="text-[13px] font-semibold text-ink">Automatically check for updates</div>
+          <div className="mt-1 text-[11px] text-ink-faint">
+            Check for a newer release on sign-in. Turn this off if updates are managed elsewhere (e.g. Coolify);
+            you can still check manually above.
+          </div>
+        </div>
+        <Toggle
+          checked={autoCheck}
+          onChange={setAutoCheck}
+          ariaLabel="Automatically check for updates"
+        />
       </div>
 
       {info?.updateAvailable && (

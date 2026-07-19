@@ -3974,6 +3974,10 @@ app.post('/api/connections/:id/query', async (req, res) => {
 
 const UPDATE_IMAGE = process.env.UPDATE_IMAGE || 'ghcr.io/aidapedia/tabletsgo'
 const UPDATE_REPO = process.env.UPDATE_REPO || 'aidapedia/tabletsgo'
+// Instance-wide default for the per-user "auto-check for updates" preference.
+// Off by default so orchestrator-managed deployments (e.g. Coolify) don't poll
+// GitHub on every sign-in; the Settings > Updates toggle overrides it per browser.
+const AUTO_CHECK_UPDATES = /^(1|true|yes|on)$/i.test(String(process.env.UPDATE_AUTO_CHECK || ''))
 const UPDATE_CACHE_MS = 30 * 60 * 1000
 let updateCache = null // { at, data }
 
@@ -4198,7 +4202,7 @@ async function computeUpdateInfo() {
 // The running app's identity — cheap; used by the wizard's verify-poll.
 app.get('/api/system/version', (req, res) => {
   if (!requireAuth(req, res)) return
-  res.json({ name: APP_NAME, version: APP_VERSION, sha: GIT_SHA })
+  res.json({ name: APP_NAME, version: APP_VERSION, sha: GIT_SHA, autoCheckUpdates: AUTO_CHECK_UPDATES })
 })
 
 // Check for a newer release (cached ~30 min; ?refresh=1 bypasses the cache).

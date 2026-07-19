@@ -1343,8 +1343,10 @@ Related env: `UPDATE_IMAGE` (default `ghcr.io/aidapedia/tabletsgo`), `UPDATE_REP
 
 ### GET `/api/system/version`
 The running app's identity (used by the wizard's verify-poll after a restart).
+`autoCheckUpdates` is the instance-wide default (from the `UPDATE_AUTO_CHECK` env)
+for the per-user "auto-check for updates" toggle in Settings > Updates.
 
-- **200:** `{ "name": "tabletsgo", "version": "0.15.2", "sha": "20f10b5" }`
+- **200:** `{ "name": "tabletsgo", "version": "0.15.2", "sha": "20f10b5", "autoCheckUpdates": false }`
 - **Example:** `GET http://localhost:3000/api/system/version`
 
 ### GET `/api/system/update/check?refresh=1`
