@@ -686,7 +686,12 @@ Node-graph automations (React Flow) run against the connection. A workflow's
   `{{input.path}}` (dotted paths supported, e.g. `{{input.row.id}}`); values are
   rendered as SQL literals (strings quoted with `''` doubling, numbers bare,
   booleans `TRUE`/`FALSE`, missing → `NULL`; a non-scalar value fails the node).
-  · `http`: `{ method, url, headers, body }` · `js`: `{ code }`
+  Add an `:ident` modifier — `{{input.field:ident}}` — to render the value as a
+  quoted SQL **identifier** instead (double-quoted with `""` doubling), for the
+  few statements that take a bare name and can't be parameterized, e.g.
+  `VACUUM (ANALYZE) {{input.relname:ident}}`. The value must be a non-empty
+  string; NULL/number/boolean fail the node so an identifier slot never silently
+  vanishes or injects. · `http`: `{ method, url, headers, body }` · `js`: `{ code }`
 - `js`: `{ code }` — the body receives `input`, returns the node output. Besides
   `input`/`console`, a curated **`crypto`** helper is in scope (no `require`):
   `crypto.hmac(algo, key, data, enc="hex")`, `crypto.hash(algo, data, enc="hex")`,
