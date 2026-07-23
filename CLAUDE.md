@@ -72,12 +72,15 @@ src/
 │   │   │                         #     TableEditPanel, columnFields, SchemaHistoryPanel (schema-version audit trail)
 │   │   └── lib/                  #   rollback (best-effort rollback SQL for staged DDL)
 │   ├── workflow/                 # workflow automations (React Flow builder + server-side runner, incl.
-│   │   │                         #   real hourly/daily scheduling via the Schedule trigger node's Active toggle)
-│   │   ├── components/           #   WorkflowEditor, WorkflowsPanel, NodePalette, NodeConfigPanel,
-│   │   │                         #     RunLogPanel, nodes/WorkflowNode (one spec-driven card)
+│   │   │                         #   real hourly/daily scheduling via the Schedule trigger node's Active toggle;
+│   │   │                         #   JSON export/import of a workflow's graph, mirroring the dashboard feature)
+│   │   ├── components/           #   WorkflowEditor (export/import toolbar buttons), WorkflowsPanel
+│   │   │                         #     (+ "Import from JSON…" → creates a new workflow), NodePalette,
+│   │   │                         #     NodeConfigPanel, RunLogPanel, nodes/WorkflowNode (one spec-driven card)
 │   │   └── lib/                  #   api (per-connection CRUD + run), nodeSpec (node catalog: manual,
 │   │                             #     schedule, query, http, js, switch, loop, export "Export SQL",
-│   │                             #     storage "Store to Storage")
+│   │                             #     storage "Store to Storage"), exportImport (WorkflowExport type +
+│   │                             #     sanitizeGraph/stripSecrets — webhook tokens never round-trip a file)
 │   ├── dashboard/                # per-connection query dashboards (New Relic style): dynamic variables
 │   │   │                         #   ({{name}} in widget SQL, query-backed or static lists), free-placement
 │   │   │                         #   12-col drag/resize grid (hard collision blocking), fullscreen, JSON

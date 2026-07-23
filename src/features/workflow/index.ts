@@ -16,3 +16,5 @@ export {
   runWorkflow,
 } from '@/features/workflow/lib/api'
 export type { Workflow, WorkflowSummary, WorkflowGraph, RunResult, RunLogEntry } from '@/features/workflow/lib/api'
+export { sanitizeGraph, stripSecrets } from '@/features/workflow/lib/exportImport'
+export type { WorkflowExport } from '@/features/workflow/lib/exportImport'

@@ -55,8 +55,8 @@ export async function getWorkflow(connectionId: string, wid: string): Promise<Wo
   return request(`/connections/${connectionId}/workflows/${wid}`)
 }
 
-export async function createWorkflow(connectionId: string, name: string): Promise<Workflow> {
-  return request(`/connections/${connectionId}/workflows`, { method: 'POST', body: { name } })
+export async function createWorkflow(connectionId: string, name: string, graph?: WorkflowGraph): Promise<Workflow> {
+  return request(`/connections/${connectionId}/workflows`, { method: 'POST', body: { name, graph } })
 }
 
 export async function updateWorkflow(

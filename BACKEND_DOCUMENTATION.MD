@@ -749,10 +749,12 @@ List workflows for a connection (newest first; no graph body).
 - **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/workflows`
 
 ### POST `/api/connections/:id/workflows`
-Create a workflow with an empty graph.
+Create a workflow. `graph` is optional — omit it (or send a non-object) for an
+empty graph; the frontend's JSON-import flow ("Import from JSON…" in the
+Workflows panel) posts a sanitized graph here to create the workflow in one call.
 
-- **Body:** `{ "name": "Nightly sync" }`
-- **200:** `{ "id", "name", "graph": { "nodes": [], "edges": [] }, "ts", "protected": false, "scheduleEnabled": false }`
+- **Body:** `{ "name": "Nightly sync", "graph"?: { "nodes": [...], "edges": [...] } }`
+- **200:** `{ "id", "name", "graph", "ts", "protected": false, "scheduleEnabled": false }`
 - **400:** `{ "error": "A workflow name is required" }`
 - **Example:** `POST http://localhost:3000/api/connections/demo-sqlite/workflows`
 

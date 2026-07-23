@@ -9,8 +9,8 @@ import Popover from '@/shared/ui/overlay/Popover'
 import Tooltip from '@/shared/ui/overlay/Tooltip'
 
 // Left-rail list of this connection's workflows. Modeled on SavedQueriesPanel
-// (minus folders): open in a tab, create, rename inline, delete.
-export default function WorkflowsPanel({ workflows = [], activeId, onOpen, onNew, onRename, onDelete, onRefresh }: any) {
+// (minus folders): open in a tab, create, rename inline, delete, import from JSON.
+export default function WorkflowsPanel({ workflows = [], activeId, onOpen, onNew, onImport, onRename, onDelete, onRefresh }: any) {
   const [searchOpen, setSearchOpen] = useState(false)
   const [filter, setFilter] = useState('')
   const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null)
@@ -137,6 +137,16 @@ export default function WorkflowsPanel({ workflows = [], activeId, onOpen, onNew
               )
             )}
           </div>
+        )}
+
+        {onImport && (
+          <button
+            type="button"
+            onClick={onImport}
+            className="mt-2 w-full rounded-soft border border-dashed border-edge px-2.5 py-2 text-[11px] text-ink-faint transition-colors hover:border-edge-strong hover:text-ink"
+          >
+            Import from JSON…
+          </button>
         )}
       </div>
     </>

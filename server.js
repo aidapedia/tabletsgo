@@ -2879,9 +2879,9 @@ app.get('/api/connections/:id/workflows', (req, res) => {
 })
 
 app.post('/api/connections/:id/workflows', (req, res) => {
-  const { name } = req.body || {}
+  const { name, graph } = req.body || {}
   if (!name?.trim()) return res.status(400).json({ error: 'A workflow name is required' })
-  const entry = { id: randomUUID(), name: name.trim(), graph: { nodes: [], edges: [] }, ts: Date.now() }
+  const entry = { id: randomUUID(), name: name.trim(), graph: graph && typeof graph === 'object' ? graph : { nodes: [], edges: [] }, ts: Date.now() }
   meta
     .prepare('INSERT INTO workflows (id, connection_id, name, graph, ts) VALUES (?, ?, ?, ?, ?)')
     .run(entry.id, req.params.id, entry.name, JSON.stringify(entry.graph), entry.ts)

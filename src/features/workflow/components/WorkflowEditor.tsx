@@ -13,14 +13,17 @@ import IconButton from '@/shared/ui/buttons/IconButton'
 import TextButton from '@/shared/ui/buttons/TextButton'
 import Popover from '@/shared/ui/overlay/Popover'
 import Tooltip from '@/shared/ui/overlay/Tooltip'
+import ConfirmDialog from '@/shared/ui/feedback/ConfirmDialog'
 import { useToast } from '@/shared/ui/feedback/Toast'
-import { ClockIcon, HistoryIcon, PlayIcon, PlusIcon } from '@/shared/ui/icons'
+import { ClockIcon, DownloadIcon, HistoryIcon, PlayIcon, PlusIcon, UploadIcon } from '@/shared/ui/icons'
 import { getSchema } from '@/shared/api/database'
 import type { SqlSchema } from '@/shared/ui/SqlEditor'
 import { getWorkflow, updateWorkflow, runWorkflow, getWorkflowRun } from '@/features/workflow/lib/api'
-import type { RunResult } from '@/features/workflow/lib/api'
+import type { RunResult, WorkflowGraph } from '@/features/workflow/lib/api'
 import { NODE_SPECS, sourceHandles } from '@/features/workflow/lib/nodeSpec'
 import type { NodeType } from '@/features/workflow/lib/nodeSpec'
+import { sanitizeGraph, stripSecrets } from '@/features/workflow/lib/exportImport'
+import type { WorkflowExport } from '@/features/workflow/lib/exportImport'
 import WorkflowNode from '@/features/workflow/components/nodes/WorkflowNode'
 import NodePalette from '@/features/workflow/components/NodePalette'
 import NodeConfigPanel from '@/features/workflow/components/NodeConfigPanel'
@@ -53,6 +56,9 @@ export default function WorkflowEditor({ conn, workflowId }: any) {
   const [runToken, setRunToken] = useState(0) // bumped after each run to refresh Activity
   const [isProtected, setIsProtected] = useState(false)
   const [scheduleEnabled, setScheduleEnabled] = useState(false)
+  const [name, setName] = useState('')
+  const [pendingImport, setPendingImport] = useState<WorkflowExport | null>(null)
+  const fileRef = useRef<HTMLInputElement>(null)
   // Right-click "add node" menu: screen coords for placement + flow coords for the node.
   const [menu, setMenu] = useState<{ x: number; y: number; flow: { x: number; y: number } } | null>(null)
   // Table→columns map for the query node's SQL autocomplete (same source as the query tab).
@@ -74,6 +80,7 @@ export default function WorkflowEditor({ conn, workflowId }: any) {
         setEdges(wf.graph?.edges || [])
         setIsProtected(!!wf.protected)
         setScheduleEnabled(!!wf.scheduleEnabled)
+        setName(wf.name)
         loadedFor.current = workflowId
         setLoading(false)
       })
@@ -272,6 +279,36 @@ export default function WorkflowEditor({ conn, workflowId }: any) {
     }
   }
 
+  // ---- Export / import ----
+  const exportJson = () => {
+    const graph: WorkflowGraph = stripSecrets({ nodes: nodes.map((n) => ({ ...n, data: stripStatus(n.data) })), edges })
+    const doc: WorkflowExport = { kind: 'workflow', version: 1, name, graph }
+    const blob = new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${name.replace(/[^\w-]+/g, '-').toLowerCase()}.workflow.json`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+  const onImportFile = async (file: File) => {
+    try {
+      const doc = JSON.parse(await file.text())
+      if (doc?.kind !== 'workflow' || !doc.graph) throw new Error('Not a workflow export file.')
+      setPendingImport(doc)
+    } catch (e: any) {
+      toast.error(`Import failed: ${e.message}`)
+    }
+  }
+  const applyImport = () => {
+    if (!pendingImport) return
+    const graph = sanitizeGraph(pendingImport.graph)
+    setNodes(graph.nodes as any)
+    setEdges(graph.edges as any)
+    setPendingImport(null)
+    toast.success('Workflow structure imported.')
+  }
+
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <div className="flex items-center gap-2 border-b border-edge px-3 py-2">
@@ -303,6 +340,18 @@ export default function WorkflowEditor({ conn, workflowId }: any) {
               Show run log
             </TextButton>
           )}
+          {!isProtected && (
+            <Tooltip label="Import structure from JSON" placement="bottom">
+              <IconButton aria-label="Import JSON" onClick={() => fileRef.current?.click()}>
+                <UploadIcon width={15} height={15} />
+              </IconButton>
+            </Tooltip>
+          )}
+          <Tooltip label="Export structure as JSON" placement="bottom">
+            <IconButton aria-label="Export JSON" onClick={exportJson}>
+              <DownloadIcon width={15} height={15} />
+            </IconButton>
+          </Tooltip>
           <Tooltip label="Activity" placement="bottom">
             <IconButton
               aria-label="Activity"
@@ -314,6 +363,27 @@ export default function WorkflowEditor({ conn, workflowId }: any) {
           </Tooltip>
         </div>
       </div>
+      <input
+        ref={fileRef}
+        type="file"
+        accept=".json,application/json"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0]
+          if (f) onImportFile(f)
+          e.target.value = ''
+        }}
+      />
+      {pendingImport && (
+        <ConfirmDialog
+          danger
+          title="Replace workflow contents?"
+          message={`Importing "${pendingImport.name}" replaces this workflow's nodes and connections. The current structure will be lost.`}
+          confirmLabel="Import"
+          onConfirm={applyImport}
+          onCancel={() => setPendingImport(null)}
+        />
+      )}
 
       <div className="flex min-h-0 flex-1 flex-col">
         <div className="relative min-h-0 flex-1">

@@ -53,7 +53,7 @@ import { formatCombo, useKeymap, useShortcut } from '@/features/keymap'
 import SavedQueriesPanel from '@/features/workspace/components/SavedQueriesPanel'
 import AnalyzePanel from '@/features/workspace/components/AnalyzePanel'
 import AnalyzeFolderPanel from '@/features/workspace/components/AnalyzeFolderPanel'
-import { WorkflowsPanel, listWorkflows, createWorkflow, deleteWorkflow, updateWorkflow } from '@/features/workflow'
+import { WorkflowsPanel, listWorkflows, createWorkflow, deleteWorkflow, updateWorkflow, sanitizeGraph } from '@/features/workflow'
 import {
   DashboardsPanel,
   listDashboards,
@@ -628,6 +628,18 @@ export default function Workspace() {
       await deleteWorkflow(id, wid)
     } catch (e) {
       toast.error(`Delete failed: ${e.message}`)
+    }
+  }
+  const workflowFileRef = useRef(null)
+  const importWorkflowFile = async (file) => {
+    try {
+      const doc = JSON.parse(await file.text())
+      if (doc?.kind !== 'workflow' || !doc.graph) throw new Error('Not a workflow export file.')
+      const wf = await createWorkflow(id, doc.name || 'Imported workflow', sanitizeGraph(doc.graph))
+      setWorkflows((prev) => [{ id: wf.id, name: wf.name, ts: Date.now(), protected: false, scheduleEnabled: false }, ...prev])
+      openWorkflow(wf)
+    } catch (e) {
+      toast.error(`Import failed: ${e.message}`)
     }
   }
 
@@ -1385,6 +1397,7 @@ export default function Workspace() {
             activeId={current?.kind === 'workflow' ? current.workflowId : null}
             onOpen={openWorkflow}
             onNew={newWorkflow}
+            onImport={() => workflowFileRef.current?.click()}
             onRename={renameWorkflow}
             onDelete={removeWorkflow}
             onRefresh={() => listWorkflows(id).then(setWorkflows)}
@@ -1487,6 +1500,17 @@ export default function Workspace() {
             onChange={(e) => {
               const f = e.target.files?.[0]
               if (f) importDashboardFile(f)
+              e.target.value = ''
+            }}
+          />
+          <input
+            ref={workflowFileRef}
+            type="file"
+            accept=".json,application/json"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0]
+              if (f) importWorkflowFile(f)
               e.target.value = ''
             }}
           />
