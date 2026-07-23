@@ -8,6 +8,7 @@ import { EXPORT_FORMATS, downloadRows, sqlValue, toCsv } from '@/features/worksp
 import Button from '@/shared/ui/buttons/Button'
 import TextButton from '@/shared/ui/buttons/TextButton'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
+import Segmented from '@/shared/ui/form/Segmented'
 import Checkbox from '@/shared/ui/form/Checkbox'
 import Popover from '@/shared/ui/overlay/Popover'
 import ContextMenu, { ContextMenuSub } from '@/shared/ui/overlay/ContextMenu'
@@ -71,6 +72,43 @@ export function matchFilter(row, f) {
   }
 }
 
+// Multi-rule client-side sort shared by the data grid + history views. Rules
+// apply in priority order (first = primary); nulls always sort last. Numeric
+// when both values parse as numbers, else locale string compare. Returns the
+// input untouched when there are no active rules.
+export function sortRows(rows, sort) {
+  const rules = (sort || []).filter((s) => s.col)
+  if (!rules.length) return rows
+  return [...rows].sort((a, b) => {
+    for (const { col, dir } of rules) {
+      const x = a[col]
+      const y = b[col]
+      if (x == null && y == null) continue
+      if (x == null) return 1
+      if (y == null) return -1
+      const nx = Number(x)
+      const ny = Number(y)
+      const c = !isNaN(nx) && !isNaN(ny) ? nx - ny : String(x).localeCompare(String(y))
+      if (c !== 0) return dir === 'desc' ? -c : c
+    }
+    return 0
+  })
+}
+
+// Reducer for a header click on `col`. Plain click = single-column sort cycling
+// asc → desc → off. Shift (additive) = add/toggle this column within the
+// multi-sort (asc → desc → removed), preserving the other rules and their order.
+export function cycleSortRules(prev, col, additive) {
+  const existing = prev.find((s) => s.col === col)
+  if (additive) {
+    if (!existing) return [...prev, makeSort(col, 'asc')]
+    if (existing.dir === 'asc') return prev.map((s) => (s.col === col ? { ...s, dir: 'desc' } : s))
+    return prev.filter((s) => s.col !== col)
+  }
+  if (existing && prev.length === 1) return existing.dir === 'asc' ? [makeSort(col, 'desc')] : []
+  return [makeSort(col, 'asc')]
+}
+
 // `filters` is owned by the parent tab so it survives the unmount that happens
 // when the user switches tabs (only the active tab is mounted).
 export default function TableView({ conn, table, onChange, onOpenReference, filters, onFiltersChange }) {
@@ -95,7 +133,7 @@ export default function TableView({ conn, table, onChange, onOpenReference, filt
   const [cellMenu, setCellMenu] = useState(null) // right-click cell menu: { x, y, row, col, value }
   const [inspecting, setInspecting] = useState(null) // row object shown in the Inspector slide-over
 
-  const [sort, setSort] = useState(null) // { col, dir }
+  const [sort, setSort] = useState([]) // [{ col, dir }] — ordered list of sort rules (first = primary)
   const [hidden, setHidden] = useState([])
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
@@ -116,7 +154,7 @@ export default function TableView({ conn, table, onChange, onOpenReference, filt
   }
 
   useEffect(() => {
-    setSort(null)
+    setSort([])
     setHidden([])
     load()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -136,23 +174,17 @@ export default function TableView({ conn, table, onChange, onOpenReference, filt
 
   const filtered = useMemo(() => rows.filter((r) => filters.every((f) => matchFilter(r, f))), [rows, filters])
 
-  const sorted = useMemo(() => {
-    if (!sort?.col) return filtered
-    const { col, dir } = sort
-    return [...filtered].sort((a, b) => {
-      const x = a[col]
-      const y = b[col]
-      if (x == null && y == null) return 0
-      if (x == null) return 1
-      if (y == null) return -1
-      const nx = Number(x)
-      const ny = Number(y)
-      const c = !isNaN(nx) && !isNaN(ny) ? nx - ny : String(x).localeCompare(String(y))
-      return dir === 'desc' ? -c : c
-    })
-  }, [filtered, sort])
+  const sorted = useMemo(() => sortRows(filtered, sort), [filtered, sort])
 
   const visibleColumns = useMemo(() => columns.filter((c) => !hidden.includes(c)), [columns, hidden])
+
+  // Header click sorting. Plain click = single-column sort cycling asc → desc →
+  // off. Shift+click = add/toggle this column within the multi-sort (asc → desc
+  // → removed), keeping the other rules and their priority order.
+  const cycleSort = (col, additive) => {
+    setSort((prev) => cycleSortRules(prev, col, additive))
+    setPage(1)
+  }
 
   const total = sorted.length
   const pageCount = Math.max(1, Math.ceil(total / pageSize))
@@ -160,6 +192,7 @@ export default function TableView({ conn, table, onChange, onOpenReference, filt
   const pageRows = useMemo(() => sorted.slice((page - 1) * pageSize, page * pageSize), [sorted, page, pageSize])
 
   const activeFilterCount = filters.filter((f) => f.enabled && f.col && f.value !== '').length
+  const activeSortCount = sort.filter((s) => s.col).length
 
   // Exports what the grid currently shows: visible columns, filtered + sorted rows.
   const exportAs = (format) => downloadRows(format, { columns: visibleColumns, rows: sorted, table })
@@ -372,18 +405,18 @@ export default function TableView({ conn, table, onChange, onOpenReference, filt
         </Popover>
 
         <Popover
-          width={260}
+          width={360}
           trigger={({ open, toggle }) => (
-            <Button variant="subtle" size="sm" icon={SortIcon} active={open || !!sort} onClick={toggle}>
-              {sort ? 'Sorted by 1 rule' : 'Sort'}
+            <Button variant="subtle" size="sm" icon={SortIcon} active={open || activeSortCount > 0} onClick={toggle}>
+              {activeSortCount > 0 ? `Sorted by ${activeSortCount} rule${activeSortCount > 1 ? 's' : ''}` : 'Sort'}
             </Button>
           )}
         >
           {({ close }) => (
             <SortPanel
               columns={columns}
-              value={sort}
-              onChange={(s) => {
+              initial={sort}
+              onApply={(s) => {
                 setSort(s)
                 setPage(1)
               }}
@@ -516,6 +549,8 @@ export default function TableView({ conn, table, onChange, onOpenReference, filt
           edits={editOverlay}
           onEdit={editCell}
           onCellContextMenu={handleCellContextMenu}
+          sort={sort}
+          onSort={cycleSort}
         />
       )}
 
@@ -629,9 +664,6 @@ export function FilterPanel({ columns, initial, onApply, onClose }) {
       <div className="mb-2.5 flex items-center gap-2 text-xs font-semibold text-ink">
         <FilterIcon className="text-ink-dim" /> Filter Data
       </div>
-      <div className="mb-3 rounded-soft border border-edge bg-bg px-3 py-2 text-[11px] text-ink-faint">
-        e.g. status = active and revenue &gt; 100
-      </div>
 
       <div className="flex flex-col gap-2">
         {draft.map((f) => (
@@ -696,51 +728,115 @@ export function FilterPanel({ columns, initial, onApply, onClose }) {
   )
 }
 
-export function SortPanel({ columns, value, onChange, onClose }) {
-  const [col, setCol] = useState(value?.col || '')
-  const [dir, setDir] = useState(value?.dir || 'asc')
+let sortId = 0
+export const makeSort = (col = '', dir = 'asc') => ({ id: `s${++sortId}`, col, dir })
+const blankSort = () => makeSort()
+
+const GripIcon = (props) => (
+  <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden {...props}>
+    <circle cx="4" cy="3" r="1" /><circle cx="8" cy="3" r="1" />
+    <circle cx="4" cy="6" r="1" /><circle cx="8" cy="6" r="1" />
+    <circle cx="4" cy="9" r="1" /><circle cx="8" cy="9" r="1" />
+  </svg>
+)
+
+export function SortPanel({ columns, initial, onApply, onClose }) {
+  const [draft, setDraft] = useState(() => (initial.length ? initial.map((s) => ({ ...s })) : [blankSort()]))
+  const [dragId, setDragId] = useState(null)
+  const update = (id, patch) => setDraft((d) => d.map((s) => (s.id === id ? { ...s, ...patch } : s)))
+
+  // Reorder the dragged rule to sit where the hovered rule currently is; the
+  // list order *is* the sort priority (first rule = primary).
+  const moveOnto = (targetId) => {
+    if (!dragId || dragId === targetId) return
+    setDraft((d) => {
+      const from = d.findIndex((s) => s.id === dragId)
+      const to = d.findIndex((s) => s.id === targetId)
+      if (from < 0 || to < 0) return d
+      const next = [...d]
+      const [moved] = next.splice(from, 1)
+      next.splice(to, 0, moved)
+      return next
+    })
+  }
 
   return (
     <div className="p-3">
-      <div className="mb-2.5 flex items-center gap-2 text-xs font-semibold text-ink">
-        <SortIcon className="text-ink-dim" /> Sort
+      <div className="mb-3 flex items-center gap-2 text-xs font-semibold text-ink">
+        <SortIcon className="text-ink-dim" /> Sort Data
       </div>
-      <Select
-        className={`${ctl} mb-2 w-full`}
-        value={col}
-        onChange={setCol}
-        placeholder="No sorting"
-        options={[{ value: '', label: 'No sorting' }, ...columns.map((c) => ({ value: c, label: c }))]}
-      />
-      <div className="mb-3 flex gap-1.5">
-        <Button variant={dir === 'asc' ? 'primary' : 'ghost'} size="sm" className="flex-1" onClick={() => setDir('asc')}>
-          Ascending
-        </Button>
-        <Button variant={dir === 'desc' ? 'primary' : 'ghost'} size="sm" className="flex-1" onClick={() => setDir('desc')}>
-          Descending
-        </Button>
+
+      <div className="flex flex-col gap-2">
+        {draft.map((s, i) => (
+          <div
+            key={s.id}
+            onDragOver={(e) => { e.preventDefault(); moveOnto(s.id) }}
+            className={`flex items-center gap-1.5 ${dragId === s.id ? 'opacity-40' : ''}`}
+          >
+            <span
+              draggable
+              onDragStart={() => setDragId(s.id)}
+              onDragEnd={() => setDragId(null)}
+              className="flex shrink-0 cursor-grab items-center text-ink-faint hover:text-ink active:cursor-grabbing"
+              aria-label="Drag to reorder"
+              title="Drag to reorder"
+            >
+              <GripIcon />
+            </span>
+            <Select
+              className={`${ctl} min-w-0 flex-1`}
+              value={s.col}
+              onChange={(v) => update(s.id, { col: v })}
+              placeholder="Column…"
+              options={[{ value: '', label: 'Column…' }, ...columns.map((c) => ({ value: c, label: c }))]}
+            />
+            <Segmented
+              className="shrink-0"
+              value={s.dir}
+              onChange={(v) => update(s.id, { dir: v })}
+              options={[
+                { value: 'asc', label: 'Asc' },
+                { value: 'desc', label: 'Desc' },
+              ]}
+            />
+            <TextButton
+              tone="faint"
+              className="shrink-0 hover:!text-red"
+              onClick={() => setDraft((d) => (d.length > 1 ? d.filter((x) => x.id !== s.id) : [blankSort()]))}
+              aria-label="Remove sort"
+            >
+              <CloseIcon width={14} height={14} />
+            </TextButton>
+          </div>
+        ))}
       </div>
-      <div className="flex justify-end gap-2">
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => {
-            onChange(null)
-            onClose()
-          }}
-        >
-          Clear
+
+      <div className="mt-3 flex items-center justify-between">
+        <Button variant="subtle" size="sm" icon={PlusSmall} onClick={() => setDraft((d) => [...d, blankSort()])}>
+          Add Sort
         </Button>
-        <Button
-          variant="primary"
-          size="sm"
-          onClick={() => {
-            onChange(col ? { col, dir } : null)
-            onClose()
-          }}
-        >
-          Apply
-        </Button>
+        <div className="flex gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              onApply([])
+              onClose()
+            }}
+          >
+            Clear
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => {
+              onApply(draft.filter((s) => s.col))
+              onClose()
+            }}
+          >
+            Apply
+          </Button>
+        </div>
       </div>
     </div>
   )

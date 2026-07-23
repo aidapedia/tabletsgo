@@ -1,9 +1,12 @@
 import { useState } from 'react'
 import Button from '@/shared/ui/buttons/Button'
 import IconButton from '@/shared/ui/buttons/IconButton'
+import SlideOverPanel from '@/shared/ui/overlay/SlideOverPanel'
+import { useSlideOver } from '@/shared/hooks/useSlideOver'
 import { Input, controlClass } from '@/shared/ui/form/Input'
 import { FormField } from '@/shared/ui/form/Form'
 import Select from '@/shared/ui/form/Select'
+import Toggle from '@/shared/ui/form/Toggle'
 import SqlEditor from '@/shared/ui/SqlEditor'
 import EmptyState from '@/shared/ui/feedback/EmptyState'
 import Badge from '@/shared/ui/Badge'
@@ -43,10 +46,13 @@ export default function DashboardSettings({
   onSave: (fields: { name: string; variables: DashboardVariable[] }) => void
   onClose: () => void
 }) {
+  const { show, close } = useSlideOver(onClose)
   const [title, setTitle] = useState(name)
   const [vars, setVars] = useState<DashboardVariable[]>(variables)
   // The variable being created/edited in the inline form (null = list mode).
   const [editing, setEditing] = useState<DashboardVariable | null>(startWithNewVariable ? emptyVariable() : null)
+
+  const save = () => close(() => onSave({ name: title.trim(), variables: vars }))
 
   const commitVariable = () => {
     if (!editing) return
@@ -63,17 +69,23 @@ export default function DashboardSettings({
     (editing.source === 'query' ? !!editing.query?.trim() : parseStaticValues(editing.values).length > 0)
 
   return (
-    <div
-      className="fixed inset-0 z-[60] flex animate-fade items-center justify-center bg-black/60 p-6 backdrop-blur-[3px]"
-      onMouseDown={onClose}
+    <SlideOverPanel
+      show={show}
+      close={close}
+      title="Dashboard settings"
+      width={560}
+      footer={
+        <>
+          <Button variant="subtle" size="sm" onClick={() => close()}>
+            Cancel
+          </Button>
+          <Button variant="primary" size="sm" disabled={!title.trim() || !!editing} onClick={save}>
+            Save settings
+          </Button>
+        </>
+      }
     >
-      <div
-        className="flex max-h-[88vh] w-full max-w-[640px] animate-pop flex-col rounded-[16px] border border-edge-strong bg-panel"
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        <div className="border-b border-edge px-5 py-4 text-sm font-bold text-ink">Dashboard settings</div>
-
-        <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-5">
+      <div className="space-y-5">
           <FormField label="Dashboard title">
             <Input value={title} onChange={(e) => setTitle(e.target.value)} />
           </FormField>
@@ -90,7 +102,7 @@ export default function DashboardSettings({
 
             {editing ? (
               <div className="space-y-3 rounded-soft border border-edge bg-card p-4">
-                <div className="flex gap-3">
+                <div className="flex flex-wrap gap-3">
                   <FormField label="Name" className="flex-1" hint="Used in widget SQL as {{name}}." error={editingNameTaken ? 'A variable with this name already exists.' : undefined}>
                     <Input
                       autoFocus
@@ -144,9 +156,27 @@ export default function DashboardSettings({
                   <Input
                     value={editing.defaultValue ?? ''}
                     onChange={(e) => setEditing({ ...editing, defaultValue: e.target.value })}
-                    placeholder="Falls back to the first option"
+                    placeholder={editing.multi ? 'One value pre-selected (else all are selected)' : 'Falls back to the first option'}
                   />
                 </FormField>
+
+                <label className="flex items-center justify-between gap-3 rounded-soft border border-edge bg-elevated/40 px-3 py-2.5">
+                  <div className="min-w-0">
+                    <div className="text-[12px] font-medium text-ink">Allow multiple selections</div>
+                    <div className="text-[11px] text-ink-faint">
+                      {'{{'}
+                      {editing.name || 'name'}
+                      {'}}'} expands to a SQL list — use it as <code className="text-ink-dim">IN ({'{{'}
+                      {editing.name || 'name'}
+                      {'}}'})</code>.
+                    </div>
+                  </div>
+                  <Toggle
+                    checked={!!editing.multi}
+                    onChange={(multi) => setEditing({ ...editing, multi })}
+                    ariaLabel="Allow multiple selections"
+                  />
+                </label>
 
                 <div className="flex justify-end gap-2">
                   <Button variant="subtle" size="sm" onClick={() => setEditing(null)}>
@@ -183,22 +213,7 @@ export default function DashboardSettings({
               </div>
             )}
           </div>
-        </div>
-
-        <div className="flex justify-end gap-2 border-t border-edge px-5 py-4">
-          <Button variant="subtle" size="sm" onClick={onClose}>
-            Cancel
-          </Button>
-          <Button
-            variant="primary"
-            size="sm"
-            disabled={!title.trim() || !!editing}
-            onClick={() => onSave({ name: title.trim(), variables: vars })}
-          >
-            Save settings
-          </Button>
-        </div>
       </div>
-    </div>
+    </SlideOverPanel>
   )
 }

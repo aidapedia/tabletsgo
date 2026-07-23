@@ -74,7 +74,7 @@ import SaveQueryPanel from '@/shared/ui/SaveQueryPanel'
 import ChangesPanel from '@/features/workspace/components/ChangesPanel'
 import SchemaView from '@/features/workspace/components/SchemaView'
 import FunctionView from '@/features/workspace/components/FunctionView'
-import Segmented from '@/shared/ui/navigation/Segmented'
+import Segmented from '@/shared/ui/form/Segmented'
 import Tooltip from '@/shared/ui/overlay/Tooltip'
 import Popover from '@/shared/ui/overlay/Popover'
 import CommandPalette, { type Command } from '@/shared/ui/overlay/CommandPalette'
@@ -103,7 +103,7 @@ import {
   TrashIcon,
   WorkflowIcon,
 } from '@/shared/ui/icons'
-import { DomainPickerModal, DomainDot, fetchDomains, updateDomain, deleteDomain } from '@/features/domains'
+import { DomainPickerPanel, DomainQuickMenu, DomainDot, fetchDomains, updateDomain, deleteDomain } from '@/features/domains'
 
 const kbd =
   'inline-flex min-w-[20px] items-center justify-center rounded-[5px] border border-edge bg-elevated px-1.5 py-0.5 text-[11px] text-ink-dim'
@@ -164,6 +164,7 @@ export default function Workspace() {
   const [queryState, setQueryState] = useState({}) // per query tab: key -> { sql, result, error, elapsedMs }
   const [closingTab, setClosingTab] = useState(null) // tab key awaiting close confirmation
   const [pendingConn, setPendingConn] = useState(null) // connection id awaiting switch confirmation
+  const [tableAction, setTableAction] = useState(null) // { table, mode: 'empty' | 'delete' } awaiting confirmation
   const [committing, setCommitting] = useState(false)
   const [dataVersion, setDataVersion] = useState(0) // bump to force table reloads
   const [sidebarOpen, setSidebarOpen] = useState(false) // mobile drawer
@@ -1144,14 +1145,19 @@ export default function Workspace() {
                     <MenuItem onClick={() => { setCreatingTable({ table: obj.name }); close() }}>
                       <EditIcon width={14} height={14} /> Edit Table
                     </MenuItem>
-                    <MenuItem onClick={() => { setDomainTable(obj.name); close() }}>
-                      <TagIcon width={14} height={14} /> Set domain
-                    </MenuItem>
+                    <DomainQuickMenu
+                      connectionId={id}
+                      table={obj.name}
+                      domains={domains}
+                      onChange={setDomains}
+                      onConfigure={() => { setDomainTable(obj.name); close() }}
+                      onAssigned={close}
+                    />
                     <div className="my-1 h-px bg-edge" />
-                    <MenuItem danger onClick={() => { emptyTable(obj.name); close() }}>
+                    <MenuItem danger onClick={() => { setTableAction({ table: obj.name, mode: 'empty' }); close() }}>
                       <TrashIcon width={14} height={14} /> Empty Table
                     </MenuItem>
-                    <MenuItem danger onClick={() => { deleteTable(obj.name); close() }}>
+                    <MenuItem danger onClick={() => { setTableAction({ table: obj.name, mode: 'delete' }); close() }}>
                       <TrashIcon width={14} height={14} /> Delete Table
                     </MenuItem>
                   </>
@@ -1782,7 +1788,7 @@ export default function Workspace() {
       )}
 
       {domainTable && (
-        <DomainPickerModal
+        <DomainPickerPanel
           connectionId={id}
           table={domainTable}
           domains={domains}
@@ -1864,6 +1870,26 @@ export default function Workspace() {
             setPendingConn(null)
           }}
           onCancel={() => setPendingConn(null)}
+        />
+      )}
+
+      {tableAction && (
+        <ConfirmDialog
+          title={tableAction.mode === 'empty' ? `Empty table "${tableAction.table}"?` : `Delete table "${tableAction.table}"?`}
+          message={
+            tableAction.mode === 'empty'
+              ? `This deletes every row in "${tableAction.table}". The data cannot be recovered.${directExecute ? ' It runs immediately.' : ' It will be added to staged changes to commit.'}`
+              : `This drops the table "${tableAction.table}" and all of its data.${directExecute ? ' It runs immediately.' : ' It will be added to staged changes to commit.'}`
+          }
+          confirmLabel={tableAction.mode === 'empty' ? 'Empty table' : 'Delete table'}
+          cancelLabel="Cancel"
+          danger
+          onConfirm={() => {
+            if (tableAction.mode === 'empty') emptyTable(tableAction.table)
+            else deleteTable(tableAction.table)
+            setTableAction(null)
+          }}
+          onCancel={() => setTableAction(null)}
         />
       )}
 

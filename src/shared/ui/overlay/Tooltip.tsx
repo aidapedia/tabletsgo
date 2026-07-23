@@ -70,7 +70,9 @@ export default function Tooltip({ label, placement = 'top', multiline = false, c
           >
             {label}
           </span>,
-          document.body
+          // Follow the fullscreened element when one is active — a tooltip on
+          // <body> wouldn't paint over a fullscreen view (see Popover).
+          document.fullscreenElement ?? document.body
         )}
     </span>
   )

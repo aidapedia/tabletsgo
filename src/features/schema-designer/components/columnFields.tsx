@@ -110,11 +110,14 @@ export function fkEligible(srcTable, srcCol, tgtTable, tgtCol) {
 export const columnTypeSql = (c) =>
   isVarchar(c.type) ? `${c.type}(${(c.varcharLen || '255').toString().trim() || '255'})` : c.type
 
-// Full column definition for CREATE TABLE / ALTER TABLE ADD COLUMN.
-export const colDef = (c) => {
+// Full column definition for CREATE TABLE / ALTER TABLE ADD COLUMN. Pass
+// `inlinePk: false` when the primary key is emitted as a table-level constraint
+// (a composite key) — the column then carries NOT NULL instead of PRIMARY KEY.
+export const colDef = (c, { inlinePk = true } = {}) => {
+  const pkInline = c.pk && inlinePk
   let d = `"${c.name.trim()}" ${columnTypeSql(c)}`
-  if (c.pk) d += ' PRIMARY KEY'
-  if (c.notNull && !c.pk) d += ' NOT NULL'
+  if (pkInline) d += ' PRIMARY KEY'
+  if (!pkInline && (c.notNull || c.pk)) d += ' NOT NULL'
   if ((c.default ?? '').toString().trim()) d += ` DEFAULT ${c.default.toString().trim()}`
   if (c.fk && c.fkTable && c.fkColumn) {
     d += ` REFERENCES "${c.fkTable}"("${c.fkColumn}")`
@@ -122,6 +125,19 @@ export const colDef = (c) => {
     if (c.fkOnUpdate) d += ` ON UPDATE ${c.fkOnUpdate}`
   }
   return d
+}
+
+// The inner lines of a CREATE TABLE: one per column, plus a trailing table-level
+// `PRIMARY KEY (...)` when two or more columns are primary keys. A single PK
+// stays inline on its column; multiple inline PRIMARY KEYs are invalid SQL.
+export const tableDefLines = (columns) => {
+  const pks = columns.filter((c) => c.pk)
+  const composite = pks.length > 1
+  const lines = columns.map((c) => colDef(c, { inlinePk: !composite }))
+  if (composite) {
+    lines.push(`PRIMARY KEY (${pks.map((c) => `"${c.name.trim()}"`).join(', ')})`)
+  }
+  return lines
 }
 
 // Split a CREATE TABLE body on its top-level commas — commas nested in parens
@@ -201,10 +217,25 @@ function parseColumnDef(part) {
 }
 
 // Parse a CREATE TABLE body into editable columns, so a staged (uncommitted)
-// CREATE TABLE can be reopened in the create-table form. Table-level
-// constraints (a bare `PRIMARY KEY (...)` line, etc.) don't match a column
-// definition and are dropped.
-export const parseColumnDefs = (body) => splitTopLevel(body).map(parseColumnDef).filter(Boolean)
+// CREATE TABLE can be reopened in the create-table form. A table-level
+// `PRIMARY KEY (a, b)` (a composite key) is applied back onto its columns;
+// other table-level constraints don't match a column definition and are dropped.
+export const parseColumnDefs = (body) => {
+  const parts = splitTopLevel(body)
+  const pkNames = new Set()
+  for (const part of parts) {
+    const m = part.trim().match(/^PRIMARY KEY\s*\(([^)]*)\)\s*$/i)
+    if (m) {
+      for (const n of m[1].split(',')) {
+        const name = n.trim().replace(/^"|"$/g, '')
+        if (name) pkNames.add(name)
+      }
+    }
+  }
+  const cols = parts.map(parseColumnDef).filter(Boolean)
+  if (pkNames.size) for (const c of cols) if (pkNames.has(c.name)) c.pk = true
+  return cols
+}
 
 // One editable column "card" — name, type (+ custom VARCHAR length), primary
 // key, not null, default value and foreign key reference. Shared between the

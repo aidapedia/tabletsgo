@@ -116,7 +116,14 @@ export type DashboardVariable = {
   /** `static` source: comma-separated values, e.g. `1, 2, "local"`. */
   values?: string
   defaultValue?: string
+  /** When true, the filter lets you pick several values at once; {{name}} then
+   *  expands to a SQL list (e.g. `'a','b'` / `1,2`) for use in `IN (...)`. */
+  multi?: boolean
 }
+
+// A variable's current selection: a single value (single-select) or a list of
+// values (multi-select variables). Threaded from the VariableBar into widgets.
+export type VariableValues = Record<string, string | string[]>
 
 export type DashboardConfig = { variables: DashboardVariable[]; widgets: Widget[] }
 
@@ -181,6 +188,7 @@ export function sanitizeConfig(raw: any): DashboardConfig {
         query: typeof v.query === 'string' ? v.query : undefined,
         values: typeof v.values === 'string' ? v.values : undefined,
         defaultValue: typeof v.defaultValue === 'string' ? v.defaultValue : undefined,
+        multi: v.multi === true,
       })),
   }
 }

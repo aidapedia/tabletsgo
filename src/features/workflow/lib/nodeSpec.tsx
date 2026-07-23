@@ -3,10 +3,15 @@
 // canvas. Drives the palette, the node cards, and the config panel.
 
 import type { ComponentType } from 'react'
-import { BranchIcon, ClockIcon, CloudIcon, CodeIcon, DatabaseIcon, DownloadIcon, GlobeIcon, LoopIcon, PlayIcon } from '@/shared/ui/icons'
+import { BellIcon, BranchIcon, ClockIcon, CloudIcon, CodeIcon, DatabaseIcon, DownloadIcon, GlobeIcon, LoopIcon, PlayIcon } from '@/shared/ui/icons'
 
-export type NodeType = 'manual' | 'schedule' | 'query' | 'http' | 'js' | 'switch' | 'loop' | 'export' | 'storage'
+export type NodeType = 'manual' | 'schedule' | 'webhook' | 'query' | 'http' | 'js' | 'switch' | 'loop' | 'export' | 'storage'
 export type NodeCategory = 'Trigger' | 'Source' | 'Script' | 'Control' | 'Destination'
+
+// Opaque, URL-safe token minted when a webhook node is created — it's the only
+// gate on the public inbound hook route, so it must be unguessable.
+export const genWebhookToken = () =>
+  (crypto.randomUUID() + crypto.randomUUID()).replace(/-/g, '')
 
 type IconType = ComponentType<{ width?: number; height?: number; className?: string }>
 
@@ -48,6 +53,18 @@ export const NODE_SPECS: Record<NodeType, NodeSpec> = {
     summary: (d) =>
       d.frequency === 'hourly' ? 'Every hour' : d.frequency === 'daily' ? `Daily at ${String(d.hourOfDay ?? 0).padStart(2, '0')}:00 UTC` : 'Manual only',
   },
+  webhook: {
+    type: 'webhook',
+    category: 'Trigger',
+    label: 'Webhook',
+    description:
+      'Runs when an external HTTP request hits this workflow\'s hook URL. The request { body, query, headers, method } becomes the trigger input.',
+    icon: BellIcon,
+    accent: 'text-pink-400',
+    hasInput: false,
+    defaultData: () => ({ token: genWebhookToken() }),
+    summary: () => 'Runs on inbound HTTP request',
+  },
   query: {
     type: 'query',
     category: 'Source',
@@ -74,7 +91,8 @@ export const NODE_SPECS: Record<NodeType, NodeSpec> = {
     type: 'js',
     category: 'Script',
     label: 'Run JavaScript',
-    description: 'Transform data. The body receives `input` and returns the node output.',
+    description:
+      'Transform data. The body receives `input` and returns the node output. A `crypto` helper is available for hashing/HMAC signing (e.g. crypto.hmac).',
     icon: CodeIcon,
     accent: 'text-purple-400',
     hasInput: true,

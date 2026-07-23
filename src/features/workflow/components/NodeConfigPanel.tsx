@@ -9,9 +9,17 @@ import SqlEditor from '@/shared/ui/SqlEditor'
 import { Input, Textarea, controlClass } from '@/shared/ui/form/Input'
 import { FormField, Label } from '@/shared/ui/form/Form'
 import { useSlideOver } from '@/shared/hooks/useSlideOver'
-import { PlusIcon, TrashIcon } from '@/shared/ui/icons'
-import { NODE_SPECS } from '@/features/workflow/lib/nodeSpec'
+import { useToast } from '@/shared/ui/feedback/Toast'
+import { CopyIcon, PlusIcon, RefreshIcon, TrashIcon } from '@/shared/ui/icons'
+import { API_URL } from '@/shared/config'
+import { NODE_SPECS, genWebhookToken } from '@/features/workflow/lib/nodeSpec'
 import { listStorages } from '@/features/backup'
+
+// Absolute URL an external caller POSTs to fire a webhook-triggered workflow.
+const webhookUrl = (workflowId: string, token: string) => {
+  const base = /^https?:\/\//.test(API_URL) ? API_URL : `${window.location.origin}${API_URL}`
+  return `${base}/hooks/wf/${workflowId}/${token}`
+}
 
 const HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].map((m) => ({ value: m, label: m }))
 const SCHEDULE_FREQUENCIES = [
@@ -23,8 +31,9 @@ const HOUR_OPTIONS = Array.from({ length: 24 }, (_, h) => ({ value: h, label: `$
 
 // Slide-over that edits the selected node's `data`. Every change flows straight
 // up via onChange so the canvas card and the debounced autosave stay in sync.
-export default function NodeConfigPanel({ node, onChange, onChangeType, allowType, schema, dialect, workspaceId, onDelete, onClose }: any) {
+export default function NodeConfigPanel({ node, onChange, onChangeType, allowType, schema, dialect, workspaceId, workflowId, onDelete, onClose }: any) {
   const { show, close } = useSlideOver(onClose)
+  const toast = useToast()
   const spec = NODE_SPECS[node.type]
   const d = node.data || {}
   const set = (patch: Record<string, any>) => onChange(node.id, patch)
@@ -125,6 +134,44 @@ export default function NodeConfigPanel({ node, onChange, onChangeType, allowTyp
             </>
           )}
 
+          {node.type === 'webhook' && (
+            <>
+              <FormField
+                label="Hook URL"
+                className="mb-4"
+                hint="Send a GET or POST request here to fire this workflow. The request { body, query, headers, method } is passed as the trigger input."
+              >
+                <div className="flex items-center gap-2">
+                  <Input readOnly value={d.token ? webhookUrl(workflowId, d.token) : 'Save the workflow first…'} className="font-mono !text-[11px]" />
+                  <IconButton
+                    aria-label="Copy hook URL"
+                    disabled={!d.token}
+                    onClick={() => {
+                      navigator.clipboard?.writeText(webhookUrl(workflowId, d.token))
+                      toast.success('Webhook URL copied to clipboard.')
+                    }}
+                  >
+                    <CopyIcon width={14} height={14} />
+                  </IconButton>
+                </div>
+              </FormField>
+              <Button
+                variant="ghost"
+                size="sm"
+                icon={RefreshIcon}
+                onClick={() => {
+                  set({ token: genWebhookToken() })
+                  toast.success('New token generated — the previous URL no longer works.')
+                }}
+              >
+                Regenerate token
+              </Button>
+              <p className="mt-3 text-[11px] text-ink-faint">
+                The token is the only thing guarding this URL — keep it secret. Anyone with the URL can trigger this workflow.
+              </p>
+            </>
+          )}
+
           {node.type === 'query' && (
             <FormField label="SQL" hint="Output: { columns, rows } passed to the next node. Autocompletes tables & columns.">
               <div className="overflow-hidden rounded-soft border border-edge-strong bg-bg">
@@ -173,11 +220,14 @@ export default function NodeConfigPanel({ node, onChange, onChangeType, allowTyp
           )}
 
           {node.type === 'js' && (
-            <FormField label="JavaScript" hint="The body receives `input` and must `return` the node's output.">
+            <FormField
+              label="JavaScript"
+              hint="The body receives `input` and must `return` the node's output. `crypto` is available: crypto.hmac(algo,key,data), crypto.hash, crypto.base64, crypto.randomUUID, crypto.timingSafeEqual."
+            >
               <Textarea
                 className="min-h-[220px] font-mono"
                 value={d.code || ''}
-                placeholder="return input"
+                placeholder={"const sig = crypto.hmac('sha256', 'secret', JSON.stringify(input.body))\nreturn { ...input, signature: sig }"}
                 onChange={(e) => set({ code: e.target.value })}
               />
             </FormField>

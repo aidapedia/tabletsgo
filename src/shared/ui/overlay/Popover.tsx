@@ -86,7 +86,10 @@ export default function Popover({
           >
             {content}
           </div>,
-          document.body
+          // The Fullscreen API only paints the fullscreened element's subtree, so
+          // a panel portaled to <body> would be invisible/unclickable there —
+          // target the fullscreen element when one is active.
+          document.fullscreenElement ?? document.body
         )}
 
       {(open || keepMounted) && !portal && (

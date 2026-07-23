@@ -31,6 +31,21 @@ export type RunLogEntry = {
 }
 export type RunResult = { ok: boolean; log: RunLogEntry[]; output?: unknown; error?: string }
 
+// How a run was triggered, recorded in the activity trail.
+export type TriggerKind = 'manual' | 'dashboard' | 'schedule' | 'webhook'
+// A row in the run-history list (log omitted — fetch a single run to drill in).
+export type WorkflowRunSummary = {
+  id: string
+  triggerKind: TriggerKind
+  status: 'success' | 'failed'
+  error: string | null
+  startedAt: number
+  finishedAt: number
+  ms: number | null
+}
+// A single run with its full per-node log.
+export type WorkflowRunDetail = WorkflowRunSummary & { ok: boolean; log: RunLogEntry[] }
+
 export async function listWorkflows(connectionId: string): Promise<WorkflowSummary[]> {
   if (!connectionId) return []
   return safeRequest(`/connections/${connectionId}/workflows`, [])
@@ -71,4 +86,15 @@ export async function runWorkflow(
     method: 'POST',
     body: { graph, input, trigger },
   })
+}
+
+// Activity trail: recent runs of a workflow (newest first). Degrades quietly.
+export async function listWorkflowRuns(connectionId: string, wid: string): Promise<WorkflowRunSummary[]> {
+  if (!connectionId || !wid) return []
+  return safeRequest(`/connections/${connectionId}/workflows/${wid}/runs`, [])
+}
+
+// One run with its full stored per-node log.
+export async function getWorkflowRun(connectionId: string, wid: string, runId: string): Promise<WorkflowRunDetail> {
+  return request(`/connections/${connectionId}/workflows/${wid}/runs/${runId}`)
 }

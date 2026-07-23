@@ -30,8 +30,8 @@ src/
 │   ├── ui/                       # presentational components, grouped by kind:
 │   │   ├── buttons/              #   Button, IconButton, TextButton
 │   │   ├── form/                 #   Form/FormField/Label, Input/Textarea, Select, Checkbox,
-│   │   │                         #     CheckboxRow, SearchInput, Toggle, NumberStepper
-│   │   ├── navigation/           #   NavItem, Tab, Segmented, MenuItem
+│   │   │                         #     CheckboxRow, SearchInput, Toggle, NumberStepper, Segmented
+│   │   ├── navigation/           #   NavItem, Tab, MenuItem
 │   │   ├── overlay/              #   Popover, Tooltip, ContextMenu
 │   │   ├── feedback/             #   Toast, ConfirmDialog, TypeToConfirmDialog, LoadingState, EmptyState, Wizard
 │   │   └── (root)                #   Avatar, Badge, PersonRow, RowLabel, SaveQueryPanel, SqlEditor,
@@ -53,8 +53,11 @@ src/
 │   │                             #   ConnectionAccessPanel, DbTypePickerModal (owns DB_CATALOG/TYPE_LABEL);
 │   │                             #   api (connection access get/set)
 │   ├── settings/                 # stores/SettingsContext
-│   ├── domains/                  # named+colored table groupings (one domain per table): DomainPickerModal
-│   │                             #   (set a table's domain), DomainEditModal, DomainDot; api (domains CRUD +
+│   ├── domains/                  # named+colored table groupings (one domain per table): DomainQuickMenu
+│   │                             #   (the table context-menu row: hover flyout for one-click assign, or
+│   │                             #   opens the panel), DomainPickerPanel (set a table's domain — a right-side
+│   │                             #   slide-over with inline create/edit/delete), DomainEditPanel, DomainDot;
+│   │                             #   api (domains CRUD +
 │   │                             #   set-table-domain). Drives the sidebar group-by-domain view and the
 │   │                             #   schema-designer's draggable/editable domain regions.
 │   ├── keymap/                   # stores/KeymapContext (useKeymap/useShortcut) + KeymapSetting
@@ -141,6 +144,7 @@ Configurable values live in env vars, wired through `docker-compose.yml` (see `.
 - `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` / `SMTP_SECURE` — **optional** fallback SMTP for member-invite emails (per-workspace UI settings override these). Invites always return a copyable link even without SMTP.
 - `VITE_API_URL` — frontend API base, **baked at build time** via Dockerfile `ARG` (not runtime). Default `/api`.
 - `TABLETSGO_TAG` — **optional**. Published image tag `docker compose` runs (and pulls on self-update). Default `latest`; one-click self-update works best on a moving tag.
+- `UPDATE_AUTO_CHECK` — **optional**. Instance-wide default (truthy `1/true/yes/on`; default off) for the per-user "auto-check for updates" toggle in Settings > Updates, surfaced via `/api/system/version`'s `autoCheckUpdates`. Leave off when an orchestrator (e.g. Coolify) manages updates; users can still override per browser.
 - `UPDATE_IMAGE` / `UPDATE_REPO` / `UPDATE_HELPER_IMAGE` — **optional** in-app update checker tuning (default to the official image/repo; override only for a fork). The checker compares the running `(version, sha)` against the latest GitHub Release + its `release.json` contract. Apply method is auto-detected: Docker socket mounted ⇒ one-click self-update via `UPDATE_HELPER_IMAGE` (default `docker:cli`); otherwise the wizard shows a manual `docker compose pull` command. `APP_VERSION` / `GIT_SHA` are baked into the image at build time and reported by `/api/system/version`.
 When you add a new tunable, thread it through server.js env, the Dockerfile/compose, and `.env.example`.
 

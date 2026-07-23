@@ -4,7 +4,7 @@ import Button from '@/shared/ui/buttons/Button'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
 import Popover from '@/shared/ui/overlay/Popover'
 import ContextMenu from '@/shared/ui/overlay/ContextMenu'
-import { FilterPanel, SortPanel, ColumnsPanel, matchFilter, PAGE_SIZES } from '@/features/workspace/components/TableView'
+import { FilterPanel, SortPanel, ColumnsPanel, matchFilter, sortRows, cycleSortRules, PAGE_SIZES } from '@/features/workspace/components/TableView'
 import {
   ChevronLeft,
   ChevronRight,
@@ -27,7 +27,7 @@ const COLUMNS = ['Version', 'Status', 'Up SQL', 'Down SQL', 'Reversible', 'Execu
 // pagination), plus a per-row Rollback action that runs the row's down SQL.
 export default function SchemaHistoryView({ migrations = [], loading = false, dialect, onRefresh, onRollback }) {
   const [filters, setFilters] = useState([])
-  const [sort, setSort] = useState(null) // { col, dir }
+  const [sort, setSort] = useState([]) // [{ col, dir }] — ordered sort rules
   const [hidden, setHidden] = useState([])
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
@@ -96,21 +96,8 @@ export default function SchemaHistoryView({ migrations = [], loading = false, di
 
   const filtered = useMemo(() => allRows.filter((r) => filters.every((f) => matchFilter(r, f))), [allRows, filters])
 
-  const sorted = useMemo(() => {
-    if (!sort?.col) return filtered
-    const { col, dir } = sort
-    return [...filtered].sort((a, b) => {
-      const x = a[col]
-      const y = b[col]
-      if (x == null && y == null) return 0
-      if (x == null) return 1
-      if (y == null) return -1
-      const nx = Number(x)
-      const ny = Number(y)
-      const c = !isNaN(nx) && !isNaN(ny) ? nx - ny : String(x).localeCompare(String(y))
-      return dir === 'desc' ? -c : c
-    })
-  }, [filtered, sort])
+  const sorted = useMemo(() => sortRows(filtered, sort), [filtered, sort])
+  const activeSortCount = sort.filter((s) => s.col).length
 
   const visibleColumns = useMemo(() => COLUMNS.filter((c) => !hidden.includes(c)), [hidden])
 
@@ -174,18 +161,18 @@ export default function SchemaHistoryView({ migrations = [], loading = false, di
         </Popover>
 
         <Popover
-          width={260}
+          width={360}
           trigger={({ open, toggle }) => (
-            <Button variant="subtle" size="sm" icon={SortIcon} active={open || !!sort} onClick={toggle}>
-              {sort ? 'Sorted by 1 rule' : 'Sort'}
+            <Button variant="subtle" size="sm" icon={SortIcon} active={open || activeSortCount > 0} onClick={toggle}>
+              {activeSortCount > 0 ? `Sorted by ${activeSortCount} rule${activeSortCount > 1 ? 's' : ''}` : 'Sort'}
             </Button>
           )}
         >
           {({ close }) => (
             <SortPanel
               columns={COLUMNS}
-              value={sort}
-              onChange={(s) => {
+              initial={sort}
+              onApply={(s) => {
                 setSort(s)
                 setPage(1)
               }}
@@ -279,6 +266,8 @@ export default function SchemaHistoryView({ migrations = [], loading = false, di
         <DataGrid
           columns={visibleColumns}
           rows={pageRows}
+          sort={sort}
+          onSort={(col, additive) => { setSort((prev) => cycleSortRules(prev, col, additive)); setPage(1) }}
           getRowKey={(row) => row.__id}
           onCellContextMenu={(e, { row }) =>
             setRowMenu({
