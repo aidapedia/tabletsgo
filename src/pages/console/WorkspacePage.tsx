@@ -53,7 +53,19 @@ import { formatCombo, useKeymap, useShortcut } from '@/features/keymap'
 import SavedQueriesPanel from '@/features/workspace/components/SavedQueriesPanel'
 import AnalyzePanel from '@/features/workspace/components/AnalyzePanel'
 import AnalyzeFolderPanel from '@/features/workspace/components/AnalyzeFolderPanel'
-import { WorkflowsPanel, listWorkflows, createWorkflow, deleteWorkflow, updateWorkflow, sanitizeGraph } from '@/features/workflow'
+import {
+  WorkflowsPanel,
+  listWorkflows,
+  createWorkflow,
+  deleteWorkflow,
+  updateWorkflow,
+  sanitizeGraph,
+  fetchWorkflowFolders,
+  createWorkflowFolder,
+  renameWorkflowFolder,
+  moveWorkflowFolder,
+  deleteWorkflowFolder,
+} from '@/features/workflow'
 import {
   DashboardsPanel,
   listDashboards,
@@ -152,6 +164,7 @@ export default function Workspace() {
   const [saved, setSaved] = useState([])
   const [folders, setFolders] = useState([])
   const [workflows, setWorkflows] = useState([])
+  const [workflowFolders, setWorkflowFolders] = useState([])
   const [dashboards, setDashboards] = useState([])
   const [dashboardFolders, setDashboardFolders] = useState([])
   const [tabMenu, setTabMenu] = useState(null) // { x, y, key } | null
@@ -304,6 +317,7 @@ export default function Workspace() {
     fetchSaved(id).then((list) => alive && setSaved(list))
     fetchFolders(id).then((list) => alive && setFolders(list))
     listWorkflows(id).then((list) => alive && setWorkflows(list))
+    fetchWorkflowFolders(id).then((list) => alive && setWorkflowFolders(list))
     listDashboards(id).then((list) => alive && setDashboards(list))
     fetchDashboardFolders(id).then((list) => alive && setDashboardFolders(list))
     fetchDomains(id).then((list) => alive && setDomains(list))
@@ -601,10 +615,10 @@ export default function Workspace() {
     setActiveTab(key)
     setSidebarOpen(false)
   }
-  const newWorkflow = async () => {
+  const newWorkflow = async (folderId = null) => {
     try {
-      const wf = await createWorkflow(id, `Workflow ${workflows.length + 1}`)
-      setWorkflows((prev) => [{ id: wf.id, name: wf.name, ts: Date.now(), protected: false, scheduleEnabled: false }, ...prev])
+      const wf = await createWorkflow(id, `Workflow ${workflows.length + 1}`, undefined, folderId)
+      setWorkflows((prev) => [{ id: wf.id, name: wf.name, ts: Date.now(), protected: false, scheduleEnabled: false, folderId: folderId || null }, ...prev])
       openWorkflow(wf)
     } catch (e) {
       toast.error(`Couldn't create workflow: ${e.message}`)
@@ -636,10 +650,71 @@ export default function Workspace() {
       const doc = JSON.parse(await file.text())
       if (doc?.kind !== 'workflow' || !doc.graph) throw new Error('Not a workflow export file.')
       const wf = await createWorkflow(id, doc.name || 'Imported workflow', sanitizeGraph(doc.graph))
-      setWorkflows((prev) => [{ id: wf.id, name: wf.name, ts: Date.now(), protected: false, scheduleEnabled: false }, ...prev])
+      setWorkflows((prev) => [{ id: wf.id, name: wf.name, ts: Date.now(), protected: false, scheduleEnabled: false, folderId: null }, ...prev])
       openWorkflow(wf)
     } catch (e) {
       toast.error(`Import failed: ${e.message}`)
+    }
+  }
+
+  // ---- Workflow folders (nesting capped at 3 levels, enforced server-side) ----
+  const addWorkflowFolder = async (name, parentId = null) => {
+    const next = name?.trim()
+    if (!next) return
+    try {
+      const folder = await createWorkflowFolder(id, next, parentId)
+      setWorkflowFolders((prev) => [...prev, folder])
+    } catch (e) {
+      toast.error(`Couldn't create folder: ${e.message}`)
+    }
+  }
+  const renameWorkflowFolderById = async (fid, name) => {
+    const next = name?.trim()
+    if (!next) return
+    setWorkflowFolders((prev) => prev.map((f) => (f.id === fid ? { ...f, name: next } : f)))
+    try {
+      await renameWorkflowFolder(id, fid, next)
+    } catch (e) {
+      toast.error(`Rename failed: ${e.message}`)
+    }
+  }
+  const removeWorkflowFolder = async (fid) => {
+    // Reparent this folder's contents up one level locally, mirroring the server:
+    // its subfolders and workflows move to its own parent (root for a top-level folder).
+    const parentId = workflowFolders.find((f) => f.id === fid)?.parentId || null
+    setWorkflowFolders((prev) =>
+      prev.filter((f) => f.id !== fid).map((f) => (f.parentId === fid ? { ...f, parentId } : f))
+    )
+    setWorkflows((prev) => prev.map((w) => (w.folderId === fid ? { ...w, folderId: parentId } : w)))
+    try {
+      await deleteWorkflowFolder(id, fid)
+    } catch (e) {
+      toast.error(`Delete failed: ${e.message}`)
+    }
+  }
+  const moveWorkflowFolderToParent = async (fid, parentId) => {
+    const target = parentId || null
+    if (fid === target) return
+    // Guard against cycles: refuse to nest a folder under its own descendant.
+    const parentOf = new Map(workflowFolders.map((f) => [f.id, f.parentId || null]))
+    for (let cur = target; cur; cur = parentOf.get(cur)) {
+      if (cur === fid) return
+    }
+    setWorkflowFolders((prev) => prev.map((f) => (f.id === fid ? { ...f, parentId: target } : f)))
+    try {
+      await moveWorkflowFolder(id, fid, target)
+    } catch (e) {
+      // Depth-cap or cycle rejection — refresh to resync with the server truth.
+      toast.error(`Move failed: ${e.message}`)
+      fetchWorkflowFolders(id).then(setWorkflowFolders)
+    }
+  }
+  const moveWorkflowToFolder = async (wid, folderId) => {
+    setWorkflows((prev) => prev.map((w) => (w.id === wid ? { ...w, folderId: folderId || null } : w)))
+    try {
+      await updateWorkflow(id, wid, { folderId: folderId || null })
+    } catch (e) {
+      toast.error(`Move failed: ${e.message}`)
     }
   }
 
@@ -1197,7 +1272,7 @@ export default function Workspace() {
   const commands: Command[] = [
     { id: 'new-query', group: 'Create', label: 'New SQL query', keywords: 'sql add query tab', icon: <CodeIcon width={15} height={15} />, hint: formatCombo(bindings['general.newTab']), run: () => openQuery() },
     { id: 'new-schema', group: 'Create', label: 'New schema diagram', keywords: 'erd designer table diagram', icon: <DiagramIcon width={15} height={15} />, run: openSchemaEditor },
-    { id: 'new-workflow', group: 'Create', label: 'New workflow', keywords: 'automation flow', icon: <WorkflowIcon width={15} height={15} />, run: newWorkflow },
+    { id: 'new-workflow', group: 'Create', label: 'New workflow', keywords: 'automation flow', icon: <WorkflowIcon width={15} height={15} />, run: () => newWorkflow() },
     { id: 'new-dashboard', group: 'Create', label: 'New dashboard', keywords: 'charts widgets analytics', icon: <GridIcon width={15} height={15} />, run: () => newDashboard() },
     { id: 'new-table', group: 'Create', label: 'New table', keywords: 'create table ddl', icon: <PlusIcon width={15} height={15} />, run: () => setCreatingTable(true) },
 
@@ -1394,13 +1469,22 @@ export default function Workspace() {
         ) : panel === 'workflows' ? (
           <WorkflowsPanel
             workflows={workflows}
+            folders={workflowFolders}
             activeId={current?.kind === 'workflow' ? current.workflowId : null}
             onOpen={openWorkflow}
             onNew={newWorkflow}
             onImport={() => workflowFileRef.current?.click()}
             onRename={renameWorkflow}
             onDelete={removeWorkflow}
-            onRefresh={() => listWorkflows(id).then(setWorkflows)}
+            onCreateFolder={addWorkflowFolder}
+            onRenameFolder={renameWorkflowFolderById}
+            onDeleteFolder={removeWorkflowFolder}
+            onMoveToFolder={moveWorkflowToFolder}
+            onMoveFolder={moveWorkflowFolderToParent}
+            onRefresh={() => {
+              listWorkflows(id).then(setWorkflows)
+              fetchWorkflowFolders(id).then(setWorkflowFolders)
+            }}
           />
         ) : panel === 'dashboards' ? (
           <DashboardsPanel
@@ -1482,7 +1566,7 @@ export default function Workspace() {
               </IconButton>
             </Tooltip>
             <Tooltip label="New workflow" placement="bottom">
-              <IconButton size="toolbar" onClick={newWorkflow} aria-label="New workflow">
+              <IconButton size="toolbar" onClick={() => newWorkflow()} aria-label="New workflow">
                 <WorkflowIcon width={16} height={16} />
               </IconButton>
             </Tooltip>

@@ -14,7 +14,13 @@ export {
   updateWorkflow,
   deleteWorkflow,
   runWorkflow,
+  fetchWorkflowFolders,
+  createWorkflowFolder,
+  renameWorkflowFolder,
+  moveWorkflowFolder,
+  deleteWorkflowFolder,
+  MAX_WORKFLOW_FOLDER_DEPTH,
 } from '@/features/workflow/lib/api'
-export type { Workflow, WorkflowSummary, WorkflowGraph, RunResult, RunLogEntry } from '@/features/workflow/lib/api'
+export type { Workflow, WorkflowSummary, WorkflowFolder, WorkflowGraph, RunResult, RunLogEntry } from '@/features/workflow/lib/api'
 export { sanitizeGraph, stripSecrets } from '@/features/workflow/lib/exportImport'
 export type { WorkflowExport } from '@/features/workflow/lib/exportImport'

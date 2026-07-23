@@ -566,18 +566,24 @@ Delete a saved query.
 
 ## Folders (per connection)
 
-### GET `/api/connections/:id/folders`
-List folders (oldest first). Folders nest via `parentId` (null = root).
+Folders are polymorphic: one tree per resource `type`. `type=query` groups saved
+queries (uncapped nesting), `type=dashboard` groups dashboards (3-level cap),
+`type=workflow` groups workflows (3-level cap). The `type` param defaults to
+`query` for older clients. Each item points back via its own `folderId`.
 
-- **200:** `Folder[]` → `[{ "id", "name", "parentId", "ts" }]`
-- **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/folders`
+### GET `/api/connections/:id/folders`
+List folders of a given `type` (oldest first). Folders nest via `parentId` (null = root).
+
+- **Query:** `?type=query|dashboard|workflow` (defaults to `query`)
+- **200:** `Folder[]` → `[{ "id", "name", "parentId", "type", "ts" }]`
+- **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/folders?type=workflow`
 
 ### POST `/api/connections/:id/folders`
 Create a folder. Pass `parentId` to create a subfolder under an existing folder.
 
-- **Body:** `{ "name": "Reports", "parentId": null }`  // `parentId` optional (defaults to root)
-- **200:** `{ "id", "name", "parentId", "ts" }`
-- **400:** `{ "error": "A folder name is required" }` / `{ "error": "Parent folder not found" }`
+- **Body:** `{ "type": "workflow", "name": "Reports", "parentId": null }`  // `type` defaults to `query`, `parentId` optional (defaults to root)
+- **200:** `{ "id", "name", "parentId", "type", "ts" }`
+- **400:** `{ "error": "A folder name is required" }` / `{ "error": "Parent folder not found" }` / `{ "error": "Folders can only nest 3 levels deep" }`
 - **Example:** `POST http://localhost:3000/api/connections/demo-sqlite/folders`
 
 ### PUT `/api/connections/:id/folders/:fid`
@@ -594,8 +600,9 @@ Rename and/or move (reparent) a folder. Send `name`, `parentId`, or both.
 
 ### DELETE `/api/connections/:id/folders/:fid`
 Delete a folder. Its contents move up one level (to the deleted folder's parent,
-or the root for a top-level folder): child subfolders are reparented and queries
-are re-attached (`folder_id`/`parent_id` set to the parent), not deleted.
+or the root for a top-level folder): child subfolders are reparented and the
+folder's items (queries/dashboards/workflows, per `type`) are re-attached
+(`folder_id`/`parent_id` set to the parent), not deleted.
 
 - **200:** `{ "ok": true }`
 - **Example:** `DELETE http://localhost:3000/api/connections/demo-sqlite/folders/fld-1`
@@ -743,18 +750,20 @@ not a workflow.
 > since a full database dump + upload can legitimately take longer.
 
 ### GET `/api/connections/:id/workflows`
-List workflows for a connection (newest first; no graph body).
+List workflows for a connection (newest first; no graph body). `folderId` is the
+containing folder (null = root; see the polymorphic Folders API with `type=workflow`).
 
-- **200:** `[{ "id", "name", "ts", "protected", "scheduleEnabled" }]`
+- **200:** `[{ "id", "name", "ts", "protected", "scheduleEnabled", "folderId" }]`
 - **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/workflows`
 
 ### POST `/api/connections/:id/workflows`
 Create a workflow. `graph` is optional — omit it (or send a non-object) for an
 empty graph; the frontend's JSON-import flow ("Import from JSON…" in the
 Workflows panel) posts a sanitized graph here to create the workflow in one call.
+`folderId` (optional) creates the workflow inside a folder.
 
-- **Body:** `{ "name": "Nightly sync", "graph"?: { "nodes": [...], "edges": [...] } }`
-- **200:** `{ "id", "name", "graph", "ts", "protected": false, "scheduleEnabled": false }`
+- **Body:** `{ "name": "Nightly sync", "graph"?: { "nodes": [...], "edges": [...] }, "folderId"?: null }`
+- **200:** `{ "id", "name", "graph", "folderId", "ts", "protected": false, "scheduleEnabled": false }`
 - **400:** `{ "error": "A workflow name is required" }`
 - **Example:** `POST http://localhost:3000/api/connections/demo-sqlite/workflows`
 
@@ -766,14 +775,16 @@ Fetch one workflow with its full graph.
 - **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/workflows/wf-1`
 
 ### PUT `/api/connections/:id/workflows/:wid`
-Update a workflow. Any subset of `name`, `graph`, `scheduleEnabled`. Posting
-`graph` or `scheduleEnabled` recomputes `next_run_at` from the graph's `schedule`
-node (cleared to `null` if the result wouldn't actually be scheduled).
+Update a workflow. Any subset of `name`, `graph`, `scheduleEnabled`, `folderId`.
+Posting `graph` or `scheduleEnabled` recomputes `next_run_at` from the graph's
+`schedule` node (cleared to `null` if the result wouldn't actually be scheduled).
+`folderId: null` moves the workflow back to the root.
 
 - **Body examples:**
   - Rename: `{ "name": "Renamed" }`
   - Save graph: `{ "graph": { "nodes": [...], "edges": [...] } }`
   - Activate schedule: `{ "scheduleEnabled": true }`
+  - Move to folder: `{ "folderId": "fld-1" }`
 - **200:** `{ "ok": true }`
 - **400:** `{ "error": "Nothing to update" }` (or name validation)
 - **404:** `{ "error": "Not found" }`

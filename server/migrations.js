@@ -93,6 +93,9 @@ function ensureBaseSchema(db) {
       name TEXT NOT NULL,
       graph TEXT,                  -- JSON { nodes, edges }
       ts INTEGER
+      -- folder_id (folders.id, NULL = root) is added by migration v4 via ALTER;
+      -- like dashboards.folder_id, it is intentionally NOT inlined here so v4's
+      -- plain ALTER doesn't collide on fresh installs (which also run v4).
     );
     CREATE TABLE IF NOT EXISTS dashboards (
       id TEXT PRIMARY KEY,
@@ -411,9 +414,19 @@ export const MIGRATIONS = [
       db.exec(`ALTER TABLE dashboards ADD COLUMN folder_id TEXT`)
     },
   },
-  // v4+: append plain, run-exactly-once steps here, e.g.
+  {
+    version: 4,
+    name: 'workflows.folder_id (workflows become folderable, type=workflow)',
+    up(db) {
+      // Workflows can now live in a folder, grouped by the generic folders tree
+      // under type='workflow' (see FOLDER_TYPES in server.js). Runs on both fresh
+      // and existing installs, so folder_id is not inlined in the baseline.
+      db.exec(`ALTER TABLE workflows ADD COLUMN folder_id TEXT`)
+    },
+  },
+  // v5+: append plain, run-exactly-once steps here, e.g.
   // {
-  //   version: 4,
+  //   version: 5,
   //   name: 'connections: last_used_at',
   //   up(db) {
   //     db.exec(`ALTER TABLE connections ADD COLUMN last_used_at INTEGER`)

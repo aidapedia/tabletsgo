@@ -1,12 +1,13 @@
 // Generic, per-connection folders — one polymorphic tree per resource `type`
-// ('query' groups saved queries, 'dashboard' groups dashboards). Backed by the
-// single `folders` table on the server; features wrap these with their own
-// type bound (see workspace/lib/savedQueries.ts and dashboard/lib/api.ts).
+// ('query' groups saved queries, 'dashboard' groups dashboards, 'workflow'
+// groups workflows). Backed by the single `folders` table on the server;
+// features wrap these with their own type bound (see workspace/lib/savedQueries.ts,
+// dashboard/lib/api.ts and workflow/lib/api.ts).
 // Reads degrade quietly; mutations throw (caller try/catches + toasts).
 
 import { request, safeRequest } from '@/shared/api/request'
 
-export type FolderType = 'query' | 'dashboard'
+export type FolderType = 'query' | 'dashboard' | 'workflow'
 export type Folder = { id: string; name: string; parentId: string | null; type: FolderType; ts: number }
 
 export async function fetchFolders(connectionId: string, type: FolderType): Promise<Folder[]> {

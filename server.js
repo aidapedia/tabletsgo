@@ -2605,6 +2605,7 @@ app.get('/api/connections/:id/saved', (req, res) => {
 const FOLDER_TYPES = {
   query: { itemTable: 'saved_queries', maxDepth: Infinity },
   dashboard: { itemTable: 'dashboards', maxDepth: 3 },
+  workflow: { itemTable: 'workflows', maxDepth: 3 },
 }
 // Coerce an untrusted `type` to a known one (defaults to 'query' for older
 // clients that predate the `type` param). Guards the itemTable interpolation.
@@ -2873,18 +2874,33 @@ app.put('/api/connections/:id/tables/:table/domain', (req, res) => {
 // automatically (backups are a separate system — see the Backup section below).
 app.get('/api/connections/:id/workflows', (req, res) => {
   const rows = meta
-    .prepare('SELECT id, name, ts, protected, schedule_enabled FROM workflows WHERE connection_id = ? ORDER BY ts DESC')
+    .prepare('SELECT id, name, ts, protected, schedule_enabled, folder_id FROM workflows WHERE connection_id = ? ORDER BY ts DESC')
     .all(req.params.id)
-  res.json(rows.map((r) => ({ id: r.id, name: r.name, ts: r.ts, protected: !!r.protected, scheduleEnabled: !!r.schedule_enabled })))
+  res.json(
+    rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      ts: r.ts,
+      protected: !!r.protected,
+      scheduleEnabled: !!r.schedule_enabled,
+      folderId: r.folder_id || null,
+    }))
+  )
 })
 
 app.post('/api/connections/:id/workflows', (req, res) => {
-  const { name, graph } = req.body || {}
+  const { name, graph, folderId } = req.body || {}
   if (!name?.trim()) return res.status(400).json({ error: 'A workflow name is required' })
-  const entry = { id: randomUUID(), name: name.trim(), graph: graph && typeof graph === 'object' ? graph : { nodes: [], edges: [] }, ts: Date.now() }
+  const entry = {
+    id: randomUUID(),
+    name: name.trim(),
+    graph: graph && typeof graph === 'object' ? graph : { nodes: [], edges: [] },
+    folderId: folderId || null,
+    ts: Date.now(),
+  }
   meta
-    .prepare('INSERT INTO workflows (id, connection_id, name, graph, ts) VALUES (?, ?, ?, ?, ?)')
-    .run(entry.id, req.params.id, entry.name, JSON.stringify(entry.graph), entry.ts)
+    .prepare('INSERT INTO workflows (id, connection_id, name, graph, folder_id, ts) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(entry.id, req.params.id, entry.name, JSON.stringify(entry.graph), entry.folderId, entry.ts)
   res.json({ ...entry, protected: false, scheduleEnabled: false })
 })
 
@@ -2920,6 +2936,11 @@ app.put('/api/connections/:id/workflows/:wid', (req, res) => {
   if (body.scheduleEnabled != null) {
     sets.push('schedule_enabled = ?')
     vals.push(body.scheduleEnabled ? 1 : 0)
+  }
+  // folderId is explicitly settable (null moves the workflow back to the root).
+  if ('folderId' in body) {
+    sets.push('folder_id = ?')
+    vals.push(body.folderId || null)
   }
   if (!sets.length) return res.status(400).json({ error: 'Nothing to update' })
   // Recompute next_run_at whenever the graph or the enabled flag changes —

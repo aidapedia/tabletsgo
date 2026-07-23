@@ -2,6 +2,7 @@
 // saved-queries client (savedQueries.ts) — reads degrade quietly, mutations throw.
 
 import { request, safeRequest } from '@/shared/api/request'
+import * as folders from '@/shared/api/folders'
 
 export type WorkflowGraph = { nodes: any[]; edges: any[] }
 export type WorkflowSummary = {
@@ -10,7 +11,15 @@ export type WorkflowSummary = {
   ts: number
   protected: boolean
   scheduleEnabled: boolean
+  folderId?: string | null
 }
+
+// A folder in the workflows rail. `parentId` builds the tree (null = root);
+// nesting is capped at MAX_WORKFLOW_FOLDER_DEPTH levels (enforced server-side).
+export type WorkflowFolder = { id: string; name: string; parentId: string | null; ts: number }
+
+// Max folder nesting depth surfaced in the UI (matches the server cap).
+export const MAX_WORKFLOW_FOLDER_DEPTH = 3
 export type Workflow = {
   id: string
   name: string
@@ -55,14 +64,21 @@ export async function getWorkflow(connectionId: string, wid: string): Promise<Wo
   return request(`/connections/${connectionId}/workflows/${wid}`)
 }
 
-export async function createWorkflow(connectionId: string, name: string, graph?: WorkflowGraph): Promise<Workflow> {
-  return request(`/connections/${connectionId}/workflows`, { method: 'POST', body: { name, graph } })
+// `graph` is optional — passed when importing a JSON export as a new workflow.
+// `folderId` (optional) creates the workflow inside a folder.
+export async function createWorkflow(
+  connectionId: string,
+  name: string,
+  graph?: WorkflowGraph,
+  folderId?: string | null
+): Promise<Workflow> {
+  return request(`/connections/${connectionId}/workflows`, { method: 'POST', body: { name, graph, folderId: folderId || null } })
 }
 
 export async function updateWorkflow(
   connectionId: string,
   wid: string,
-  fields: { name?: string; graph?: WorkflowGraph; scheduleEnabled?: boolean }
+  fields: { name?: string; graph?: WorkflowGraph; scheduleEnabled?: boolean; folderId?: string | null }
 ): Promise<void> {
   await request(`/connections/${connectionId}/workflows/${wid}`, { method: 'PUT', body: fields })
 }
@@ -97,4 +113,32 @@ export async function listWorkflowRuns(connectionId: string, wid: string): Promi
 // One run with its full stored per-node log.
 export async function getWorkflowRun(connectionId: string, wid: string, runId: string): Promise<WorkflowRunDetail> {
   return request(`/connections/${connectionId}/workflows/${wid}/runs/${runId}`)
+}
+
+// ---- Workflow folders (nesting capped at MAX_WORKFLOW_FOLDER_DEPTH, enforced server-side) ----
+// The generic, polymorphic folders (shared/api/folders) bound to type='workflow'.
+
+export function fetchWorkflowFolders(connectionId: string): Promise<WorkflowFolder[]> {
+  return folders.fetchFolders(connectionId, 'workflow')
+}
+
+export function createWorkflowFolder(
+  connectionId: string,
+  name: string,
+  parentId: string | null = null
+): Promise<WorkflowFolder> {
+  return folders.createFolder(connectionId, 'workflow', name, parentId)
+}
+
+export function renameWorkflowFolder(connectionId: string, folderId: string, name: string): Promise<void> {
+  return folders.renameFolder(connectionId, folderId, name)
+}
+
+// Move a folder under a new parent (null = root). Nesting builds subdirectories.
+export function moveWorkflowFolder(connectionId: string, folderId: string, parentId: string | null): Promise<void> {
+  return folders.moveFolder(connectionId, folderId, parentId)
+}
+
+export function deleteWorkflowFolder(connectionId: string, folderId: string): Promise<void> {
+  return folders.deleteFolder(connectionId, folderId)
 }
