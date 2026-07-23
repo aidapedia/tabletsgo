@@ -72,6 +72,43 @@ export function matchFilter(row, f) {
   }
 }
 
+// Multi-rule client-side sort shared by the data grid + history views. Rules
+// apply in priority order (first = primary); nulls always sort last. Numeric
+// when both values parse as numbers, else locale string compare. Returns the
+// input untouched when there are no active rules.
+export function sortRows(rows, sort) {
+  const rules = (sort || []).filter((s) => s.col)
+  if (!rules.length) return rows
+  return [...rows].sort((a, b) => {
+    for (const { col, dir } of rules) {
+      const x = a[col]
+      const y = b[col]
+      if (x == null && y == null) continue
+      if (x == null) return 1
+      if (y == null) return -1
+      const nx = Number(x)
+      const ny = Number(y)
+      const c = !isNaN(nx) && !isNaN(ny) ? nx - ny : String(x).localeCompare(String(y))
+      if (c !== 0) return dir === 'desc' ? -c : c
+    }
+    return 0
+  })
+}
+
+// Reducer for a header click on `col`. Plain click = single-column sort cycling
+// asc → desc → off. Shift (additive) = add/toggle this column within the
+// multi-sort (asc → desc → removed), preserving the other rules and their order.
+export function cycleSortRules(prev, col, additive) {
+  const existing = prev.find((s) => s.col === col)
+  if (additive) {
+    if (!existing) return [...prev, makeSort(col, 'asc')]
+    if (existing.dir === 'asc') return prev.map((s) => (s.col === col ? { ...s, dir: 'desc' } : s))
+    return prev.filter((s) => s.col !== col)
+  }
+  if (existing && prev.length === 1) return existing.dir === 'asc' ? [makeSort(col, 'desc')] : []
+  return [makeSort(col, 'asc')]
+}
+
 // `filters` is owned by the parent tab so it survives the unmount that happens
 // when the user switches tabs (only the active tab is mounted).
 export default function TableView({ conn, table, onChange, onOpenReference, filters, onFiltersChange }) {
@@ -137,27 +174,17 @@ export default function TableView({ conn, table, onChange, onOpenReference, filt
 
   const filtered = useMemo(() => rows.filter((r) => filters.every((f) => matchFilter(r, f))), [rows, filters])
 
-  const sorted = useMemo(() => {
-    const rules = sort.filter((s) => s.col)
-    if (!rules.length) return filtered
-    return [...filtered].sort((a, b) => {
-      for (const { col, dir } of rules) {
-        const x = a[col]
-        const y = b[col]
-        // Nulls always sort last, regardless of direction.
-        if (x == null && y == null) continue
-        if (x == null) return 1
-        if (y == null) return -1
-        const nx = Number(x)
-        const ny = Number(y)
-        const c = !isNaN(nx) && !isNaN(ny) ? nx - ny : String(x).localeCompare(String(y))
-        if (c !== 0) return dir === 'desc' ? -c : c
-      }
-      return 0
-    })
-  }, [filtered, sort])
+  const sorted = useMemo(() => sortRows(filtered, sort), [filtered, sort])
 
   const visibleColumns = useMemo(() => columns.filter((c) => !hidden.includes(c)), [columns, hidden])
+
+  // Header click sorting. Plain click = single-column sort cycling asc → desc →
+  // off. Shift+click = add/toggle this column within the multi-sort (asc → desc
+  // → removed), keeping the other rules and their priority order.
+  const cycleSort = (col, additive) => {
+    setSort((prev) => cycleSortRules(prev, col, additive))
+    setPage(1)
+  }
 
   const total = sorted.length
   const pageCount = Math.max(1, Math.ceil(total / pageSize))
@@ -522,6 +549,8 @@ export default function TableView({ conn, table, onChange, onOpenReference, filt
           edits={editOverlay}
           onEdit={editCell}
           onCellContextMenu={handleCellContextMenu}
+          sort={sort}
+          onSort={cycleSort}
         />
       )}
 

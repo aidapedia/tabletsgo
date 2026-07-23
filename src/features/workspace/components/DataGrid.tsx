@@ -110,6 +110,13 @@ const INDEX_W = 44
 const ACTIONS_W = 110
 const thBase =
   'sticky top-0 z-[1] whitespace-nowrap border-b border-r border-edge bg-elevated px-3 py-1.5 text-left font-semibold text-ink-dim relative'
+
+// Small caret shown in a sorted column header (▲ asc / ▼ desc).
+const SortArrow = ({ dir }: any) => (
+  <svg width="9" height="9" viewBox="0 0 10 10" fill="currentColor" aria-hidden>
+    {dir === 'asc' ? <path d="M5 2 L9 8 L1 8 Z" /> : <path d="M5 8 L1 2 L9 2 Z" />}
+  </svg>
+)
 const tdBase =
   'overflow-hidden text-ellipsis whitespace-nowrap border-b border-r border-edge px-3 py-1 text-ink'
 const firstTh = `${thBase} left-0 z-[2] text-right`
@@ -130,6 +137,8 @@ export default function DataGrid({
   edits,
   onEdit,
   onCellContextMenu,
+  sort, // [{ col, dir }] — active sort rules (drives header carets)
+  onSort, // (col, additive) => void — header click; additive (Shift) adds to multi-sort
   actionsLabel = 'Actions', // header text for the trailing per-row actions column
   renderRowActions, // (row, i) => ReactNode — adds a trailing actions column when set
 }: any) {
@@ -215,6 +224,11 @@ export default function DataGrid({
       /* leave invalid JSON untouched */
     }
   }
+  // col -> { dir, index } so headers can render a caret and (when multi) a priority number.
+  const sortByCol: Record<string, { dir: string; index: number }> = {}
+  ;(sort || []).forEach((s: any, i: number) => { if (s?.col) sortByCol[s.col] = { dir: s.dir, index: i } })
+  const multiSort = (sort?.length || 0) > 1
+
   const allSelected = selectable && rows.length > 0 && rows.every((r, i) => selectedKeys?.has(keyOf(r, i)))
   const someSelected = selectable && !allSelected && rows.some((r, i) => selectedKeys?.has(keyOf(r, i)))
 
@@ -272,9 +286,23 @@ export default function DataGrid({
                 '#'
               )}
             </th>
-            {columns.map((c) => (
+            {columns.map((c) => {
+              const sc = sortByCol[c]
+              return (
               <th key={c} className={thBase}>
-                <span className="block truncate">{c}</span>
+                <div
+                  className={`flex items-center gap-1 ${onSort ? 'cursor-pointer select-none hover:text-ink' : ''}`}
+                  onClick={onSort ? (e) => onSort(c, e.shiftKey) : undefined}
+                  title={onSort ? 'Click to sort · Shift+click to add to sort' : undefined}
+                >
+                  <span className="block min-w-0 truncate">{c}</span>
+                  {sc && (
+                    <span className="flex shrink-0 items-center gap-0.5 text-green">
+                      <SortArrow dir={sc.dir} />
+                      {multiSort && <span className="text-[9px] font-bold leading-none">{sc.index + 1}</span>}
+                    </span>
+                  )}
+                </div>
                 <div
                   onMouseDown={(e) => startResize(e, c)}
                   className={`absolute right-0 top-0 z-10 h-full cursor-col-resize transition-colors ${
@@ -288,7 +316,7 @@ export default function DataGrid({
                   )}
                 </div>
               </th>
-            ))}
+            )})}
             {renderRowActions && <th className={thBase}>{actionsLabel}</th>}
             {spacerW > 0 && <th className={thBase} />}
           </tr>

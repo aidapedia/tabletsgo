@@ -42,7 +42,7 @@ Self‑hosted, single Docker image, your data stays yours.
 | | Feature | What it does |
 |---|---|---|
 | 🗂️ | **Connections** | Organize databases by environment, folder, and tags. Credentials encrypted at rest. Per‑connection access control. |
-| 📊 | **Data browser** | Fast, spreadsheet‑style data grid — filter, sort, edit rows inline, insert & delete, with a staged **Changes** panel before you commit. |
+| 📊 | **Data browser** | Fast, spreadsheet‑style data grid — filter, multi‑column sort (click a header, Shift+click to add), edit rows inline, insert & delete, with a staged **Changes** panel before you commit. |
 | 🧮 | **SQL editor** | CodeMirror‑powered editor with SQL highlighting, formatting, query history, and reusable **saved queries**. |
 | 🎨 | **Schema designer** | Visual ERD (React Flow) to create/edit tables and columns; staged DDL with a **schema version** audit trail and best‑effort rollback SQL. |
 | ⚙️ | **Workflows** | Drag‑and‑drop automation builder: `Manual`/`Schedule`/`Webhook` triggers → `Run query`, `HTTP Request`, `Run JavaScript`, `Switch`, `Loop`, `Export SQL`, `Store to Storage`. Real hourly/daily scheduling, a public **webhook** trigger URL, and an **Activity** trail of past runs (every trigger). The JavaScript node has a built‑in `crypto` helper for HMAC/hash signing (e.g. signed HTTP headers). Runs can carry an input payload; query nodes inline it as `{{input.field}}`. |
