@@ -30,8 +30,8 @@ src/
 │   ├── ui/                       # presentational components, grouped by kind:
 │   │   ├── buttons/              #   Button, IconButton, TextButton
 │   │   ├── form/                 #   Form/FormField/Label, Input/Textarea, Select, Checkbox,
-│   │   │                         #     CheckboxRow, SearchInput, Toggle, NumberStepper
-│   │   ├── navigation/           #   NavItem, Tab, Segmented, MenuItem
+│   │   │                         #     CheckboxRow, SearchInput, Toggle, NumberStepper, Segmented
+│   │   ├── navigation/           #   NavItem, Tab, MenuItem
 │   │   ├── overlay/              #   Popover, Tooltip, ContextMenu
 │   │   ├── feedback/             #   Toast, ConfirmDialog, TypeToConfirmDialog, LoadingState, EmptyState, Wizard
 │   │   └── (root)                #   Avatar, Badge, PersonRow, RowLabel, SaveQueryPanel, SqlEditor,

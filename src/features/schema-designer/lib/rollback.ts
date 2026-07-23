@@ -33,10 +33,11 @@ export async function rollbackForDropColumn(conn: any, sql: string, table: strin
 // One column's definition string (same shape as getColumns()'s response),
 // mirroring columnFields.tsx's colDef() quoting. Shared by CREATE TABLE and
 // ADD COLUMN reconstruction.
-export function columnDef(c: any) {
+export function columnDef(c: any, inlinePk = true) {
+  const pkInline = c.pk && inlinePk
   let d = `"${c.name}" ${c.type || 'TEXT'}`
-  if (c.pk) d += ' PRIMARY KEY'
-  if (c.notnull && !c.pk) d += ' NOT NULL'
+  if (pkInline) d += ' PRIMARY KEY'
+  if (!pkInline && (c.notnull || c.pk)) d += ' NOT NULL'
   if (c.default != null && String(c.default).trim()) d += ` DEFAULT ${c.default}`
   if (c.references?.table && c.references?.column) {
     d += ` REFERENCES "${c.references.table}"("${c.references.column}")`
@@ -44,9 +45,17 @@ export function columnDef(c: any) {
   return d
 }
 
-// Reconstruct a CREATE TABLE statement from a live column list.
+// Reconstruct a CREATE TABLE statement from a live column list. Two or more
+// primary-key columns become one table-level `PRIMARY KEY (...)` constraint —
+// multiple inline PRIMARY KEYs are invalid SQL.
 export function buildCreateTableSql(table: string, columns: any[]) {
-  return `CREATE TABLE "${table}" (\n  ${columns.map(columnDef).join(',\n  ')}\n);`
+  const pks = columns.filter((c) => c.pk)
+  const composite = pks.length > 1
+  const lines = columns.map((c) => columnDef(c, !composite))
+  if (composite) {
+    lines.push(`PRIMARY KEY (${pks.map((c) => `"${c.name}"`).join(', ')})`)
+  }
+  return `CREATE TABLE "${table}" (\n  ${lines.join(',\n  ')}\n);`
 }
 
 // Best-effort forward (Up) / rollback (Down) SQL for a saved schema draft, for

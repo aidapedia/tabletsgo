@@ -7,7 +7,7 @@ import { useSlideOver } from '@/shared/hooks/useSlideOver'
 import { PlusIcon } from '@/shared/ui/icons'
 import { Input } from '@/shared/ui/form/Input'
 import { FormField, Label } from '@/shared/ui/form/Form'
-import { ColumnField, colDef, newColumn, useColumnTypes } from '@/features/schema-designer/components/columnFields'
+import { ColumnField, colDef, tableDefLines, newColumn, useColumnTypes } from '@/features/schema-designer/components/columnFields'
 
 /**
  * Three modes, all sharing one form:
@@ -71,7 +71,7 @@ export default function CreateTablePanel({ conn, initialTable, draftColumns, onC
     }
     const named = columns.filter((c) => c.name.trim())
     if (!name.trim() || named.length === 0) return []
-    return [`CREATE TABLE "${name.trim()}" (\n  ${named.map(colDef).join(',\n  ')}\n);`]
+    return [`CREATE TABLE "${name.trim()}" (\n  ${tableDefLines(named).join(',\n  ')}\n);`]
   }, [columns, newColumns, name, isEdit, initialTable])
 
   const valid = isEdit ? statements.length > 0 : name.trim() && statements.length > 0
