@@ -103,7 +103,7 @@ import {
   TrashIcon,
   WorkflowIcon,
 } from '@/shared/ui/icons'
-import { DomainPickerModal, DomainDot, fetchDomains, updateDomain, deleteDomain } from '@/features/domains'
+import { DomainPickerPanel, DomainQuickMenu, DomainDot, fetchDomains, updateDomain, deleteDomain } from '@/features/domains'
 
 const kbd =
   'inline-flex min-w-[20px] items-center justify-center rounded-[5px] border border-edge bg-elevated px-1.5 py-0.5 text-[11px] text-ink-dim'
@@ -1145,9 +1145,14 @@ export default function Workspace() {
                     <MenuItem onClick={() => { setCreatingTable({ table: obj.name }); close() }}>
                       <EditIcon width={14} height={14} /> Edit Table
                     </MenuItem>
-                    <MenuItem onClick={() => { setDomainTable(obj.name); close() }}>
-                      <TagIcon width={14} height={14} /> Set domain
-                    </MenuItem>
+                    <DomainQuickMenu
+                      connectionId={id}
+                      table={obj.name}
+                      domains={domains}
+                      onChange={setDomains}
+                      onConfigure={() => { setDomainTable(obj.name); close() }}
+                      onAssigned={close}
+                    />
                     <div className="my-1 h-px bg-edge" />
                     <MenuItem danger onClick={() => { setTableAction({ table: obj.name, mode: 'empty' }); close() }}>
                       <TrashIcon width={14} height={14} /> Empty Table
@@ -1783,7 +1788,7 @@ export default function Workspace() {
       )}
 
       {domainTable && (
-        <DomainPickerModal
+        <DomainPickerPanel
           connectionId={id}
           table={domainTable}
           domains={domains}

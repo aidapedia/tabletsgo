@@ -53,8 +53,11 @@ src/
 │   │                             #   ConnectionAccessPanel, DbTypePickerModal (owns DB_CATALOG/TYPE_LABEL);
 │   │                             #   api (connection access get/set)
 │   ├── settings/                 # stores/SettingsContext
-│   ├── domains/                  # named+colored table groupings (one domain per table): DomainPickerModal
-│   │                             #   (set a table's domain), DomainEditModal, DomainDot; api (domains CRUD +
+│   ├── domains/                  # named+colored table groupings (one domain per table): DomainQuickMenu
+│   │                             #   (the table context-menu row: hover flyout for one-click assign, or
+│   │                             #   opens the panel), DomainPickerPanel (set a table's domain — a right-side
+│   │                             #   slide-over with inline create/edit/delete), DomainEditPanel, DomainDot;
+│   │                             #   api (domains CRUD +
 │   │                             #   set-table-domain). Drives the sidebar group-by-domain view and the
 │   │                             #   schema-designer's draggable/editable domain regions.
 │   ├── keymap/                   # stores/KeymapContext (useKeymap/useShortcut) + KeymapSetting
