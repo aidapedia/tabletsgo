@@ -106,6 +106,19 @@ src/
 │   │   │                         #     BackupCalendarHeatmap, BackupVersionList (run-based restore),
 │   │   │                         #     RestorePanel (restore from uploaded file or browsed storage object)
 │   │   └── lib/                  #   api (storages CRUD, backup schedule/runs/calendar/restore), types
+│   ├── templates/                # built-in, read-only template catalog (browse + apply only — no
+│   │   │                         #   authoring). A template bundles workflows + dashboards; applying
+│   │   │                         #   creates the workflows first, resolves `{{workflow:<key>}}`
+│   │   │                         #   placeholders in dashboard row-action `workflowId`s against the
+│   │   │                         #   newly created ids, then creates the dashboards. Filterable by
+│   │   │                         #   DB type ("postgresql" | "sqlite") against Template.databases.
+│   │   │                         #   VSCode-style entry: a Templates icon in the console IconRail opens
+│   │   │                         #   TemplatesPanel in the sidebar; picking a template opens its detail
+│   │   │                         #   in a main-area tab (kind: 'template').
+│   │   ├── catalog/               #   TEMPLATES: Template[] — the shipped templates (plain TS objects)
+│   │   ├── components/            #   TemplatesPanel (sidebar list + DB-type filter chips),
+│   │   │                         #     TemplateDetailView (main-area tab: contents + Apply button)
+│   │   └── lib/                   #   apply (applyTemplate: create workflows → resolve refs → create dashboards)
 │   └── system-update/            # in-app update checking + guided update wizard (backup → pre-flight →
 │       │                         #   apply → verify). Compares running (version, sha) to the latest GitHub
 │       │                         #   Release; docker-socket-mounted ⇒ one-click self-update, else a manual

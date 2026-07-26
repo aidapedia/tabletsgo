@@ -113,9 +113,11 @@ import {
   TableIcon,
   TagIcon,
   TrashIcon,
+  WandIcon,
   WorkflowIcon,
 } from '@/shared/ui/icons'
 import { DomainPickerPanel, DomainQuickMenu, DomainDot, fetchDomains, updateDomain, deleteDomain } from '@/features/domains'
+import { TemplatesPanel, TemplateDetailView, TEMPLATES } from '@/features/templates'
 
 const kbd =
   'inline-flex min-w-[20px] items-center justify-center rounded-[5px] border border-edge bg-elevated px-1.5 py-0.5 text-[11px] text-ink-dim'
@@ -183,7 +185,7 @@ export default function Workspace() {
   const [sidebarOpen, setSidebarOpen] = useState(false) // mobile drawer
   const [openGroup, setOpenGroup] = useState('table') // accordion: the one expanded browser section
   const [tablesVisible, setTablesVisible] = useState(true) // left panel visible
-  const [panel, setPanel] = useState('browser') // 'browser' | 'queries' | 'workflows'
+  const [panel, setPanel] = useState('browser') // 'browser' | 'queries' | 'workflows' | 'dashboards' | 'schema' | 'templates'
   const [searchOpen, setSearchOpen] = useState(false) // table search toggle
   const [paletteOpen, setPaletteOpen] = useState(false) // ⌘K command palette
   const [tableSort, setTableSort] = useState('az') // 'az' | 'za'
@@ -729,6 +731,26 @@ export default function Workspace() {
     )
     setActiveTab(key)
     setSidebarOpen(false)
+  }
+  // ---- Templates (built-in catalog, browse + apply) ----
+  // Open a template's detail in its own tab (VSCode-style). Applying creates
+  // its workflows + dashboards on this connection, then refreshes the rails.
+  const openTemplate = (t) => {
+    const key = `template:${t.id}`
+    setTabs((prev) =>
+      prev.some((tab) => tab.key === key) ? prev : [...prev, { key, kind: 'template', templateId: t.id, title: t.name }]
+    )
+    setActiveTab(key)
+    setSidebarOpen(false)
+  }
+  const onTemplateApplied = (res) => {
+    listWorkflows(id).then(setWorkflows)
+    fetchWorkflowFolders(id).then(setWorkflowFolders)
+    listDashboards(id).then(setDashboards)
+    fetchDashboardFolders(id).then(setDashboardFolders)
+    const d = res.dashboards[0]
+    if (d) openDashboard(d)
+    else if (res.workflows[0]) openWorkflow(res.workflows[0])
   }
   const newDashboard = async (folderId = null) => {
     try {
@@ -1281,6 +1303,7 @@ export default function Workspace() {
     { id: 'go-workflows', group: 'Navigate', label: 'Workflows', keywords: 'automation', icon: <WorkflowIcon width={15} height={15} />, hint: formatCombo(bindings['workspace.panelWorkflows']), run: () => selectPanel('workflows') },
     { id: 'go-schema', group: 'Navigate', label: 'Schema', keywords: 'designer diagram', icon: <DiagramIcon width={15} height={15} />, hint: formatCombo(bindings['workspace.panelSchema']), run: () => selectPanel('schema') },
     { id: 'go-dashboards', group: 'Navigate', label: 'Dashboards', keywords: 'charts analytics', icon: <GridIcon width={15} height={15} />, hint: formatCombo(bindings['workspace.panelDashboards']), run: () => selectPanel('dashboards') },
+    { id: 'go-templates', group: 'Navigate', label: 'Templates', keywords: 'presets starter gallery scaffold', icon: <WandIcon width={15} height={15} />, run: () => selectPanel('templates') },
 
     { id: 'view-history', group: 'View', label: 'Query history', keywords: 'recent past', icon: <HistoryIcon width={15} height={15} />, run: openHistory },
     { id: 'view-schema-history', group: 'View', label: `Schema version history (v${conn.schemaVersion ?? 1})`, keywords: 'migrations audit', icon: <TagIcon width={15} height={15} />, run: openSchemaHistory },
@@ -1314,6 +1337,7 @@ export default function Workspace() {
           onWorkflows={() => selectPanel('workflows')}
           onDashboards={() => selectPanel('dashboards')}
           onSchema={() => selectPanel('schema')}
+          onTemplates={() => selectPanel('templates')}
           onHome={() => navigate('/')}
           onLogout={logout}
         />
@@ -1520,6 +1544,12 @@ export default function Workspace() {
             onRefreshMigrations={loadSchemaHistory}
             onRollback={setRollbackTarget}
           />
+        ) : panel === 'templates' ? (
+          <TemplatesPanel
+            dbType={conn?.type}
+            activeId={current?.kind === 'template' ? current.templateId : null}
+            onOpen={openTemplate}
+          />
         ) : (
           <SavedQueriesPanel
             saved={saved.filter((s) => s.kind !== 'schema')}
@@ -1706,6 +1736,8 @@ export default function Workspace() {
                   <WorkflowIcon className={active ? 'text-ink' : 'text-ink-faint'} />
                 ) : t.kind === 'dashboard' ? (
                   <GridIcon className={active ? 'text-ink' : 'text-ink-faint'} />
+                ) : t.kind === 'template' ? (
+                  <WandIcon className={active ? 'text-ink' : 'text-ink-faint'} />
                 ) : (
                   <TableIcon className={active ? 'text-ink' : 'text-ink-faint'} />
                 )}
@@ -1812,6 +1844,20 @@ export default function Workspace() {
               />
             </Suspense>
           )}
+          {conn && current?.kind === 'template' && (() => {
+            const tpl = TEMPLATES.find((t) => t.id === current.templateId)
+            return tpl ? (
+              <TemplateDetailView
+                key={current.key}
+                template={tpl}
+                connectionId={id}
+                dbType={conn.type}
+                onApplied={onTemplateApplied}
+              />
+            ) : (
+              <div className="flex-1 p-8 text-center text-xs text-ink-faint">Template not found.</div>
+            )
+          })()}
           {!current && (
             <div className="flex h-full w-full items-center justify-center overflow-auto p-8">
               <div className="w-full max-w-[560px] text-center">
