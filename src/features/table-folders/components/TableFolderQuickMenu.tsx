@@ -4,42 +4,43 @@ import MenuItem from '@/shared/ui/navigation/MenuItem'
 import EmptyState from '@/shared/ui/feedback/EmptyState'
 import { MENU_PANEL_CLASS } from '@/shared/ui/overlay/Popover'
 import { useToast } from '@/shared/ui/feedback/Toast'
-import { CheckIcon, ChevronRight, SettingsIcon, TagIcon } from '@/shared/ui/icons'
-import { setTableDomain } from '../lib/api'
+import { CheckIcon, ChevronRight, FolderIcon, SettingsIcon } from '@/shared/ui/icons'
+import { setTableFolder } from '../lib/api'
 import { withTableAssignment } from '../lib/assign'
-import type { Domain } from '../types'
-import DomainDot from './DomainDot'
+import type { TableFolder } from '../types'
+import { folderParentPath, foldersInTreeOrder } from '../lib/tree'
+import FolderDot from './FolderDot'
 
 const WIDTH = 200
 const GAP = 4
 const MARGIN = 8
 
 /**
- * The "Set domain" row inside a table's context menu. Hovering it opens a flyout
- * of the connection's domains for one-click assignment (the fast path), so most
+ * The "Set folder" row inside a table's context menu. Hovering it opens a flyout
+ * of the connection's folders for one-click assignment (the fast path), so most
  * reassignments never need the full slide-over. Mirrors ContextMenuSub: the
  * flyout is a `fixed`, JS-positioned panel (opened on hover with a small close
  * delay so a cursor that cuts a corner is forgiven) — not a CSS opacity fade,
  * which flickers see-through while scrolling a long list. It flips to whichever
- * side has room and caps its height so many domains scroll in place. When none
- * exist yet, it points the user at the "Configure domains…" panel instead.
+ * side has room and caps its height so many folders scroll in place. When none
+ * exist yet, it points the user at the "Configure folders…" panel instead.
  *
  * Self-contained like the picker panel: it performs the assign call itself and
  * hands the parent the recomputed list via `onChange`. `onConfigure` opens the
  * full slide-over; `onAssigned` closes the surrounding context menu.
  */
-export default function DomainQuickMenu({
+export default function TableFolderQuickMenu({
   connectionId,
   table,
-  domains,
+  folders,
   onChange,
   onConfigure,
   onAssigned,
 }: {
   connectionId: string
   table: string
-  domains: Domain[]
-  onChange: (next: Domain[]) => void
+  folders: TableFolder[]
+  onChange: (next: TableFolder[]) => void
   onConfigure: () => void
   onAssigned: () => void
 }) {
@@ -65,25 +66,25 @@ export default function DomainQuickMenu({
     const panelH = Math.min(panelRef.current?.offsetHeight ?? 0, maxHeight)
     const top = Math.max(MARGIN, Math.min(r.top, window.innerHeight - MARGIN - panelH))
     setPos({ left, top, maxHeight })
-  }, [open, domains.length])
+  }, [open, folders.length])
 
   const cancelClose = () => clearTimeout(closeTimer.current)
   const scheduleClose = () => {
     closeTimer.current = setTimeout(() => setOpen(false), 150)
   }
 
-  const currentId = domains.find((d) => d.tables.includes(table))?.id ?? null
-  const current = domains.find((d) => d.id === currentId) ?? null
+  const currentId = folders.find((d) => d.tables.includes(table))?.id ?? null
+  const current = folders.find((d) => d.id === currentId) ?? null
 
-  const assign = async (domainId: string | null) => {
+  const assign = async (folderId: string | null) => {
     onAssigned()
-    if (domainId === currentId) return
-    const prev = domains
-    onChange(withTableAssignment(domains, table, domainId))
+    if (folderId === currentId) return
+    const prev = folders
+    onChange(withTableAssignment(folders, table, folderId))
     try {
-      await setTableDomain(connectionId, table, domainId)
+      await setTableFolder(connectionId, table, folderId)
     } catch (e: any) {
-      toast.error(`Couldn't set domain: ${e.message}`)
+      toast.error(`Couldn't set folder: ${e.message}`)
       onChange(prev)
     }
   }
@@ -94,10 +95,10 @@ export default function DomainQuickMenu({
     <div ref={rowRef} onMouseEnter={() => (cancelClose(), setOpen(true))} onMouseLeave={scheduleClose}>
       <MenuItem className="justify-between" onClick={onConfigure}>
         <span className="flex items-center gap-2.5">
-          <TagIcon width={14} height={14} /> Set domain
+          <FolderIcon width={14} height={14} /> Set folder
         </span>
         <span className="flex items-center gap-2">
-          {current && <DomainDot color={current.color} size={7} />}
+          {current && <FolderDot color={current.color} size={7} />}
           <ChevronRight width={13} height={13} className="text-ink-faint" />
         </span>
       </MenuItem>
@@ -110,11 +111,11 @@ export default function DomainQuickMenu({
           onMouseEnter={cancelClose}
           onMouseLeave={scheduleClose}
         >
-          {domains.length === 0 ? (
+          {folders.length === 0 ? (
             <div className="px-1.5 py-2">
-              <EmptyState className="mb-2 py-1">No domains yet.</EmptyState>
+              <EmptyState className="mb-2 py-1">No folders yet.</EmptyState>
               <Button variant="subtle" size="sm" icon={SettingsIcon} onClick={onConfigure} className="w-full">
-                Configure domains…
+                Configure folders…
               </Button>
             </div>
           ) : (
@@ -124,28 +125,35 @@ export default function DomainQuickMenu({
                 onClick={() => assign(null)}
                 className={`${item} ${currentId === null ? 'bg-card-hover text-ink' : 'text-ink-dim hover:bg-card-hover hover:text-ink'}`}
               >
-                <DomainDot color={null} />
-                <span className="flex-1 truncate">No domain</span>
+                <FolderDot color={null} />
+                <span className="flex-1 truncate">No folder</span>
                 {currentId === null && <CheckIcon width={13} height={13} className="text-green" />}
               </button>
 
-              {domains.map((d) => (
-                <button
-                  key={d.id}
-                  type="button"
-                  onClick={() => assign(d.id)}
-                  className={`${item} ${d.id === currentId ? 'bg-card-hover text-ink' : 'text-ink-dim hover:bg-card-hover hover:text-ink'}`}
-                >
-                  <DomainDot color={d.color} />
-                  <span className="flex-1 truncate">{d.name}</span>
-                  <span className="text-[10px] text-ink-faint">{d.tables.length}</span>
-                  {d.id === currentId && <CheckIcon width={13} height={13} className="text-green" />}
-                </button>
-              ))}
+              {foldersInTreeOrder(folders).map((d) => {
+                const path = folderParentPath(folders, d)
+                return (
+                  <button
+                    key={d.id}
+                    type="button"
+                    onClick={() => assign(d.id)}
+                    className={`${item} ${d.id === currentId ? 'bg-card-hover text-ink' : 'text-ink-dim hover:bg-card-hover hover:text-ink'}`}
+                    title={path ? `${path} / ${d.name}` : d.name}
+                  >
+                    <FolderDot color={d.color} />
+                    <span className="flex-1 truncate">
+                      {path && <span className="text-ink-faint">{path} / </span>}
+                      {d.name}
+                    </span>
+                    <span className="text-[10px] text-ink-faint">{d.tables.length}</span>
+                    {d.id === currentId && <CheckIcon width={13} height={13} className="text-green" />}
+                  </button>
+                )
+              })}
 
               <div className="my-1 h-px shrink-0 bg-edge" />
               <MenuItem onClick={onConfigure}>
-                <SettingsIcon width={14} height={14} /> Manage domains…
+                <SettingsIcon width={14} height={14} /> Manage folders…
               </MenuItem>
             </>
           )}

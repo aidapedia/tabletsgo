@@ -53,22 +53,30 @@ src/
 │   │                             #   ConnectionAccessPanel, DbTypePickerModal (owns DB_CATALOG/TYPE_LABEL);
 │   │                             #   api (connection access get/set)
 │   ├── settings/                 # stores/SettingsContext
-│   ├── domains/                  # named+colored table groupings (one domain per table): DomainQuickMenu
-│   │                             #   (the table context-menu row: hover flyout for one-click assign, or
-│   │                             #   opens the panel), DomainPickerPanel (set a table's domain — a right-side
-│   │                             #   slide-over with inline create/edit/delete), DomainEditPanel, DomainDot;
-│   │                             #   api (domains CRUD +
-│   │                             #   set-table-domain). Drives the sidebar group-by-domain view and the
-│   │                             #   schema-designer's draggable/editable domain regions.
+│   ├── table-folders/            # the connected DB's tables grouped by the generic folders tree
+│   │                             #   (type='table', 3-level cap, one folder per table), each folder
+│   │                             #   carrying an optional color. Replaced the old "domains" feature —
+│   │                             #   meta migration v5 folded every domain into the folders tree,
+│   │                             #   keeping its id/name/color. Components: TableFolderList (the console
+│   │                             #   sidebar's folder view: collapsible color-tinted folders + subfolders,
+│   │                             #   drag a table into a folder / a folder into a folder, trailing
+│   │                             #   "Ungrouped" drop zone, inline new folder + rename),
+│   │                             #   TableFolderQuickMenu (the table context-menu row: hover flyout for
+│   │                             #   one-click assign), TableFolderPickerPanel (right-side slide-over
+│   │                             #   with inline create/edit/delete), TableFolderEditPanel (name+color),
+│   │                             #   FolderDot; lib/api (wraps shared/api/folders with the 'table' type
+│   │                             #   bound + set-table-folder), lib/assign, lib/tree (path/tree order).
+│   │                             #   Drives the sidebar folder view and the schema-designer's
+│   │                             #   draggable/editable folder regions.
 │   ├── keymap/                   # stores/KeymapContext (useKeymap/useShortcut) + KeymapSetting
 │   ├── workspace/                # the DB console (one connection): data browsing + querying
 │   │   ├── components/           #   DataGrid, TableView, SchemaView, QueryEditor, FunctionView,
 │   │   │                         #   QueryHistoryView, InsertRowPanel, ChangesPanel, SavedQueriesPanel, IconRail
 │   │   └── lib/                  #   savedQueries, queryHistory (backend calls)
 │   ├── schema-designer/          # visual schema design (React Flow ERD + table/column editors; tables
-│   │   │                         #   sharing a domain are clustered into a draggable, editable region)
+│   │   │                         #   sharing a folder are clustered into a draggable, editable region)
 │   │   ├── components/           #   SchemaEditor, SchemaSidebar (accordion: Draft Schema / Table List /
-│   │   │                         #     References / Domain Group — click to focus/edit), CreateTablePanel,
+│   │   │                         #     References / Table Folders — click to focus/edit), CreateTablePanel,
 │   │   │                         #     TableEditPanel, columnFields, SchemaHistoryPanel (schema-version audit trail)
 │   │   └── lib/                  #   rollback (best-effort rollback SQL for staged DDL)
 │   ├── workflow/                 # workflow automations (React Flow builder + server-side runner, incl.

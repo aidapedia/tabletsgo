@@ -68,9 +68,25 @@ function ensureBaseSchema(db) {
       name TEXT NOT NULL,
       ts INTEGER
     );
-    -- Domains: named, colored groupings for a connection's tables. A domain is
-    -- an entity (name + color); table_domains maps each table to exactly one
-    -- domain (UNIQUE per table), so tables can be grouped by domain.
+    -- Per-table metadata: one row per (connection, table_name). Tables live in
+    -- the user's database, not here, so this is where anything the app knows
+    -- about a table hangs. Today that's folder membership (folders.id,
+    -- type='table') — it doubles as the "item table" the generic folders tree
+    -- needs; future per-table config (access, display, …) becomes new columns.
+    -- Superseded the domains/table_domains pair in migration v5;
+    -- CREATE ... IF NOT EXISTS is idempotent with v5, so fresh + existing
+    -- installs agree.
+    CREATE TABLE IF NOT EXISTS connection_tables (
+      id TEXT PRIMARY KEY,
+      connection_id TEXT NOT NULL,
+      table_name TEXT NOT NULL,
+      folder_id TEXT,                     -- folders.id (type='table'), NULL = ungrouped
+      ts INTEGER,
+      UNIQUE(connection_id, table_name)   -- one row (so one folder) per table
+    );
+    CREATE INDEX IF NOT EXISTS idx_connection_tables_conn ON connection_tables(connection_id);
+    -- DEPRECATED (superseded by folders type='table' + connection_tables in v5).
+    -- Kept for rollback compat only — live code must not read these.
     CREATE TABLE IF NOT EXISTS domains (
       id TEXT PRIMARY KEY,
       connection_id TEXT NOT NULL,
@@ -108,8 +124,9 @@ function ensureBaseSchema(db) {
       -- on fresh installs (which also run v3).
     );
     -- Generic, polymorphic folders: one tree per (connection, type). The type
-    -- discriminates what the folder groups ('query' | 'dashboard' | future);
-    -- items point back via their own folder_id (saved_queries, dashboards, …).
+    -- discriminates what the folder groups ('query' | 'dashboard' | 'workflow' |
+    -- 'table'); items point back via their own folder_id (saved_queries,
+    -- dashboards, workflows, connection_tables).
     -- parent_id builds the tree (NULL = root); nesting caps are per-type and
     -- enforced in server.js. Supersedes the legacy saved_folders table, whose
     -- rows migration v3 copies in as type='query'. CREATE ... IF NOT EXISTS is
@@ -424,9 +441,43 @@ export const MIGRATIONS = [
       db.exec(`ALTER TABLE workflows ADD COLUMN folder_id TEXT`)
     },
   },
-  // v5+: append plain, run-exactly-once steps here, e.g.
+  {
+    version: 5,
+    name: 'domains become table folders (folders.color + connection_tables; backfill domains)',
+    up(db) {
+      // Folders carry a color now — it came over with the domains they absorb,
+      // and every folder type can use it. NULL = no color (the default look).
+      db.exec(`ALTER TABLE folders ADD COLUMN color TEXT`)
+      // Tables live in the user's database, not here, so anything the app knows
+      // about one needs a row of its own. Folder membership is the first such
+      // fact (this is the "item table" for type='table' folders); later
+      // per-table config lands here as extra columns.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS connection_tables (
+          id TEXT PRIMARY KEY,
+          connection_id TEXT NOT NULL,
+          table_name TEXT NOT NULL,
+          folder_id TEXT,
+          ts INTEGER,
+          UNIQUE(connection_id, table_name)
+        );
+      `)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_connection_tables_conn ON connection_tables(connection_id)`)
+      // Each domain becomes a root-level folder of type='table', keeping its id
+      // (so table_domains.domain_id maps straight across), name and color.
+      db.exec(`
+        INSERT OR IGNORE INTO folders (id, connection_id, type, name, color, parent_id, ts)
+        SELECT id, connection_id, 'table', name, color, NULL, ts FROM domains
+      `)
+      db.exec(`
+        INSERT OR IGNORE INTO connection_tables (id, connection_id, table_name, folder_id, ts)
+        SELECT id, connection_id, table_name, domain_id, ts FROM table_domains
+      `)
+    },
+  },
+  // v6+: append plain, run-exactly-once steps here, e.g.
   // {
-  //   version: 5,
+  //   version: 6,
   //   name: 'connections: last_used_at',
   //   up(db) {
   //     db.exec(`ALTER TABLE connections ADD COLUMN last_used_at INTEGER`)
@@ -441,6 +492,8 @@ export const MIGRATIONS = [
 // moved past every image that still used the table.
 export const DEPRECATED_TABLES = [
   { table: 'saved_folders', supersededBy: 'folders', sinceStep: 3 },
+  { table: 'domains', supersededBy: 'folders', sinceStep: 5 },
+  { table: 'table_domains', supersededBy: 'connection_tables', sinceStep: 5 },
 ]
 
 export const LATEST_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version

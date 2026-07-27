@@ -102,22 +102,18 @@ reassembles this same shape on every read, so API consumers see no difference:
 {
   "id": "uuid",
   "name": "Reports",
+  "color": "#6366f1",   // hex accent color or null (any type; used by table folders)
   "parentId": null,     // parent folder id or null (root) — folders nest into subdirectories
-  "ts": 1719600000000
+  "type": "query",      // "query" | "dashboard" | "workflow" | "table"
+  "ts": 1719600000000,
+  "tables": ["orders", "order_details"]  // type="table" only: the tables grouped in this folder
 }
 ```
-
-### Domain
-```jsonc
-{
-  "id": "uuid",
-  "name": "Orders",
-  "color": "#6366f1",           // hex color or null
-  "ts": 1719600000000,          // epoch ms
-  "tables": ["orders", "order_details"]  // tables grouped under this domain
-}
-```
-A table belongs to **at most one** domain (a domain is a grouping "by domain").
+Folders of `type: "table"` group the connected database's tables. A table belongs
+to **at most one** folder; membership lives server-side in `connection_tables`,
+the per-table metadata row (tables themselves aren't rows in the metadata DB). These replaced the old *domains* concept
+in meta migration v5 — each domain became a root-level table folder, keeping its
+id, name and color, so old domain ids still resolve.
 
 ### Query history entry
 ```jsonc
@@ -233,21 +229,28 @@ CREATE TABLE saved_folders (
   parent_id TEXT,               -- nullable self-FK to saved_folders.id (NULL = root); enables nesting
   ts INTEGER
 );
-CREATE TABLE domains (
+CREATE TABLE folders (          -- one polymorphic tree per (connection, type)
   id TEXT PRIMARY KEY,
   connection_id TEXT NOT NULL,
+  type TEXT NOT NULL,           -- "query" | "dashboard" | "workflow" | "table"
   name TEXT NOT NULL,
-  color TEXT,                   -- hex color string, e.g. "#6366f1"
+  color TEXT,                   -- hex color string, e.g. "#6366f1" (nullable)
+  parent_id TEXT,               -- nullable self-FK (NULL = root); enables nesting
   ts INTEGER
 );
-CREATE TABLE table_domains (    -- one domain per table
+CREATE TABLE connection_tables (  -- per-table metadata, one row per (connection, table)
   id TEXT PRIMARY KEY,
   connection_id TEXT NOT NULL,
   table_name TEXT NOT NULL,
-  domain_id TEXT NOT NULL,
+  folder_id TEXT,               -- nullable FK to folders.id (type="table"); NULL = ungrouped
   ts INTEGER,
   UNIQUE(connection_id, table_name)
 );
+-- Tables live in the user's database, so this row is where anything the app
+-- knows about a table hangs. Folder membership is the first such fact; future
+-- per-table config (access, display, …) becomes additional columns here.
+-- domains / table_domains: DEPRECATED, superseded by the two tables above in
+-- meta migration v5. Kept for rollback compatibility; no live code reads them.
 CREATE TABLE query_history (
   id TEXT PRIMARY KEY,
   connection_id TEXT NOT NULL,
@@ -498,7 +501,8 @@ pools/handles so the next query reconnects with new settings.
 - **Example:** `PUT http://localhost:3000/api/connections/demo-sqlite`
 
 ### DELETE `/api/connections/:id`
-Delete a connection and cascade-delete its saved queries, folders and domains.
+Delete a connection and cascade-delete its saved queries, folders (including
+table-folder membership), workflows, dashboards and history.
 Also closes any open pool/handle.
 
 - **200:** `{ "ok": true }`
@@ -568,29 +572,34 @@ Delete a saved query.
 
 Folders are polymorphic: one tree per resource `type`. `type=query` groups saved
 queries (uncapped nesting), `type=dashboard` groups dashboards (3-level cap),
-`type=workflow` groups workflows (3-level cap). The `type` param defaults to
-`query` for older clients. Each item points back via its own `folderId`.
+`type=workflow` groups workflows (3-level cap), `type=table` groups the connected
+database's tables (3-level cap). The `type` param defaults to `query` for older
+clients. Each item points back via its own `folderId` — except tables, which live
+in the user's database and are mapped by name in `connection_tables` (see the
+`/tables/:table/folder` endpoint below). Every folder may carry a `color`.
 
 ### GET `/api/connections/:id/folders`
 List folders of a given `type` (oldest first). Folders nest via `parentId` (null = root).
 
-- **Query:** `?type=query|dashboard|workflow` (defaults to `query`)
-- **200:** `Folder[]` → `[{ "id", "name", "parentId", "type", "ts" }]`
+- **Query:** `?type=query|dashboard|workflow|table` (defaults to `query`)
+- **200:** `Folder[]` → `[{ "id", "name", "color", "parentId", "type", "ts" }]`
+  (`type=table` rows also carry `"tables": ["orders", …]`)
 - **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/folders?type=workflow`
 
 ### POST `/api/connections/:id/folders`
 Create a folder. Pass `parentId` to create a subfolder under an existing folder.
 
-- **Body:** `{ "type": "workflow", "name": "Reports", "parentId": null }`  // `type` defaults to `query`, `parentId` optional (defaults to root)
-- **200:** `{ "id", "name", "parentId", "type", "ts" }`
+- **Body:** `{ "type": "workflow", "name": "Reports", "parentId": null, "color": null }`  // `type` defaults to `query`; `parentId` (root) and `color` optional
+- **200:** `{ "id", "name", "color", "parentId", "type", "ts" }` (plus `"tables": []` when `type=table`)
 - **400:** `{ "error": "A folder name is required" }` / `{ "error": "Parent folder not found" }` / `{ "error": "Folders can only nest 3 levels deep" }`
 - **Example:** `POST http://localhost:3000/api/connections/demo-sqlite/folders`
 
 ### PUT `/api/connections/:id/folders/:fid`
-Rename and/or move (reparent) a folder. Send `name`, `parentId`, or both.
-`parentId: null` moves the folder to the root.
+Rename, recolor and/or move (reparent) a folder. Send any subset of `name`,
+`color`, `parentId`. `parentId: null` moves the folder to the root; `color: null`
+clears the color.
 
-- **Body:** `{ "name": "Renamed" }` and/or `{ "parentId": "fld-2" }`
+- **Body:** `{ "name": "Renamed" }` and/or `{ "color": "#ef4444" }` and/or `{ "parentId": "fld-2" }`
 - **200:** `{ "ok": true }`
 - **400:** `{ "error": "A folder name is required" }` / `{ "error": "Parent folder not found" }` /
   `{ "error": "Can't move a folder into its own subfolder" }` / `{ "error": "A folder can't be its own parent" }` /
@@ -601,57 +610,35 @@ Rename and/or move (reparent) a folder. Send `name`, `parentId`, or both.
 ### DELETE `/api/connections/:id/folders/:fid`
 Delete a folder. Its contents move up one level (to the deleted folder's parent,
 or the root for a top-level folder): child subfolders are reparented and the
-folder's items (queries/dashboards/workflows, per `type`) are re-attached
-(`folder_id`/`parent_id` set to the parent), not deleted.
+folder's items (queries/dashboards/workflows/tables, per `type`) are re-attached
+(`folder_id`/`parent_id` set to the parent), not deleted. For `type=table`,
+items that land at the root are simply ungrouped (their mapping row is dropped).
 
 - **200:** `{ "ok": true }`
 - **Example:** `DELETE http://localhost:3000/api/connections/demo-sqlite/folders/fld-1`
 
 ---
 
-## Domains (per connection)
+## Table folders (per connection)
 
-A domain is a named, colored entity that groups a connection's tables — each
-table belongs to **at most one** domain ("group tables by domain"). Table names
-are plain strings, so the contract is database-agnostic across every dialect.
+Tables are grouped by the generic folders tree above, using `type=table`. Each
+table belongs to **at most one** folder; table names are plain strings, so the
+contract is database-agnostic across every dialect. Folder create/list/update/
+delete all go through `/api/connections/:id/folders` — the only extra endpoint is
+membership:
 
-### GET `/api/connections/:id/domains`
-List domains (oldest first). Each domain embeds the table names it groups.
+> **Migrated from domains.** Meta migration v5 folded every domain into this tree
+> (same id, name and color), so previously assigned tables keep their grouping.
+> The `/api/connections/:id/domains*` endpoints are gone.
 
-- **200:** `Domain[]` → `[{ "id", "name", "color", "ts", "tables": ["orders", "order_details"] }]`
-- **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/domains`
+### PUT `/api/connections/:id/tables/:table/folder`
+Set (or clear) which folder a table belongs to. Reassigning replaces the table's
+previous folder (upsert); `folderId: null` ungroups it.
 
-### POST `/api/connections/:id/domains`
-Create a domain.
-
-- **Body:** `{ "name": "Orders", "color": "#6366f1" }` (`color` optional)
-- **200:** `{ "id", "name", "color", "ts", "tables": [] }`
-- **400:** `{ "error": "A domain name is required" }`
-- **Example:** `POST http://localhost:3000/api/connections/demo-sqlite/domains`
-
-### PUT `/api/connections/:id/domains/:domainId`
-Update a domain. Any subset of `name`, `color`.
-
-- **Body examples:** `{ "name": "Renamed" }` · `{ "color": "#ef4444" }`
-- **200:** the updated `Domain` (with `tables`)
-- **400:** `{ "error": "Nothing to update" }` (or name validation)
-- **404:** `{ "error": "Not found" }`
-- **Example:** `PUT http://localhost:3000/api/connections/demo-sqlite/domains/dom-1`
-
-### DELETE `/api/connections/:id/domains/:domainId`
-Delete a domain and detach all of its tables.
-
+- **Body:** `{ "folderId": "fld-1" }` (or `{ "folderId": null }` to clear)
 - **200:** `{ "ok": true }`
-- **Example:** `DELETE http://localhost:3000/api/connections/demo-sqlite/domains/dom-1`
-
-### PUT `/api/connections/:id/tables/:table/domain`
-Set (or clear) which domain a table belongs to. Reassigning replaces the
-table's previous domain (upsert); `domainId: null` removes it from any domain.
-
-- **Body:** `{ "domainId": "dom-1" }` (or `{ "domainId": null }` to clear)
-- **200:** `{ "ok": true }`
-- **404:** `{ "error": "Domain not found" }`
-- **Example:** `PUT http://localhost:3000/api/connections/demo-sqlite/tables/orders/domain`
+- **404:** `{ "error": "Folder not found" }`
+- **Example:** `PUT http://localhost:3000/api/connections/demo-sqlite/tables/orders/folder`
 
 ---
 
@@ -1513,14 +1500,10 @@ Liveness probe. Also reports boot readiness and the running identity.
 | POST   | `/api/connections/:id/saved`              | Create saved query              |
 | PUT    | `/api/connections/:id/saved/:sid`         | Update saved query / move       |
 | DELETE | `/api/connections/:id/saved/:sid`         | Delete saved query              |
-| GET    | `/api/connections/:id/domains`            | List domains (with tables)      |
-| POST   | `/api/connections/:id/domains`            | Create a domain                 |
-| PUT    | `/api/connections/:id/domains/:domainId`  | Update a domain (name/color)    |
-| DELETE | `/api/connections/:id/domains/:domainId`  | Delete a domain + detach tables |
-| PUT    | `/api/connections/:id/tables/:table/domain` | Set/clear a table's domain    |
-| GET    | `/api/connections/:id/folders`            | List folders                    |
-| POST   | `/api/connections/:id/folders`            | Create folder (opt. `parentId`) |
-| PUT    | `/api/connections/:id/folders/:fid`       | Rename / move (reparent) folder |
+| GET    | `/api/connections/:id/folders`            | List folders (`?type=`; tables embed `tables`) |
+| POST   | `/api/connections/:id/folders`            | Create folder (opt. `parentId`, `color`) |
+| PUT    | `/api/connections/:id/folders/:fid`       | Rename / recolor / move folder  |
+| PUT    | `/api/connections/:id/tables/:table/folder` | Set/clear a table's folder    |
 | DELETE | `/api/connections/:id/folders/:fid`       | Delete folder (contents move up)|
 | GET    | `/api/connections/:id/history`            | List query history              |
 | POST   | `/api/connections/:id/history`            | Record a query execution        |

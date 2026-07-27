@@ -29,10 +29,10 @@ import CreateTablePanel from '@/features/schema-designer/components/CreateTableP
 import SchemaSidebar from '@/features/schema-designer/components/SchemaSidebar'
 import SaveQueryPanel from '@/shared/ui/SaveQueryPanel'
 import { newItemId } from '@/shared/lib/schemaDraft'
-import { DomainEditPanel } from '@/features/domains'
+import { TableFolderEditPanel } from '@/features/table-folders'
 import { columnTypeSql, FK_ACTIONS, fkEligible, normFkAction, parseColumnDefs, useColumnTypes } from '@/features/schema-designer/components/columnFields'
 import { useShortcut } from '@/features/keymap'
-import { ChevronRight, ColumnsIcon, DownloadIcon, EditIcon, PlusIcon, SaveIcon, TableIcon, TagIcon, TrashIcon, WandIcon } from '@/shared/ui/icons'
+import { ChevronRight, ColumnsIcon, DownloadIcon, EditIcon, FolderIcon, PlusIcon, SaveIcon, TableIcon, TagIcon, TrashIcon, WandIcon } from '@/shared/ui/icons'
 
 // Fixed metrics so per-column handles line up with their rows.
 const HEADER_H = 34
@@ -200,12 +200,12 @@ function TableNode({ data, selected }) {
   )
 }
 
-// ---- Custom node: a translucent region wrapping a domain's tables ----
+// ---- Custom node: a translucent region wrapping a folder's tables ----
 // A translucent backdrop sized to the bounding box of its member tables (see
-// domainGroups below). The whole region is a drag surface, so it's painted
+// folderGroups below). The whole region is a drag surface, so it's painted
 // under both the tables and the FK lines (zIndex -1) to stay out of the way of
 // clicks meant for them.
-function DomainGroupNode({ data }) {
+function FolderGroupNode({ data }) {
   const [hover, setHover] = useState(false)
   const color = data.color || '#94a3b8'
   return (
@@ -224,7 +224,7 @@ function DomainGroupNode({ data }) {
       }}
     >
       {/* Header bar: an obvious, wide grab target. Its edit button opens the
-          domain editor (detected via the `.domain-edit` class in onNodeClick). */}
+          folder editor (detected via the `.folder-edit` class in onNodeClick). */}
       <div
         className="absolute inset-x-0 top-0 flex h-[22px] items-center gap-1.5 rounded-t-[12px] px-2 transition-colors"
         style={{ backgroundColor: hover ? `${color}40` : `${color}26` }}
@@ -234,14 +234,14 @@ function DomainGroupNode({ data }) {
           {data.name}
         </span>
         {/* Edit affordance — revealed on hover, matching the table cards; click
-            opens the domain editor (detected via `.domain-edit` in onNodeClick). */}
+            opens the folder editor (detected via `.folder-edit` in onNodeClick). */}
         <button
           type="button"
-          className={`domain-edit flex h-[18px] w-[18px] shrink-0 cursor-pointer items-center justify-center rounded transition-opacity hover:bg-black/10 ${
+          className={`folder-edit flex h-[18px] w-[18px] shrink-0 cursor-pointer items-center justify-center rounded transition-opacity hover:bg-black/10 ${
             hover ? 'opacity-100' : 'opacity-0'
           }`}
           style={{ color }}
-          title="Edit domain"
+          title="Edit folder"
         >
           <EditIcon width={12} height={12} />
         </button>
@@ -250,7 +250,7 @@ function DomainGroupNode({ data }) {
   )
 }
 
-const nodeTypes = { table: TableNode, domainGroup: DomainGroupNode }
+const nodeTypes = { table: TableNode, folderGroup: FolderGroupNode }
 
 // ---- Parse staged change SQL into pending tables / columns ----
 // A staged CREATE TABLE — the source of truth for a not-yet-committed table,
@@ -545,7 +545,7 @@ function pathWithJumps(points, verticals) {
   return d
 }
 
-export default function SchemaEditor({ conn, changes, domains = [], onUpdateDomain, onDeleteDomain, onSetDomain, pending = [], onPendingChange, onStageItems, onSaveDraft, onUpdateDraft, draftId, onOpenTable, onOpenSchema }) {
+export default function SchemaEditor({ conn, changes, folders = [], onUpdateFolder, onDeleteFolder, onSetFolder, pending = [], onPendingChange, onStageItems, onSaveDraft, onUpdateDraft, draftId, onOpenTable, onOpenSchema }) {
   const dialect = conn.type === 'postgresql' ? 'postgresql' : 'sqlite'
   const types = useColumnTypes(conn)
   const toast = useToast()
@@ -561,7 +561,7 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
   const [hiddenTables, setHiddenTables] = useState(() => new Set()) // tables hidden from the diagram
   const [menu, setMenu] = useState(null) // canvas context menu { x, y }
   const [nodeMenu, setNodeMenu] = useState(null) // table right-click menu { x, y, table, pending }
-  const [editingDomain, setEditingDomain] = useState(null) // domain being edited from the canvas | null
+  const [editingFolder, setEditingFolder] = useState(null) // folder being edited from the canvas | null
   const [creating, setCreating] = useState(false) // create-table panel open
   const [editingDraft, setEditingDraft] = useState(null) // staged new table being re-edited { table, columns }
   const [naming, setNaming] = useState(false) // "save as draft" name prompt open
@@ -766,18 +766,18 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
   // Node size (matches the fixed row metrics) so dagre arranges without overlaps.
   const sizeOf = (t) => ({ w: NODE_W, h: HEADER_H + PAD_T * 2 + t.columns.length * ROW_H })
 
-  // Inner padding a domain region reserves around its member tables, plus the
-  // top strip for its draggable label. Kept in sync with domainGroups (below),
+  // Inner padding a folder region reserves around its member tables, plus the
+  // top strip for its draggable label. Kept in sync with folderGroups (below),
   // which derives the region rectangle from the same members.
-  const DOMAIN_PAD = 22
-  const DOMAIN_LABEL_H = 26
+  const FOLDER_PAD = 22
+  const FOLDER_LABEL_H = 26
 
   // Build a table React Flow node at an absolute position.
   const tableNodeAt = useCallback(
     (t, position) => ({
       id: t.name,
       type: 'table',
-      zIndex: 1, // paint above the FK lines and the domain regions (zIndex -1)
+      zIndex: 1, // paint above the FK lines and the folder regions (zIndex -1)
       position,
       style: { width: NODE_W },
       data: {
@@ -796,8 +796,8 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
     [fkInfo, canEditFk]
   )
 
-  // Arrange tables with dagre. Tables sharing a domain are clustered into their
-  // own block (laid out internally, then placed as one unit), so each domain
+  // Arrange tables with dagre. Tables sharing a folder are clustered into their
+  // own block (laid out internally, then placed as one unit), so each folder
   // region wraps only its members and never overlaps a foreign table. Ranks
   // follow FK relationships, no collisions.
   const layoutNodes = useCallback(() => {
@@ -805,21 +805,21 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
     const sizes = {}
     for (const t of visible) sizes[t.name] = sizeOf(t)
 
-    // Which domain (if any, and only if it has a visible member) each table is in.
-    const domainOf = {}
-    for (const d of domains) for (const tn of d.tables || []) domainOf[tn] = d.id
-    const activeDomains = new Set(visible.map((t) => domainOf[t.name]).filter(Boolean))
+    // Which folder (if any, and only if it has a visible member) each table is in.
+    const folderOf = {}
+    for (const d of folders) for (const tn of d.tables || []) folderOf[tn] = d.id
+    const activeFolders = new Set(visible.map((t) => folderOf[t.name]).filter(Boolean))
 
-    // 1) Lay out each domain's members internally → relative offsets + inner size.
-    const inner = {} // domainId -> { rel: {table -> {x,y}}, w, h }
-    for (const did of activeDomains) {
-      const members = visible.filter((t) => domainOf[t.name] === did)
+    // 1) Lay out each folder's members internally → relative offsets + inner size.
+    const inner = {} // folderId -> { rel: {table -> {x,y}}, w, h }
+    for (const did of activeFolders) {
+      const members = visible.filter((t) => folderOf[t.name] === did)
       const g = new dagre.graphlib.Graph()
       g.setDefaultEdgeLabel(() => ({}))
       g.setGraph({ rankdir: 'LR', nodesep: 40, ranksep: 80, marginx: 0, marginy: 0 })
       for (const t of members) g.setNode(t.name, { width: sizes[t.name].w, height: sizes[t.name].h })
       for (const fk of diagram.foreignKeys) {
-        if (domainOf[fk.table] === did && domainOf[fk.refTable] === did && fk.table !== fk.refTable) g.setEdge(fk.table, fk.refTable)
+        if (folderOf[fk.table] === did && folderOf[fk.refTable] === did && fk.table !== fk.refTable) g.setEdge(fk.table, fk.refTable)
       }
       dagre.layout(g)
       let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
@@ -832,17 +832,17 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
         minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x + s.w); maxY = Math.max(maxY, y + s.h)
       }
       // Normalize so the top-left member sits at (PAD, PAD + LABEL_H) inside the block.
-      for (const t of members) { rel[t.name].x += DOMAIN_PAD - minX; rel[t.name].y += DOMAIN_PAD + DOMAIN_LABEL_H - minY }
-      inner[did] = { rel, w: maxX - minX + DOMAIN_PAD * 2, h: maxY - minY + DOMAIN_PAD * 2 + DOMAIN_LABEL_H }
+      for (const t of members) { rel[t.name].x += FOLDER_PAD - minX; rel[t.name].y += FOLDER_PAD + FOLDER_LABEL_H - minY }
+      inner[did] = { rel, w: maxX - minX + FOLDER_PAD * 2, h: maxY - minY + FOLDER_PAD * 2 + FOLDER_LABEL_H }
     }
 
-    // 2) Lay out blocks: each domain (as one node) + each ungrouped table.
-    const blockOf = (table) => (activeDomains.has(domainOf[table]) ? `d:${domainOf[table]}` : `t:${table}`)
+    // 2) Lay out blocks: each folder (as one node) + each ungrouped table.
+    const blockOf = (table) => (activeFolders.has(folderOf[table]) ? `d:${folderOf[table]}` : `t:${table}`)
     const g2 = new dagre.graphlib.Graph()
     g2.setDefaultEdgeLabel(() => ({}))
     g2.setGraph({ rankdir: 'LR', nodesep: 60, ranksep: 120, marginx: 24, marginy: 24 })
-    for (const did of activeDomains) g2.setNode(`d:${did}`, { width: inner[did].w, height: inner[did].h })
-    for (const t of visible) if (!activeDomains.has(domainOf[t.name])) g2.setNode(`t:${t.name}`, { width: sizes[t.name].w, height: sizes[t.name].h })
+    for (const did of activeFolders) g2.setNode(`d:${did}`, { width: inner[did].w, height: inner[did].h })
+    for (const t of visible) if (!activeFolders.has(folderOf[t.name])) g2.setNode(`t:${t.name}`, { width: sizes[t.name].w, height: sizes[t.name].h })
     const seen = new Set()
     for (const fk of diagram.foreignKeys) {
       if (fk.table === fk.refTable || hiddenTables.has(fk.table) || hiddenTables.has(fk.refTable)) continue
@@ -857,23 +857,23 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
 
     // 3) Expand blocks back into absolute table positions.
     const out = []
-    for (const did of activeDomains) {
+    for (const did of activeFolders) {
       const b = g2.node(`d:${did}`)
       const bx = b.x - inner[did].w / 2, by = b.y - inner[did].h / 2
       for (const t of visible) {
-        if (domainOf[t.name] !== did) continue
+        if (folderOf[t.name] !== did) continue
         const r = inner[did].rel[t.name]
         out.push(tableNodeAt(t, { x: bx + r.x, y: by + r.y }))
       }
     }
     for (const t of visible) {
-      if (activeDomains.has(domainOf[t.name])) continue
+      if (activeFolders.has(folderOf[t.name])) continue
       const b = g2.node(`t:${t.name}`)
       const s = sizes[t.name]
       out.push(tableNodeAt(t, { x: b.x - s.w / 2, y: b.y - s.h / 2 }))
     }
     return out
-  }, [augmented, diagram, hiddenTables, domains, tableNodeAt])
+  }, [augmented, diagram, hiddenTables, folders, tableNodeAt])
 
   const toggleTable = (name) =>
     setHiddenTables((s) => {
@@ -1039,17 +1039,17 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
   // Inject each table's connection endpoints into node data (without re-running
   // dagre), so a connected column can paint a solid dot on the exact edge its
   // line lands on. Kept off `layoutNodes` so it never reshuffles the diagram.
-  // Domain regions: one translucent region per domain, sized to the bounding
+  // Folder regions: one translucent region per folder, sized to the bounding
   // box of its visible member tables (using live node positions, so the region
   // tracks member drags). Painted behind the tables and the FK lines (see the
   // zIndex note below). Grabbing anywhere on the region drags the whole group
-  // (see handleNodesChange); its header's edit button opens the domain editor.
-  const domainGroups = useMemo(() => {
-    if (!domains.length || !nodes.length) return []
+  // (see handleNodesChange); its header's edit button opens the folder editor.
+  const folderGroups = useMemo(() => {
+    if (!folders.length || !nodes.length) return []
     const byTable = {}
     for (const n of nodes) byTable[n.id] = n
     const heightOf = (n) => HEADER_H + PAD_T * 2 + (n.data.columns?.length || 0) * ROW_H
-    return domains
+    return folders
       .map((d) => {
         const members = (d.tables || []).map((t) => byTable[t]).filter(Boolean)
         if (!members.length) return null
@@ -1061,12 +1061,12 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
           maxX = Math.max(maxX, n.position.x + w)
           maxY = Math.max(maxY, n.position.y + heightOf(n))
         }
-        const w = maxX - minX + DOMAIN_PAD * 2
-        const h = maxY - minY + DOMAIN_PAD * 2 + DOMAIN_LABEL_H
+        const w = maxX - minX + FOLDER_PAD * 2
+        const h = maxY - minY + FOLDER_PAD * 2 + FOLDER_LABEL_H
         return {
-          id: `domain:${d.id}`,
-          type: 'domainGroup',
-          position: { x: minX - DOMAIN_PAD, y: minY - DOMAIN_PAD - DOMAIN_LABEL_H },
+          id: `folder:${d.id}`,
+          type: 'folderGroup',
+          position: { x: minX - FOLDER_PAD, y: minY - FOLDER_PAD - FOLDER_LABEL_H },
           // Provide explicit dimensions so React Flow never has to (re)measure
           // the node — otherwise it flips to visibility:hidden each time this
           // memo rebuilds during a drag, and a mousedown in that window falls
@@ -1090,17 +1090,17 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
         }
       })
       .filter(Boolean)
-  }, [domains, nodes])
+  }, [folders, nodes])
 
   const displayNodes = useMemo(
     () => [
-      ...domainGroups,
+      ...folderGroups,
       ...nodes.map((n) => (n.data.fkSides === fkEndpoints[n.id] ? n : { ...n, data: { ...n.data, fkSides: fkEndpoints[n.id] } })),
     ],
-    [domainGroups, nodes, fkEndpoints]
+    [folderGroups, nodes, fkEndpoints]
   )
 
-  // Domain regions aren't stored in node state (they're derived from members),
+  // Folder regions aren't stored in node state (they're derived from members),
   // so dragging one is translated here into position changes for its member
   // tables — the region then follows the members it wraps. Everything else
   // passes straight through to useNodesState's handler.
@@ -1109,14 +1109,14 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
       const passthrough = []
       const extra = []
       for (const ch of changes) {
-        if (ch.id?.startsWith?.('domain:')) {
+        if (ch.id?.startsWith?.('folder:')) {
           if (ch.type === 'position' && ch.position) {
-            const grp = domainGroups.find((g) => g.id === ch.id)
+            const grp = folderGroups.find((g) => g.id === ch.id)
             if (grp) {
               const dx = ch.position.x - grp.position.x
               const dy = ch.position.y - grp.position.y
               if (dx || dy) {
-                const dom = domains.find((d) => `domain:${d.id}` === ch.id)
+                const dom = folders.find((d) => `folder:${d.id}` === ch.id)
                 for (const tn of dom?.tables || []) {
                   const node = liveNodes.current.find((n) => n.id === tn)
                   if (node) extra.push({ id: tn, type: 'position', position: { x: node.position.x + dx, y: node.position.y + dy }, dragging: ch.dragging })
@@ -1124,13 +1124,13 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
               }
             }
           }
-          continue // never apply domain-node changes to table state
+          continue // never apply folder-node changes to table state
         }
         passthrough.push(ch)
       }
       onNodesChange([...passthrough, ...extra])
     },
-    [onNodesChange, domainGroups, domains]
+    [onNodesChange, folderGroups, folders]
   )
 
   // ---- Sidebar focus / edit actions ----
@@ -1154,7 +1154,7 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
     }
   }
   const focusTable = (name) => revealAndFit([name], [name])
-  const focusDomain = (d) => revealAndFit(d.tables || [], d.tables || [])
+  const focusFolder = (d) => revealAndFit(d.tables || [], d.tables || [])
   // Focus a foreign key's two tables and open its edit popup (centered near the
   // top of the canvas, since there's no click point from the list).
   const openReference = (fk, i) => {
@@ -1442,8 +1442,8 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
           onFocusTable={focusTable}
           foreignKeys={augmentedForeignKeys}
           onEditReference={openReference}
-          domains={domains}
-          onFocusDomain={focusDomain}
+          folders={folders}
+          onFocusFolder={focusFolder}
         />
         <div
           ref={canvasWrapRef}
@@ -1478,13 +1478,13 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
                 onConnectEnd={onConnectEnd}
                 onNodeClick={(e, node) => {
                   const target = e.target as HTMLElement
-                  // Domains and tables are edited only via their hover edit icon
-                  // (`.domain-edit` / `.table-edit`); a plain click just leaves the
+                  // Folders and tables are edited only via their hover edit icon
+                  // (`.folder-edit` / `.table-edit`); a plain click just leaves the
                   // node draggable and never opens the editor.
-                  if (node.id.startsWith('domain:')) {
-                    if (target?.closest?.('.domain-edit')) {
-                      const d = domains.find((dm) => `domain:${dm.id}` === node.id)
-                      if (d) setEditingDomain(d)
+                  if (node.id.startsWith('folder:')) {
+                    if (target?.closest?.('.folder-edit')) {
+                      const d = folders.find((dm) => `folder:${dm.id}` === node.id)
+                      if (d) setEditingFolder(d)
                     }
                     return
                   }
@@ -1495,7 +1495,7 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
                   // Stop the event bubbling to the canvas' onContextMenu, which
                   // would otherwise also open the empty-space menu on top.
                   e.stopPropagation()
-                  if (node.id.startsWith('domain:')) return
+                  if (node.id.startsWith('folder:')) return
                   setMenu(null)
                   setNodeMenu({ x: e.clientX, y: e.clientY, table: node.id, pending: !!node.data?.pending })
                 }}
@@ -1589,12 +1589,12 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
         />
       )}
 
-      {editingDomain && (
-        <DomainEditPanel
-          domain={editingDomain}
-          onSave={(fields) => onUpdateDomain?.(editingDomain.id, fields)}
-          onDelete={() => onDeleteDomain?.(editingDomain.id)}
-          onClose={() => setEditingDomain(null)}
+      {editingFolder && (
+        <TableFolderEditPanel
+          folder={editingFolder}
+          onSave={(fields) => onUpdateFolder?.(editingFolder.id, fields)}
+          onDelete={() => onDeleteFolder?.(editingFolder.id)}
+          onClose={() => setEditingFolder(null)}
         />
       )}
 
@@ -1790,8 +1790,8 @@ export default function SchemaEditor({ conn, changes, domains = [], onUpdateDoma
           <MenuItem onClick={() => { openTableEditor(nodeMenu.table, nodeMenu.pending); setNodeMenu(null) }}>
             <EditIcon width={14} height={14} /> Edit table
           </MenuItem>
-          <MenuItem onClick={() => { onSetDomain?.(nodeMenu.table); setNodeMenu(null) }}>
-            <TagIcon width={14} height={14} /> Move to domain…
+          <MenuItem onClick={() => { onSetFolder?.(nodeMenu.table); setNodeMenu(null) }}>
+            <FolderIcon width={14} height={14} /> Move to folder…
           </MenuItem>
           <div className="my-1 h-px bg-edge" />
           <MenuItem danger className="!text-red" onClick={() => { deleteTable(nodeMenu.table, nodeMenu.pending); setNodeMenu(null) }}>

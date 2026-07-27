@@ -103,6 +103,7 @@ import {
   DiagramIcon,
   EditIcon,
   EyeIcon,
+  FolderIcon,
   GridIcon,
   HistoryIcon,
   MenuIcon,
@@ -116,7 +117,16 @@ import {
   WandIcon,
   WorkflowIcon,
 } from '@/shared/ui/icons'
-import { DomainPickerPanel, DomainQuickMenu, DomainDot, fetchDomains, updateDomain, deleteDomain } from '@/features/domains'
+import {
+  TableFolderPickerPanel,
+  TableFolderQuickMenu,
+  TableFolderEditPanel,
+  TableFolderList,
+  FolderDot,
+  fetchTableFolders,
+  updateTableFolder,
+  deleteTableFolder,
+} from '@/features/table-folders'
 import { TemplatesPanel, TemplateDetailView, TEMPLATES } from '@/features/templates'
 
 const kbd =
@@ -189,9 +199,10 @@ export default function Workspace() {
   const [searchOpen, setSearchOpen] = useState(false) // table search toggle
   const [paletteOpen, setPaletteOpen] = useState(false) // ⌘K command palette
   const [tableSort, setTableSort] = useState('az') // 'az' | 'za'
-  const [tableView, setTableView] = useState('flat') // 'flat' | 'domains' — Tables list grouping
-  const [domains, setDomains] = useState([]) // per-connection domains (with grouped table names)
-  const [domainTable, setDomainTable] = useState(null) // table whose domain picker is open | null
+  const [tableView, setTableView] = useState('flat') // 'flat' | 'folders' — Tables list grouping
+  const [tableFolders, setTableFolders] = useState([]) // per-connection tableFolders (with grouped table names)
+  const [folderPickerTable, setFolderPickerTable] = useState(null) // table whose folder picker is open | null
+  const [editingFolder, setEditingFolder] = useState(null) // folder being renamed/recolored | null
   const searchRef = useRef(null)
   const autoOpenedFor = useRef(null) // connection id we've already auto-opened a tab for
 
@@ -322,7 +333,7 @@ export default function Workspace() {
     fetchWorkflowFolders(id).then((list) => alive && setWorkflowFolders(list))
     listDashboards(id).then((list) => alive && setDashboards(list))
     fetchDashboardFolders(id).then((list) => alive && setDashboardFolders(list))
-    fetchDomains(id).then((list) => alive && setDomains(list))
+    fetchTableFolders(id).then((list) => alive && setTableFolders(list))
     return () => {
       alive = false
     }
@@ -1142,61 +1153,73 @@ export default function Workspace() {
 
   const current = tabs.find((t) => t.key === activeTab)
 
-  // tableName -> its single domain (drives the inline dot + the grouped view).
-  const domainByTable = useMemo(() => {
+  // tableName -> its folder (drives the inline dot + the grouped view).
+  const folderByTable = useMemo(() => {
     const map = {}
-    for (const d of domains) for (const tn of d.tables || []) map[tn] = d
+    for (const d of tableFolders) for (const tn of d.tables || []) map[tn] = d
     return map
-  }, [domains])
+  }, [tableFolders])
 
-  // Grouped-by-domain buckets for the Tables section (only built in 'domains'
-  // view). Tables with no domain fall into a trailing "Ungrouped" bucket.
+  // Tables shown in the 'folders' view — TableFolderList buckets them into one
+  // folder per table folder plus a trailing "Ungrouped" folder.
   const tableObjects = visibleObjects.filter((o) => o.type === 'table')
-  const domainBuckets = domains
-    .map((d) => ({ key: d.id, domain: d, items: tableObjects.filter((o) => d.tables?.includes(o.name)) }))
-    .filter((b) => b.items.length > 0)
-  const ungroupedTables = tableObjects.filter((o) => !domainByTable[o.name])
 
-  // Edit/delete a domain from the schema diagram (optimistic local update).
-  const updateDomainById = async (domainId, fields) => {
-    setDomains((prev) => prev.map((d) => (d.id === domainId ? { ...d, ...fields } : d)))
+  // Edit/delete a folder from the schema diagram (optimistic local update).
+  const updateFolderById = async (folderId, fields) => {
+    setTableFolders((prev) => prev.map((d) => (d.id === folderId ? { ...d, ...fields } : d)))
     try {
-      await updateDomain(id, domainId, fields)
+      await updateTableFolder(id, folderId, fields)
     } catch (e) {
-      toast.error(`Couldn't update domain: ${e.message}`)
+      toast.error(`Couldn't update folder: ${e.message}`)
     }
   }
-  const removeDomain = async (domainId) => {
-    setDomains((prev) => prev.filter((d) => d.id !== domainId))
+  const removeTableFolder = async (folderId) => {
+    // Mirror the server locally: subfolders and member tables move up one level
+    // (to this folder's parent — the root, i.e. ungrouped, for a top-level one).
+    const prev = tableFolders
+    const gone = tableFolders.find((f) => f.id === folderId)
+    const parentId = gone?.parentId || null
+    setTableFolders((list) =>
+      list
+        .filter((f) => f.id !== folderId)
+        .map((f) => ({
+          ...f,
+          parentId: (f.parentId || null) === folderId ? parentId : f.parentId,
+          tables: f.id === parentId ? [...f.tables, ...(gone?.tables || [])] : f.tables,
+        }))
+    )
     try {
-      await deleteDomain(id, domainId)
+      await deleteTableFolder(id, folderId)
     } catch (e) {
+      setTableFolders(prev)
       toast.error(`Delete failed: ${e.message}`)
     }
   }
 
-  // One table/view/function sidebar row (used flat and inside tag buckets).
-  const renderObject = (obj) => {
+  // One table/view/function sidebar row (used flat and inside table folders).
+  // `rowProps` is spread onto the row so the folder view can make it draggable.
+  const renderObject = (obj, rowProps = {}) => {
     const active =
       obj.type === 'function'
         ? current?.kind === 'function' && current.name === obj.name
         : current?.kind === 'table' && current.table === obj.name
     const Icon = obj.type === 'view' ? EyeIcon : obj.type === 'function' ? CodeIcon : TableIcon
     const onOpen = obj.type === 'function' ? () => openFunction(obj.name) : () => openTable(obj.name)
-    const rowDomain = obj.type === 'table' ? domainByTable[obj.name] : null
+    const rowFolder = obj.type === 'table' ? folderByTable[obj.name] : null
     return (
       <ListRow
         key={`${obj.type}:${obj.name}`}
         active={active}
         onClick={onOpen}
         icon={<Icon className={`flex-shrink-0 ${active ? 'text-ink' : 'text-ink-faint'}`} />}
+        {...rowProps}
       >
         <RowLabel title={obj.type === 'function' && obj.detail ? `${obj.name}(${obj.detail})` : obj.name}>
           {obj.name}
         </RowLabel>
-        {rowDomain && (
-          <span className="shrink-0 group-hover:hidden" title={rowDomain.name}>
-            <DomainDot color={rowDomain.color} size={7} />
+        {rowFolder && (
+          <span className="shrink-0 group-hover:hidden" title={rowFolder.name}>
+            <FolderDot color={rowFolder.color} size={7} />
           </span>
         )}
         <div className="shrink-0" onClick={(e) => e.stopPropagation()}>
@@ -1254,12 +1277,12 @@ export default function Workspace() {
                     <MenuItem onClick={() => { setCreatingTable({ table: obj.name }); close() }}>
                       <EditIcon width={14} height={14} /> Edit Table
                     </MenuItem>
-                    <DomainQuickMenu
+                    <TableFolderQuickMenu
                       connectionId={id}
                       table={obj.name}
-                      domains={domains}
-                      onChange={setDomains}
-                      onConfigure={() => { setDomainTable(obj.name); close() }}
+                      folders={tableFolders}
+                      onChange={setTableFolders}
+                      onConfigure={() => { setFolderPickerTable(obj.name); close() }}
                       onAssigned={close}
                     />
                     <div className="my-1 h-px bg-edge" />
@@ -1386,13 +1409,13 @@ export default function Workspace() {
                 <SearchIcon width={15} height={15} />
               </IconButton>
             </Tooltip>
-            <Tooltip label={tableView === 'domains' ? 'Ungroup' : 'Group by domain'} placement="bottom">
+            <Tooltip label={tableView === 'folders' ? 'Ungroup' : 'Group by folder'} placement="bottom">
               <IconButton
-                active={tableView === 'domains'}
-                onClick={() => setTableView((v) => (v === 'domains' ? 'flat' : 'domains'))}
-                aria-label="Group tables by domain"
+                active={tableView === 'folders'}
+                onClick={() => setTableView((v) => (v === 'folders' ? 'flat' : 'folders'))}
+                aria-label="Group tables by folder"
               >
-                <TagIcon width={15} height={15} />
+                <FolderIcon width={15} height={15} />
               </IconButton>
             </Tooltip>
             <Tooltip label="Create table" placement="bottom">
@@ -1456,30 +1479,19 @@ export default function Workspace() {
                 </TextButton>
                 {openGroup === group.type && (
                   <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto pr-0.5">
-                    {group.type === 'table' && tableView === 'domains' ? (
-                      <>
-                        {domainBuckets.map((b) => (
-                          <div key={b.key} className="flex flex-col gap-0.5">
-                            <div className="flex items-center gap-1.5 px-2.5 pb-0.5 pt-1.5 text-[10px] font-semibold uppercase tracking-wide text-ink-faint">
-                              <DomainDot color={b.domain.color} />
-                              <span className="truncate">{b.domain.name}</span>
-                              <span className="opacity-60">{b.items.length}</span>
-                            </div>
-                            {b.items.map(renderObject)}
-                          </div>
-                        ))}
-                        {ungroupedTables.length > 0 && (
-                          <div className="flex flex-col gap-0.5">
-                            <div className="flex items-center gap-1.5 px-2.5 pb-0.5 pt-1.5 text-[10px] font-semibold uppercase tracking-wide text-ink-faint">
-                              <span className="truncate">Ungrouped</span>
-                              <span className="opacity-60">{ungroupedTables.length}</span>
-                            </div>
-                            {ungroupedTables.map(renderObject)}
-                          </div>
-                        )}
-                      </>
+                    {group.type === 'table' && tableView === 'folders' ? (
+                      <TableFolderList
+                        connectionId={id}
+                        folders={tableFolders}
+                        tables={tableObjects}
+                        searching={!!filter.trim()}
+                        onChange={setTableFolders}
+                        onEdit={setEditingFolder}
+                        onDelete={removeTableFolder}
+                        renderTable={renderObject}
+                      />
                     ) : (
-                      group.items.map(renderObject)
+                      group.items.map((o) => renderObject(o))
                     )}
                   </div>
                 )}
@@ -1780,10 +1792,10 @@ export default function Workspace() {
                 key={`${current.key}:${dataVersion}:${ns.database}:${ns.schema}`}
                 conn={nsConn}
                 changes={changes}
-                domains={domains}
-                onUpdateDomain={updateDomainById}
-                onDeleteDomain={removeDomain}
-                onSetDomain={setDomainTable}
+                folders={tableFolders}
+                onUpdateFolder={updateFolderById}
+                onDeleteFolder={removeTableFolder}
+                onSetFolder={setFolderPickerTable}
                 pending={schemaPending[current.key] || []}
                 onPendingChange={(items) => setSchemaPending((p) => ({ ...p, [current.key]: items }))}
                 onStageItems={stageSchemaItems}
@@ -1941,13 +1953,22 @@ export default function Workspace() {
         />
       )}
 
-      {domainTable && (
-        <DomainPickerPanel
+      {editingFolder && (
+        <TableFolderEditPanel
+          folder={editingFolder}
+          onSave={(fields) => updateFolderById(editingFolder.id, fields)}
+          onDelete={() => removeTableFolder(editingFolder.id)}
+          onClose={() => setEditingFolder(null)}
+        />
+      )}
+
+      {folderPickerTable && (
+        <TableFolderPickerPanel
           connectionId={id}
-          table={domainTable}
-          domains={domains}
-          onChange={setDomains}
-          onClose={() => setDomainTable(null)}
+          table={folderPickerTable}
+          folders={tableFolders}
+          onChange={setTableFolders}
+          onClose={() => setFolderPickerTable(null)}
         />
       )}
 
