@@ -49,11 +49,24 @@ const WorkflowEditor = lazy(() => import('@/features/workflow/components/Workflo
 // Lazy — recharts + react-grid-layout; only load when a dashboard tab opens.
 const DashboardView = lazy(() => import('@/features/dashboard/components/DashboardView'))
 import IconRail from '@/features/workspace/components/IconRail'
+import TabBar from '@/features/workspace/components/TabBar'
 import { formatCombo, useKeymap, useShortcut } from '@/features/keymap'
 import SavedQueriesPanel from '@/features/workspace/components/SavedQueriesPanel'
 import AnalyzePanel from '@/features/workspace/components/AnalyzePanel'
 import AnalyzeFolderPanel from '@/features/workspace/components/AnalyzeFolderPanel'
-import { WorkflowsPanel, listWorkflows, createWorkflow, deleteWorkflow, updateWorkflow } from '@/features/workflow'
+import {
+  WorkflowsPanel,
+  listWorkflows,
+  createWorkflow,
+  deleteWorkflow,
+  updateWorkflow,
+  sanitizeGraph,
+  fetchWorkflowFolders,
+  createWorkflowFolder,
+  renameWorkflowFolder,
+  moveWorkflowFolder,
+  deleteWorkflowFolder,
+} from '@/features/workflow'
 import {
   DashboardsPanel,
   listDashboards,
@@ -85,12 +98,12 @@ import ListRow from '@/shared/ui/ListRow'
 import TextButton from '@/shared/ui/buttons/TextButton'
 import {
   ChevronRight,
-  CloseIcon,
   CodeIcon,
   ColumnsIcon,
   DiagramIcon,
   EditIcon,
   EyeIcon,
+  FolderPlusIcon,
   GridIcon,
   HistoryIcon,
   MenuIcon,
@@ -101,9 +114,18 @@ import {
   TableIcon,
   TagIcon,
   TrashIcon,
+  WandIcon,
   WorkflowIcon,
 } from '@/shared/ui/icons'
-import { DomainPickerPanel, DomainQuickMenu, DomainDot, fetchDomains, updateDomain, deleteDomain } from '@/features/domains'
+import {
+  TableFolderPickerPanel,
+  TableFolderList,
+  FolderDot,
+  fetchTableFolders,
+  updateTableFolder,
+  deleteTableFolder,
+} from '@/features/table-folders'
+import { TemplatesPanel, TemplateDetailView, TEMPLATES } from '@/features/templates'
 
 const kbd =
   'inline-flex min-w-[20px] items-center justify-center rounded-[5px] border border-edge bg-elevated px-1.5 py-0.5 text-[11px] text-ink-dim'
@@ -152,6 +174,7 @@ export default function Workspace() {
   const [saved, setSaved] = useState([])
   const [folders, setFolders] = useState([])
   const [workflows, setWorkflows] = useState([])
+  const [workflowFolders, setWorkflowFolders] = useState([])
   const [dashboards, setDashboards] = useState([])
   const [dashboardFolders, setDashboardFolders] = useState([])
   const [tabMenu, setTabMenu] = useState(null) // { x, y, key } | null
@@ -170,13 +193,13 @@ export default function Workspace() {
   const [sidebarOpen, setSidebarOpen] = useState(false) // mobile drawer
   const [openGroup, setOpenGroup] = useState('table') // accordion: the one expanded browser section
   const [tablesVisible, setTablesVisible] = useState(true) // left panel visible
-  const [panel, setPanel] = useState('browser') // 'browser' | 'queries' | 'workflows'
+  const [panel, setPanel] = useState('browser') // 'browser' | 'queries' | 'workflows' | 'dashboards' | 'schema' | 'templates'
   const [searchOpen, setSearchOpen] = useState(false) // table search toggle
   const [paletteOpen, setPaletteOpen] = useState(false) // ⌘K command palette
   const [tableSort, setTableSort] = useState('az') // 'az' | 'za'
-  const [tableView, setTableView] = useState('flat') // 'flat' | 'domains' — Tables list grouping
-  const [domains, setDomains] = useState([]) // per-connection domains (with grouped table names)
-  const [domainTable, setDomainTable] = useState(null) // table whose domain picker is open | null
+  const [tableFolders, setTableFolders] = useState([]) // per-connection tableFolders (with grouped table names)
+  const [creatingTableFolder, setCreatingTableFolder] = useState(null) // { parentId } while naming a new folder | null
+  const [folderPickerTable, setFolderPickerTable] = useState(null) // table whose folder picker is open (schema diagram) | null
   const searchRef = useRef(null)
   const autoOpenedFor = useRef(null) // connection id we've already auto-opened a tab for
 
@@ -304,9 +327,10 @@ export default function Workspace() {
     fetchSaved(id).then((list) => alive && setSaved(list))
     fetchFolders(id).then((list) => alive && setFolders(list))
     listWorkflows(id).then((list) => alive && setWorkflows(list))
+    fetchWorkflowFolders(id).then((list) => alive && setWorkflowFolders(list))
     listDashboards(id).then((list) => alive && setDashboards(list))
     fetchDashboardFolders(id).then((list) => alive && setDashboardFolders(list))
-    fetchDomains(id).then((list) => alive && setDomains(list))
+    fetchTableFolders(id).then((list) => alive && setTableFolders(list))
     return () => {
       alive = false
     }
@@ -601,10 +625,10 @@ export default function Workspace() {
     setActiveTab(key)
     setSidebarOpen(false)
   }
-  const newWorkflow = async () => {
+  const newWorkflow = async (folderId = null) => {
     try {
-      const wf = await createWorkflow(id, `Workflow ${workflows.length + 1}`)
-      setWorkflows((prev) => [{ id: wf.id, name: wf.name, ts: Date.now(), protected: false, scheduleEnabled: false }, ...prev])
+      const wf = await createWorkflow(id, `Workflow ${workflows.length + 1}`, undefined, folderId)
+      setWorkflows((prev) => [{ id: wf.id, name: wf.name, ts: Date.now(), protected: false, scheduleEnabled: false, folderId: folderId || null }, ...prev])
       openWorkflow(wf)
     } catch (e) {
       toast.error(`Couldn't create workflow: ${e.message}`)
@@ -630,6 +654,79 @@ export default function Workspace() {
       toast.error(`Delete failed: ${e.message}`)
     }
   }
+  const workflowFileRef = useRef(null)
+  const importWorkflowFile = async (file) => {
+    try {
+      const doc = JSON.parse(await file.text())
+      if (doc?.kind !== 'workflow' || !doc.graph) throw new Error('Not a workflow export file.')
+      const wf = await createWorkflow(id, doc.name || 'Imported workflow', sanitizeGraph(doc.graph))
+      setWorkflows((prev) => [{ id: wf.id, name: wf.name, ts: Date.now(), protected: false, scheduleEnabled: false, folderId: null }, ...prev])
+      openWorkflow(wf)
+    } catch (e) {
+      toast.error(`Import failed: ${e.message}`)
+    }
+  }
+
+  // ---- Workflow folders (nesting capped at 3 levels, enforced server-side) ----
+  const addWorkflowFolder = async (name, parentId = null) => {
+    const next = name?.trim()
+    if (!next) return
+    try {
+      const folder = await createWorkflowFolder(id, next, parentId)
+      setWorkflowFolders((prev) => [...prev, folder])
+    } catch (e) {
+      toast.error(`Couldn't create folder: ${e.message}`)
+    }
+  }
+  const renameWorkflowFolderById = async (fid, name) => {
+    const next = name?.trim()
+    if (!next) return
+    setWorkflowFolders((prev) => prev.map((f) => (f.id === fid ? { ...f, name: next } : f)))
+    try {
+      await renameWorkflowFolder(id, fid, next)
+    } catch (e) {
+      toast.error(`Rename failed: ${e.message}`)
+    }
+  }
+  const removeWorkflowFolder = async (fid) => {
+    // Reparent this folder's contents up one level locally, mirroring the server:
+    // its subfolders and workflows move to its own parent (root for a top-level folder).
+    const parentId = workflowFolders.find((f) => f.id === fid)?.parentId || null
+    setWorkflowFolders((prev) =>
+      prev.filter((f) => f.id !== fid).map((f) => (f.parentId === fid ? { ...f, parentId } : f))
+    )
+    setWorkflows((prev) => prev.map((w) => (w.folderId === fid ? { ...w, folderId: parentId } : w)))
+    try {
+      await deleteWorkflowFolder(id, fid)
+    } catch (e) {
+      toast.error(`Delete failed: ${e.message}`)
+    }
+  }
+  const moveWorkflowFolderToParent = async (fid, parentId) => {
+    const target = parentId || null
+    if (fid === target) return
+    // Guard against cycles: refuse to nest a folder under its own descendant.
+    const parentOf = new Map(workflowFolders.map((f) => [f.id, f.parentId || null]))
+    for (let cur = target; cur; cur = parentOf.get(cur)) {
+      if (cur === fid) return
+    }
+    setWorkflowFolders((prev) => prev.map((f) => (f.id === fid ? { ...f, parentId: target } : f)))
+    try {
+      await moveWorkflowFolder(id, fid, target)
+    } catch (e) {
+      // Depth-cap or cycle rejection — refresh to resync with the server truth.
+      toast.error(`Move failed: ${e.message}`)
+      fetchWorkflowFolders(id).then(setWorkflowFolders)
+    }
+  }
+  const moveWorkflowToFolder = async (wid, folderId) => {
+    setWorkflows((prev) => prev.map((w) => (w.id === wid ? { ...w, folderId: folderId || null } : w)))
+    try {
+      await updateWorkflow(id, wid, { folderId: folderId || null })
+    } catch (e) {
+      toast.error(`Move failed: ${e.message}`)
+    }
+  }
 
   // ---- Dashboards (per connection) ----
   // Mirrors the workflow handlers: open in a tab, create, rename, delete,
@@ -642,6 +739,26 @@ export default function Workspace() {
     )
     setActiveTab(key)
     setSidebarOpen(false)
+  }
+  // ---- Templates (built-in catalog, browse + apply) ----
+  // Open a template's detail in its own tab (VSCode-style). Applying creates
+  // its workflows + dashboards on this connection, then refreshes the rails.
+  const openTemplate = (t) => {
+    const key = `template:${t.id}`
+    setTabs((prev) =>
+      prev.some((tab) => tab.key === key) ? prev : [...prev, { key, kind: 'template', templateId: t.id, title: t.name }]
+    )
+    setActiveTab(key)
+    setSidebarOpen(false)
+  }
+  const onTemplateApplied = (res) => {
+    listWorkflows(id).then(setWorkflows)
+    fetchWorkflowFolders(id).then(setWorkflowFolders)
+    listDashboards(id).then(setDashboards)
+    fetchDashboardFolders(id).then(setDashboardFolders)
+    const d = res.dashboards[0]
+    if (d) openDashboard(d)
+    else if (res.workflows[0]) openWorkflow(res.workflows[0])
   }
   const newDashboard = async (folderId = null) => {
     try {
@@ -1010,9 +1127,30 @@ export default function Workspace() {
     })
   }
 
+  const closeOtherTabs = (key) => {
+    setTabs((prev) => {
+      if (!prev.some((t) => t.key === key)) return prev
+      if (activeTab !== key) setActiveTab(key)
+      return prev.filter((t) => t.key === key)
+    })
+  }
+
   const closeAllTabs = () => {
     setTabs([])
     setActiveTab(null)
+  }
+
+  // Drag-reorder from the tab bar: move `fromKey` next to `toKey` (before or
+  // after it); `toKey === null` moves it to the end.
+  const moveTab = (fromKey, toKey, before) => {
+    setTabs((prev) => {
+      const from = prev.findIndex((t) => t.key === fromKey)
+      if (from === -1) return prev
+      const next = prev.filter((t) => t.key !== fromKey)
+      const at = toKey == null ? next.length : next.findIndex((t) => t.key === toKey)
+      next.splice(at === -1 ? next.length : at + (before ? 0 : 1), 0, prev[from])
+      return next
+    })
   }
 
   const openTabMenu = (e, key) => {
@@ -1029,65 +1167,79 @@ export default function Workspace() {
     { type: 'table', label: 'Tables', items: visibleObjects.filter((o) => o.type === 'table') },
     { type: 'view', label: 'Views', items: visibleObjects.filter((o) => o.type === 'view') },
     { type: 'function', label: 'Functions', items: visibleObjects.filter((o) => o.type === 'function') },
-  ].filter((g) => g.items.length > 0)
+    // Tables also stays visible while it only holds folders (empty ones, or all
+    // of their tables filtered out) — otherwise the folder tree would vanish.
+  ].filter((g) => g.items.length > 0 || (g.type === 'table' && (tableFolders.length > 0 || creatingTableFolder)))
 
   const current = tabs.find((t) => t.key === activeTab)
 
-  // tableName -> its single domain (drives the inline dot + the grouped view).
-  const domainByTable = useMemo(() => {
+  // tableName -> its folder (drives the inline dot + the grouped view).
+  const folderByTable = useMemo(() => {
     const map = {}
-    for (const d of domains) for (const tn of d.tables || []) map[tn] = d
+    for (const d of tableFolders) for (const tn of d.tables || []) map[tn] = d
     return map
-  }, [domains])
+  }, [tableFolders])
 
-  // Grouped-by-domain buckets for the Tables section (only built in 'domains'
-  // view). Tables with no domain fall into a trailing "Ungrouped" bucket.
+  // Tables shown in the 'folders' view — TableFolderList buckets them into one
+  // folder per table folder plus a trailing "Ungrouped" folder.
   const tableObjects = visibleObjects.filter((o) => o.type === 'table')
-  const domainBuckets = domains
-    .map((d) => ({ key: d.id, domain: d, items: tableObjects.filter((o) => d.tables?.includes(o.name)) }))
-    .filter((b) => b.items.length > 0)
-  const ungroupedTables = tableObjects.filter((o) => !domainByTable[o.name])
 
-  // Edit/delete a domain from the schema diagram (optimistic local update).
-  const updateDomainById = async (domainId, fields) => {
-    setDomains((prev) => prev.map((d) => (d.id === domainId ? { ...d, ...fields } : d)))
+  // Edit/delete a folder from the schema diagram (optimistic local update).
+  const updateFolderById = async (folderId, fields) => {
+    setTableFolders((prev) => prev.map((d) => (d.id === folderId ? { ...d, ...fields } : d)))
     try {
-      await updateDomain(id, domainId, fields)
+      await updateTableFolder(id, folderId, fields)
     } catch (e) {
-      toast.error(`Couldn't update domain: ${e.message}`)
+      toast.error(`Couldn't update folder: ${e.message}`)
     }
   }
-  const removeDomain = async (domainId) => {
-    setDomains((prev) => prev.filter((d) => d.id !== domainId))
+  const removeTableFolder = async (folderId) => {
+    // Mirror the server locally: subfolders and member tables move up one level
+    // (to this folder's parent — the root, i.e. ungrouped, for a top-level one).
+    const prev = tableFolders
+    const gone = tableFolders.find((f) => f.id === folderId)
+    const parentId = gone?.parentId || null
+    setTableFolders((list) =>
+      list
+        .filter((f) => f.id !== folderId)
+        .map((f) => ({
+          ...f,
+          parentId: (f.parentId || null) === folderId ? parentId : f.parentId,
+          tables: f.id === parentId ? [...f.tables, ...(gone?.tables || [])] : f.tables,
+        }))
+    )
     try {
-      await deleteDomain(id, domainId)
+      await deleteTableFolder(id, folderId)
     } catch (e) {
+      setTableFolders(prev)
       toast.error(`Delete failed: ${e.message}`)
     }
   }
 
-  // One table/view/function sidebar row (used flat and inside tag buckets).
-  const renderObject = (obj) => {
+  // One table/view/function sidebar row (used flat and inside table folders).
+  // `rowProps` is spread onto the row so the folder view can make it draggable.
+  const renderObject = (obj, rowProps = {}) => {
     const active =
       obj.type === 'function'
         ? current?.kind === 'function' && current.name === obj.name
         : current?.kind === 'table' && current.table === obj.name
     const Icon = obj.type === 'view' ? EyeIcon : obj.type === 'function' ? CodeIcon : TableIcon
     const onOpen = obj.type === 'function' ? () => openFunction(obj.name) : () => openTable(obj.name)
-    const rowDomain = obj.type === 'table' ? domainByTable[obj.name] : null
+    const rowFolder = obj.type === 'table' ? folderByTable[obj.name] : null
     return (
       <ListRow
         key={`${obj.type}:${obj.name}`}
         active={active}
         onClick={onOpen}
         icon={<Icon className={`flex-shrink-0 ${active ? 'text-ink' : 'text-ink-faint'}`} />}
+        {...rowProps}
       >
         <RowLabel title={obj.type === 'function' && obj.detail ? `${obj.name}(${obj.detail})` : obj.name}>
           {obj.name}
         </RowLabel>
-        {rowDomain && (
-          <span className="shrink-0 group-hover:hidden" title={rowDomain.name}>
-            <DomainDot color={rowDomain.color} size={7} />
+        {rowFolder && (
+          <span className="shrink-0 group-hover:hidden" title={rowFolder.name}>
+            <FolderDot color={rowFolder.color} size={7} />
           </span>
         )}
         <div className="shrink-0" onClick={(e) => e.stopPropagation()}>
@@ -1145,14 +1297,6 @@ export default function Workspace() {
                     <MenuItem onClick={() => { setCreatingTable({ table: obj.name }); close() }}>
                       <EditIcon width={14} height={14} /> Edit Table
                     </MenuItem>
-                    <DomainQuickMenu
-                      connectionId={id}
-                      table={obj.name}
-                      domains={domains}
-                      onChange={setDomains}
-                      onConfigure={() => { setDomainTable(obj.name); close() }}
-                      onAssigned={close}
-                    />
                     <div className="my-1 h-px bg-edge" />
                     <MenuItem danger onClick={() => { setTableAction({ table: obj.name, mode: 'empty' }); close() }}>
                       <TrashIcon width={14} height={14} /> Empty Table
@@ -1185,7 +1329,7 @@ export default function Workspace() {
   const commands: Command[] = [
     { id: 'new-query', group: 'Create', label: 'New SQL query', keywords: 'sql add query tab', icon: <CodeIcon width={15} height={15} />, hint: formatCombo(bindings['general.newTab']), run: () => openQuery() },
     { id: 'new-schema', group: 'Create', label: 'New schema diagram', keywords: 'erd designer table diagram', icon: <DiagramIcon width={15} height={15} />, run: openSchemaEditor },
-    { id: 'new-workflow', group: 'Create', label: 'New workflow', keywords: 'automation flow', icon: <WorkflowIcon width={15} height={15} />, run: newWorkflow },
+    { id: 'new-workflow', group: 'Create', label: 'New workflow', keywords: 'automation flow', icon: <WorkflowIcon width={15} height={15} />, run: () => newWorkflow() },
     { id: 'new-dashboard', group: 'Create', label: 'New dashboard', keywords: 'charts widgets analytics', icon: <GridIcon width={15} height={15} />, run: () => newDashboard() },
     { id: 'new-table', group: 'Create', label: 'New table', keywords: 'create table ddl', icon: <PlusIcon width={15} height={15} />, run: () => setCreatingTable(true) },
 
@@ -1194,6 +1338,7 @@ export default function Workspace() {
     { id: 'go-workflows', group: 'Navigate', label: 'Workflows', keywords: 'automation', icon: <WorkflowIcon width={15} height={15} />, hint: formatCombo(bindings['workspace.panelWorkflows']), run: () => selectPanel('workflows') },
     { id: 'go-schema', group: 'Navigate', label: 'Schema', keywords: 'designer diagram', icon: <DiagramIcon width={15} height={15} />, hint: formatCombo(bindings['workspace.panelSchema']), run: () => selectPanel('schema') },
     { id: 'go-dashboards', group: 'Navigate', label: 'Dashboards', keywords: 'charts analytics', icon: <GridIcon width={15} height={15} />, hint: formatCombo(bindings['workspace.panelDashboards']), run: () => selectPanel('dashboards') },
+    { id: 'go-templates', group: 'Navigate', label: 'Templates', keywords: 'presets starter gallery scaffold', icon: <WandIcon width={15} height={15} />, run: () => selectPanel('templates') },
 
     { id: 'view-history', group: 'View', label: 'Query history', keywords: 'recent past', icon: <HistoryIcon width={15} height={15} />, run: openHistory },
     { id: 'view-schema-history', group: 'View', label: `Schema version history (v${conn.schemaVersion ?? 1})`, keywords: 'migrations audit', icon: <TagIcon width={15} height={15} />, run: openSchemaHistory },
@@ -1227,6 +1372,7 @@ export default function Workspace() {
           onWorkflows={() => selectPanel('workflows')}
           onDashboards={() => selectPanel('dashboards')}
           onSchema={() => selectPanel('schema')}
+          onTemplates={() => selectPanel('templates')}
           onHome={() => navigate('/')}
           onLogout={logout}
         />
@@ -1275,13 +1421,15 @@ export default function Workspace() {
                 <SearchIcon width={15} height={15} />
               </IconButton>
             </Tooltip>
-            <Tooltip label={tableView === 'domains' ? 'Ungroup' : 'Group by domain'} placement="bottom">
+            <Tooltip label="New folder" placement="bottom">
               <IconButton
-                active={tableView === 'domains'}
-                onClick={() => setTableView((v) => (v === 'domains' ? 'flat' : 'domains'))}
-                aria-label="Group tables by domain"
+                onClick={() => {
+                  setOpenGroup('table')
+                  setCreatingTableFolder({ parentId: null })
+                }}
+                aria-label="New table folder"
               >
-                <TagIcon width={15} height={15} />
+                <FolderPlusIcon />
               </IconButton>
             </Tooltip>
             <Tooltip label="Create table" placement="bottom">
@@ -1345,36 +1493,26 @@ export default function Workspace() {
                 </TextButton>
                 {openGroup === group.type && (
                   <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto pr-0.5">
-                    {group.type === 'table' && tableView === 'domains' ? (
-                      <>
-                        {domainBuckets.map((b) => (
-                          <div key={b.key} className="flex flex-col gap-0.5">
-                            <div className="flex items-center gap-1.5 px-2.5 pb-0.5 pt-1.5 text-[10px] font-semibold uppercase tracking-wide text-ink-faint">
-                              <DomainDot color={b.domain.color} />
-                              <span className="truncate">{b.domain.name}</span>
-                              <span className="opacity-60">{b.items.length}</span>
-                            </div>
-                            {b.items.map(renderObject)}
-                          </div>
-                        ))}
-                        {ungroupedTables.length > 0 && (
-                          <div className="flex flex-col gap-0.5">
-                            <div className="flex items-center gap-1.5 px-2.5 pb-0.5 pt-1.5 text-[10px] font-semibold uppercase tracking-wide text-ink-faint">
-                              <span className="truncate">Ungrouped</span>
-                              <span className="opacity-60">{ungroupedTables.length}</span>
-                            </div>
-                            {ungroupedTables.map(renderObject)}
-                          </div>
-                        )}
-                      </>
+                    {group.type === 'table' ? (
+                      <TableFolderList
+                        connectionId={id}
+                        folders={tableFolders}
+                        tables={tableObjects}
+                        searching={!!filter.trim()}
+                        creating={creatingTableFolder}
+                        onCreatingChange={setCreatingTableFolder}
+                        onChange={setTableFolders}
+                        onDelete={removeTableFolder}
+                        renderTable={renderObject}
+                      />
                     ) : (
-                      group.items.map(renderObject)
+                      group.items.map((o) => renderObject(o))
                     )}
                   </div>
                 )}
               </div>
             ))}
-          {!loading && visibleObjects.length === 0 && (
+          {!loading && objectGroups.length === 0 && (
             <div className={`${centerState} text-xs`}>No objects</div>
           )}
         </div>
@@ -1382,12 +1520,22 @@ export default function Workspace() {
         ) : panel === 'workflows' ? (
           <WorkflowsPanel
             workflows={workflows}
+            folders={workflowFolders}
             activeId={current?.kind === 'workflow' ? current.workflowId : null}
             onOpen={openWorkflow}
             onNew={newWorkflow}
+            onImport={() => workflowFileRef.current?.click()}
             onRename={renameWorkflow}
             onDelete={removeWorkflow}
-            onRefresh={() => listWorkflows(id).then(setWorkflows)}
+            onCreateFolder={addWorkflowFolder}
+            onRenameFolder={renameWorkflowFolderById}
+            onDeleteFolder={removeWorkflowFolder}
+            onMoveToFolder={moveWorkflowToFolder}
+            onMoveFolder={moveWorkflowFolderToParent}
+            onRefresh={() => {
+              listWorkflows(id).then(setWorkflows)
+              fetchWorkflowFolders(id).then(setWorkflowFolders)
+            }}
           />
         ) : panel === 'dashboards' ? (
           <DashboardsPanel
@@ -1422,6 +1570,12 @@ export default function Workspace() {
             onRefreshDrafts={() => fetchSaved(id).then(setSaved)}
             onRefreshMigrations={loadSchemaHistory}
             onRollback={setRollbackTarget}
+          />
+        ) : panel === 'templates' ? (
+          <TemplatesPanel
+            dbType={conn?.type}
+            activeId={current?.kind === 'template' ? current.templateId : null}
+            onOpen={openTemplate}
           />
         ) : (
           <SavedQueriesPanel
@@ -1469,7 +1623,7 @@ export default function Workspace() {
               </IconButton>
             </Tooltip>
             <Tooltip label="New workflow" placement="bottom">
-              <IconButton size="toolbar" onClick={newWorkflow} aria-label="New workflow">
+              <IconButton size="toolbar" onClick={() => newWorkflow()} aria-label="New workflow">
                 <WorkflowIcon width={16} height={16} />
               </IconButton>
             </Tooltip>
@@ -1487,6 +1641,17 @@ export default function Workspace() {
             onChange={(e) => {
               const f = e.target.files?.[0]
               if (f) importDashboardFile(f)
+              e.target.value = ''
+            }}
+          />
+          <input
+            ref={workflowFileRef}
+            type="file"
+            accept=".json,application/json"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0]
+              if (f) importWorkflowFile(f)
               e.target.value = ''
             }}
           />
@@ -1567,54 +1732,14 @@ export default function Workspace() {
           </div>
         </div>
 
-        <div className="flex items-stretch gap-1 overflow-x-auto border-b border-edge bg-panel px-1.5 pt-1.5">
-          {tabs.map((t) => {
-            const active = activeTab === t.key
-            return (
-              <div
-                key={t.key}
-                onClick={() => setActiveTab(t.key)}
-                onContextMenu={(e) => openTabMenu(e, t.key)}
-                className={`group/tab relative flex cursor-pointer items-center gap-2.5 whitespace-nowrap rounded-t-[8px] px-3.5 py-2.5 text-xs transition-colors ${
-                  active
-                    ? 'bg-elevated font-medium text-ink'
-                    : 'text-ink-dim hover:bg-elevated/40 hover:text-ink'
-                }`}
-              >
-                {active && <span className="absolute inset-x-0 bottom-0 h-[2px] bg-green" />}
-                {t.kind === 'query' ? (
-                  <CodeIcon className={active ? 'text-ink' : 'text-ink-faint'} />
-                ) : t.kind === 'schema' ? (
-                  <ColumnsIcon className={active ? 'text-ink' : 'text-ink-faint'} />
-                ) : t.kind === 'schemaEditor' ? (
-                  <DiagramIcon className={active ? 'text-ink' : 'text-ink-faint'} />
-                ) : t.kind === 'history' ? (
-                  <HistoryIcon className={active ? 'text-ink' : 'text-ink-faint'} />
-                ) : t.kind === 'schemaHistory' ? (
-                  <HistoryIcon className={active ? 'text-ink' : 'text-ink-faint'} />
-                ) : t.kind === 'function' ? (
-                  <CodeIcon className={active ? 'text-ink' : 'text-ink-faint'} />
-                ) : t.kind === 'workflow' ? (
-                  <WorkflowIcon className={active ? 'text-ink' : 'text-ink-faint'} />
-                ) : t.kind === 'dashboard' ? (
-                  <GridIcon className={active ? 'text-ink' : 'text-ink-faint'} />
-                ) : (
-                  <TableIcon className={active ? 'text-ink' : 'text-ink-faint'} />
-                )}
-                <span>{t.title}</span>
-                <IconButton
-                  size="xs"
-                  className="shrink-0 !text-ink-faint opacity-70 group-hover/tab:opacity-100"
-                  onClick={(e) => closeTab(e, t.key)}
-                  aria-label="Close tab"
-                >
-                  <CloseIcon width={13} height={13} />
-                </IconButton>
-              </div>
-            )
-          })}
-          {tabs.length === 0 && <div className="px-3 py-2.5 text-[11px] text-ink-faint">No open tabs</div>}
-        </div>
+        <TabBar
+          tabs={tabs}
+          activeTab={activeTab}
+          onSelect={setActiveTab}
+          onClose={closeTab}
+          onContextMenu={openTabMenu}
+          onReorder={moveTab}
+        />
 
         <div className="flex min-h-0 flex-1 overflow-hidden">
           {conn && current?.kind === 'table' && (
@@ -1640,10 +1765,10 @@ export default function Workspace() {
                 key={`${current.key}:${dataVersion}:${ns.database}:${ns.schema}`}
                 conn={nsConn}
                 changes={changes}
-                domains={domains}
-                onUpdateDomain={updateDomainById}
-                onDeleteDomain={removeDomain}
-                onSetDomain={setDomainTable}
+                folders={tableFolders}
+                onUpdateFolder={updateFolderById}
+                onDeleteFolder={removeTableFolder}
+                onSetFolder={setFolderPickerTable}
                 pending={schemaPending[current.key] || []}
                 onPendingChange={(items) => setSchemaPending((p) => ({ ...p, [current.key]: items }))}
                 onStageItems={stageSchemaItems}
@@ -1704,6 +1829,20 @@ export default function Workspace() {
               />
             </Suspense>
           )}
+          {conn && current?.kind === 'template' && (() => {
+            const tpl = TEMPLATES.find((t) => t.id === current.templateId)
+            return tpl ? (
+              <TemplateDetailView
+                key={current.key}
+                template={tpl}
+                connectionId={id}
+                dbType={conn.type}
+                onApplied={onTemplateApplied}
+              />
+            ) : (
+              <div className="flex-1 p-8 text-center text-xs text-ink-faint">Template not found.</div>
+            )
+          })()}
           {!current && (
             <div className="flex h-full w-full items-center justify-center overflow-auto p-8">
               <div className="w-full max-w-[560px] text-center">
@@ -1758,6 +1897,15 @@ export default function Workspace() {
             Close
           </MenuItem>
           <MenuItem
+            disabled={tabs.length < 2}
+            onClick={() => {
+              closeOtherTabs(tabMenu.key)
+              setTabMenu(null)
+            }}
+          >
+            Close other tabs
+          </MenuItem>
+          <MenuItem
             disabled={tabs.findIndex((t) => t.key === tabMenu.key) === tabs.length - 1}
             onClick={() => {
               closeTabsToRight(tabMenu.key)
@@ -1787,13 +1935,15 @@ export default function Workspace() {
         />
       )}
 
-      {domainTable && (
-        <DomainPickerPanel
+      {/* Only the schema diagram's "Move to folder…" opens this — the Tables
+          sidebar assigns folders by drag and drop. */}
+      {folderPickerTable && (
+        <TableFolderPickerPanel
           connectionId={id}
-          table={domainTable}
-          domains={domains}
-          onChange={setDomains}
-          onClose={() => setDomainTable(null)}
+          table={folderPickerTable}
+          folders={tableFolders}
+          onChange={setTableFolders}
+          onClose={() => setFolderPickerTable(null)}
         />
       )}
 

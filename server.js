@@ -2144,8 +2144,7 @@ app.delete('/api/workspaces/:id', (req, res) => {
     if (JSON.parse(row.data).workspaceId === req.params.id) {
       deleteConnectionRow(row.id)
       meta.prepare('DELETE FROM saved_queries WHERE connection_id = ?').run(row.id)
-      meta.prepare('DELETE FROM domains WHERE connection_id = ?').run(row.id)
-      meta.prepare('DELETE FROM table_domains WHERE connection_id = ?').run(row.id)
+      meta.prepare('DELETE FROM connection_tables WHERE connection_id = ?').run(row.id)
       meta.prepare('DELETE FROM workflows WHERE connection_id = ?').run(row.id)
       meta.prepare('DELETE FROM dashboards WHERE connection_id = ?').run(row.id)
       meta.prepare('DELETE FROM folders WHERE connection_id = ?').run(row.id)
@@ -2560,8 +2559,7 @@ app.delete('/api/connections/:id', (req, res) => {
   deleteConnectionRow(req.params.id)
   meta.prepare('DELETE FROM saved_queries WHERE connection_id = ?').run(req.params.id)
   meta.prepare('DELETE FROM folders WHERE connection_id = ?').run(req.params.id)
-  meta.prepare('DELETE FROM domains WHERE connection_id = ?').run(req.params.id)
-  meta.prepare('DELETE FROM table_domains WHERE connection_id = ?').run(req.params.id)
+  meta.prepare('DELETE FROM connection_tables WHERE connection_id = ?').run(req.params.id)
   meta.prepare('DELETE FROM workflows WHERE connection_id = ?').run(req.params.id)
   meta.prepare('DELETE FROM workflow_runs WHERE connection_id = ?').run(req.params.id)
   meta.prepare('DELETE FROM dashboards WHERE connection_id = ?').run(req.params.id)
@@ -2598,13 +2596,22 @@ app.get('/api/connections/:id/saved', (req, res) => {
 
 // ---- Folders (per connection, polymorphic by `type`) ----
 // One tree per (connection, type): 'query' groups saved queries, 'dashboard'
-// groups dashboards. Each item points back via its own `folder_id` column, and
+// groups dashboards, 'workflow' groups workflows, 'table' groups the connected
+// database's tables. Each item points back via its own `folder_id` column, and
 // `parent_id` builds the tree (NULL = root). Nesting caps are per type (queries
-// uncapped for back-compat; dashboards capped at 3) and enforced here. Adding a
+// uncapped for back-compat; the rest capped at 3) and enforced here. Adding a
 // new folderable resource = one entry in FOLDER_TYPES + a `folder_id` column.
+//
+// 'table' is the one type whose items don't live in the meta DB (tables belong
+// to the user's database), so its "item table" is `connection_tables` — the
+// per-table metadata row (one per connection+table), of which `folder_id` is
+// currently the only fact. It replaced the old domains/table_domains pair in
+// meta migration v5 — a folder's `color` is what a domain's color became.
 const FOLDER_TYPES = {
   query: { itemTable: 'saved_queries', maxDepth: Infinity },
   dashboard: { itemTable: 'dashboards', maxDepth: 3 },
+  workflow: { itemTable: 'workflows', maxDepth: 3 },
+  table: { itemTable: 'connection_tables', maxDepth: 3 },
 }
 // Coerce an untrusted `type` to a known one (defaults to 'query' for older
 // clients that predate the `type` param). Guards the itemTable interpolation.
@@ -2655,16 +2662,34 @@ function folderHasAncestor(connectionId, type, folderId, candidateAncestor, pare
   return false
 }
 
+// Table names grouped under a 'table' folder (empty for every other type —
+// those items carry their own folder_id and are listed by their own endpoint).
+const folderTables = (connectionId, folderId) =>
+  meta
+    .prepare('SELECT table_name FROM connection_tables WHERE connection_id = ? AND folder_id = ? ORDER BY table_name ASC')
+    .all(connectionId, folderId)
+    .map((r) => r.table_name)
+
+const folderRow = (connectionId, type, r) => ({
+  id: r.id,
+  name: r.name,
+  color: r.color || null,
+  parentId: r.parent_id || null,
+  type,
+  ts: r.ts,
+  ...(type === 'table' ? { tables: folderTables(connectionId, r.id) } : null),
+})
+
 app.get('/api/connections/:id/folders', (req, res) => {
   const type = folderTypeOf(req.query.type)
   const rows = meta
-    .prepare('SELECT id, name, parent_id, ts FROM folders WHERE connection_id = ? AND type = ? ORDER BY ts ASC')
+    .prepare('SELECT id, name, color, parent_id, ts FROM folders WHERE connection_id = ? AND type = ? ORDER BY ts ASC')
     .all(req.params.id, type)
-  res.json(rows.map((r) => ({ id: r.id, name: r.name, parentId: r.parent_id || null, type, ts: r.ts })))
+  res.json(rows.map((r) => folderRow(req.params.id, type, r)))
 })
 
 app.post('/api/connections/:id/folders', (req, res) => {
-  const { name, parentId } = req.body || {}
+  const { name, parentId, color } = req.body || {}
   const type = folderTypeOf(req.body?.type)
   if (!name?.trim()) return res.status(400).json({ error: 'A folder name is required' })
   if (parentId) {
@@ -2675,11 +2700,18 @@ app.post('/api/connections/:id/folders', (req, res) => {
     if (folderDepth(req.params.id, type, parentId) >= FOLDER_TYPES[type].maxDepth)
       return res.status(400).json({ error: `Folders can only nest ${FOLDER_TYPES[type].maxDepth} levels deep` })
   }
-  const entry = { id: randomUUID(), name: name.trim(), parentId: parentId || null, type, ts: Date.now() }
+  const entry = {
+    id: randomUUID(),
+    name: name.trim(),
+    color: color || null,
+    parentId: parentId || null,
+    type,
+    ts: Date.now(),
+  }
   meta
-    .prepare('INSERT INTO folders (id, connection_id, type, name, parent_id, ts) VALUES (?, ?, ?, ?, ?, ?)')
-    .run(entry.id, req.params.id, entry.type, entry.name, entry.parentId, entry.ts)
-  res.json(entry)
+    .prepare('INSERT INTO folders (id, connection_id, type, name, color, parent_id, ts) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run(entry.id, req.params.id, entry.type, entry.name, entry.color, entry.parentId, entry.ts)
+  res.json(type === 'table' ? { ...entry, tables: [] } : entry)
 })
 
 app.put('/api/connections/:id/folders/:fid', (req, res) => {
@@ -2696,6 +2728,11 @@ app.put('/api/connections/:id/folders/:fid', (req, res) => {
     if (!name.trim()) return res.status(400).json({ error: 'A folder name is required' })
     sets.push('name = ?')
     vals.push(name.trim())
+  }
+  // color is explicitly settable (null clears it back to the default look).
+  if ('color' in body) {
+    sets.push('color = ?')
+    vals.push(body.color || null)
   }
   // parentId is explicitly settable (null moves the folder to the root).
   if ('parentId' in body) {
@@ -2739,7 +2776,34 @@ app.delete('/api/connections/:id/folders/:fid', (req, res) => {
   meta
     .prepare(`UPDATE ${FOLDER_TYPES[type].itemTable} SET folder_id = ? WHERE folder_id = ? AND connection_id = ?`)
     .run(parentId, req.params.fid, req.params.id)
+  // A connection_tables row only records membership, so "moved to the root" means
+  // ungrouped — drop the row rather than leaving a folder-less mapping behind.
+  if (type === 'table' && !parentId)
+    meta.prepare('DELETE FROM connection_tables WHERE folder_id IS NULL AND connection_id = ?').run(req.params.id)
   meta.prepare('DELETE FROM folders WHERE id = ? AND connection_id = ?').run(req.params.fid, req.params.id)
+  res.json({ ok: true })
+})
+
+// Set (or clear) a table's folder. `folderId: null` ungroups the table;
+// otherwise it's reassigned to that single folder (upsert — one folder per
+// table). Table names are plain strings, so this works for any dialect.
+app.put('/api/connections/:id/tables/:table/folder', (req, res) => {
+  const folderId = req.body?.folderId ?? null
+  const table = req.params.table
+  if (folderId === null) {
+    meta.prepare('DELETE FROM connection_tables WHERE connection_id = ? AND table_name = ?').run(req.params.id, table)
+    return res.json({ ok: true })
+  }
+  const folder = meta
+    .prepare("SELECT id FROM folders WHERE id = ? AND connection_id = ? AND type = 'table'")
+    .get(folderId, req.params.id)
+  if (!folder) return res.status(404).json({ error: 'Folder not found' })
+  meta
+    .prepare(
+      `INSERT INTO connection_tables (id, connection_id, table_name, folder_id, ts) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(connection_id, table_name) DO UPDATE SET folder_id = excluded.folder_id, ts = excluded.ts`
+    )
+    .run(randomUUID(), req.params.id, table, folderId, Date.now())
   res.json({ ok: true })
 })
 
@@ -2786,105 +2850,39 @@ app.delete('/api/connections/:id/saved/:sid', (req, res) => {
   res.json({ ok: true })
 })
 
-// ---- Domains (per connection) ----
-// A domain is a named, colored entity that groups tables; each table belongs to
-// at most one domain. The shape is database-agnostic (table names are plain
-// strings) so it works for any dialect the connection targets. Each domain
-// carries the list of table names it currently groups.
-const domainWithTables = (connectionId, domain) => ({
-  id: domain.id,
-  name: domain.name,
-  color: domain.color || null,
-  ts: domain.ts,
-  tables: meta
-    .prepare('SELECT table_name FROM table_domains WHERE connection_id = ? AND domain_id = ? ORDER BY table_name ASC')
-    .all(connectionId, domain.id)
-    .map((r) => r.table_name),
-})
-
-app.get('/api/connections/:id/domains', (req, res) => {
-  const rows = meta
-    .prepare('SELECT id, name, color, ts FROM domains WHERE connection_id = ? ORDER BY ts ASC')
-    .all(req.params.id)
-  res.json(rows.map((d) => domainWithTables(req.params.id, d)))
-})
-
-app.post('/api/connections/:id/domains', (req, res) => {
-  const { name, color } = req.body || {}
-  if (!name?.trim()) return res.status(400).json({ error: 'A domain name is required' })
-  const entry = { id: randomUUID(), name: name.trim(), color: color || null, ts: Date.now() }
-  meta
-    .prepare('INSERT INTO domains (id, connection_id, name, color, ts) VALUES (?, ?, ?, ?, ?)')
-    .run(entry.id, req.params.id, entry.name, entry.color, entry.ts)
-  res.json(domainWithTables(req.params.id, entry))
-})
-
-app.put('/api/connections/:id/domains/:domainId', (req, res) => {
-  const body = req.body || {}
-  const sets = []
-  const vals = []
-  if (body.name != null) {
-    if (!body.name.trim()) return res.status(400).json({ error: 'A domain name is required' })
-    sets.push('name = ?')
-    vals.push(body.name.trim())
-  }
-  if ('color' in body) {
-    sets.push('color = ?')
-    vals.push(body.color || null)
-  }
-  if (!sets.length) return res.status(400).json({ error: 'Nothing to update' })
-  const r = meta
-    .prepare(`UPDATE domains SET ${sets.join(', ')} WHERE id = ? AND connection_id = ?`)
-    .run(...vals, req.params.domainId, req.params.id)
-  if (!r.changes) return res.status(404).json({ error: 'Not found' })
-  const domain = meta.prepare('SELECT id, name, color, ts FROM domains WHERE id = ?').get(req.params.domainId)
-  res.json(domainWithTables(req.params.id, domain))
-})
-
-app.delete('/api/connections/:id/domains/:domainId', (req, res) => {
-  meta.prepare('DELETE FROM table_domains WHERE domain_id = ? AND connection_id = ?').run(req.params.domainId, req.params.id)
-  meta.prepare('DELETE FROM domains WHERE id = ? AND connection_id = ?').run(req.params.domainId, req.params.id)
-  res.json({ ok: true })
-})
-
-// Set (or clear) a table's domain. `domainId: null` removes the table from any
-// domain; otherwise the table is reassigned to that single domain (upsert).
-app.put('/api/connections/:id/tables/:table/domain', (req, res) => {
-  const domainId = req.body?.domainId ?? null
-  const table = req.params.table
-  if (domainId === null) {
-    meta.prepare('DELETE FROM table_domains WHERE connection_id = ? AND table_name = ?').run(req.params.id, table)
-    return res.json({ ok: true })
-  }
-  const domain = meta.prepare('SELECT id FROM domains WHERE id = ? AND connection_id = ?').get(domainId, req.params.id)
-  if (!domain) return res.status(404).json({ error: 'Domain not found' })
-  meta
-    .prepare(
-      `INSERT INTO table_domains (id, connection_id, table_name, domain_id, ts) VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(connection_id, table_name) DO UPDATE SET domain_id = excluded.domain_id, ts = excluded.ts`
-    )
-    .run(randomUUID(), req.params.id, table, domainId, Date.now())
-  res.json({ ok: true })
-})
-
 // ---- Workflows (per connection) ----
 // A workflow can be marked `protected` (undeletable) — `DELETE` 409s on it,
 // everything else behaves like a normal workflow. Nothing currently sets this
 // automatically (backups are a separate system — see the Backup section below).
 app.get('/api/connections/:id/workflows', (req, res) => {
   const rows = meta
-    .prepare('SELECT id, name, ts, protected, schedule_enabled FROM workflows WHERE connection_id = ? ORDER BY ts DESC')
+    .prepare('SELECT id, name, ts, protected, schedule_enabled, folder_id FROM workflows WHERE connection_id = ? ORDER BY ts DESC')
     .all(req.params.id)
-  res.json(rows.map((r) => ({ id: r.id, name: r.name, ts: r.ts, protected: !!r.protected, scheduleEnabled: !!r.schedule_enabled })))
+  res.json(
+    rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      ts: r.ts,
+      protected: !!r.protected,
+      scheduleEnabled: !!r.schedule_enabled,
+      folderId: r.folder_id || null,
+    }))
+  )
 })
 
 app.post('/api/connections/:id/workflows', (req, res) => {
-  const { name } = req.body || {}
+  const { name, graph, folderId } = req.body || {}
   if (!name?.trim()) return res.status(400).json({ error: 'A workflow name is required' })
-  const entry = { id: randomUUID(), name: name.trim(), graph: { nodes: [], edges: [] }, ts: Date.now() }
+  const entry = {
+    id: randomUUID(),
+    name: name.trim(),
+    graph: graph && typeof graph === 'object' ? graph : { nodes: [], edges: [] },
+    folderId: folderId || null,
+    ts: Date.now(),
+  }
   meta
-    .prepare('INSERT INTO workflows (id, connection_id, name, graph, ts) VALUES (?, ?, ?, ?, ?)')
-    .run(entry.id, req.params.id, entry.name, JSON.stringify(entry.graph), entry.ts)
+    .prepare('INSERT INTO workflows (id, connection_id, name, graph, folder_id, ts) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(entry.id, req.params.id, entry.name, JSON.stringify(entry.graph), entry.folderId, entry.ts)
   res.json({ ...entry, protected: false, scheduleEnabled: false })
 })
 
@@ -2920,6 +2918,11 @@ app.put('/api/connections/:id/workflows/:wid', (req, res) => {
   if (body.scheduleEnabled != null) {
     sets.push('schedule_enabled = ?')
     vals.push(body.scheduleEnabled ? 1 : 0)
+  }
+  // folderId is explicitly settable (null moves the workflow back to the root).
+  if ('folderId' in body) {
+    sets.push('folder_id = ?')
+    vals.push(body.folderId || null)
   }
   if (!sets.length) return res.status(400).json({ error: 'Nothing to update' })
   // Recompute next_run_at whenever the graph or the enabled flag changes —

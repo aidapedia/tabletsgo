@@ -4,7 +4,7 @@ import Badge from '@/shared/ui/Badge'
 import IconButton from '@/shared/ui/buttons/IconButton'
 import EmptyState from '@/shared/ui/feedback/EmptyState'
 import { ChevronRight, TableIcon, TrashIcon } from '@/shared/ui/icons'
-import { DomainDot } from '@/features/domains'
+import { FolderDot } from '@/features/table-folders'
 
 // Accordion section header — one open section at a time, like the console
 // browser sidebar.
@@ -46,8 +46,8 @@ function opBadge(p) {
 
 /**
  * Left sidebar for the schema diagram — an accordion of Draft Schema (staged
- * changes), Table List, References (FKs) and Domain Groups. Clicking a table or
- * domain focuses the diagram on it; clicking a reference focuses it and opens
+ * changes), Table List, References (FKs) and Table Folders. Clicking a table or
+ * folder focuses the diagram on it; clicking a reference focuses it and opens
  * its edit popup (wired via the callbacks).
  */
 export default function SchemaSidebar({
@@ -59,8 +59,8 @@ export default function SchemaSidebar({
   onFocusTable,
   foreignKeys,
   onEditReference,
-  domains,
-  onFocusDomain,
+  folders,
+  onFocusFolder,
 }) {
   const [open, setOpen] = useState('tables')
   const [q, setQ] = useState('')
@@ -73,7 +73,7 @@ export default function SchemaSidebar({
     { key: 'draft', label: 'Schema Changes', count: pending.length },
     { key: 'tables', label: 'Table List', count: tables.length },
     { key: 'refs', label: 'References Key', count: foreignKeys.length },
-    { key: 'domains', label: 'Domain Group', count: domains.length },
+    { key: 'folders', label: 'Table Folders', count: folders.length },
   ]
 
   return (
@@ -156,13 +156,13 @@ export default function SchemaSidebar({
                     ))
                   ))}
 
-                {s.key === 'domains' &&
-                  (domains.length === 0 ? (
-                    <EmptyState className="py-6">No domains yet.</EmptyState>
+                {s.key === 'folders' &&
+                  (folders.length === 0 ? (
+                    <EmptyState className="py-6">No folders yet.</EmptyState>
                   ) : (
-                    domains.map((d) => (
-                      <div key={d.id} className={rowClass} onClick={() => onFocusDomain(d)}>
-                        <DomainDot color={d.color} />
+                    folders.map((d) => (
+                      <div key={d.id} className={rowClass} onClick={() => onFocusFolder(d)}>
+                        <FolderDot color={d.color} />
                         <span className="flex-1 truncate">{d.name}</span>
                         <span className="text-[10px] text-ink-faint">{d.tables.length}</span>
                       </div>

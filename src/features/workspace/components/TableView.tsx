@@ -4,7 +4,7 @@ import { useSettings } from '@/features/settings'
 import { useShortcut } from '@/features/keymap'
 import DataGrid, { cellText } from '@/features/workspace/components/DataGrid'
 import RowEditorPanel from '@/features/workspace/components/RowEditorPanel'
-import { EXPORT_FORMATS, downloadRows, sqlValue, toCsv } from '@/features/workspace/lib/exportRows'
+import { EXPORT_FORMATS, downloadRows, sqlValue, toCsv, toJson } from '@/features/workspace/lib/exportRows'
 import Button from '@/shared/ui/buttons/Button'
 import TextButton from '@/shared/ui/buttons/TextButton'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
@@ -256,13 +256,24 @@ export default function TableView({ conn, table, onChange, onOpenReference, filt
     stagedInfo('Added insert to changes — commit to apply.')
   }
 
-  // Cell context-menu actions
-  const setCellAs = (row, col, mode) => {
-    const expr = mode === 'default' ? colDefaults[col] : mode === 'null' ? 'NULL' : sqlValue('')
-    if (expr == null) return
-    const sql = `UPDATE "${table}" SET "${col}" = ${expr} WHERE ${rowWhere(row)}`
-    onChange?.({ kind: 'update', label: `Set ${col} to ${mode.toUpperCase()}`, sql, table })
-    stagedInfo('Added update to changes — commit to apply.')
+  // Cell context-menu actions. `sel` is the grid's rectangular cell selection
+  // (always at least the right-clicked cell), so one code path covers both a
+  // single cell and a dragged block: one UPDATE per row, every selected column.
+  const setCellsAs = (sel, mode) => {
+    const expr = (col) => (mode === 'default' ? colDefaults[col] : mode === 'null' ? 'NULL' : sqlValue(''))
+    let staged = 0
+    for (const row of sel.rows) {
+      const parts = sel.columns.filter((c) => expr(c) != null).map((c) => `"${c}" = ${expr(c)}`)
+      if (!parts.length) continue
+      onChange?.({
+        kind: 'update',
+        label: `Set ${sel.columns.join(', ')} to ${mode.toUpperCase()}`,
+        sql: `UPDATE "${table}" SET ${parts.join(', ')} WHERE ${rowWhere(row)}`,
+        table,
+      })
+      staged++
+    }
+    if (staged) stagedInfo(`Added ${staged} update(s) to changes — commit to apply.`)
   }
 
   const copyText = async (text, label = 'Copied to clipboard') => {
@@ -273,7 +284,15 @@ export default function TableView({ conn, table, onChange, onOpenReference, filt
       toast.error('Could not copy to clipboard')
     }
   }
-  const rowToCsv = (row) => toCsv(columns, [row])
+  // Serialize a cell selection. TSV is the default (what spreadsheets expect);
+  // CSV/JSON keep only the selected columns, so the text mirrors the block.
+  const selectionText = (sel, format) => {
+    if (format === 'tsv') {
+      return sel.values.map((vals) => vals.map((v) => cellText(v).replace(/[\t\r\n]+/g, ' ')).join('\t')).join('\n')
+    }
+    const objs = sel.values.map((vals) => Object.fromEntries(sel.columns.map((c, k) => [c, vals[k]])))
+    return format === 'json' ? toJson(sel.columns, objs) : toCsv(sel.columns, objs)
+  }
 
   const addQuickFilter = (col, op, value) => {
     onFiltersChange([...filters, makeFilter(col, op, op === 'isnull' || op === 'notnull' ? '' : cellText(value))])
@@ -321,8 +340,8 @@ export default function TableView({ conn, table, onChange, onOpenReference, filt
   }
   const discardEdits = () => setEdits({})
 
-  const handleCellContextMenu = (e, { row, col, value }) => {
-    setCellMenu({ x: e.clientX, y: e.clientY, row, col, value })
+  const handleCellContextMenu = (e, { row, col, value, selection }) => {
+    setCellMenu({ x: e.clientX, y: e.clientY, row, col, value, selection })
   }
 
   useShortcut('workspace.newRow', () => setShowInsert(true))
@@ -597,6 +616,11 @@ export default function TableView({ conn, table, onChange, onOpenReference, filt
         (() => {
           const { row, col, value } = cellMenu
           const isNum = NUMERIC_TYPE.test(colTypes[col] || '')
+          // Always a rectangle — a lone right-clicked cell is a 1×1 selection.
+          const sel = cellMenu.selection || { rows: [row], columns: [col], values: [[value]], cellCount: 1 }
+          const multi = sel.cellCount > 1
+          const selLabel = multi ? `${sel.cellCount} cells` : 'cell value'
+          const rowLabel = sel.rows.length > 1 ? `${sel.rows.length} rows` : 'row'
           return (
             <ContextMenu x={cellMenu.x} y={cellMenu.y} onClose={() => setCellMenu(null)}>
               <ContextMenuSub label="Filter by this column" icon={FilterIcon}>
@@ -614,21 +638,35 @@ export default function TableView({ conn, table, onChange, onOpenReference, filt
                 <MenuItem onClick={() => { addQuickFilter(col, 'isnull', ''); setCellMenu(null) }}>is null</MenuItem>
                 <MenuItem onClick={() => { addQuickFilter(col, 'notnull', ''); setCellMenu(null) }}>is not null</MenuItem>
               </ContextMenuSub>
-              <ContextMenuSub label="Set as" icon={EditIcon}>
-                <MenuItem onClick={() => { setCellAs(row, col, 'null'); setCellMenu(null) }}>NULL</MenuItem>
-                <MenuItem onClick={() => { setCellAs(row, col, 'empty'); setCellMenu(null) }}>EMPTY</MenuItem>
-                <MenuItem disabled={colDefaults[col] == null} onClick={() => { setCellAs(row, col, 'default'); setCellMenu(null) }}>
+              <ContextMenuSub label={multi ? `Set ${sel.cellCount} cells as` : 'Set as'} icon={EditIcon}>
+                <MenuItem onClick={() => { setCellsAs(sel, 'null'); setCellMenu(null) }}>NULL</MenuItem>
+                <MenuItem onClick={() => { setCellsAs(sel, 'empty'); setCellMenu(null) }}>EMPTY</MenuItem>
+                <MenuItem
+                  disabled={sel.columns.every((c) => colDefaults[c] == null)}
+                  onClick={() => { setCellsAs(sel, 'default'); setCellMenu(null) }}
+                >
                   DEFAULT
                 </MenuItem>
               </ContextMenuSub>
-              
-              <MenuItem onClick={() => { copyText(cellText(value)); setCellMenu(null) }}>
-                <CopyIcon width={14} height={14} /> Copy cell value
+
+              <MenuItem
+                onClick={() => {
+                  copyText(multi ? selectionText(sel, 'tsv') : cellText(value), `Copied ${selLabel}`)
+                  setCellMenu(null)
+                }}
+              >
+                <CopyIcon width={14} height={14} /> Copy {selLabel}
               </MenuItem>
-              <ContextMenuSub label="Copy row as" icon={CopyIcon}>
-                <MenuItem onClick={() => { copyText(insertSql(row), 'Copied SQL'); setCellMenu(null) }}>SQL</MenuItem>
-                <MenuItem onClick={() => { copyText(rowToCsv(row), 'Copied CSV'); setCellMenu(null) }}>CSV</MenuItem>
-                <MenuItem onClick={() => { copyText(JSON.stringify(row, null, 2), 'Copied JSON'); setCellMenu(null) }}>JSON</MenuItem>
+              {multi && (
+                <ContextMenuSub label="Copy selection as" icon={CopyIcon}>
+                  <MenuItem onClick={() => { copyText(selectionText(sel, 'csv'), 'Copied CSV'); setCellMenu(null) }}>CSV</MenuItem>
+                  <MenuItem onClick={() => { copyText(selectionText(sel, 'json'), 'Copied JSON'); setCellMenu(null) }}>JSON</MenuItem>
+                </ContextMenuSub>
+              )}
+              <ContextMenuSub label={`Copy ${rowLabel} as`} icon={CopyIcon}>
+                <MenuItem onClick={() => { copyText(sel.rows.map(insertSql).join('\n'), 'Copied SQL'); setCellMenu(null) }}>SQL</MenuItem>
+                <MenuItem onClick={() => { copyText(toCsv(columns, sel.rows), 'Copied CSV'); setCellMenu(null) }}>CSV</MenuItem>
+                <MenuItem onClick={() => { copyText(JSON.stringify(sel.rows.length > 1 ? sel.rows : row, null, 2), 'Copied JSON'); setCellMenu(null) }}>JSON</MenuItem>
               </ContextMenuSub>
 
               <div className="my-1 h-px bg-edge" />
@@ -639,13 +677,13 @@ export default function TableView({ conn, table, onChange, onOpenReference, filt
               <MenuItem onClick={() => { setShowInsert(true); setCellMenu(null) }}>
                 <PlusSmall width={14} height={14} /> Insert row
               </MenuItem>
-              <MenuItem onClick={() => { stageDuplicate([row], { clear: false }); setCellMenu(null) }}>
-                <CopyIcon width={14} height={14} /> Duplicate row
+              <MenuItem onClick={() => { stageDuplicate(sel.rows, { clear: false }); setCellMenu(null) }}>
+                <CopyIcon width={14} height={14} /> Duplicate {rowLabel}
               </MenuItem>
 
               <div className="my-1 h-px bg-edge" />
-              <MenuItem danger onClick={() => { stageDelete([row], { clear: false }); setCellMenu(null) }}>
-                <TrashIcon width={14} height={14} /> Delete row
+              <MenuItem danger onClick={() => { stageDelete(sel.rows, { clear: false }); setCellMenu(null) }}>
+                <TrashIcon width={14} height={14} /> Delete {rowLabel}
               </MenuItem>
               
             </ContextMenu>

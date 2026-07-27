@@ -6,35 +6,35 @@ import ConfirmDialog from '@/shared/ui/feedback/ConfirmDialog'
 import SlideOverPanel from '@/shared/ui/overlay/SlideOverPanel'
 import { useSlideOver } from '@/shared/hooks/useSlideOver'
 import { TrashIcon } from '@/shared/ui/icons'
-import { DOMAIN_COLORS, type Domain } from '../types'
+import { FOLDER_COLORS, type TableFolder } from '../types'
 
 /**
- * Edit a domain's name and color, or delete it. Presentational — the caller
- * wires `onSave` / `onDelete` to the domain API and its `domains` state. Opens
+ * Edit a folder's name and color, or delete it. Presentational — the caller
+ * wires `onSave` / `onDelete` to the folder API and its `folders` state. Opens
  * as a right-side slide-over (like the migration inspector / table editor),
- * from the schema diagram's domain region label.
+ * from the schema diagram's folder region label.
  */
-export default function DomainEditPanel({
-  domain,
+export default function TableFolderEditPanel({
+  folder,
   onSave,
   onDelete,
   onClose,
 }: {
-  domain: Domain
+  folder: TableFolder
   onSave: (fields: { name?: string; color?: string | null }) => void
   onDelete: () => void
   onClose: () => void
 }) {
   const { show, close } = useSlideOver(onClose)
-  const [name, setName] = useState(domain.name)
-  const [color, setColor] = useState<string>(domain.color || DOMAIN_COLORS[0])
+  const [name, setName] = useState(folder.name)
+  const [color, setColor] = useState<string>(folder.color || FOLDER_COLORS[0])
   const [confirmDelete, setConfirmDelete] = useState(false)
 
   const save = () => {
     const trimmed = name.trim()
     if (!trimmed) return
     close(() => {
-      if (trimmed !== domain.name || color !== domain.color) onSave({ name: trimmed, color })
+      if (trimmed !== folder.name || color !== folder.color) onSave({ name: trimmed, color })
       onClose()
     })
   }
@@ -50,7 +50,7 @@ export default function DomainEditPanel({
         title={
           <span className="flex items-center gap-2">
             <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: color }} />
-            Edit domain
+            Edit folder
           </span>
         }
         footer={
@@ -74,13 +74,13 @@ export default function DomainEditPanel({
           value={name}
           onChange={(e) => setName(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && save()}
-          placeholder="Domain name"
+          placeholder="Folder name"
           autoFocus
         />
 
         <Label className="mt-4">Color</Label>
         <div className="flex flex-wrap gap-1.5">
-          {DOMAIN_COLORS.map((c) => (
+          {FOLDER_COLORS.map((c) => (
             <button
               key={c}
               type="button"
@@ -95,15 +95,15 @@ export default function DomainEditPanel({
         </div>
 
         <p className="mt-4 text-[11px] text-ink-faint">
-          {domain.tables.length} table{domain.tables.length === 1 ? '' : 's'} in this domain.
+          {folder.tables.length} table{folder.tables.length === 1 ? '' : 's'} in this folder.
         </p>
       </SlideOverPanel>
 
       {confirmDelete && (
         <ConfirmDialog
-          title={`Delete domain “${domain.name}”?`}
-          message="The domain is removed and its tables become ungrouped. Table data is not affected."
-          confirmLabel="Delete domain"
+          title={`Delete folder “${folder.name}”?`}
+          message="The folder is removed and its tables become ungrouped. Table data is not affected."
+          confirmLabel="Delete folder"
           cancelLabel="Cancel"
           danger
           onConfirm={() => {

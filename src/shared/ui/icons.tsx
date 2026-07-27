@@ -109,6 +109,17 @@ export const TagIcon = (props) => (
   </svg>
 )
 
+export const PaletteIcon = (props) => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...props}>
+    <path d="M12 3a9 9 0 0 0 0 18c.83 0 1.5-.67 1.5-1.5 0-.39-.15-.74-.39-1-.24-.27-.39-.62-.39-1 0-.83.67-1.5 1.5-1.5H16a5 5 0 0 0 5-5c0-4.42-4.03-8-9-8Z" />
+    <circle cx="7.5" cy="10.5" r="1" fill="currentColor" stroke="none" />
+    <circle cx="10.5" cy="7" r="1" fill="currentColor" stroke="none" />
+    <circle cx="15" cy="7.5" r="1" fill="currentColor" stroke="none" />
+    <circle cx="17.5" cy="11" r="1" fill="currentColor" stroke="none" />
+  </svg>
+)
+
 export const RefreshIcon = (props) => (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
     strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>

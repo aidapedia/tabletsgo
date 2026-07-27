@@ -8,6 +8,7 @@ export { default as RowEditorPanel } from './components/RowEditorPanel'
 export { default as ChangesPanel } from './components/ChangesPanel'
 export { default as SavedQueriesPanel } from './components/SavedQueriesPanel'
 export { default as IconRail } from './components/IconRail'
+export { default as TabBar } from './components/TabBar'
 
 export * from './lib/savedQueries'
 export * from './lib/queryHistory'

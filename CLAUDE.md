@@ -53,31 +53,55 @@ src/
 │   │                             #   ConnectionAccessPanel, DbTypePickerModal (owns DB_CATALOG/TYPE_LABEL);
 │   │                             #   api (connection access get/set)
 │   ├── settings/                 # stores/SettingsContext
-│   ├── domains/                  # named+colored table groupings (one domain per table): DomainQuickMenu
-│   │                             #   (the table context-menu row: hover flyout for one-click assign, or
-│   │                             #   opens the panel), DomainPickerPanel (set a table's domain — a right-side
-│   │                             #   slide-over with inline create/edit/delete), DomainEditPanel, DomainDot;
-│   │                             #   api (domains CRUD +
-│   │                             #   set-table-domain). Drives the sidebar group-by-domain view and the
-│   │                             #   schema-designer's draggable/editable domain regions.
+│   ├── table-folders/            # the connected DB's tables grouped by the generic folders tree
+│   │                             #   (type='table', 3-level cap, one folder per table), each folder
+│   │                             #   carrying an optional color. Replaced the old "domains" feature —
+│   │                             #   meta migration v5 folded every domain into the folders tree,
+│   │                             #   keeping its id/name/color. Components: TableFolderList (the console
+│   │                             #   Tables sidebar — always folder-grouped, like the dashboards/workflows
+│   │                             #   panels: collapsible color-tinted folders + subfolders, drag a table
+│   │                             #   into a folder / a folder into a folder, un-foldered tables listed
+│   │                             #   plainly beneath as the root drop zone, inline new folder (name only —
+│   │                             #   the row is controlled via `creating`/`onCreatingChange` so the panel
+│   │                             #   header's folder+ button starts it) + rename, and one swatch picker
+│   │                             #   reachable two ways: click the folder icon, or ⋮ > "Change color" (a
+│   │                             #   ContextMenuSub flyout)), TableFolderPickerPanel + TableFolderEditPanel (right-side
+│   │                             #   slide-overs, now only reached from the schema diagram's node menu /
+│   │                             #   region label), FolderDot; lib/api (wraps shared/api/folders with the
+│   │                             #   'table' type bound + set-table-folder), lib/assign, lib/tree
+│   │                             #   (path/tree order). Drives the sidebar folder view and the
+│   │                             #   schema-designer's draggable/editable folder regions.
 │   ├── keymap/                   # stores/KeymapContext (useKeymap/useShortcut) + KeymapSetting
 │   ├── workspace/                # the DB console (one connection): data browsing + querying
-│   │   ├── components/           #   DataGrid, TableView, SchemaView, QueryEditor, FunctionView,
-│   │   │                         #   QueryHistoryView, InsertRowPanel, ChangesPanel, SavedQueriesPanel, IconRail
+│   │   ├── components/           #   DataGrid (drag / Shift+click selects a rectangular cell range —
+│   │   │                         #     ⌘/Ctrl+C copies it as TSV, Esc clears; the range rides along in
+│   │   │                         #     onCellContextMenu's payload as `selection`), TableView (its cell
+│   │   │                         #     context menu acts on that selection: copy as TSV/CSV/JSON, set
+│   │   │                         #     NULL/EMPTY/DEFAULT, duplicate/delete the spanned rows),
+│   │   │                         #   SchemaView, QueryEditor, FunctionView,
+│   │   │                         #   QueryHistoryView, InsertRowPanel, ChangesPanel, SavedQueriesPanel, IconRail,
+│   │   │                         #   TabBar (the open-tab strip: drag a tab left/right to reorder — insertion
+│   │   │                         #   caret on drag-over, committed on drop; right-click closes this/others/
+│   │   │                         #   to-the-right/all)
 │   │   └── lib/                  #   savedQueries, queryHistory (backend calls)
 │   ├── schema-designer/          # visual schema design (React Flow ERD + table/column editors; tables
-│   │   │                         #   sharing a domain are clustered into a draggable, editable region)
+│   │   │                         #   sharing a folder are clustered into a draggable, editable region)
 │   │   ├── components/           #   SchemaEditor, SchemaSidebar (accordion: Draft Schema / Table List /
-│   │   │                         #     References / Domain Group — click to focus/edit), CreateTablePanel,
+│   │   │                         #     References / Table Folders — click to focus/edit), CreateTablePanel,
 │   │   │                         #     TableEditPanel, columnFields, SchemaHistoryPanel (schema-version audit trail)
 │   │   └── lib/                  #   rollback (best-effort rollback SQL for staged DDL)
 │   ├── workflow/                 # workflow automations (React Flow builder + server-side runner, incl.
-│   │   │                         #   real hourly/daily scheduling via the Schedule trigger node's Active toggle)
-│   │   ├── components/           #   WorkflowEditor, WorkflowsPanel, NodePalette, NodeConfigPanel,
-│   │   │                         #     RunLogPanel, nodes/WorkflowNode (one spec-driven card)
-│   │   └── lib/                  #   api (per-connection CRUD + run), nodeSpec (node catalog: manual,
-│   │                             #     schedule, query, http, js, switch, loop, export "Export SQL",
-│   │                             #     storage "Store to Storage")
+│   │   │                         #   real hourly/daily scheduling via the Schedule trigger node's Active toggle;
+│   │   │                         #   JSON export/import of a workflow's graph; folders — grouped via the generic
+│   │   │                         #   folders tree (type='workflow'), 3-level cap — mirroring the dashboard feature)
+│   │   ├── components/           #   WorkflowEditor (export/import toolbar buttons), WorkflowsPanel (folder
+│   │   │                         #     tree: create/rename/delete/drag into folders + "Import from JSON…"),
+│   │   │                         #     NodePalette, NodeConfigPanel, RunLogPanel, nodes/WorkflowNode (spec card)
+│   │   └── lib/                  #   api (per-connection CRUD + run + folder CRUD via shared/api/folders),
+│   │                             #     nodeSpec (node catalog: manual, schedule, query, http, js, switch, loop,
+│   │                             #     export "Export SQL", storage "Store to Storage"), exportImport
+│   │                             #     (WorkflowExport type + sanitizeGraph/stripSecrets — webhook tokens
+│   │                             #     never round-trip a file)
 │   ├── dashboard/                # per-connection query dashboards (New Relic style): dynamic variables
 │   │   │                         #   ({{name}} in widget SQL, query-backed or static lists), free-placement
 │   │   │                         #   12-col drag/resize grid (hard collision blocking), fullscreen, JSON
@@ -101,6 +125,19 @@ src/
 │   │   │                         #     BackupCalendarHeatmap, BackupVersionList (run-based restore),
 │   │   │                         #     RestorePanel (restore from uploaded file or browsed storage object)
 │   │   └── lib/                  #   api (storages CRUD, backup schedule/runs/calendar/restore), types
+│   ├── templates/                # built-in, read-only template catalog (browse + apply only — no
+│   │   │                         #   authoring). A template bundles workflows + dashboards; applying
+│   │   │                         #   creates the workflows first, resolves `{{workflow:<key>}}`
+│   │   │                         #   placeholders in dashboard row-action `workflowId`s against the
+│   │   │                         #   newly created ids, then creates the dashboards. Filterable by
+│   │   │                         #   DB type ("postgresql" | "sqlite") against Template.databases.
+│   │   │                         #   VSCode-style entry: a Templates icon in the console IconRail opens
+│   │   │                         #   TemplatesPanel in the sidebar; picking a template opens its detail
+│   │   │                         #   in a main-area tab (kind: 'template').
+│   │   ├── catalog/               #   TEMPLATES: Template[] — the shipped templates (plain TS objects)
+│   │   ├── components/            #   TemplatesPanel (sidebar list + DB-type filter chips),
+│   │   │                         #     TemplateDetailView (main-area tab: contents + Apply button)
+│   │   └── lib/                   #   apply (applyTemplate: create workflows → resolve refs → create dashboards)
 │   └── system-update/            # in-app update checking + guided update wizard (backup → pre-flight →
 │       │                         #   apply → verify). Compares running (version, sha) to the latest GitHub
 │       │                         #   Release; docker-socket-mounted ⇒ one-click self-update, else a manual
