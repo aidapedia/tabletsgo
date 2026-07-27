@@ -52,10 +52,17 @@ export default function ContextMenu({ x, y, onClose, children, width = 220 }) {
   )
 }
 
-/** A MenuItem row that opens a flyout panel to its side on hover. */
+/**
+ * A MenuItem row that opens a flyout panel to its side on hover. Inside a
+ * ContextMenu the parent coordinates which sub is open; used standalone (e.g.
+ * in a Popover action menu, where there are no siblings to coordinate with) it
+ * falls back to its own state.
+ */
 export function ContextMenuSub({ label, icon: Icon, disabled = false, width = 200, children }) {
   const id = useId()
-  const { openSub, setOpenSub } = useContext(OpenSubContext)
+  const parent = useContext(OpenSubContext)
+  const [localSub, setLocalSub] = useState(null)
+  const { openSub, setOpenSub } = parent ?? { openSub: localSub, setOpenSub: setLocalSub }
   const open = openSub === id
   const [pos, setPos] = useState({ left: 0, top: 0 })
   const rowRef = useRef(null)

@@ -58,16 +58,19 @@ src/
 │   │                             #   carrying an optional color. Replaced the old "domains" feature —
 │   │                             #   meta migration v5 folded every domain into the folders tree,
 │   │                             #   keeping its id/name/color. Components: TableFolderList (the console
-│   │                             #   sidebar's folder view: collapsible color-tinted folders + subfolders,
-│   │                             #   drag a table into a folder / a folder into a folder, trailing
-│   │                             #   "Ungrouped" drop zone, inline new folder + rename),
-│   │                             #   TableFolderQuickMenu (the table context-menu row: hover flyout for
-│   │                             #   one-click assign), TableFolderPickerPanel (right-side slide-over
-│   │                             #   with inline create/edit/delete), TableFolderEditPanel (name+color),
-│   │                             #   FolderDot; lib/api (wraps shared/api/folders with the 'table' type
-│   │                             #   bound + set-table-folder), lib/assign, lib/tree (path/tree order).
-│   │                             #   Drives the sidebar folder view and the schema-designer's
-│   │                             #   draggable/editable folder regions.
+│   │                             #   Tables sidebar — always folder-grouped, like the dashboards/workflows
+│   │                             #   panels: collapsible color-tinted folders + subfolders, drag a table
+│   │                             #   into a folder / a folder into a folder, un-foldered tables listed
+│   │                             #   plainly beneath as the root drop zone, inline new folder (name only —
+│   │                             #   the row is controlled via `creating`/`onCreatingChange` so the panel
+│   │                             #   header's folder+ button starts it) + rename, and one swatch picker
+│   │                             #   reachable two ways: click the folder icon, or ⋮ > "Change color" (a
+│   │                             #   ContextMenuSub flyout)), TableFolderPickerPanel + TableFolderEditPanel (right-side
+│   │                             #   slide-overs, now only reached from the schema diagram's node menu /
+│   │                             #   region label), FolderDot; lib/api (wraps shared/api/folders with the
+│   │                             #   'table' type bound + set-table-folder), lib/assign, lib/tree
+│   │                             #   (path/tree order). Drives the sidebar folder view and the
+│   │                             #   schema-designer's draggable/editable folder regions.
 │   ├── keymap/                   # stores/KeymapContext (useKeymap/useShortcut) + KeymapSetting
 │   ├── workspace/                # the DB console (one connection): data browsing + querying
 │   │   ├── components/           #   DataGrid (drag / Shift+click selects a rectangular cell range —

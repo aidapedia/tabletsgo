@@ -6,12 +6,13 @@ import {
   FolderOpenIcon,
   FolderPlusIcon,
   MoreVerticalIcon,
-  SettingsIcon,
+  PaletteIcon,
   TrashIcon,
 } from '@/shared/ui/icons'
 import IconButton from '@/shared/ui/buttons/IconButton'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
 import Popover from '@/shared/ui/overlay/Popover'
+import { ContextMenuSub } from '@/shared/ui/overlay/ContextMenu'
 import { Input } from '@/shared/ui/form/Input'
 import { useToast } from '@/shared/ui/feedback/Toast'
 import { createTableFolder, updateTableFolder, setTableFolder } from '../lib/api'
@@ -27,16 +28,22 @@ type TableObject = { name: string; type: string }
 const byName = (a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name)
 
 /**
- * The Tables sidebar in "folders" mode: the connection's tables grouped by the
- * generic folders tree (type='table'), nesting up to MAX_TABLE_FOLDER_DEPTH —
+ * The console's Tables sidebar: the connection's tables grouped by the generic
+ * folders tree (type='table'), nesting up to MAX_TABLE_FOLDER_DEPTH —
  * the same folder UX as saved queries, dashboards and workflows, plus a color
- * per folder (what a domain's color became). Tables with no folder sit in a
- * trailing "Ungrouped" area, which doubles as the drop target that ungroups a
+ * per folder (what a domain's color became). Tables with no folder are simply
+ * listed under the folders (no "Ungrouped" heading — same shape as the
+ * dashboards panel); that root area doubles as the drop target that ungroups a
  * table and the root drop target for folders.
  *
- * Self-contained like the picker panel: assignment, folder creation, renames
- * and folder moves happen here and are handed back via `onChange`; recoloring
- * and deleting are delegated so they reuse the caller's slide-over wiring.
+ * Self-contained: assignment, folder creation, renames, recoloring and folder
+ * moves all happen here and are handed back via `onChange` — no slide-over.
+ * A folder is created by typing its name inline (like a dashboard folder); its
+ * color is picked from the swatch popover behind the folder icon. Only deleting
+ * is delegated, so the caller can mirror the server's reparenting locally.
+ *
+ * The "new folder" row is controlled (`creating` / `onCreatingChange`) so the
+ * Tables panel header's + button can start one from outside this component.
  *
  * `renderTable` is the caller's own table row renderer; the second argument is
  * spread onto the row so it becomes draggable without duplicating that markup.
@@ -46,8 +53,9 @@ export default function TableFolderList({
   folders,
   tables,
   searching = false,
+  creating,
+  onCreatingChange,
   onChange,
-  onEdit,
   onDelete,
   renderTable,
 }: {
@@ -55,8 +63,9 @@ export default function TableFolderList({
   folders: TableFolder[]
   tables: TableObject[]
   searching?: boolean
+  creating: { parentId: string | null } | null
+  onCreatingChange: (next: { parentId: string | null } | null) => void
   onChange: (next: TableFolder[]) => void
-  onEdit: (folder: TableFolder) => void
   onDelete: (folderId: string) => void
   renderTable: (obj: TableObject, rowProps: Record<string, unknown>) => ReactNode
 }) {
@@ -65,7 +74,6 @@ export default function TableFolderList({
   // track the collapsed ones instead of the open ones.
   const [collapsed, setCollapsed] = useState(() => new Set<string>())
   const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null)
-  const [creating, setCreating] = useState<{ parentId: string | null } | null>(null)
   const [newName, setNewName] = useState('')
   const [drag, setDrag] = useState<{ type: 'table' | 'folder'; id: string } | null>(null)
   const [dropTarget, setDropTarget] = useState<string | null | undefined>(undefined) // folder id | null (root) | undefined
@@ -153,6 +161,19 @@ export default function TableFolderList({
     }
   }
 
+  // Recolor from the swatch popover behind the folder icon (what the old
+  // "Name & color…" slide-over used to do).
+  const recolor = async (folderId: string, color: string | null) => {
+    const prev = folders
+    onChange(folders.map((f) => (f.id === folderId ? { ...f, color } : f)))
+    try {
+      await updateTableFolder(connectionId, folderId, { color })
+    } catch (e) {
+      onChange(prev)
+      toast.error(`Couldn't recolor folder: ${e.message}`)
+    }
+  }
+
   const commitRename = async () => {
     const target = renaming ? folders.find((f) => f.id === renaming.id) : null
     const name = renaming?.value.trim()
@@ -172,7 +193,7 @@ export default function TableFolderList({
     const name = newName.trim()
     const parentId = creating?.parentId ?? null
     setNewName('')
-    setCreating(null)
+    onCreatingChange(null)
     if (!name) return
     try {
       const created = await createTableFolder(connectionId, {
@@ -188,7 +209,7 @@ export default function TableFolderList({
   const startSubfolder = (parentId: string) => {
     expand(parentId)
     setNewName('')
-    setCreating({ parentId })
+    onCreatingChange({ parentId })
   }
 
   // ---- Drag and drop: a table or a folder into a folder / out to the root ----
@@ -232,6 +253,33 @@ export default function TableFolderList({
     className: drag?.type === 'table' && drag.id === obj.name ? 'opacity-50' : '',
   })
 
+  // The swatch grid, shared by the folder icon's popover and its ⋮ menu.
+  const renderColorPicker = (folder: TableFolder, close: () => void, className = 'p-2') => (
+    <div className={className}>
+      <div className="grid grid-cols-6 gap-1.5">
+        {FOLDER_COLORS.map((c) => (
+          <button
+            key={c}
+            type="button"
+            onClick={() => { recolor(folder.id, c); close() }}
+            aria-label={`Color ${c}`}
+            className={`h-5 w-5 rounded-full border-2 transition-transform hover:scale-110 ${
+              folder.color === c ? 'border-ink' : 'border-transparent'
+            }`}
+            style={{ backgroundColor: c }}
+          />
+        ))}
+      </div>
+      <button
+        type="button"
+        onClick={() => { recolor(folder.id, null); close() }}
+        className="mt-1.5 w-full rounded-[6px] px-1.5 py-1 text-left text-[11px] text-ink-faint hover:bg-elevated hover:text-ink"
+      >
+        No color
+      </button>
+    </div>
+  )
+
   const renderNewFolderInput = () => (
     <div className="flex items-center gap-2 px-2.5 py-1">
       <FolderIcon className="shrink-0 text-ink-faint" width={15} height={15} />
@@ -246,7 +294,7 @@ export default function TableFolderList({
           if (e.key === 'Enter') commitNewFolder()
           else if (e.key === 'Escape') {
             setNewName('')
-            setCreating(null)
+            onCreatingChange(null)
           }
         }}
       />
@@ -299,7 +347,28 @@ export default function TableFolderList({
           onClick={() => toggle(folder.id)}
           className={`${rowBase} cursor-pointer ${isDrop ? 'text-ink' : rowIdle}`}
         >
-          <FolderGlyph className="shrink-0 text-ink-faint" width={15} height={15} style={tint} />
+          {/* The folder icon doubles as the color picker — click it for swatches. */}
+          <div className="shrink-0" onClick={(e) => e.stopPropagation()}>
+            <Popover
+              width={168}
+              portal
+              trigger={({ open, toggle: toggleColors }) => (
+                <button
+                  type="button"
+                  onClick={toggleColors}
+                  aria-label={`Color of ${folder.name}`}
+                  title="Folder color"
+                  className={`flex h-[22px] w-[22px] items-center justify-center rounded-[6px] hover:bg-elevated ${
+                    open ? 'bg-elevated' : ''
+                  }`}
+                >
+                  <FolderGlyph className="text-ink-faint" width={15} height={15} style={tint} />
+                </button>
+              )}
+            >
+              {({ close }) => renderColorPicker(folder, close)}
+            </Popover>
+          </div>
           <span className="min-w-0 flex-1 truncate">{folder.name}</span>
           {subtreeCount(folder) > 0 && <span className="text-[10px] text-ink-faint">{subtreeCount(folder)}</span>}
           <div className="shrink-0" onClick={(e) => e.stopPropagation()}>
@@ -329,9 +398,10 @@ export default function TableFolderList({
                   <MenuItem onClick={() => { setRenaming({ id: folder.id, value: folder.name }); close() }}>
                     <EditIcon width={14} height={14} /> Rename
                   </MenuItem>
-                  <MenuItem onClick={() => { onEdit(folder); close() }}>
-                    <SettingsIcon width={14} height={14} /> Name &amp; color…
-                  </MenuItem>
+                  {/* Same picker the folder icon opens, as a side flyout. */}
+                  <ContextMenuSub label="Change color" icon={PaletteIcon} width={170}>
+                    {renderColorPicker(folder, close, 'p-0.5')}
+                  </ContextMenuSub>
                   <div className="my-1 h-px bg-edge" />
                   <MenuItem danger onClick={() => { onDelete(folder.id); close() }}>
                     <TrashIcon width={14} height={14} /> Delete folder
@@ -361,7 +431,8 @@ export default function TableFolderList({
       {childFolders(null).map(renderFolder)}
       {creating && creating.parentId == null && renderNewFolderInput()}
 
-      {/* Ungrouped tables — also the drop zone that pulls a table or a folder
+      {/* Un-foldered tables, listed straight after the folders (like the
+          dashboards panel) — also the drop zone that pulls a table or a folder
           back out to the root. */}
       <div
         {...dropProps(null)}
@@ -369,25 +440,11 @@ export default function TableFolderList({
           dropTarget === null ? 'bg-green/10 ring-1 ring-green-dim' : ''
         }`}
       >
-        {folders.length > 0 && (
-          <div className="flex items-center gap-1.5 px-2.5 pb-0.5 pt-1.5 text-[10px] font-semibold uppercase tracking-wide text-ink-faint">
-            <span>Ungrouped</span>
-            {ungrouped.length > 0 && <span className="opacity-60">{ungrouped.length}</span>}
-          </div>
-        )}
         {ungrouped.map((o) => renderTable(o, tableRowProps(o)))}
         {ungrouped.length === 0 && folders.length > 0 && (
           <div className="px-2.5 py-1 text-[11px] text-ink-faint">Drag tables out of folders here</div>
         )}
       </div>
-
-      <button
-        type="button"
-        onClick={() => { setNewName(''); setCreating({ parentId: null }) }}
-        className="mt-1 flex w-full items-center gap-2 rounded-soft border border-dashed border-edge px-2.5 py-1.5 text-[11px] text-ink-faint transition-colors hover:border-edge-strong hover:text-ink"
-      >
-        <FolderPlusIcon width={14} height={14} /> New folder
-      </button>
     </div>
   )
 }

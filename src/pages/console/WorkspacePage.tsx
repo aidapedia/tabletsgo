@@ -103,7 +103,7 @@ import {
   DiagramIcon,
   EditIcon,
   EyeIcon,
-  FolderIcon,
+  FolderPlusIcon,
   GridIcon,
   HistoryIcon,
   MenuIcon,
@@ -119,8 +119,6 @@ import {
 } from '@/shared/ui/icons'
 import {
   TableFolderPickerPanel,
-  TableFolderQuickMenu,
-  TableFolderEditPanel,
   TableFolderList,
   FolderDot,
   fetchTableFolders,
@@ -199,10 +197,9 @@ export default function Workspace() {
   const [searchOpen, setSearchOpen] = useState(false) // table search toggle
   const [paletteOpen, setPaletteOpen] = useState(false) // ⌘K command palette
   const [tableSort, setTableSort] = useState('az') // 'az' | 'za'
-  const [tableView, setTableView] = useState('flat') // 'flat' | 'folders' — Tables list grouping
   const [tableFolders, setTableFolders] = useState([]) // per-connection tableFolders (with grouped table names)
-  const [folderPickerTable, setFolderPickerTable] = useState(null) // table whose folder picker is open | null
-  const [editingFolder, setEditingFolder] = useState(null) // folder being renamed/recolored | null
+  const [creatingTableFolder, setCreatingTableFolder] = useState(null) // { parentId } while naming a new folder | null
+  const [folderPickerTable, setFolderPickerTable] = useState(null) // table whose folder picker is open (schema diagram) | null
   const searchRef = useRef(null)
   const autoOpenedFor = useRef(null) // connection id we've already auto-opened a tab for
 
@@ -1170,7 +1167,9 @@ export default function Workspace() {
     { type: 'table', label: 'Tables', items: visibleObjects.filter((o) => o.type === 'table') },
     { type: 'view', label: 'Views', items: visibleObjects.filter((o) => o.type === 'view') },
     { type: 'function', label: 'Functions', items: visibleObjects.filter((o) => o.type === 'function') },
-  ].filter((g) => g.items.length > 0)
+    // Tables also stays visible while it only holds folders (empty ones, or all
+    // of their tables filtered out) — otherwise the folder tree would vanish.
+  ].filter((g) => g.items.length > 0 || (g.type === 'table' && (tableFolders.length > 0 || creatingTableFolder)))
 
   const current = tabs.find((t) => t.key === activeTab)
 
@@ -1298,14 +1297,6 @@ export default function Workspace() {
                     <MenuItem onClick={() => { setCreatingTable({ table: obj.name }); close() }}>
                       <EditIcon width={14} height={14} /> Edit Table
                     </MenuItem>
-                    <TableFolderQuickMenu
-                      connectionId={id}
-                      table={obj.name}
-                      folders={tableFolders}
-                      onChange={setTableFolders}
-                      onConfigure={() => { setFolderPickerTable(obj.name); close() }}
-                      onAssigned={close}
-                    />
                     <div className="my-1 h-px bg-edge" />
                     <MenuItem danger onClick={() => { setTableAction({ table: obj.name, mode: 'empty' }); close() }}>
                       <TrashIcon width={14} height={14} /> Empty Table
@@ -1430,13 +1421,15 @@ export default function Workspace() {
                 <SearchIcon width={15} height={15} />
               </IconButton>
             </Tooltip>
-            <Tooltip label={tableView === 'folders' ? 'Ungroup' : 'Group by folder'} placement="bottom">
+            <Tooltip label="New folder" placement="bottom">
               <IconButton
-                active={tableView === 'folders'}
-                onClick={() => setTableView((v) => (v === 'folders' ? 'flat' : 'folders'))}
-                aria-label="Group tables by folder"
+                onClick={() => {
+                  setOpenGroup('table')
+                  setCreatingTableFolder({ parentId: null })
+                }}
+                aria-label="New table folder"
               >
-                <FolderIcon width={15} height={15} />
+                <FolderPlusIcon />
               </IconButton>
             </Tooltip>
             <Tooltip label="Create table" placement="bottom">
@@ -1500,14 +1493,15 @@ export default function Workspace() {
                 </TextButton>
                 {openGroup === group.type && (
                   <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto pr-0.5">
-                    {group.type === 'table' && tableView === 'folders' ? (
+                    {group.type === 'table' ? (
                       <TableFolderList
                         connectionId={id}
                         folders={tableFolders}
                         tables={tableObjects}
                         searching={!!filter.trim()}
+                        creating={creatingTableFolder}
+                        onCreatingChange={setCreatingTableFolder}
                         onChange={setTableFolders}
-                        onEdit={setEditingFolder}
                         onDelete={removeTableFolder}
                         renderTable={renderObject}
                       />
@@ -1518,7 +1512,7 @@ export default function Workspace() {
                 )}
               </div>
             ))}
-          {!loading && visibleObjects.length === 0 && (
+          {!loading && objectGroups.length === 0 && (
             <div className={`${centerState} text-xs`}>No objects</div>
           )}
         </div>
@@ -1941,15 +1935,8 @@ export default function Workspace() {
         />
       )}
 
-      {editingFolder && (
-        <TableFolderEditPanel
-          folder={editingFolder}
-          onSave={(fields) => updateFolderById(editingFolder.id, fields)}
-          onDelete={() => removeTableFolder(editingFolder.id)}
-          onClose={() => setEditingFolder(null)}
-        />
-      )}
-
+      {/* Only the schema diagram's "Move to folder…" opens this — the Tables
+          sidebar assigns folders by drag and drop. */}
       {folderPickerTable && (
         <TableFolderPickerPanel
           connectionId={id}
