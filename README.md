@@ -42,7 +42,7 @@ Self‑hosted, single Docker image, your data stays yours.
 | | Feature | What it does |
 |---|---|---|
 | 🗂️ | **Connections** | Organize databases by environment, folder, and tags. Credentials encrypted at rest. Per‑connection access control. |
-| 📊 | **Data browser** | Fast, spreadsheet‑style data grid — filter, multi‑column sort (click a header, Shift+click to add), edit rows inline, insert & delete, with a staged **Changes** panel before you commit. |
+| 📊 | **Data browser** | Fast, spreadsheet‑style data grid — filter, multi‑column sort (click a header, Shift+click to add), edit rows inline, insert & delete, with a staged **Changes** panel before you commit. Drag (or Shift+click) across cells to select a block, then `⌘/Ctrl+C` to copy it as TSV or right‑click for copy as CSV/JSON, set NULL/EMPTY/DEFAULT, and duplicate/delete the rows it spans. |
 | 📁 | **Table folders** | Group a connection's tables into colored, nestable folders (up to 3 levels) — drag a table into a folder in the sidebar, or assign it from the table menu. The schema designer clusters each folder's tables into its own region on the ERD. |
 | 🧮 | **SQL editor** | CodeMirror‑powered editor with SQL highlighting, formatting, query history, and reusable **saved queries**. |
 | 🎨 | **Schema designer** | Visual ERD (React Flow) to create/edit tables and columns; staged DDL with a **schema version** audit trail and best‑effort rollback SQL. |

@@ -1,5 +1,6 @@
-import { useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import Checkbox from '@/shared/ui/form/Checkbox'
+import { useToast } from '@/shared/ui/feedback/Toast'
 import Button from '@/shared/ui/buttons/Button'
 import TextButton from '@/shared/ui/buttons/TextButton'
 import Tooltip from '@/shared/ui/overlay/Tooltip'
@@ -24,6 +25,19 @@ export const cellText = (v) => {
   if (v instanceof Date) return isoDateTime(v)
   return isJsonValue(v) ? safeStringify(v) : String(v)
 }
+// ---- Rectangular cell selection ----
+// A selection is stored as anchor (r1,c1) → focus (r2,c2) with *column indices*,
+// so a drag can run in any direction; normalize before asking "is this in it?".
+const normalizeRange = (r) =>
+  r && {
+    r1: Math.min(r.r1, r.r2),
+    r2: Math.max(r.r1, r.r2),
+    c1: Math.min(r.c1, r.c2),
+    c2: Math.max(r.c1, r.c2),
+  }
+// Tab-separated text — the format spreadsheets expect on paste.
+const toTsv = (values) => values.map((row) => row.map((v) => cellText(v).replace(/[\t\r\n]+/g, ' ')).join('\t')).join('\n')
+
 // Parse a string to a JSON object/array, or null if it isn't one.
 const parseJsonObject = (s) => {
   if (typeof s !== 'string') return null
@@ -152,8 +166,11 @@ export default function DataGrid({
     draftRef.current = v
     setDraftState(v)
   }
-  const [sel, setSel] = useState(null) // selected cell { r, c }
+  const [range, setRange] = useState(null) // cell selection { r1, c1, r2, c2 } (c = column index)
+  const [dragging, setDragging] = useState(false) // mouse is painting a selection
+  const draggingRef = useRef(false)
   const scrollRef = useRef(null)
+  const toast = useToast()
   const [fill, setFill] = useState({ rowH: 24, remaining: 0 }) // empty grid fill
   const [clientW, setClientW] = useState(0) // container width (to fill horizontally)
   const [widths, setWidths] = useState({}) // per-column override widths
@@ -175,6 +192,21 @@ export default function DataGrid({
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
   }
+
+  // A drag can end anywhere (outside the grid, outside the window), so the
+  // release is watched globally rather than on the cells.
+  useEffect(() => {
+    const stop = () => {
+      draggingRef.current = false
+      setDragging(false)
+    }
+    window.addEventListener('mouseup', stop)
+    return () => window.removeEventListener('mouseup', stop)
+  }, [])
+
+  // Row/column indices are only meaningful for the data currently on screen —
+  // a page change, re-sort or column toggle invalidates the selection.
+  useEffect(() => setRange(null), [rows, columns])
 
   // Measure leftover space so we can pad the grid with empty rows.
   useLayoutEffect(() => {
@@ -201,6 +233,74 @@ export default function DataGrid({
   }
 
   const keyOf = (row, i) => (getRowKey ? getRowKey(row, i) : i)
+
+  // The value the grid shows for a cell — the pending edit when there is one.
+  const cellValue = (row, i, j) => {
+    const c = columns[j]
+    const raw = Array.isArray(row) ? row[j] : row[c]
+    const rowEdits = editable && edits ? edits[keyOf(row, i)] : null
+    return rowEdits && Object.prototype.hasOwnProperty.call(rowEdits, c) ? rowEdits[c] : raw
+  }
+
+  // ---- Cell range selection (click-drag, Shift+click) ----
+  const box = normalizeRange(range)
+  const inBox = (i, j) => !!box && i >= box.r1 && i <= box.r2 && j >= box.c1 && j <= box.c2
+
+  // Everything the selection covers, in the grid's own order — handed to the
+  // context menu so callers can copy/act on it without redoing the geometry.
+  const selectionPayload = () => {
+    if (!box) return null
+    const rowIndexes = []
+    for (let i = box.r1; i <= Math.min(box.r2, rows.length - 1); i++) rowIndexes.push(i)
+    const colIndexes = []
+    for (let j = box.c1; j <= Math.min(box.c2, columns.length - 1); j++) colIndexes.push(j)
+    return {
+      rows: rowIndexes.map((i) => rows[i]),
+      columns: colIndexes.map((j) => columns[j]),
+      values: rowIndexes.map((i) => colIndexes.map((j) => cellValue(rows[i], i, j))),
+      rowCount: rowIndexes.length,
+      colCount: colIndexes.length,
+      cellCount: rowIndexes.length * colIndexes.length,
+    }
+  }
+
+  const startSelect = (e, i, j) => {
+    if (e.button !== 0) return
+    // Suppress the browser's own text selection during the drag; focus is moved
+    // by hand since preventDefault() also cancels the implicit focus.
+    e.preventDefault()
+    scrollRef.current?.focus()
+    if (e.shiftKey && range) setRange((p) => ({ ...p, r2: i, c2: j }))
+    else {
+      setRange({ r1: i, c1: j, r2: i, c2: j })
+      draggingRef.current = true
+      setDragging(true)
+    }
+  }
+  const extendSelect = (i, j) => {
+    if (draggingRef.current) setRange((p) => (p ? { ...p, r2: i, c2: j } : p))
+  }
+
+  const copySelection = async () => {
+    const s = selectionPayload()
+    if (!s) return
+    try {
+      await navigator.clipboard.writeText(toTsv(s.values))
+      toast.success(`Copied ${s.cellCount} cell${s.cellCount > 1 ? 's' : ''}`)
+    } catch {
+      toast.error('Could not copy to clipboard')
+    }
+  }
+
+  const onGridKeyDown = (e) => {
+    if (editing) return
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'c' && box) {
+      e.preventDefault()
+      copySelection()
+    } else if (e.key === 'Escape' && box) {
+      setRange(null)
+    }
+  }
 
   // All edits open a type-aware modal (never inline).
   const startEdit = (rowIndex, col, val) => {
@@ -260,8 +360,16 @@ export default function DataGrid({
 
   return (
     <>
-    <div ref={scrollRef} className="relative min-h-0 w-full min-w-0 flex-1 overflow-auto">
-      <table className="table-fixed border-collapse text-[11px]" style={{ width: tableW }}>
+    <div
+      ref={scrollRef}
+      tabIndex={-1}
+      onKeyDown={onGridKeyDown}
+      className="relative min-h-0 w-full min-w-0 flex-1 overflow-auto outline-none"
+    >
+      <table
+        className={`table-fixed border-collapse text-[11px] ${dragging ? 'select-none' : ''}`}
+        style={{ width: tableW }}
+      >
         <colgroup>
           <col style={{ width: INDEX_W }} />
           {columns.map((c) => (
@@ -345,7 +453,23 @@ export default function DataGrid({
                     const rowEdits = editable && edits ? edits[key] : null
                     const dirty = rowEdits && Object.prototype.hasOwnProperty.call(rowEdits, c)
                     const val = dirty ? rowEdits[c] : raw
-                    const isSel = sel && sel.r === i && sel.c === c
+                    const isSel = inBox(i, j)
+                    // Only the rectangle's outer edges get a line, so a
+                    // multi-cell selection reads as one block instead of a mesh
+                    // of boxes. Inset shadows (not borders) — they don't take up
+                    // space, so selecting never nudges the layout.
+                    const ringStyle = isSel
+                      ? {
+                          boxShadow: [
+                            i === box.r1 && 'inset 0 1px 0 0 var(--color-green)',
+                            i === box.r2 && 'inset 0 -1px 0 0 var(--color-green)',
+                            j === box.c1 && 'inset 1px 0 0 0 var(--color-green)',
+                            j === box.c2 && 'inset -1px 0 0 0 var(--color-green)',
+                          ]
+                            .filter(Boolean)
+                            .join(', '),
+                        }
+                      : undefined
                     const ref = columnRefs?.[c]
                     const hasRef = ref && val != null && val !== ''
                     return (
@@ -353,14 +477,27 @@ export default function DataGrid({
                         key={j}
                         className={`${tdBase} ${editable ? 'cursor-pointer' : ''} ${
                           dirty ? '!bg-amber/10 text-amber' : ''
-                        } ${isSel ? '!bg-green/15 outline outline-1 -outline-offset-1 outline-green' : ''}`}
-                        onClick={() => setSel({ r: i, c })}
+                        } ${isSel ? '!bg-green/15' : ''}`}
+                        style={ringStyle}
+                        onMouseDown={(e) => startSelect(e, i, j)}
+                        onMouseEnter={() => extendSelect(i, j)}
                         onDoubleClick={() => editable && !Array.isArray(row) && startEdit(i, c, val)}
                         onContextMenu={(e) => {
                           if (!onCellContextMenu || Array.isArray(row)) return
                           e.preventDefault()
-                          setSel({ r: i, c })
-                          onCellContextMenu(e, { row, rowIndex: i, col: c, value: val })
+                          // Right-clicking outside the selection moves it, the
+                          // way every spreadsheet behaves; inside, it's kept.
+                          const keep = inBox(i, j)
+                          if (!keep) setRange({ r1: i, c1: j, r2: i, c2: j })
+                          onCellContextMenu(e, {
+                            row,
+                            rowIndex: i,
+                            col: c,
+                            value: val,
+                            selection: keep
+                              ? selectionPayload()
+                              : { rows: [row], columns: [c], values: [[val]], rowCount: 1, colCount: 1, cellCount: 1 },
+                          })
                         }}
                         title={editable ? 'Double-click to edit' : undefined}
                       >

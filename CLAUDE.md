@@ -70,8 +70,16 @@ src/
 │   │                             #   draggable/editable folder regions.
 │   ├── keymap/                   # stores/KeymapContext (useKeymap/useShortcut) + KeymapSetting
 │   ├── workspace/                # the DB console (one connection): data browsing + querying
-│   │   ├── components/           #   DataGrid, TableView, SchemaView, QueryEditor, FunctionView,
-│   │   │                         #   QueryHistoryView, InsertRowPanel, ChangesPanel, SavedQueriesPanel, IconRail
+│   │   ├── components/           #   DataGrid (drag / Shift+click selects a rectangular cell range —
+│   │   │                         #     ⌘/Ctrl+C copies it as TSV, Esc clears; the range rides along in
+│   │   │                         #     onCellContextMenu's payload as `selection`), TableView (its cell
+│   │   │                         #     context menu acts on that selection: copy as TSV/CSV/JSON, set
+│   │   │                         #     NULL/EMPTY/DEFAULT, duplicate/delete the spanned rows),
+│   │   │                         #   SchemaView, QueryEditor, FunctionView,
+│   │   │                         #   QueryHistoryView, InsertRowPanel, ChangesPanel, SavedQueriesPanel, IconRail,
+│   │   │                         #   TabBar (the open-tab strip: drag a tab left/right to reorder — insertion
+│   │   │                         #   caret on drag-over, committed on drop; right-click closes this/others/
+│   │   │                         #   to-the-right/all)
 │   │   └── lib/                  #   savedQueries, queryHistory (backend calls)
 │   ├── schema-designer/          # visual schema design (React Flow ERD + table/column editors; tables
 │   │   │                         #   sharing a folder are clustered into a draggable, editable region)

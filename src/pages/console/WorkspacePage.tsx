@@ -49,6 +49,7 @@ const WorkflowEditor = lazy(() => import('@/features/workflow/components/Workflo
 // Lazy — recharts + react-grid-layout; only load when a dashboard tab opens.
 const DashboardView = lazy(() => import('@/features/dashboard/components/DashboardView'))
 import IconRail from '@/features/workspace/components/IconRail'
+import TabBar from '@/features/workspace/components/TabBar'
 import { formatCombo, useKeymap, useShortcut } from '@/features/keymap'
 import SavedQueriesPanel from '@/features/workspace/components/SavedQueriesPanel'
 import AnalyzePanel from '@/features/workspace/components/AnalyzePanel'
@@ -97,7 +98,6 @@ import ListRow from '@/shared/ui/ListRow'
 import TextButton from '@/shared/ui/buttons/TextButton'
 import {
   ChevronRight,
-  CloseIcon,
   CodeIcon,
   ColumnsIcon,
   DiagramIcon,
@@ -1130,9 +1130,30 @@ export default function Workspace() {
     })
   }
 
+  const closeOtherTabs = (key) => {
+    setTabs((prev) => {
+      if (!prev.some((t) => t.key === key)) return prev
+      if (activeTab !== key) setActiveTab(key)
+      return prev.filter((t) => t.key === key)
+    })
+  }
+
   const closeAllTabs = () => {
     setTabs([])
     setActiveTab(null)
+  }
+
+  // Drag-reorder from the tab bar: move `fromKey` next to `toKey` (before or
+  // after it); `toKey === null` moves it to the end.
+  const moveTab = (fromKey, toKey, before) => {
+    setTabs((prev) => {
+      const from = prev.findIndex((t) => t.key === fromKey)
+      if (from === -1) return prev
+      const next = prev.filter((t) => t.key !== fromKey)
+      const at = toKey == null ? next.length : next.findIndex((t) => t.key === toKey)
+      next.splice(at === -1 ? next.length : at + (before ? 0 : 1), 0, prev[from])
+      return next
+    })
   }
 
   const openTabMenu = (e, key) => {
@@ -1717,56 +1738,14 @@ export default function Workspace() {
           </div>
         </div>
 
-        <div className="flex items-stretch gap-1 overflow-x-auto border-b border-edge bg-panel px-1.5 pt-1.5">
-          {tabs.map((t) => {
-            const active = activeTab === t.key
-            return (
-              <div
-                key={t.key}
-                onClick={() => setActiveTab(t.key)}
-                onContextMenu={(e) => openTabMenu(e, t.key)}
-                className={`group/tab relative flex cursor-pointer items-center gap-2.5 whitespace-nowrap rounded-t-[8px] px-3.5 py-2.5 text-xs transition-colors ${
-                  active
-                    ? 'bg-elevated font-medium text-ink'
-                    : 'text-ink-dim hover:bg-elevated/40 hover:text-ink'
-                }`}
-              >
-                {active && <span className="absolute inset-x-0 bottom-0 h-[2px] bg-green" />}
-                {t.kind === 'query' ? (
-                  <CodeIcon className={active ? 'text-ink' : 'text-ink-faint'} />
-                ) : t.kind === 'schema' ? (
-                  <ColumnsIcon className={active ? 'text-ink' : 'text-ink-faint'} />
-                ) : t.kind === 'schemaEditor' ? (
-                  <DiagramIcon className={active ? 'text-ink' : 'text-ink-faint'} />
-                ) : t.kind === 'history' ? (
-                  <HistoryIcon className={active ? 'text-ink' : 'text-ink-faint'} />
-                ) : t.kind === 'schemaHistory' ? (
-                  <HistoryIcon className={active ? 'text-ink' : 'text-ink-faint'} />
-                ) : t.kind === 'function' ? (
-                  <CodeIcon className={active ? 'text-ink' : 'text-ink-faint'} />
-                ) : t.kind === 'workflow' ? (
-                  <WorkflowIcon className={active ? 'text-ink' : 'text-ink-faint'} />
-                ) : t.kind === 'dashboard' ? (
-                  <GridIcon className={active ? 'text-ink' : 'text-ink-faint'} />
-                ) : t.kind === 'template' ? (
-                  <WandIcon className={active ? 'text-ink' : 'text-ink-faint'} />
-                ) : (
-                  <TableIcon className={active ? 'text-ink' : 'text-ink-faint'} />
-                )}
-                <span>{t.title}</span>
-                <IconButton
-                  size="xs"
-                  className="shrink-0 !text-ink-faint opacity-70 group-hover/tab:opacity-100"
-                  onClick={(e) => closeTab(e, t.key)}
-                  aria-label="Close tab"
-                >
-                  <CloseIcon width={13} height={13} />
-                </IconButton>
-              </div>
-            )
-          })}
-          {tabs.length === 0 && <div className="px-3 py-2.5 text-[11px] text-ink-faint">No open tabs</div>}
-        </div>
+        <TabBar
+          tabs={tabs}
+          activeTab={activeTab}
+          onSelect={setActiveTab}
+          onClose={closeTab}
+          onContextMenu={openTabMenu}
+          onReorder={moveTab}
+        />
 
         <div className="flex min-h-0 flex-1 overflow-hidden">
           {conn && current?.kind === 'table' && (
@@ -1922,6 +1901,15 @@ export default function Workspace() {
             }}
           >
             Close
+          </MenuItem>
+          <MenuItem
+            disabled={tabs.length < 2}
+            onClick={() => {
+              closeOtherTabs(tabMenu.key)
+              setTabMenu(null)
+            }}
+          >
+            Close other tabs
           </MenuItem>
           <MenuItem
             disabled={tabs.findIndex((t) => t.key === tabMenu.key) === tabs.length - 1}
