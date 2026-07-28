@@ -1420,6 +1420,18 @@ async function execExportSql(conn) {
   return { filePath: tmpPath, sizeBytes, dialect: conn.type }
 }
 
+// Writes the connection's export document (see buildConnectionExport) to a temp
+// file so it can ride the same upload path as a database dump. Never carries
+// secrets: the file lands in object storage and may sit there for years —
+// restoring it means re-entering the password. Output: { filePath, sizeBytes }.
+async function execExportConnectionConfig(conn) {
+  const doc = buildConnectionExport(conn.id, { includeSecrets: false })
+  if (!doc) throw new Error('Connection not found')
+  const tmpPath = path.join(BACKUP_TMP_DIR, `${randomUUID()}.connection.json`)
+  await fs.promises.writeFile(tmpPath, JSON.stringify(doc, null, 2))
+  return { filePath: tmpPath, sizeBytes: fs.statSync(tmpPath).size }
+}
+
 // On-disk format for an encrypted backup file: [12B IV][ciphertext][16B authTag].
 // Streamed both ways so file size never buffers fully in memory.
 async function encryptFileToFile(srcPath, key = BACKUP_FILE_KEY) {
@@ -2414,6 +2426,325 @@ app.post('/api/connections', (req, res) => {
   res.json(getConnection(conn.id))
 })
 
+// ---- Connection export / import (whole-connection JSON bundle) ----
+// One portable document carries a connection's settings plus every artifact
+// hanging off it: folders (all types), table→folder assignments, saved queries,
+// workflows, dashboards and the backup schedule. Deliberately left out:
+// history/audit rows (query_history, workflow_runs, backup_runs,
+// schema_migrations) and connection_access grants — they describe *this*
+// instance, not the connection's configuration, and their principals (users,
+// teams) don't exist in the importing workspace.
+//
+// The document is dialect-agnostic: connection settings ride along as an opaque
+// `settings` object, so a new database type needs no change here.
+const CONNECTION_EXPORT_VERSION = 1
+// Credential fields kept out of an export unless the caller opts in (?secrets=1).
+const CONNECTION_SECRET_FIELDS = ['password']
+// Same shape as the frontend's genWebhookToken — an opaque, URL-safe token.
+const mintWebhookToken = () => (randomUUID() + randomUUID()).replace(/-/g, '')
+
+// Blank the password embedded in a connection URI (`postgres://u:p@host/db`).
+function redactUriPassword(uri) {
+  try {
+    const u = new URL(uri)
+    if (!u.password) return uri
+    u.password = ''
+    return u.toString()
+  } catch {
+    return uri
+  }
+}
+
+// Webhook tokens are secrets and never round-trip through an export file —
+// import mints a fresh one (mirrors the frontend's stripSecrets/sanitizeGraph).
+function stripWorkflowGraphSecrets(graph) {
+  const nodes = (graph?.nodes || []).map((n) => {
+    const { __status, ...data } = n?.data && typeof n.data === 'object' ? n.data : {}
+    if (n?.type === 'webhook') {
+      const { token, ...rest } = data
+      return { ...n, data: rest }
+    }
+    return { ...n, data }
+  })
+  return { nodes, edges: graph?.edges || [] }
+}
+
+// Build the export document for one connection. `includeSecrets` keeps the
+// stored password (for moving a connection between instances verbatim);
+// otherwise every secret field is dropped and the importer supplies it.
+function buildConnectionExport(connectionId, { includeSecrets = false } = {}) {
+  const conn = getConnection(connectionId)
+  if (!conn) return null
+  // Peel off the identity/ownership columns — an import re-creates them.
+  const { id, workspaceId, ownerId, ownerName, ownerEmail, schemaVersion, type, name, environment, folder, tags, ...settings } = conn
+  if (!includeSecrets) {
+    for (const f of CONNECTION_SECRET_FIELDS) delete settings[f]
+    if (typeof settings.uri === 'string' && settings.uri) settings.uri = redactUriPassword(settings.uri)
+  }
+
+  const folders = meta
+    .prepare('SELECT id, type, name, color, parent_id, ts FROM folders WHERE connection_id = ? ORDER BY ts ASC')
+    .all(connectionId)
+    .map((r) => ({ id: r.id, type: r.type, name: r.name, color: r.color || null, parentId: r.parent_id || null, ts: r.ts }))
+
+  const tableFolders = meta
+    .prepare('SELECT table_name, folder_id FROM connection_tables WHERE connection_id = ? AND folder_id IS NOT NULL ORDER BY table_name ASC')
+    .all(connectionId)
+    .map((r) => ({ tableName: r.table_name, folderId: r.folder_id }))
+
+  const savedQueries = meta
+    .prepare('SELECT id, name, sql, kind, folder_id, ts FROM saved_queries WHERE connection_id = ? ORDER BY ts ASC')
+    .all(connectionId)
+    .map((r) => ({ id: r.id, name: r.name, sql: r.sql, kind: r.kind || 'query', folderId: r.folder_id || null, ts: r.ts }))
+
+  const workflows = meta
+    .prepare('SELECT id, name, graph, folder_id, schedule_enabled, ts FROM workflows WHERE connection_id = ? ORDER BY ts ASC')
+    .all(connectionId)
+    .map((r) => ({
+      id: r.id,
+      name: r.name,
+      graph: stripWorkflowGraphSecrets(safeJson(r.graph) || { nodes: [], edges: [] }),
+      folderId: r.folder_id || null,
+      scheduleEnabled: !!r.schedule_enabled,
+      ts: r.ts,
+    }))
+
+  const dashboards = meta
+    .prepare('SELECT id, name, config, folder_id, ts FROM dashboards WHERE connection_id = ? ORDER BY ts ASC')
+    .all(connectionId)
+    .map((r) => ({
+      id: r.id,
+      name: r.name,
+      config: safeJson(r.config) || { variables: [], widgets: [] },
+      folderId: r.folder_id || null,
+      ts: r.ts,
+    }))
+
+  const schedule = rowToBackupSchedule(getBackupScheduleRow(connectionId))
+  const backupSchedule = schedule ? (({ connectionId: _c, ...rest }) => rest)(schedule) : null
+
+  return {
+    kind: 'connection',
+    version: CONNECTION_EXPORT_VERSION,
+    exportedAt: Date.now(),
+    app: { name: APP_NAME, version: APP_VERSION },
+    includesSecrets: !!includeSecrets,
+    connection: { type, name, environment: environment || null, folder: folder || '', tags: tags || [], settings },
+    folders,
+    tableFolders,
+    savedQueries,
+    workflows,
+    dashboards,
+    backupSchedule,
+  }
+}
+
+// Re-id an exported folder tree: every folder gets a fresh id, parents are
+// remapped, and anything that would cycle or bust the per-type depth cap is
+// reparented to the root (a hand-edited file shouldn't be able to corrupt the tree).
+function remapFolders(rawFolders, warnings) {
+  const list = (Array.isArray(rawFolders) ? rawFolders : []).filter((f) => f && typeof f.name === 'string' && f.name.trim())
+  const idMap = new Map()
+  for (const f of list) idMap.set(f.id, randomUUID())
+  const parentOf = new Map(list.map((f) => [f.id, f.parentId || null]))
+  const typeOf = new Map(list.map((f) => [f.id, folderTypeOf(f.type)]))
+
+  // Depth walked over the *exported* ids (root folder = 1); a cycle returns Infinity.
+  const depthOf = (fid) => {
+    let depth = 0
+    let cur = fid
+    const seen = new Set()
+    while (cur) {
+      if (seen.has(cur)) return Infinity
+      seen.add(cur)
+      depth++
+      cur = parentOf.get(cur) || null
+    }
+    return depth
+  }
+
+  return {
+    idMap,
+    typeByOldId: typeOf,
+    rows: list.map((f) => {
+      const type = typeOf.get(f.id)
+      let parentId = f.parentId || null
+      // A parent of a different type (or missing) is not a valid parent.
+      if (parentId && (!idMap.has(parentId) || typeOf.get(parentId) !== type)) parentId = null
+      if (parentId && depthOf(f.id) > FOLDER_TYPES[type].maxDepth) {
+        warnings.push(`Folder "${f.name}" was nested too deep and was imported at the root.`)
+        parentId = null
+      }
+      return {
+        id: idMap.get(f.id),
+        type,
+        name: f.name.trim(),
+        color: f.color || null,
+        parentId: parentId ? idMap.get(parentId) : null,
+        ts: Number(f.ts) || Date.now(),
+      }
+    }),
+  }
+}
+
+// Deep-replace every string that is exactly an exported workflow id with the
+// id its import created — this is what keeps dashboard row-action buttons
+// (`rowActions[].workflowId`) wired to the right workflow.
+function remapIdsDeep(value, idMap) {
+  if (typeof value === 'string') return idMap.get(value) || value
+  if (Array.isArray(value)) return value.map((v) => remapIdsDeep(v, idMap))
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, remapIdsDeep(v, idMap)]))
+  }
+  return value
+}
+
+// Create a connection (plus all its artifacts) from an export document. Runs in
+// one transaction: a rejected document leaves nothing behind. Returns the new
+// connection with a per-artifact count and any warnings worth surfacing.
+function importConnectionDoc(doc, { workspaceId, ownerId, name, settings: settingsOverride }) {
+  if (!doc || doc.kind !== 'connection') throw Object.assign(new Error('Not a connection export file.'), { status: 400 })
+  if (Number(doc.version) > CONNECTION_EXPORT_VERSION)
+    throw Object.assign(new Error(`This file was exported by a newer version of ${APP_NAME}.`), { status: 400 })
+  const src = doc.connection
+  if (!src || typeof src.type !== 'string' || !src.type.trim())
+    throw Object.assign(new Error('The file is missing its connection settings.'), { status: 400 })
+
+  const warnings = []
+  const connectionId = randomUUID()
+  const connName = (name || src.name || 'Imported connection').trim()
+
+  // Storage destinations are workspace-scoped and are NOT part of the bundle —
+  // references to ones this workspace doesn't have are dropped, not invented.
+  const knownDestinations = new Set([LOCAL_STORAGE_ID, ...listStorageRows(workspaceId).map((d) => d.id)])
+  const keepDestinations = (ids, label) => {
+    const list = (Array.isArray(ids) ? ids : []).filter((d) => typeof d === 'string')
+    const kept = list.filter((d) => knownDestinations.has(d))
+    if (kept.length < list.length) warnings.push(`${label} referenced a storage destination this workspace doesn't have; it was removed.`)
+    return kept
+  }
+
+  const { idMap: folderIds, typeByOldId, rows: folderRows } = remapFolders(doc.folders, warnings)
+  // Only accept an item's folder when it exists *and* groups that kind of item.
+  const folderFor = (oldId, type) => (oldId && folderIds.has(oldId) && typeByOldId.get(oldId) === type ? folderIds.get(oldId) : null)
+
+  const workflowIds = new Map()
+  for (const w of Array.isArray(doc.workflows) ? doc.workflows : []) if (w?.id) workflowIds.set(w.id, randomUUID())
+
+  const counts = { folders: folderRows.length, tables: 0, savedQueries: 0, workflows: 0, dashboards: 0 }
+
+  const tx = meta.transaction(() => {
+    saveConnection({
+      ...(src.settings && typeof src.settings === 'object' ? src.settings : {}),
+      ...(settingsOverride && typeof settingsOverride === 'object' ? settingsOverride : {}),
+      id: connectionId,
+      type: src.type,
+      name: connName,
+      workspaceId,
+      ownerId,
+      environment: src.environment || null,
+      folder: src.folder || '',
+      tags: Array.isArray(src.tags) ? src.tags : [],
+      schemaVersion: 1,
+    })
+
+    const insFolder = meta.prepare('INSERT INTO folders (id, connection_id, type, name, color, parent_id, ts) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    for (const f of folderRows) insFolder.run(f.id, connectionId, f.type, f.name, f.color, f.parentId, f.ts)
+
+    const insTable = meta.prepare('INSERT INTO connection_tables (id, connection_id, table_name, folder_id, ts) VALUES (?, ?, ?, ?, ?)')
+    for (const t of Array.isArray(doc.tableFolders) ? doc.tableFolders : []) {
+      const fid = folderFor(t?.folderId, 'table')
+      if (!t?.tableName || !fid) continue
+      insTable.run(randomUUID(), connectionId, String(t.tableName), fid, Date.now())
+      counts.tables++
+    }
+
+    const insQuery = meta.prepare('INSERT INTO saved_queries (id, connection_id, name, sql, kind, folder_id, ts) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    for (const q of Array.isArray(doc.savedQueries) ? doc.savedQueries : []) {
+      if (!q?.name?.trim() || !q?.sql?.trim()) continue
+      insQuery.run(randomUUID(), connectionId, q.name.trim(), q.sql.trim(), q.kind || 'query', folderFor(q.folderId, 'query'), Number(q.ts) || Date.now())
+      counts.savedQueries++
+    }
+
+    // Schedules are imported paused: an import shouldn't silently start firing
+    // jobs (or backups) against a database the user hasn't verified yet.
+    const insWorkflow = meta.prepare(
+      'INSERT INTO workflows (id, connection_id, name, graph, folder_id, schedule_enabled, next_run_at, ts) VALUES (?, ?, ?, ?, ?, 0, NULL, ?)'
+    )
+    let pausedWorkflows = 0
+    for (const w of Array.isArray(doc.workflows) ? doc.workflows : []) {
+      if (!w?.name?.trim() || !workflowIds.has(w.id)) continue
+      const nodes = (w.graph?.nodes || []).map((n) => {
+        if (n?.type === 'webhook') return { ...n, data: { ...(n.data || {}), token: mintWebhookToken() } }
+        if (n?.type === 'storage')
+          return { ...n, data: { ...(n.data || {}), destinationIds: keepDestinations(n.data?.destinationIds, `Workflow "${w.name}"`) } }
+        return n
+      })
+      if (w.scheduleEnabled) pausedWorkflows++
+      insWorkflow.run(
+        workflowIds.get(w.id),
+        connectionId,
+        w.name.trim(),
+        JSON.stringify({ nodes, edges: w.graph?.edges || [] }),
+        folderFor(w.folderId, 'workflow'),
+        Number(w.ts) || Date.now()
+      )
+      counts.workflows++
+    }
+    if (pausedWorkflows) warnings.push(`${pausedWorkflows} scheduled workflow(s) were imported paused — enable them once the connection is verified.`)
+
+    const insDashboard = meta.prepare('INSERT INTO dashboards (id, connection_id, name, config, folder_id, ts) VALUES (?, ?, ?, ?, ?, ?)')
+    for (const d of Array.isArray(doc.dashboards) ? doc.dashboards : []) {
+      if (!d?.name?.trim()) continue
+      const config = remapIdsDeep(d.config && typeof d.config === 'object' ? d.config : { variables: [], widgets: [] }, workflowIds)
+      insDashboard.run(randomUUID(), connectionId, d.name.trim(), JSON.stringify(config), folderFor(d.folderId, 'dashboard'), Number(d.ts) || Date.now())
+      counts.dashboards++
+    }
+
+    const bs = doc.backupSchedule
+    if (bs && typeof bs === 'object' && bs.frequency) {
+      const now = Date.now()
+      meta
+        .prepare(
+          `INSERT INTO backup_schedules
+           (id, connection_id, frequency, hour_of_day, destination_ids, retry_limit, retry_delay_sec, retention_days, encrypt, enabled, next_run_at, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?)`
+        )
+        .run(
+          randomUUID(),
+          connectionId,
+          bs.frequency,
+          bs.hourOfDay ?? 0,
+          JSON.stringify(keepDestinations(bs.destinationIds, 'The backup schedule')),
+          Math.max(0, Math.min(5, parseInt(bs.retryLimit) || 0)),
+          Math.max(1, parseInt(bs.retryDelaySec) || 60),
+          Math.max(0, parseInt(bs.retentionDays) || 0),
+          bs.encrypt ? 1 : 0,
+          now,
+          now
+        )
+      warnings.push('The backup schedule was imported paused — review its destinations, then activate it.')
+    }
+  })
+  tx()
+
+  return { connection: getConnection(connectionId), counts, warnings }
+}
+
+// Import an export document as a brand-new connection in `workspaceId`.
+// Mounted above the `/api/connections/:id` guard so "import" isn't read as an id.
+app.post('/api/connections/import', (req, res) => {
+  const user = requireAuth(req, res)
+  if (!user) return
+  const { workspaceId, document, name, settings } = req.body || {}
+  if (!workspaceId || !memberRole(workspaceId, user.id)) return res.status(403).json({ error: 'Forbidden' })
+  try {
+    res.json(importConnectionDoc(document, { workspaceId, ownerId: user.id, name, settings }))
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message })
+  }
+})
+
 // ---- Storage destinations (S3-compatible, workspace-scoped) ----
 app.get('/api/storages', (req, res) => {
   const user = requireAuth(req, res)
@@ -2566,6 +2897,16 @@ app.delete('/api/connections/:id', (req, res) => {
   meta.prepare('DELETE FROM query_history WHERE connection_id = ?').run(req.params.id)
   meta.prepare('DELETE FROM connection_access WHERE connection_id = ?').run(req.params.id)
   res.json({ ok: true })
+})
+
+// Export this connection as one portable JSON document (see
+// buildConnectionExport above for what's in it). `?secrets=1` keeps the stored
+// password — off by default, since the file usually leaves the instance.
+app.get('/api/connections/:id/export', (req, res) => {
+  const includeSecrets = ['1', 'true', 'yes'].includes(String(req.query.secrets || '').toLowerCase())
+  const doc = buildConnectionExport(req.params.id, { includeSecrets })
+  if (!doc) return res.status(404).json({ error: 'Connection not found' })
+  res.json(doc)
 })
 
 // ---- Connection access (which teams/members may see this connection) ----
@@ -3145,6 +3486,7 @@ const rowToBackupSchedule = (row) =>
     retryDelaySec: row.retry_delay_sec || 60,
     retentionDays: row.retention_days || 0,
     encrypt: !!row.encrypt,
+    includeConfig: !!row.include_config,
     enabled: !!row.enabled,
   }
 const getBackupScheduleRow = (connectionId) => meta.prepare('SELECT * FROM backup_schedules WHERE connection_id = ?').get(connectionId)
@@ -3157,6 +3499,7 @@ async function runBackupOnce(scheduleRow, conn, triggerKind) {
   let error = null
   let uploads = []
   let exportOutput = null
+  let configOutput = null
   try {
     exportOutput = await execExportSql(conn)
     // No S3 destination configured ⇒ default to the local server disk.
@@ -3172,11 +3515,35 @@ async function runBackupOnce(scheduleRow, conn, triggerKind) {
       status = 'failed'
       error = `Upload failed for ${failed.length} of ${uploads.length} destination(s): ${failed[0].error}`
     }
+
+    // Second artifact: the connection's own configuration, uploaded beside the
+    // dump under the same date folder. It's recorded *on* each destination's
+    // upload entry (`configKey`) rather than as its own entry, so every lookup
+    // that finds an upload by destinationId (download/delete/restore) keeps
+    // resolving the dump — the thing you restore from. Retention is left to the
+    // dump's prune pass above: it already sweeps the whole folder by date.
+    if (scheduleRow.include_config) {
+      configOutput = await execExportConnectionConfig(conn)
+      const configStore = await execStoreToStorage(conn, configOutput, destinationIds, { encrypt: !!scheduleRow.encrypt })
+      const byDest = new Map(configStore.uploaded.map((u) => [u.destinationId, u]))
+      uploads = uploads.map((u) => {
+        const c = byDest.get(u.destinationId)
+        if (!c) return u
+        return c.ok
+          ? { ...u, configKey: c.key, configSizeBytes: c.sizeBytes, ...(c.encrypted ? { configEncrypted: true } : null) }
+          : { ...u, configError: c.error }
+      })
+      // A failed config upload doesn't fail the run: the database dump — what a
+      // restore actually needs — already succeeded, and failing here would
+      // re-dump the whole database on every retry. The error rides along on the
+      // destination's row instead.
+    }
   } catch (err) {
     status = 'failed'
     error = describeError(err)
   } finally {
     if (exportOutput?.filePath) fs.rm(exportOutput.filePath, { force: true }, () => {})
+    if (configOutput?.filePath) fs.rm(configOutput.filePath, { force: true }, () => {})
   }
   const finishedAt = Date.now()
   const id = randomUUID()
@@ -3238,7 +3605,7 @@ app.post('/api/connections/:id/backup/schedule', (req, res) => {
     return res.status(400).json({ error: `Backups are not supported for connection type: ${conn.type}` })
   }
   if (getBackupScheduleRow(req.params.id)) return res.status(409).json({ error: 'This connection already has a backup schedule.' })
-  const { frequency, hourOfDay, destinationIds, retryLimit, retryDelaySec, retentionDays, encrypt, enabled } = req.body || {}
+  const { frequency, hourOfDay, destinationIds, retryLimit, retryDelaySec, retentionDays, encrypt, includeConfig, enabled } = req.body || {}
   const err = validateScheduleBody(conn, destinationIds, frequency)
   if (err) return res.status(400).json({ error: err })
 
@@ -3248,8 +3615,8 @@ app.post('/api/connections/:id/backup/schedule', (req, res) => {
   meta
     .prepare(
       `INSERT INTO backup_schedules
-       (id, connection_id, frequency, hour_of_day, destination_ids, retry_limit, retry_delay_sec, retention_days, encrypt, enabled, next_run_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       (id, connection_id, frequency, hour_of_day, destination_ids, retry_limit, retry_delay_sec, retention_days, encrypt, include_config, enabled, next_run_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       id,
@@ -3261,6 +3628,7 @@ app.post('/api/connections/:id/backup/schedule', (req, res) => {
       Math.max(1, parseInt(retryDelaySec) || 60),
       Math.max(0, parseInt(retentionDays) || 0),
       encrypt ? 1 : 0,
+      includeConfig ? 1 : 0,
       isEnabled ? 1 : 0,
       isEnabled ? computeNextRun(frequency, hourOfDay ?? 0) : null,
       now,
@@ -3286,12 +3654,13 @@ app.put('/api/connections/:id/backup/schedule', (req, res) => {
   const retryDelaySec = body.retryDelaySec != null ? Math.max(1, parseInt(body.retryDelaySec) || 60) : row.retry_delay_sec
   const retentionDays = body.retentionDays != null ? Math.max(0, parseInt(body.retentionDays) || 0) : row.retention_days
   const encrypt = body.encrypt != null ? !!body.encrypt : !!row.encrypt
+  const includeConfig = body.includeConfig != null ? !!body.includeConfig : !!row.include_config
   const enabled = body.enabled != null ? !!body.enabled : !!row.enabled
 
   meta
     .prepare(
       `UPDATE backup_schedules SET frequency = ?, hour_of_day = ?, destination_ids = ?, retry_limit = ?, retry_delay_sec = ?,
-       retention_days = ?, encrypt = ?, enabled = ?, next_run_at = ?, updated_at = ? WHERE id = ?`
+       retention_days = ?, encrypt = ?, include_config = ?, enabled = ?, next_run_at = ?, updated_at = ? WHERE id = ?`
     )
     .run(
       frequency,
@@ -3301,6 +3670,7 @@ app.put('/api/connections/:id/backup/schedule', (req, res) => {
       retryDelaySec,
       retentionDays,
       encrypt ? 1 : 0,
+      includeConfig ? 1 : 0,
       enabled ? 1 : 0,
       enabled ? computeNextRun(frequency, hourOfDay) : null,
       Date.now(),
@@ -3374,7 +3744,9 @@ app.delete('/api/connections/:id/backup/runs/:runId/uploads/:destinationId', asy
   const dest = getStorage(req.params.destinationId)
   if (!dest) return res.status(404).json({ error: 'Storage destination not found' })
   try {
-    await deleteStorageObjects(dest, [upload.key])
+    // The connection-config JSON (when the schedule ships one) belongs to the
+    // same run — it goes with the dump rather than lingering as an orphan.
+    await deleteStorageObjects(dest, [upload.key, ...(upload.configKey ? [upload.configKey] : [])])
   } catch (err) {
     return res.status(500).json({ error: describeError(err) })
   }
@@ -3383,13 +3755,17 @@ app.delete('/api/connections/:id/backup/runs/:runId/uploads/:destinationId', asy
   res.json({ ok: true })
 })
 
-// Download a specific uploaded backup artifact (decrypted server-side first, if needed).
+// Download a specific uploaded backup artifact (decrypted server-side first, if
+// needed). `?artifact=config` fetches the connection JSON the run shipped
+// alongside the dump (only present when the schedule has includeConfig on).
 app.get('/api/connections/:id/backup/runs/:runId/uploads/:destinationId/download', async (req, res) => {
   const run = meta.prepare('SELECT * FROM backup_runs WHERE id = ? AND connection_id = ?').get(req.params.runId, req.params.id)
   if (!run) return res.status(404).json({ error: 'Backup run not found' })
+  const wantConfig = req.query.artifact === 'config'
   const uploads = safeJson(run.uploads) || []
   const upload = uploads.find((u) => u.destinationId === req.params.destinationId && u.ok && !u.deleted)
-  if (!upload?.key) return res.status(404).json({ error: 'No downloadable upload found for this destination' })
+  const objectKey = wantConfig ? upload?.configKey : upload?.key
+  if (!objectKey) return res.status(404).json({ error: `No downloadable ${wantConfig ? 'configuration' : 'upload'} found for this destination` })
   const dest = getStorage(req.params.destinationId)
   if (!dest) return res.status(404).json({ error: 'Storage destination not found' })
   const conn = getConnection(req.params.id)
@@ -3401,9 +3777,10 @@ app.get('/api/connections/:id/backup/runs/:runId/uploads/:destinationId/download
     if (decPath) fs.rm(decPath, { force: true }, () => {})
   }
   try {
-    await fetchStorageObjectToFile(dest, upload.key, tmpPath)
-    const filePath = upload.encrypted ? (decPath = await decryptFileToFile(tmpPath)) : tmpPath
-    const ext = conn?.type === 'postgresql' ? 'dump' : 'sqlite'
+    await fetchStorageObjectToFile(dest, objectKey, tmpPath)
+    const encrypted = wantConfig ? upload.configEncrypted : upload.encrypted
+    const filePath = encrypted ? (decPath = await decryptFileToFile(tmpPath)) : tmpPath
+    const ext = wantConfig ? 'connection.json' : conn?.type === 'postgresql' ? 'dump' : 'sqlite'
     const filename = `${sanitizeForKey(conn?.name)}-${new Date(run.started_at).toISOString().slice(0, 10)}.${ext}`
     res.download(filePath, filename, (err) => {
       cleanup()

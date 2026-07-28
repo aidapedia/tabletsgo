@@ -16,6 +16,7 @@ import {
   CopyIcon,
   DatabaseIcon,
   DbLogo,
+  DownloadIcon,
   EditIcon,
   ExternalLinkIcon,
   MoreVerticalIcon,
@@ -63,7 +64,7 @@ function DetailRow({ label, value }: { label: string; value?: string }) {
 
 // Full-page connection detail: Data Connection / Access / Backup tabs, each laid
 // out as a main column + a context sidebar.
-export default function ConnectionDetail({ conn, onBack, onOpen, onEdit, onDelete }) {
+export default function ConnectionDetail({ conn, onBack, onOpen, onEdit, onDelete, onExport }) {
   const toast = useToast()
   const [tab, setTab] = useState<'data' | 'access' | 'backup'>('data')
   const [status, setStatus] = useState<'checking' | 'connected' | 'offline'>('checking')
@@ -128,6 +129,11 @@ export default function ConnectionDetail({ conn, onBack, onOpen, onEdit, onDelet
                 <MenuItem onClick={() => { copyUrl(); close() }}>
                   <CopyIcon width={14} height={14} /> Copy as URL
                 </MenuItem>
+                {onExport && (
+                  <MenuItem onClick={() => { close(); onExport(conn) }}>
+                    <DownloadIcon width={14} height={14} /> Export as JSON
+                  </MenuItem>
+                )}
                 {onDelete && (
                   <>
                     <div className="my-1 h-px bg-edge" />

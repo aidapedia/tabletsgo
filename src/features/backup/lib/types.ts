@@ -22,6 +22,9 @@ export type BackupSchedule = {
   retryDelaySec: number
   retentionDays: number
   encrypt: boolean
+  /** Also upload the connection's export JSON (settings + folders + saved queries
+   *  + workflows + dashboards) beside each dump. Never carries the password. */
+  includeConfig: boolean
 }
 
 export type BackupUpload = {
@@ -33,6 +36,14 @@ export type BackupUpload = {
   encrypted?: boolean
   prunedCount?: number
   deleted?: boolean
+  /** Key of the connection-config JSON shipped with this dump (schedules with
+   *  `includeConfig`). Absent when the schedule doesn't ship one. */
+  configKey?: string
+  configSizeBytes?: number
+  configEncrypted?: boolean
+  /** Why the config upload failed. The run itself still counts as a success —
+   *  the dump, which is what a restore needs, made it. */
+  configError?: string
 }
 
 export type BackupRun = {

@@ -334,6 +334,7 @@ function ScheduleCard({
             )
           }
         />
+        <ScheduleRow label="Connection config" value={schedule.includeConfig ? 'Included' : 'Not included'} />
       </div>
 
       <div className="mt-4 flex gap-2">

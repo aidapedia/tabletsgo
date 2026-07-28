@@ -9,7 +9,7 @@ import ConfirmDialog from '@/shared/ui/feedback/ConfirmDialog'
 import TypeToConfirmDialog from '@/shared/ui/feedback/TypeToConfirmDialog'
 import Tooltip from '@/shared/ui/overlay/Tooltip'
 import { useToast } from '@/shared/ui/feedback/Toast'
-import { ChevronLeft, ChevronRight, CloseIcon, DownloadIcon, HistoryIcon, RestoreIcon, ShieldIcon, TrashIcon } from '@/shared/ui/icons'
+import { ChevronLeft, ChevronRight, CloseIcon, DownloadIcon, HistoryIcon, RestoreIcon, SettingsIcon, ShieldIcon, TrashIcon } from '@/shared/ui/icons'
 import { deleteBackupUpload, downloadBackupUpload, listBackupRuns, listStorages, restoreBackup } from '@/features/backup/lib/api'
 import type { BackupRun, BackupUpload, StorageDestination } from '@/features/backup/lib/types'
 import LoadingState from '@/shared/ui/feedback/LoadingState'
@@ -116,9 +116,9 @@ export default function BackupVersionList({
     }
   }
 
-  const doDownload = async (runId: string, destinationId: string) => {
+  const doDownload = async (runId: string, destinationId: string, artifact: 'dump' | 'config' = 'dump') => {
     try {
-      await downloadBackupUpload(connectionId, runId, destinationId)
+      await downloadBackupUpload(connectionId, runId, destinationId, artifact)
     } catch (err: any) {
       toast.error(err.message)
     }
@@ -162,6 +162,11 @@ export default function BackupVersionList({
                   </div>
                   <div className="mt-1 text-[11px] text-ink-faint">
                     {upload.deleted ? 'Deleted from storage' : upload.ok ? fmtBytes(upload.sizeBytes) : upload.error}
+                    {/* The config JSON rides along with the dump; a failed one doesn't fail the run. */}
+                    {upload.ok && !upload.deleted && upload.configKey && ' · + connection config'}
+                    {upload.ok && !upload.deleted && upload.configError && (
+                      <span className="text-red"> · config not saved: {upload.configError}</span>
+                    )}
                   </div>
                 </div>
                 {upload.ok && !upload.deleted && (
@@ -177,11 +182,22 @@ export default function BackupVersionList({
                         <RestoreIcon width={15} height={15} />
                       </TextButton>
                     </Tooltip>
-                    <Tooltip label="Download">
-                      <TextButton tone="faint" onClick={() => doDownload(run.id, upload.destinationId)} aria-label="Download">
+                    <Tooltip label="Download database">
+                      <TextButton tone="faint" onClick={() => doDownload(run.id, upload.destinationId)} aria-label="Download database">
                         <DownloadIcon width={15} height={15} />
                       </TextButton>
                     </Tooltip>
+                    {upload.configKey && (
+                      <Tooltip label="Download connection config">
+                        <TextButton
+                          tone="faint"
+                          onClick={() => doDownload(run.id, upload.destinationId, 'config')}
+                          aria-label="Download connection config"
+                        >
+                          <SettingsIcon width={15} height={15} />
+                        </TextButton>
+                      </Tooltip>
+                    )}
                     <Tooltip label="Delete">
                       <TextButton
                         tone="faint"
