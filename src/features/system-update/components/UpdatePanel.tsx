@@ -11,46 +11,24 @@ import UpdateWizard from './UpdateWizard'
 // Settings > Updates: current vs latest, manual re-check, changelog, and the
 // entry point into the guided update wizard.
 export default function UpdatePanel() {
-  const { info, loading, lastChecked, check, autoCheck, setAutoCheck } = useUpdate()
+  const { info, identity, loading, lastChecked, check, autoCheck, setAutoCheck } = useUpdate()
   const { current } = useWorkspaces()
   const isAdmin = current?.role === 'admin'
   const [wizardOpen, setWizardOpen] = useState(false)
 
   const upToDate = info && !info.updateAvailable && !info.unreachable
+  // The running version is known from /system/version even before (or without)
+  // an update check — only fall back to a placeholder while that's in flight.
+  const version = info?.current.version ?? identity?.version
 
   return (
     <div className="max-w-[640px] space-y-5">
-      <div className="flex items-start justify-between gap-4 rounded-[12px] border border-edge bg-elevated px-4 py-3.5">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="text-[13px] font-semibold text-ink">Current version</span>
-            <span className="rounded bg-edge px-1.5 py-0.5 font-mono text-[11px] text-ink-dim">
-              v{info?.current.version ?? '…'}
-            </span>
-            {upToDate && <Badge tone="green">Up to date</Badge>}
-            {info?.updateAvailable && <Badge tone="amber">Update available</Badge>}
-          </div>
-          <div className="mt-1 text-[11px] text-ink-faint">
-            {info?.unreachable
-              ? 'Could not reach the update server — check your connection.'
-              : info?.updateAvailable
-                ? `v${info.latest?.version} is available`
-                : lastChecked
-                  ? `Last checked ${new Date(lastChecked).toLocaleTimeString()}`
-                  : 'Checking…'}
-          </div>
-        </div>
-        <Button variant="ghost" size="sm" icon={RefreshIcon} onClick={() => check(true)} disabled={loading}>
-          {loading ? 'Checking…' : 'Check for updates'}
-        </Button>
-      </div>
-
       <div className="flex items-center justify-between gap-4 rounded-[12px] border border-edge bg-elevated px-4 py-3.5">
         <div className="min-w-0">
           <div className="text-[13px] font-semibold text-ink">Automatically check for updates</div>
           <div className="mt-1 text-[11px] text-ink-faint">
             Check for a newer release on sign-in. Turn this off if updates are managed elsewhere (e.g. Coolify);
-            you can still check manually above.
+            you can still check manually below.
           </div>
         </div>
         <Toggle
@@ -58,6 +36,33 @@ export default function UpdatePanel() {
           onChange={setAutoCheck}
           ariaLabel="Automatically check for updates"
         />
+      </div>
+
+      <div className="flex items-start justify-between gap-4 rounded-[12px] border border-edge bg-elevated px-4 py-3.5">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="text-[13px] font-semibold text-ink">Current version</span>
+            <span className="rounded bg-edge px-1.5 py-0.5 font-mono text-[11px] text-ink-dim">
+              {version ? `v${version}` : '…'}
+            </span>
+            {upToDate && <Badge tone="green">Up to date</Badge>}
+            {info?.updateAvailable && <Badge tone="amber">Update available</Badge>}
+          </div>
+          <div className="mt-1 text-[11px] text-ink-faint">
+            {loading
+              ? 'Checking…'
+              : info?.unreachable
+                ? 'Could not reach the update server — check your connection.'
+                : info?.updateAvailable
+                  ? `v${info.latest?.version} is available`
+                  : lastChecked
+                    ? `Last checked ${new Date(lastChecked).toLocaleTimeString()}`
+                    : 'Not checked for updates yet.'}
+          </div>
+        </div>
+        <Button variant="ghost" size="sm" icon={RefreshIcon} onClick={() => check(true)} disabled={loading}>
+          {loading ? 'Checking…' : 'Check for updates'}
+        </Button>
       </div>
 
       {info?.updateAvailable && (
