@@ -179,6 +179,9 @@ function ensureBaseSchema(db) {
       next_run_at INTEGER,
       created_at INTEGER,
       updated_at INTEGER
+      -- include_config (0/1 — also upload the connection export JSON) is added
+      -- by migration v6 via ALTER; like dashboards.folder_id it is intentionally
+      -- NOT inlined here so v6's plain ALTER doesn't collide on fresh installs.
     );
     CREATE TABLE IF NOT EXISTS backup_runs (
       id TEXT PRIMARY KEY,
@@ -475,9 +478,20 @@ export const MIGRATIONS = [
       `)
     },
   },
-  // v6+: append plain, run-exactly-once steps here, e.g.
+  {
+    version: 6,
+    name: 'backup_schedules.include_config (ship the connection JSON with each run)',
+    up(db) {
+      // Opt-in: a scheduled run also uploads the connection's export document
+      // (settings + folders + saved queries + workflows + dashboards + the
+      // schedule itself) next to the database dump. Default 0 — existing
+      // schedules keep backing up data only until someone turns it on.
+      db.exec(`ALTER TABLE backup_schedules ADD COLUMN include_config INTEGER DEFAULT 0`)
+    },
+  },
+  // v7+: append plain, run-exactly-once steps here, e.g.
   // {
-  //   version: 6,
+  //   version: 7,
   //   name: 'connections: last_used_at',
   //   up(db) {
   //     db.exec(`ALTER TABLE connections ADD COLUMN last_used_at INTEGER`)

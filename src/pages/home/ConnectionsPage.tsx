@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   useConnections, ConnectionForm, ConnectionDetail, DbTypePickerModal,
+  ConnectionExportModal, ConnectionImportModal, readConnectionExportFile,
   StatusBadge, connectionUrl, TYPE_LABEL,
 } from '@/features/connections'
+import type { ConnectionExport } from '@/features/connections'
 import { pingConnection } from '@/shared/api/database'
 import { listBackupRuns } from '@/features/backup'
 import { relativeTime } from '@/shared/lib/recents'
@@ -22,12 +24,14 @@ import {
   CopyIcon,
   DatabaseIcon,
   DbLogo,
+  DownloadIcon,
   EditIcon,
   ExternalLinkIcon,
   GridIcon,
   MoreVerticalIcon,
   PlusIcon,
   TrashIcon,
+  UploadIcon,
 } from '@/shared/ui/icons'
 import SearchInput from '@/shared/ui/form/SearchInput'
 import EmptyState from '@/shared/ui/feedback/EmptyState'
@@ -82,6 +86,9 @@ export default function ConnectionsPage() {
   const [formConn, setFormConn] = useState<any>(null) // { mode, conn?, type? } — full-page create/edit form
   const [picker, setPicker] = useState(false) // db-type picker open
   const [deleting, setDeleting] = useState<any>(null) // connection pending delete confirmation
+  const [exporting, setExporting] = useState<any>(null) // connection whose JSON bundle is being downloaded
+  const [importDoc, setImportDoc] = useState<ConnectionExport | null>(null) // parsed file awaiting confirmation
+  const importFileRef = useRef<HTMLInputElement>(null)
   const [statuses, setStatuses] = useState<Record<string, string>>({})
   const [backups, setBackups] = useState<Record<string, { ts: number; ok: boolean }>>({})
 
@@ -185,6 +192,16 @@ export default function ConnectionsPage() {
     toast.success('Connection URL copied to clipboard.')
   }
 
+  // Import: parse the picked file here so a bad file is rejected before the
+  // confirmation dialog opens.
+  const pickImportFile = async (file: File) => {
+    try {
+      setImportDoc(await readConnectionExportFile(file))
+    } catch (e: any) {
+      toast.error(`Import failed: ${e.message}`)
+    }
+  }
+
   const openConsole = (conn) => navigate(`/connection/${conn.id}`)
   const subtitle = (c) => (c.type === 'sqlite' ? c.filepath : c.host)
   const dbName = (c) => (c.type === 'sqlite' ? (c.filepath || '').split('/').pop() : c.database)
@@ -203,15 +220,37 @@ export default function ConnectionsPage() {
     )
   }
 
+  // Export/import dialogs live outside the list ↔ detail switch below, so both
+  // views can open them.
+  const modals = (
+    <>
+      {exporting && <ConnectionExportModal conn={exporting} onClose={() => setExporting(null)} />}
+      {importDoc && (
+        <ConnectionImportModal
+          doc={importDoc}
+          onClose={() => setImportDoc(null)}
+          onImported={(conn) => {
+            setImportDoc(null)
+            setDetailConn(conn)
+          }}
+        />
+      )}
+    </>
+  )
+
   if (detailConn) {
     return (
-      <ConnectionDetail
-        conn={detailConn}
-        onBack={() => setDetailConn(null)}
-        onOpen={openConsole}
-        onEdit={(c, tab) => setFormConn({ mode: 'edit', conn: c, tab })}
-        onDelete={(c) => setDeleting(c)}
-      />
+      <>
+        <ConnectionDetail
+          conn={detailConn}
+          onBack={() => setDetailConn(null)}
+          onOpen={openConsole}
+          onEdit={(c, tab) => setFormConn({ mode: 'edit', conn: c, tab })}
+          onDelete={(c) => setDeleting(c)}
+          onExport={(c) => setExporting(c)}
+        />
+        {modals}
+      </>
     )
   }
 
@@ -222,9 +261,25 @@ export default function ConnectionsPage() {
           title="Connections"
           desc="Manage the databases connected to this workspace."
           action={
-            <Button variant="primary" size="lg" icon={PlusIcon} onClick={() => setPicker(true)}>
-              New connection
-            </Button>
+            <div className="flex items-center gap-2">
+              <input
+                ref={importFileRef}
+                type="file"
+                accept=".json,application/json"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0]
+                  if (f) pickImportFile(f)
+                  e.target.value = ''
+                }}
+              />
+              <Button size="lg" icon={UploadIcon} onClick={() => importFileRef.current?.click()}>
+                Import
+              </Button>
+              <Button variant="primary" size="lg" icon={PlusIcon} onClick={() => setPicker(true)}>
+                New connection
+              </Button>
+            </div>
           }
         />
 
@@ -369,6 +424,9 @@ export default function ConnectionsPage() {
                           <MenuItem onClick={() => { copyUrl(conn); close() }}>
                             <CopyIcon width={14} height={14} /> Copy as URL
                           </MenuItem>
+                          <MenuItem onClick={() => { close(); setExporting(conn) }}>
+                            <DownloadIcon width={14} height={14} /> Export as JSON
+                          </MenuItem>
                           <MenuItem danger onClick={() => { close(); setDeleting(conn) }}>
                             <TrashIcon width={14} height={14} /> Delete
                           </MenuItem>
@@ -425,6 +483,8 @@ export default function ConnectionsPage() {
           onCancel={() => setDeleting(null)}
         />
       )}
+
+      {modals}
     </>
   )
 }

@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState } from 'react'
 import { request, safeRequest } from '@/shared/api/request'
 import { useWorkspaces } from '@/features/workspaces'
+import { importConnection as importConnectionDoc } from '../api'
 
 const ConnectionsContext = createContext(null)
 
@@ -42,6 +43,15 @@ export function ConnectionsProvider({ children }) {
     }
   }
 
+  // Create a connection (plus its folders/queries/workflows/dashboards) from an
+  // export document. Unlike the CRUD helpers above this one *throws* — the
+  // import dialog needs the server's message to show what went wrong.
+  const importConnection = async ({ document, name, settings }) => {
+    const result = await importConnectionDoc({ workspaceId: currentId, document, name, settings })
+    setConnections((prev) => [...prev, result.connection])
+    return result
+  }
+
   const removeConnection = async (id) => {
     try {
       await request(`/connections/${id}`, { method: 'DELETE' })
@@ -68,7 +78,7 @@ export function ConnectionsProvider({ children }) {
 
   return (
     <ConnectionsContext.Provider
-      value={{ connections, loading, addConnection, updateConnection, removeConnection, testConnection, patchLocalConnection }}
+      value={{ connections, loading, addConnection, updateConnection, importConnection, removeConnection, testConnection, patchLocalConnection }}
     >
       {children}
     </ConnectionsContext.Provider>

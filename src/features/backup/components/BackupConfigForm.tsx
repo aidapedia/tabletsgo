@@ -46,6 +46,7 @@ type ConfigState = {
   retryDelaySec: number
   retentionDays: number
   encrypt: boolean
+  includeConfig: boolean
   enabled: boolean
 }
 
@@ -57,6 +58,7 @@ const DEFAULT_CONFIG: ConfigState = {
   retryDelaySec: 60,
   retentionDays: 0,
   encrypt: false,
+  includeConfig: false,
   enabled: true,
 }
 
@@ -95,6 +97,7 @@ export default function BackupConfigForm({
           retryDelaySec: sched.retryDelaySec,
           retentionDays: sched.retentionDays,
           encrypt: sched.encrypt,
+          includeConfig: sched.includeConfig,
           enabled: sched.enabled,
         })
       }
@@ -212,6 +215,17 @@ export default function BackupConfigForm({
           <p className="mt-0.5 text-[11px] text-ink-faint">Encrypted with a server-managed key; restoring decrypts it automatically.</p>
         </div>
         <Toggle checked={config.encrypt} onChange={(v) => patch({ encrypt: v })} ariaLabel="Encrypt before upload" />
+      </label>
+
+      <label className="flex cursor-pointer items-center justify-between gap-3 rounded-soft border border-edge bg-elevated/40 px-3 py-2.5">
+        <div>
+          <div className="text-[12px] font-medium text-ink">Include connection configuration</div>
+          <p className="mt-0.5 text-[11px] text-ink-faint">
+            Ships a <code>.connection.json</code> next to each dump — settings, folders, saved queries, workflows and
+            dashboards — so a lost connection can be rebuilt with Import. The password is never included.
+          </p>
+        </div>
+        <Toggle checked={config.includeConfig} onChange={(v) => patch({ includeConfig: v })} ariaLabel="Include connection configuration" />
       </label>
 
       <Button variant="primary" size="sm" className="self-start" onClick={save} disabled={!config.destinationIds.length || saving}>

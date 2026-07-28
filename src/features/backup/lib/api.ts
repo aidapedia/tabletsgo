@@ -48,6 +48,7 @@ export type BackupSchedulePayload = {
   retryDelaySec?: number
   retentionDays?: number
   encrypt?: boolean
+  includeConfig?: boolean
   enabled?: boolean
 }
 
@@ -90,9 +91,16 @@ export async function deleteBackupUpload(connectionId: string, runId: string, de
 // Downloads a backup artifact through the authenticated API and saves it via
 // the browser — a plain <a href> can't carry the Authorization header, so
 // this fetches the blob directly and triggers the save itself.
-export async function downloadBackupUpload(connectionId: string, runId: string, destinationId: string): Promise<void> {
+// `artifact: 'config'` grabs the connection JSON the run shipped with the dump.
+export async function downloadBackupUpload(
+  connectionId: string,
+  runId: string,
+  destinationId: string,
+  artifact: 'dump' | 'config' = 'dump'
+): Promise<void> {
   const token = getToken()
-  const res = await fetch(`${API_URL}/connections/${connectionId}/backup/runs/${runId}/uploads/${destinationId}/download`, {
+  const qs = artifact === 'config' ? '?artifact=config' : ''
+  const res = await fetch(`${API_URL}/connections/${connectionId}/backup/runs/${runId}/uploads/${destinationId}/download${qs}`, {
     headers: token ? { Authorization: `Bearer ${token}` } : {},
   })
   if (!res.ok) {

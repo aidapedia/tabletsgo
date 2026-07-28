@@ -308,6 +308,7 @@ CREATE TABLE backup_schedules (
   retry_delay_sec INTEGER DEFAULT 60,   -- delay between attempts
   retention_days INTEGER DEFAULT 0,     -- prune uploads older than this after each run (0 = never)
   encrypt INTEGER DEFAULT 0,      -- encrypt the dump (AES-256-GCM, server-derived key) before upload
+  include_config INTEGER DEFAULT 0, -- also upload the connection's export JSON (never with secrets)
   enabled INTEGER DEFAULT 1,      -- "Active" toggle
   next_run_at INTEGER,            -- epoch ms; scheduler's due-check cursor
   created_at INTEGER,
@@ -320,7 +321,7 @@ CREATE TABLE backup_runs (
   trigger_kind TEXT NOT NULL,     -- "manual" | "schedule" | "retry"
   status TEXT NOT NULL,           -- "success" | "failed"
   error TEXT,
-  uploads TEXT,                   -- JSON: [{destinationId, ok, key?, sizeBytes?, encrypted?, error?, prunedCount?, deleted?}]
+  uploads TEXT,                   -- JSON: [{destinationId, ok, key?, sizeBytes?, encrypted?, error?, prunedCount?, deleted?, configKey?, configSizeBytes?, configEncrypted?, configError?}]
   started_at INTEGER NOT NULL,
   finished_at INTEGER,
   ts INTEGER NOT NULL
@@ -508,6 +509,88 @@ Also closes any open pool/handle.
 - **200:** `{ "ok": true }`
 - **404:** `{ "error": "Connection not found" }`
 - **Example:** `DELETE http://localhost:3000/api/connections/demo-sqlite`
+
+### Connection export / import
+Moves a whole connection — its settings **and** every artifact hanging off it — as
+one portable JSON document. Included: connection settings, folders (all four types,
+with their tree + colors), table→folder assignments, saved queries, workflows,
+dashboards and the backup schedule. Deliberately **excluded**: history/audit rows
+(query history, workflow runs, backup runs, schema migrations) and connection access
+grants — they describe one instance, not the connection's configuration.
+
+The document is dialect-agnostic: connection settings ride along as an opaque
+`connection.settings` object, so a new database type needs no change here.
+
+#### GET `/api/connections/:id/export`
+Build the export document for a connection.
+
+- **Query:** `secrets` (optional — `1`/`true`/`yes` keeps the stored password; default
+  omits every secret field and blanks a password embedded in a `uri`)
+- **200:**
+```json
+{
+  "kind": "connection",
+  "version": 1,
+  "exportedAt": 1785227173000,
+  "app": { "name": "tabletsgo", "version": "0.19.0" },
+  "includesSecrets": false,
+  "connection": {
+    "type": "postgresql",
+    "name": "Demo",
+    "environment": "local",
+    "folder": "",
+    "tags": ["analytics"],
+    "settings": { "host": "localhost", "port": 5432, "username": "app", "database": "demo", "sslmode": "disable" }
+  },
+  "folders": [{ "id": "f1", "type": "table", "name": "Core", "color": "#6366f1", "parentId": null, "ts": 1785227173134 }],
+  "tableFolders": [{ "tableName": "users", "folderId": "f1" }],
+  "savedQueries": [{ "id": "q1", "name": "All rows", "sql": "SELECT 1", "kind": "query", "folderId": null, "ts": 1785227173232 }],
+  "workflows": [{ "id": "w1", "name": "Nightly", "graph": { "nodes": [], "edges": [] }, "folderId": null, "scheduleEnabled": true, "ts": 1785227173259 }],
+  "dashboards": [{ "id": "d1", "name": "Overview", "config": { "variables": [], "widgets": [] }, "folderId": null, "ts": 1785227173300 }],
+  "backupSchedule": { "frequency": "daily", "hourOfDay": 2, "destinationIds": ["local"], "retryLimit": 0, "retryDelaySec": 60, "retentionDays": 7, "encrypt": false, "enabled": true }
+}
+```
+- **404:** `{ "error": "Connection not found" }`
+- **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/export?secrets=1`
+
+Webhook tokens are stripped from workflow graphs — they're secrets and never
+round-trip through a file (import mints fresh ones).
+
+#### POST `/api/connections/import`
+Create a **new** connection from an export document, in one transaction (a rejected
+document leaves nothing behind). Caller must be a member of the target workspace.
+Mounted above the `/api/connections/:id` guard, so `import` is never read as an id.
+
+Every artifact gets a fresh id: the folder tree is re-parented onto the new ids
+(a cycle or an over-deep branch is imported at the root), items keep their folder
+when the folder groups that kind of item, and dashboard row actions are re-pointed
+at the newly created workflow ids. Storage destinations are workspace-scoped and are
+**not** part of the bundle — references this workspace doesn't have are dropped, and
+schedules (workflow + backup) arrive **paused**.
+
+- **Body:**
+```json
+{
+  "workspaceId": "ws_1",
+  "document": { "kind": "connection", "version": 1, "...": "the export document" },
+  "name": "Demo (imported)",
+  "settings": { "password": "typed-in-by-the-importer" }
+}
+```
+  `name` (optional) overrides the connection name; `settings` (optional) overrides
+  individual credential fields — e.g. a password the export left out, or SQLite's
+  `filepath` on this host.
+- **200:**
+```json
+{
+  "connection": { "id": "new-uuid", "type": "sqlite", "name": "Demo (imported)", "...": "full connection object" },
+  "counts": { "folders": 5, "tables": 1, "savedQueries": 1, "workflows": 1, "dashboards": 1 },
+  "warnings": ["1 scheduled workflow(s) were imported paused — enable them once the connection is verified."]
+}
+```
+- **400:** `{ "error": "Not a connection export file." }` / `{ "error": "This file was exported by a newer version of tabletsgo." }` / `{ "error": "The file is missing its connection settings." }`
+- **403:** `{ "error": "Forbidden" }` (not a member of `workspaceId`)
+- **Example:** `POST http://localhost:3000/api/connections/import`
 
 ### Connection access
 Controls which teams / individual members may see and open a connection. An empty
@@ -1007,16 +1090,35 @@ schedule per connection. All schedule config (create + edit) is driven from
 the frontend's Edit Connection → Backup tab; the connection's own Backup tab
 is a read-only viewer (status, calendar, version list).
 
+**Connection configuration in a backup.** With `includeConfig` on, each run
+uploads a second artifact next to the database dump: the connection's export
+document (the same JSON `GET /api/connections/:id/export` returns — settings,
+folders, saved queries, workflows, dashboards, the schedule itself), named
+`<uuid>.connection.json` in the same date folder, honoring the schedule's
+`encrypt`. It is **always written without secrets** — the file may sit in a
+bucket for years; rebuilding from it means re-entering the password via
+`POST /api/connections/import`.
+
+The config artifact is recorded **on** each destination's upload entry
+(`configKey` / `configSizeBytes` / `configEncrypted`), not as an entry of its
+own, so every lookup by `destinationId` (download, delete, restore) still
+resolves the dump — the thing a restore needs. A failed config upload records
+`configError` on the entry and does **not** fail the run: the dump already
+succeeded, and failing would re-dump the whole database on every retry.
+Retention pruning is unchanged — the dump's prune pass already sweeps the
+whole folder by date, so both artifacts age out together.
+
 ### GET `/api/connections/:id/backup/schedule`
 Current backup schedule for this connection (`null` if none exists yet).
 
-- **200:** `{ "schedule": { "connectionId", "enabled", "frequency": "hourly"|"daily", "hourOfDay", "destinationIds", "retryLimit", "retryDelaySec", "retentionDays", "encrypt" } | null }`
+- **200:** `{ "schedule": { "connectionId", "enabled", "frequency": "hourly"|"daily", "hourOfDay", "destinationIds", "retryLimit", "retryDelaySec", "retentionDays", "encrypt", "includeConfig" } | null }`
 - **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/backup/schedule`
 
 ### POST `/api/connections/:id/backup/schedule`
 Create the connection's backup schedule. 409s if one already exists.
 
-- **Body:** `{ "frequency": "hourly"|"daily", "hourOfDay"?: 0-23, "destinationIds": string[], "retryLimit"?: 0-5, "retryDelaySec"?: number, "retentionDays"?: number, "encrypt"?: boolean, "enabled"?: boolean }`
+- **Body:** `{ "frequency": "hourly"|"daily", "hourOfDay"?: 0-23, "destinationIds": string[], "retryLimit"?: 0-5, "retryDelaySec"?: number, "retentionDays"?: number, "encrypt"?: boolean, "includeConfig"?: boolean, "enabled"?: boolean }`
+  - `includeConfig` (default `false`) also uploads the connection's export JSON with each run — see the note above.
   - `destinationIds` may include real `storage_destinations.id`s and/or the reserved `"local"` (server disk). An **empty array is allowed** and falls back to `["local"]` at run time — see the "local" destination note under Storage destinations above.
 - **200:** `{ "schedule": {...} }` (same shape as GET)
 - **400:** invalid frequency/destinations, or connection type isn't sqlite/postgresql
@@ -1058,13 +1160,15 @@ Paginated backup runs, including per-destination upload results (size,
 encrypted, pruned count) the version list needs. Optional `date=YYYY-MM-DD`
 filters to one UTC day (what clicking a calendar cell does in the UI).
 
-- **200:** `{ "total": number, "runs": [{ "id", "trigger": "manual"|"schedule"|"retry", "status", "error"?, "startedAt", "finishedAt", "uploads": [{ "destinationId", "ok", "key"?, "sizeBytes"?, "error"?, "encrypted"?, "prunedCount"?, "pruneError"?, "deleted"? }] }] }`
+- **200:** `{ "total": number, "runs": [{ "id", "trigger": "manual"|"schedule"|"retry", "status", "error"?, "startedAt", "finishedAt", "uploads": [{ "destinationId", "ok", "key"?, "sizeBytes"?, "error"?, "encrypted"?, "prunedCount"?, "pruneError"?, "deleted"?, "configKey"?, "configSizeBytes"?, "configEncrypted"?, "configError"? }] }] }`
 - **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/backup/runs?limit=20&offset=20`
 
 ### DELETE `/api/connections/:id/backup/runs/:runId/uploads/:destinationId`
-Permanently deletes that uploaded artifact from storage. The `backup_runs` row
-and other uploads in it are untouched — this upload is marked `deleted: true`
-(history stays visible; Restore/Download disappear for it). Irreversible.
+Permanently deletes that uploaded artifact from storage — together with the
+connection-config JSON (`configKey`) the same run shipped, so no orphan is left
+behind. The `backup_runs` row and other uploads in it are untouched — this
+upload is marked `deleted: true` (history stays visible; Restore/Download
+disappear for it). Irreversible.
 
 - **200:** `{ "ok": true }`
 - **404:** run or deletable upload not found
@@ -1075,10 +1179,13 @@ and other uploads in it are untouched — this upload is marked `deleted: true`
 Downloads that uploaded artifact (decrypted server-side first if `encrypted`)
 as a file attachment (`Content-Disposition`).
 
+- **Query:** `artifact` (optional — `config` downloads the connection JSON the
+  run shipped beside the dump, named `<connection>-<date>.connection.json`;
+  omitted/`dump` downloads the database dump)
 - **200:** binary file stream
-- **404:** run or downloadable upload not found
+- **404:** run or downloadable upload not found (`No downloadable configuration found for this destination` when the run shipped no config)
 - **500:** `{ "error": "<message>" }`
-- **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/backup/runs/run-1/uploads/storage-1/download`
+- **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/backup/runs/run-1/uploads/storage-1/download?artifact=config`
 
 ### POST `/api/connections/:id/backup/restore`
 Download a past backup artifact and overwrite a connection's live data in

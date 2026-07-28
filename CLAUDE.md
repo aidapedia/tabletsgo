@@ -50,8 +50,10 @@ src/
 │   │                             #   api (workspaces/members/teams CRUD)
 │   ├── connections/              # stores/ConnectionsContext (scoped to current workspace); components:
 │   │                             #   ConnectionForm, ConnectionDetail (Data/Access/Backup tabs),
-│   │                             #   ConnectionAccessPanel, DbTypePickerModal (owns DB_CATALOG/TYPE_LABEL);
-│   │                             #   api (connection access get/set)
+│   │                             #   ConnectionAccessPanel, DbTypePickerModal (owns DB_CATALOG/TYPE_LABEL),
+│   │                             #   ConnectionExportModal + ConnectionImportModal (whole-connection JSON
+│   │                             #   bundle — see "CONNECTION EXPORT / IMPORT" below); api (connection
+│   │                             #   access get/set, export/import client + file read/download helpers)
 │   ├── settings/                 # stores/SettingsContext
 │   ├── table-folders/            # the connected DB's tables grouped by the generic folders tree
 │   │                             #   (type='table', 3-level cap, one folder per table), each folder
@@ -193,6 +195,19 @@ Login/setup/accept-invite return `{ user, token }`; the token is stored in local
 The `connections` table stores dialect-agnostic fields (`type`, `name`, `workspace_id`, `environment`, `folder`, `tags`, `schema_version`) as plain columns and everything else (host/port/username/password/filepath/database/uri/sslmode/auth/keychain) as one AES-256-GCM-encrypted JSON blob in `credentials`. `server.js`'s `rowToConnection`/`connectionToRow` reassemble/split the flat connection shape the frontend has always used — the API contract for `/api/connections*` didn't change, only storage.
 
 Every connection has a `schemaVersion` starting at 1. DDL staged from the schema designer / create-table panel / drop-table / empty-table actions is tagged `ddl: true` with a computed `rollbackSql` (see `src/features/schema-designer/lib/rollback.ts`) when staged. After `commitChanges` in `WorkspacePage.tsx` successfully executes a batch containing DDL, it calls `POST /api/connections/:id/schema/migrations` once, which records the batch (forward + rollback SQL) in `schema_migrations` and bumps `schema_version` — one version per successful commit, not per statement. Each migration carries a `status` (`active` | `rollbacked`; NULL on legacy rows = active). `GET .../schema/migrations` lists the trail; `POST .../schema/rollback { toVersion }` undoes every still-active migration newer than the target (newest first), refuses to cross an irreversible one (`reversible = 0`), marks the undone rows `rollbacked`, and resets `schema_version` to the target. Version numbers are reused after a rollback (roll 3→1, commit again ⇒ a new v2), so they're only unique among `active` rows. Plain row-level data edits (insert/update/delete via `TableView`) are never tagged `ddl` and never affect `schemaVersion`.
+
+## CONNECTION EXPORT / IMPORT
+A connection moves between instances as one JSON document (`kind: 'connection'`, versioned by `CONNECTION_EXPORT_VERSION` in `server.js`). `GET /api/connections/:id/export` builds it; `POST /api/connections/import` creates a **new** connection from it, in one `meta.transaction` — a rejected document leaves nothing behind. The import route is mounted **above** the `/api/connections/:id` guard so `import` isn't read as an id.
+
+- **In the bundle:** connection settings (as an opaque, dialect-agnostic `connection.settings` object), folders of all four types with their tree + colors, table→folder assignments, saved queries, workflows, dashboards, backup schedule.
+- **Not in the bundle:** history/audit rows (`query_history`, `workflow_runs`, `backup_runs`, `schema_migrations`) and `connection_access` — they describe one instance, and their principals don't exist in the importing workspace. Storage destinations are workspace-scoped too: references the target workspace lacks are dropped (with a warning), never invented.
+- **Secrets:** the password is omitted unless `?secrets=1` (a password embedded in a `uri` is blanked as well); the import dialog can supply one via the body's `settings` override. Webhook tokens are stripped on export and re-minted on import — same rule as the per-workflow export (`features/workflow/lib/exportImport.ts`).
+- **Ids:** everything is re-idded on import. Folders are re-parented onto the new ids (a cycle or an over-deep branch lands at the root), an item keeps its folder only when that folder groups its kind, and dashboard row actions are re-pointed at the new workflow ids (`remapIdsDeep`) — the same problem `features/templates/lib/apply.ts` solves for templates.
+- **Schedules arrive paused** (workflow `schedule_enabled = 0`, backup `enabled = 0`): an import must not start firing jobs at a database nobody has verified yet. The response's `warnings[]` says so, and the UI toasts them.
+
+When you add a new per-connection resource, add it to the bundle (`buildConnectionExport` + `importConnectionDoc`) alongside the `DELETE /api/connections/:id` cascade — the two lists should stay in sync.
+
+The backup schedule can ship the same document on a schedule: `backup_schedules.include_config` (meta migration v6) makes each run upload `<uuid>.connection.json` beside the dump via `execExportConnectionConfig` → the existing `execStoreToStorage`. It's recorded **on** the destination's upload entry (`configKey`/`configSizeBytes`/`configEncrypted`/`configError`), never as its own entry, so every `uploads.find(u => u.destinationId === …)` lookup (download/delete/restore) still resolves the dump. Downloads take `?artifact=config`; deleting an upload deletes both objects; retention is left to the dump's prune pass (it sweeps the folder by date). A failed config upload does not fail the run — the dump succeeded, and failing would re-dump the database on every retry.
 
 ## META DB MIGRATIONS (app's own SQLite)
 Metadata-schema evolution lives in `server/migrations.js` as a versioned, append-only `MIGRATIONS` step array. `PRAGMA user_version` records the last applied step; on boot `migrate()` runs every pending step (oldest first), each in its own transaction, stamping `user_version` as it goes. Before the first pending step touches an existing install, the meta DB is snapshotted to `data/backups/pre-migrate-v{N}-{ts}.db` automatically — no constant to remember. To change the meta schema:
