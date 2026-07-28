@@ -63,9 +63,10 @@ src/
 │   │                             #   into a folder / a folder into a folder, un-foldered tables listed
 │   │                             #   plainly beneath as the root drop zone, inline new folder (name only —
 │   │                             #   the row is controlled via `creating`/`onCreatingChange` so the panel
-│   │                             #   header's folder+ button starts it) + rename, and one swatch picker
-│   │                             #   reachable two ways: click the folder icon, or ⋮ > "Change color" (a
-│   │                             #   ContextMenuSub flyout)), TableFolderPickerPanel + TableFolderEditPanel (right-side
+│   │                             #   header's folder+ button starts it) + rename, and a swatch picker
+│   │                             #   under ⋮ > "Change color" (a ContextMenuSub flyout); the folder icon
+│   │                             #   itself is plain, clicking it just expands/collapses the folder),
+│   │                             #   TableFolderPickerPanel + TableFolderEditPanel (right-side
 │   │                             #   slide-overs, now only reached from the schema diagram's node menu /
 │   │                             #   region label), FolderDot; lib/api (wraps shared/api/folders with the
 │   │                             #   'table' type bound + set-table-folder), lib/assign, lib/tree
