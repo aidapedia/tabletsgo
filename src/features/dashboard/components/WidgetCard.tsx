@@ -126,6 +126,9 @@ export default function WidgetCard({
           <Popover
             align="right"
             width={170}
+            // Portal: the card clips its overflow and grid cells are siblings,
+            // so an in-card panel would be cut off / painted under the next widget.
+            portal
             trigger={({ open, toggle }) => (
               <IconButton size="sm" active={open} onClick={toggle} aria-label="Widget actions">
                 <MoreVerticalIcon width={14} height={14} />
