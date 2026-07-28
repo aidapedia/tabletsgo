@@ -39,7 +39,7 @@ const byName = (a: { name: string }, b: { name: string }) => a.name.localeCompar
  * Self-contained: assignment, folder creation, renames, recoloring and folder
  * moves all happen here and are handed back via `onChange` — no slide-over.
  * A folder is created by typing its name inline (like a dashboard folder); its
- * color is picked from the swatch popover behind the folder icon. Only deleting
+ * color is picked from the ⋮ menu's "Change color" flyout. Only deleting
  * is delegated, so the caller can mirror the server's reparenting locally.
  *
  * The "new folder" row is controlled (`creating` / `onCreatingChange`) so the
@@ -161,7 +161,7 @@ export default function TableFolderList({
     }
   }
 
-  // Recolor from the swatch popover behind the folder icon (what the old
+  // Recolor from the ⋮ menu's swatch flyout (what the old
   // "Name & color…" slide-over used to do).
   const recolor = async (folderId: string, color: string | null) => {
     const prev = folders
@@ -253,7 +253,7 @@ export default function TableFolderList({
     className: drag?.type === 'table' && drag.id === obj.name ? 'opacity-50' : '',
   })
 
-  // The swatch grid, shared by the folder icon's popover and its ⋮ menu.
+  // The swatch grid behind the ⋮ menu's "Change color" flyout.
   const renderColorPicker = (folder: TableFolder, close: () => void, className = 'p-2') => (
     <div className={className}>
       <div className="grid grid-cols-6 gap-1.5">
@@ -347,28 +347,7 @@ export default function TableFolderList({
           onClick={() => toggle(folder.id)}
           className={`${rowBase} cursor-pointer ${isDrop ? 'text-ink' : rowIdle}`}
         >
-          {/* The folder icon doubles as the color picker — click it for swatches. */}
-          <div className="shrink-0" onClick={(e) => e.stopPropagation()}>
-            <Popover
-              width={168}
-              portal
-              trigger={({ open, toggle: toggleColors }) => (
-                <button
-                  type="button"
-                  onClick={toggleColors}
-                  aria-label={`Color of ${folder.name}`}
-                  title="Folder color"
-                  className={`flex h-[22px] w-[22px] items-center justify-center rounded-[6px] hover:bg-elevated ${
-                    open ? 'bg-elevated' : ''
-                  }`}
-                >
-                  <FolderGlyph className="text-ink-faint" width={15} height={15} style={tint} />
-                </button>
-              )}
-            >
-              {({ close }) => renderColorPicker(folder, close)}
-            </Popover>
-          </div>
+          <FolderGlyph className="shrink-0 text-ink-faint" width={15} height={15} style={tint} />
           <span className="min-w-0 flex-1 truncate">{folder.name}</span>
           {subtreeCount(folder) > 0 && <span className="text-[10px] text-ink-faint">{subtreeCount(folder)}</span>}
           <div className="shrink-0" onClick={(e) => e.stopPropagation()}>
@@ -398,7 +377,6 @@ export default function TableFolderList({
                   <MenuItem onClick={() => { setRenaming({ id: folder.id, value: folder.name }); close() }}>
                     <EditIcon width={14} height={14} /> Rename
                   </MenuItem>
-                  {/* Same picker the folder icon opens, as a side flyout. */}
                   <ContextMenuSub label="Change color" icon={PaletteIcon} width={170}>
                     {renderColorPicker(folder, close, 'p-0.5')}
                   </ContextMenuSub>
