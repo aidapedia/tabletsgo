@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { useAuth } from '@/features/auth'
 import { checkForUpdate, getVersion } from '../lib/api'
-import type { UpdateInfo } from '../lib/types'
+import type { AppIdentity, UpdateInfo } from '../lib/types'
 
 // App-wide update state: one silent check after login (when auto-check is on),
 // exposed to the banner (HomeLayout) and the Settings > Updates panel.
@@ -16,6 +16,9 @@ const AUTOCHECK_KEY = 'dbm.update.autocheck'
 
 type UpdateCtx = {
   info: UpdateInfo | null
+  // The running build, from the local /system/version endpoint. Always known
+  // once authenticated — even when auto-check is off and `info` is still null.
+  identity: AppIdentity | null
   loading: boolean
   lastChecked: number | null
   check: (refresh?: boolean) => Promise<void>
@@ -49,6 +52,7 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
       return null
     }
   })
+  const [identity, setIdentity] = useState<AppIdentity | null>(null)
   const [serverDefault, setServerDefault] = useState<boolean | null>(null)
 
   // Resolved preference: an explicit per-browser choice wins; otherwise the
@@ -69,7 +73,13 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!user) return
     let cancelled = false
-    getVersion().then((v) => !cancelled && setServerDefault(!!v.autoCheckUpdates))
+    getVersion().then((v) => {
+      if (cancelled) return
+      // safeRequest's fallback ('0.0.0') means the endpoint didn't answer —
+      // don't pass that off as the running version.
+      setIdentity(v.version === '0.0.0' ? null : v)
+      setServerDefault(!!v.autoCheckUpdates)
+    })
     return () => {
       cancelled = true
     }
@@ -108,8 +118,8 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   const dismissed = !!info?.latest && dismissedVersion === info.latest.version
 
   const value = useMemo(
-    () => ({ info, loading, lastChecked, check, dismissed, dismiss, autoCheck, setAutoCheck }),
-    [info, loading, lastChecked, check, dismissed, dismiss, autoCheck, setAutoCheck],
+    () => ({ info, identity, loading, lastChecked, check, dismissed, dismiss, autoCheck, setAutoCheck }),
+    [info, identity, loading, lastChecked, check, dismissed, dismiss, autoCheck, setAutoCheck],
   )
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>
