@@ -18,7 +18,7 @@ export default function IconRail({
   user,
   connections = [],
   currentId,
-  onSelectConnection,
+  onBrowseConnections,
   active = 'browser',
   onBrowser,
   onQueries,
@@ -34,38 +34,15 @@ export default function IconRail({
 
   return (
     <div className="flex w-[56px] shrink-0 flex-col items-center border-r border-edge bg-bg py-3">
-      {/* Connection switcher */}
-      <Popover
-        width={240}
-        trigger={({ toggle }) => (
-          <Tooltip label={current?.name || 'Connections'} placement="right">
-            <IconButton size="xl" onClick={toggle} aria-label="Connections">
-              <DbLogo type={current?.type} className="h-9 w-9" />
-            </IconButton>
-          </Tooltip>
-        )}
+      {/* Connection switcher — opens the searchable folder-tree modal */}
+      <Tooltip
+        label={current?.environment ? `${current.name} · ${current.environment}` : current?.name || 'Connections'}
+        placement="right"
       >
-        {({ close }) => (
-          <div className="p-1">
-            <div className="px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-ink-faint">
-              Connections
-            </div>
-            {connections.map((c) => (
-              <MenuItem
-                key={c.id}
-                active={c.id === currentId}
-                onClick={() => {
-                  onSelectConnection?.(c.id)
-                  close()
-                }}
-              >
-                <DbLogo type={c.type} className="h-7 w-7 shrink-0" />
-                <span className="flex-1 truncate">{c.name}</span>
-              </MenuItem>
-            ))}
-          </div>
-        )}
-      </Popover>
+        <IconButton size="xl" onClick={onBrowseConnections} aria-label="Switch connection">
+          <DbLogo type={current?.type} className="h-9 w-9" />
+        </IconButton>
+      </Tooltip>
 
       <div className="my-2 h-px w-7 bg-edge" />
 

@@ -9,6 +9,7 @@ export { default as ChangesPanel } from './components/ChangesPanel'
 export { default as SavedQueriesPanel } from './components/SavedQueriesPanel'
 export { default as IconRail } from './components/IconRail'
 export { default as TabBar } from './components/TabBar'
+export { default as StatusBar } from './components/StatusBar'
 
 export * from './lib/savedQueries'
 export * from './lib/queryHistory'

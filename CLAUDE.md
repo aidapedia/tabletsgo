@@ -51,6 +51,9 @@ src/
 │   ├── connections/              # stores/ConnectionsContext (scoped to current workspace); components:
 │   │                             #   ConnectionForm, ConnectionDetail (Data/Access/Backup tabs),
 │   │                             #   ConnectionAccessPanel, DbTypePickerModal (owns DB_CATALOG/TYPE_LABEL),
+│   │                             #   ConnectionSwitcherModal (the console's "switch connection" overlay:
+│   │                             #     search + database-type filter chips + a collapsible folder tree —
+│   │                             #     a connection's `folder` string nests on "/"; ↑/↓/Enter/Esc),
 │   │                             #   ConnectionExportModal + ConnectionImportModal (whole-connection JSON
 │   │                             #   bundle — see "CONNECTION EXPORT / IMPORT" below); api (connection
 │   │                             #   access get/set, export/import client + file read/download helpers)
@@ -82,10 +85,17 @@ src/
 │   │   │                         #     context menu acts on that selection: copy as TSV/CSV/JSON, set
 │   │   │                         #     NULL/EMPTY/DEFAULT, duplicate/delete the spanned rows),
 │   │   │                         #   SchemaView, QueryEditor, FunctionView,
-│   │   │                         #   QueryHistoryView, InsertRowPanel, ChangesPanel, SavedQueriesPanel, IconRail,
+│   │   │                         #   QueryHistoryView, InsertRowPanel, ChangesPanel, SavedQueriesPanel,
+│   │   │                         #   IconRail (its DB logo at the top opens the ConnectionSwitcherModal via
+│   │   │                         #     onBrowseConnections — no inline connection popover anymore),
 │   │   │                         #   TabBar (the open-tab strip: drag a tab left/right to reorder — insertion
 │   │   │                         #   caret on drag-over, committed on drop; right-click closes this/others/
-│   │   │                         #   to-the-right/all)
+│   │   │                         #   to-the-right/all),
+│   │   │                         #   StatusBar (bottom bar of the main area only — the icon rail and Tables
+│   │   │                         #   sidebar keep their full height. DB type + logo,
+│   │   │                         #   connection name, environment pill, current database/schema, and the
+│   │   │                         #   schema version on the right — clicking it opens the schema history tab.
+│   │   │                         #   Env + version live here only; the top toolbar no longer shows them)
 │   │   └── lib/                  #   savedQueries, queryHistory (backend calls)
 │   ├── schema-designer/          # visual schema design (React Flow ERD + table/column editors; tables
 │   │   │                         #   sharing a folder are clustered into a draggable, editable region)

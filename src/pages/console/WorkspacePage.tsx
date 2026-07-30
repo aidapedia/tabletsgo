@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useAuth } from '@/features/auth'
-import { useConnections } from '@/features/connections'
+import { useConnections, ConnectionSwitcherModal } from '@/features/connections'
 import { useSettings } from '@/features/settings'
 import { useToast } from '@/shared/ui/feedback/Toast'
 import Select from '@/shared/ui/form/Select'
@@ -50,6 +50,7 @@ const WorkflowEditor = lazy(() => import('@/features/workflow/components/Workflo
 const DashboardView = lazy(() => import('@/features/dashboard/components/DashboardView'))
 import IconRail from '@/features/workspace/components/IconRail'
 import TabBar from '@/features/workspace/components/TabBar'
+import StatusBar from '@/features/workspace/components/StatusBar'
 import { formatCombo, useKeymap, useShortcut } from '@/features/keymap'
 import SavedQueriesPanel from '@/features/workspace/components/SavedQueriesPanel'
 import AnalyzePanel from '@/features/workspace/components/AnalyzePanel'
@@ -100,6 +101,7 @@ import {
   ChevronRight,
   CodeIcon,
   ColumnsIcon,
+  DatabaseIcon,
   DiagramIcon,
   EditIcon,
   EyeIcon,
@@ -187,6 +189,7 @@ export default function Workspace() {
   const [queryState, setQueryState] = useState({}) // per query tab: key -> { sql, result, error, elapsedMs }
   const [closingTab, setClosingTab] = useState(null) // tab key awaiting close confirmation
   const [pendingConn, setPendingConn] = useState(null) // connection id awaiting switch confirmation
+  const [switcherOpen, setSwitcherOpen] = useState(false) // connection switcher modal
   const [tableAction, setTableAction] = useState(null) // { table, mode: 'empty' | 'delete' } awaiting confirmation
   const [committing, setCommitting] = useState(false)
   const [dataVersion, setDataVersion] = useState(0) // bump to force table reloads
@@ -207,6 +210,7 @@ export default function Workspace() {
   // editor state are all scoped to the current connection. Ask first, then wipe
   // that state and navigate. If there's nothing to lose, switch straight away.
   const requestConnSwitch = (cid) => {
+    setSwitcherOpen(false)
     if (cid === id) {
       setSidebarOpen(false)
       return
@@ -1339,6 +1343,7 @@ export default function Workspace() {
     { id: 'go-schema', group: 'Navigate', label: 'Schema', keywords: 'designer diagram', icon: <DiagramIcon width={15} height={15} />, hint: formatCombo(bindings['workspace.panelSchema']), run: () => selectPanel('schema') },
     { id: 'go-dashboards', group: 'Navigate', label: 'Dashboards', keywords: 'charts analytics', icon: <GridIcon width={15} height={15} />, hint: formatCombo(bindings['workspace.panelDashboards']), run: () => selectPanel('dashboards') },
     { id: 'go-templates', group: 'Navigate', label: 'Templates', keywords: 'presets starter gallery scaffold', icon: <WandIcon width={15} height={15} />, run: () => selectPanel('templates') },
+    { id: 'switch-connection', group: 'Navigate', label: 'Switch connection…', keywords: 'database change connect', icon: <DatabaseIcon width={15} height={15} />, run: () => setSwitcherOpen(true) },
 
     { id: 'view-history', group: 'View', label: 'Query history', keywords: 'recent past', icon: <HistoryIcon width={15} height={15} />, run: openHistory },
     { id: 'view-schema-history', group: 'View', label: `Schema version history (v${conn.schemaVersion ?? 1})`, keywords: 'migrations audit', icon: <TagIcon width={15} height={15} />, run: openSchemaHistory },
@@ -1365,7 +1370,7 @@ export default function Workspace() {
           user={user}
           connections={connections}
           currentId={id}
-          onSelectConnection={requestConnSwitch}
+          onBrowseConnections={() => setSwitcherOpen(true)}
           active={tablesVisible ? panel : ''}
           onBrowser={() => selectPanel('browser')}
           onQueries={() => selectPanel('queries')}
@@ -1667,16 +1672,8 @@ export default function Workspace() {
             </kbd>
           </button>
           <div className="ml-auto flex items-center gap-2">
+            {/* Environment + schema version now live in the bottom status bar. */}
             <div className="flex items-center gap-2 max-[720px]:hidden">
-              <Tooltip label="Schema version history" placement="bottom">
-                <button
-                  type="button"
-                  onClick={openSchemaHistory}
-                  className="rounded-[20px] border border-edge bg-elevated px-[9px] py-1 text-[11px] font-medium text-ink-faint transition-colors hover:border-edge-strong hover:text-ink"
-                >
-                  v{conn.schemaVersion ?? 1}
-                </button>
-              </Tooltip>
               <Tooltip label="Query history" placement="bottom">
                 <IconButton size="toolbar" onClick={openHistory} aria-label="Query history">
                   <HistoryIcon width={16} height={16} />
@@ -1884,6 +1881,15 @@ export default function Workspace() {
             </div>
           )}
         </div>
+
+        {/* Status bar — bottom of the main area only; the rail and sidebar keep
+            their full height. */}
+        <StatusBar
+          conn={conn}
+          database={ns.database}
+          schema={ns.schema}
+          onSchemaHistory={openSchemaHistory}
+        />
       </main>
 
       {tabMenu && (
@@ -2087,6 +2093,15 @@ export default function Workspace() {
             </div>
           </div>
         </div>
+      )}
+
+      {switcherOpen && (
+        <ConnectionSwitcherModal
+          connections={connections}
+          currentId={id}
+          onSelect={requestConnSwitch}
+          onClose={() => setSwitcherOpen(false)}
+        />
       )}
 
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} commands={commands} />
