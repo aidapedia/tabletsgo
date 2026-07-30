@@ -6,9 +6,9 @@ import type { RedisKeyMeta } from './api'
  * a real tree: every separator-delimited prefix becomes a branch, and each key
  * lands as a leaf under its own prefix.
  *
- * A branch that would hold exactly one child branch and nothing else is folded
- * into its parent (`a` → `a:b` → `a:b:c` renders as one `a:b:c` row), which is
- * what keeps a deeply-namespaced keyspace readable.
+ * Every segment gets its own level — `a:b:c:key` nests `a` > `b` > `c` > `key`
+ * — so the depth of a row always matches the depth of the namespace, and a
+ * prefix can be collapsed at exactly the level you think of it.
  */
 
 export type RedisTreeNode =
@@ -47,24 +47,17 @@ export function buildKeyTree(keys: RedisKeyMeta[], delimiter = ':'): RedisTreeNo
   return sortNodes(collapse(root, delimiter))
 }
 
-// A branch's contents: its child branches (single-child chains folded) followed
-// by the keys that sit directly on it.
+// A branch's contents: one row per child segment, followed by the keys that sit
+// directly on it.
 function collapse(branch: Branch, delimiter: string): RedisTreeNode[] {
   const nodes: RedisTreeNode[] = []
-  for (const child of branch.children.values()) {
-    let node = child
-    // Fold `a` → `a:b` into one row while the chain has no keys of its own and
-    // exactly one way forward.
-    while (node.keys.length === 0 && node.children.size === 1) {
-      node = node.children.values().next().value!
-    }
+  for (const node of branch.children.values()) {
     const children = sortNodes(collapse(node, delimiter))
     nodes.push({
       kind: 'branch',
       id: `branch:${node.segments.join(delimiter)}`,
-      // Label covers every segment folded into this row, so the full path is
-      // still readable without expanding the chain.
-      label: node.segments.slice(branch.segments.length).join(delimiter),
+      // One segment per row — the parents above carry the rest of the prefix.
+      label: node.segments[node.segments.length - 1],
       prefix: node.segments.join(delimiter),
       children,
       keyCount: countKeys(children),

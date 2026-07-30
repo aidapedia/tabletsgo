@@ -71,8 +71,8 @@ src/
 │   │   │                         #     CodeMirror), RedisEditor (CodeMirror with a Redis StreamLanguage
 │   │   │                         #     + command autocomplete; reuses SqlEditor's exported theme)
 │   │   └── lib/                  #   api (/redis/* client), commands (command catalog for autocomplete
-│   │                             #     + argument hints), tree (buildKeyTree: split keys on ':' and
-│   │                             #     fold single-child chains; TTL/type formatting)
+│   │                             #     + argument hints), tree (buildKeyTree: split keys on ':' — one
+│   │                             #     folder level per segment, no chain folding; TTL/type formatting)
 │   ├── table-folders/            # the connected DB's tables grouped by the generic folders tree
 │   │                             #   (type='table', 3-level cap, one folder per table), each folder
 │   │                             #   carrying an optional color. Replaced the old "domains" feature —
