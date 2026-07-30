@@ -181,8 +181,9 @@ sole `INTEGER PRIMARY KEY` on a rowid table). A column is safe to omit from an
 ```jsonc
 // SELECT
 { "type": "rows", "columns": ["id", "name"], "rows": [{ "id": 1, "name": "A" }] }
-// non-SELECT
-{ "type": "message", "message": "Query OK · 3 row(s) affected." }
+// non-SELECT — `rowCount` lets a caller tell a statement that changed nothing
+// (0-row UPDATE/DELETE: not an error, but not a success either) from one that did
+{ "type": "message", "message": "Query OK · 3 row(s) affected.", "rowCount": 3 }
 // failure (HTTP 200, error in body)
 { "error": "no such table: foo" }
 ```
@@ -1378,7 +1379,16 @@ Read rows from a table (capped by `limit`).
 - **Query:** `limit` (default `200`), plus optional `database`, `schema`
 - **200:** `{ "columns": ["id", "name"], "rows": [ {…} ] }`
   - On a DB error the body is `{ "columns": [], "rows": [], "error": "<msg>" }` (HTTP 200)
+- **Row order:** ordered by primary key when the table has one. Postgres writes a
+  new tuple version on `UPDATE`, so an unordered read returns an edited row at the
+  end of the heap — it looks like the edit was lost.
+- **`__tg_rowid` (tables with no primary key only):** each row object also carries
+  its physical row id — SQLite `rowid`, Postgres `ctid` (as text, e.g. `"(0,4)"`).
+  It is deliberately **absent from `columns`**, so it never renders or exports; it
+  exists so an edit can target the one row it came from. Views, `WITHOUT ROWID`
+  tables and any table with a PK omit it.
 - **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/table/users?limit=50000`
+- **Example (no PK):** `{ "columns": ["rule_id","value"], "rows": [{ "__tg_rowid": "(0,4)", "rule_id": 2, "value": "…" }] }`
 
 ### GET `/api/connections/:id/columns/:table`
 Column metadata for a table (used for PK detection, inserts, editing).
@@ -1471,7 +1481,7 @@ are rejected — they would hold the pooled connection open indefinitely.
 - **Body:** `{ "sql": "SELECT * FROM users", "database": "appdb", "schema": "public" }`
 - **Body (Redis):** `{ "sql": "HGETALL cfg:app", "database": "db2" }`
 - **200 (SELECT):** `{ "type": "rows", "columns": [...], "rows": [...] }`
-- **200 (other):** `{ "type": "message", "message": "Query OK · 3 row(s) affected." }`
+- **200 (other):** `{ "type": "message", "message": "Query OK · 3 row(s) affected.", "rowCount": 3 }` (`rowCount` absent on Redis replies)
 - **200 (SQL error):** `{ "error": "<driver message>" }` (note: HTTP 200, error in body)
 - **400:** `{ "error": "SQL query required" }`
 - **404:** `{ "error": "Connection not found" }`

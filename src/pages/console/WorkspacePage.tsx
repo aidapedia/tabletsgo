@@ -497,6 +497,10 @@ export default function Workspace() {
   const runChangeBatch = async (ordered) => {
     const remaining = []
     const succeeded = []
+    // Ran without error but matched no rows. Not a failure — but reporting it
+    // as "committed" is how an edit that never landed (a row someone else
+    // already changed, a stale WHERE) ends up looking like a success.
+    const noop = []
     let failure = null
     for (const ch of ordered) {
       if (failure) {
@@ -509,6 +513,7 @@ export default function Workspace() {
         remaining.push(ch)
       } else {
         succeeded.push(ch)
+        if ((ch.kind === 'update' || ch.kind === 'delete') && res?.rowCount === 0) noop.push(ch)
       }
     }
     setDataVersion((v) => v + 1)
@@ -540,13 +545,14 @@ export default function Workspace() {
     )
     for (const did of deployedDraftIds) removeSaved(did)
 
-    return { succeeded, remaining, failure }
+    return { succeeded, remaining, failure, noop }
   }
 
   // Direct-execute path: run one change immediately, no staging.
   const executeDirect = async (change) => {
-    const { failure } = await runChangeBatch([change])
+    const { failure, noop } = await runChangeBatch([change])
     if (failure) toast.error(`${change.label} failed: ${failure}`)
+    else if (noop.length) toast.info(`${change.label} matched no rows — nothing changed.`)
     else toast.success(`Executed: ${change.label}`)
   }
 
@@ -555,7 +561,7 @@ export default function Workspace() {
   const commitChanges = async () => {
     if (!changes.length || committing) return
     setCommitting(true)
-    const { succeeded, remaining, failure } = await runChangeBatch([...changes].reverse())
+    const { succeeded, remaining, failure, noop } = await runChangeBatch([...changes].reverse())
     setCommitting(false)
     setChanges(remaining.reverse())
 
@@ -563,6 +569,9 @@ export default function Workspace() {
       toast.error(`Committed ${succeeded.length}, then failed: ${failure}`)
     } else {
       toast.success(`Committed ${succeeded.length} change${succeeded.length > 1 ? 's' : ''}.`)
+      if (noop.length) {
+        toast.info(`${noop.length} of them matched no rows — those rows were not changed.`)
+      }
       setChangesOpen(false)
     }
   }

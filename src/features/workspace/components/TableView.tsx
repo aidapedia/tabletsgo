@@ -33,6 +33,12 @@ import {
 
 const NUMERIC_TYPE = /(int|serial|numeric|decimal|real|double|float)/i
 
+// Hidden field the table read attaches on tables with no primary key, holding
+// the row's physical id (Postgres ctid / SQLite rowid). It is not part of
+// `columns`, so it never renders, exports, or lands in an INSERT — it only
+// identifies the exact row an edit targets. Keep in sync with server.js.
+const ROW_ID_COLUMN = '__tg_rowid'
+
 const OPERATORS = [
   { value: 'contains', label: 'contains' },
   { value: '=', label: '=' },
@@ -164,13 +170,22 @@ export default function TableView({ conn, table, onChange, onOpenReference, filt
   // puts us back on the first page.
   useEffect(() => setPage(1), [filters])
 
-  // Rows are targeted by primary key when available; otherwise we fall back to
-  // matching every column so selection / delete / duplicate work on any table.
+  // Rows are targeted by primary key when available. Without one, the read
+  // carries the physical row id (Postgres ctid / SQLite rowid) in a hidden
+  // field and we target that. Only if even that is missing (a view) do we fall
+  // back to matching every column — which never matches when a value doesn't
+  // round-trip (JSON, floats, timestamps) and hits *every* duplicate when the
+  // table has identical rows.
   const identCols = pkCols.length ? pkCols : columns
+  const rowIdRef = conn.type === 'postgresql' ? 'ctid' : 'rowid'
+  const hasRowId = !pkCols.length && rows.length > 0 && rows[0][ROW_ID_COLUMN] != null
   const selectable = columns.length > 0
-  const rowKey = (row) => identCols.map((c) => String(row[c])).join('¦')
+  const rowKey = (row) =>
+    hasRowId ? String(row[ROW_ID_COLUMN]) : identCols.map((c) => String(row[c])).join('¦')
   const rowWhere = (row) =>
-    identCols.map((c) => (row[c] == null ? `"${c}" IS NULL` : `"${c}" = ${sqlValue(row[c])}`)).join(' AND ')
+    hasRowId
+      ? `${rowIdRef} = ${sqlValue(row[ROW_ID_COLUMN])}`
+      : identCols.map((c) => (row[c] == null ? `"${c}" IS NULL` : `"${c}" = ${sqlValue(row[c])}`)).join(' AND ')
 
   const filtered = useMemo(() => rows.filter((r) => filters.every((f) => matchFilter(r, f))), [rows, filters])
 

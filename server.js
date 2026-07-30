@@ -562,12 +562,30 @@ function listSqliteObjects(db) {
     .map((r) => ({ name: r.name, type: r.type }))
 }
 
+// Hidden field carrying each row's physical row id (SQLite rowid / Postgres
+// ctid) on tables that have no primary key. It rides along in the row objects
+// but never in the `columns` list, so it stays out of the grid, exports and
+// INSERTs — the console uses it to target the exact row it displayed. Matching
+// every column instead is fragile (a JSON/float/timestamp value that doesn't
+// round-trip never matches) and plain wrong on a table with duplicate rows,
+// where it rewrites all of them at once.
+const ROW_ID_COLUMN = '__tg_rowid'
+
 function getSqliteTableData(db, table, limit = 200) {
   try {
     const columns = db.prepare(`PRAGMA table_info("${table}")`).all()
     const columnNames = columns.map(c => c.name)
-    
-    const rows = db.prepare(`SELECT * FROM "${table}" LIMIT ${limit}`).all()
+
+    let rows = null
+    if (!columns.some((c) => c.pk)) {
+      // WITHOUT ROWID tables and views have no rowid — fall through to a plain read.
+      try {
+        rows = db.prepare(`SELECT rowid AS "${ROW_ID_COLUMN}", * FROM "${table}" LIMIT ${limit}`).all()
+      } catch {
+        rows = null
+      }
+    }
+    if (!rows) rows = db.prepare(`SELECT * FROM "${table}" LIMIT ${limit}`).all()
     return { columns: columnNames, rows }
   } catch (error) {
     return { columns: [], rows: [], error: error.message }
@@ -633,7 +651,7 @@ function runSqliteQuery(db, sql) {
       return { type: 'rows', columns, rows }
     }
     const result = stmt.run()
-    return { type: 'message', message: `Query OK · ${result.changes} row(s) affected.` }
+    return { type: 'message', message: `Query OK · ${result.changes} row(s) affected.`, rowCount: result.changes }
   } catch (error) {
     return { error: error.message }
   }
@@ -785,6 +803,27 @@ async function listPostgresObjects(pool, schema = 'public') {
   return out
 }
 
+// Primary-key columns of a table, in key order — used to give the browse query
+// a stable sort. Empty for views/matviews and for tables without a PK.
+async function getPostgresPrimaryKey(pool, table, schema = 'public') {
+  try {
+    const r = await pool.query(
+      `SELECT a.attname AS name
+       FROM pg_index ix
+       JOIN pg_class t ON t.oid = ix.indrelid
+       JOIN pg_namespace n ON n.oid = t.relnamespace
+       JOIN unnest(ix.indkey) WITH ORDINALITY AS k(attnum, ord) ON true
+       JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = k.attnum
+       WHERE ix.indisprimary AND t.relname = $1 AND n.nspname = $2
+       ORDER BY k.ord`,
+      [table, schema]
+    )
+    return r.rows.map((row) => row.name)
+  } catch {
+    return []
+  }
+}
+
 async function getPostgresTableData(pool, table, limit = 200, schema = 'public') {
   try {
     const columns = await pool.query(
@@ -793,7 +832,27 @@ async function getPostgresTableData(pool, table, limit = 200, schema = 'public')
       [table, schema]
     )
     const columnNames = columns.rows.map((r) => r.column_name)
-    const rows = await pool.query(`SELECT * FROM "${schema}"."${table}" LIMIT ${limit}`)
+    const pk = await getPostgresPrimaryKey(pool, table, schema)
+    let rows
+    if (pk.length) {
+      // Order by the primary key. Postgres writes a new tuple version on
+      // UPDATE, so an unordered scan returns the edited row at the end of the
+      // heap — it jumps to the bottom of the grid, or drops out of view once
+      // the table is larger than `limit`, which reads as "my edit wasn't saved".
+      const order = pk.map((c) => `"${c}"`).join(', ')
+      rows = await pool.query(`SELECT * FROM "${schema}"."${table}" ORDER BY ${order} LIMIT ${limit}`)
+    } else {
+      // No PK: carry the ctid so edits can target the exact row (see
+      // ROW_ID_COLUMN). Only physical tables have one — a view falls back to
+      // the plain unordered read.
+      try {
+        rows = await pool.query(
+          `SELECT ctid::text AS "${ROW_ID_COLUMN}", * FROM "${schema}"."${table}" ORDER BY ctid LIMIT ${limit}`
+        )
+      } catch {
+        rows = await pool.query(`SELECT * FROM "${schema}"."${table}" LIMIT ${limit}`)
+      }
+    }
     return { columns: columnNames, rows: rows.rows }
   } catch (error) {
     return { columns: [], rows: [], error: error.message }
@@ -923,7 +982,10 @@ async function runPostgresQuery(pool, sql, schema) {
     if (columns.length) {
       return { type: 'rows', columns, rows: result.rows }
     }
-    return { type: 'message', message: `Query OK · ${result.rowCount ?? 0} row(s) affected.` }
+    // `rowCount` rides along with the message so callers can tell a statement
+    // that changed nothing from one that did — a 0-row UPDATE is not an error,
+    // but it isn't a success worth reporting as one either.
+    return { type: 'message', message: `Query OK · ${result.rowCount ?? 0} row(s) affected.`, rowCount: result.rowCount ?? 0 }
   } catch (error) {
     return { error: error.message }
   }
