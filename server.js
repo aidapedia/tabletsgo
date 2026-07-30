@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Backend server for database management
- * Handles SQLite and PostgreSQL connections
+ * Handles SQLite, PostgreSQL and Redis connections
  */
 
 import express from 'express'
@@ -30,6 +30,16 @@ import {
 } from '@aws-sdk/client-s3'
 import pkg from 'pg'
 import { migrate } from './server/migrations.js'
+import {
+  closeAllRedisClients,
+  closeRedisClients,
+  getRedisClient,
+  readRedisKey,
+  redisNamespaces,
+  redisOverview,
+  runRedisCommand,
+  scanRedisKeys,
+} from './server/redis.js'
 const { Client, Pool } = pkg
 
 const execFileAsync = promisify(execFile)
@@ -426,13 +436,17 @@ const bumpSchemaVersion = (id) => {
   return meta.prepare('SELECT schema_version FROM connections WHERE id = ?').get(id)?.schema_version
 }
 
-// Execute one SQL statement against a connection's target database, dispatching
-// on dialect. Shared by the /query endpoint and schema rollback. Throws on error.
+// Execute one statement against a connection's target database, dispatching on
+// dialect. Shared by the /query endpoint and schema rollback. Throws on error.
+// Redis has no SQL: `sql` carries the raw command text the console sent, and the
+// result comes back in the same generic rows/message shape.
 async function execSqlOnConnection(conn, sql, database, schema) {
   if (conn.type === 'sqlite') {
     return runSqliteQuery(getSqliteDb(conn.filepath), sql)
   } else if (conn.type === 'postgresql') {
     return runPostgresQuery(getPostgresPool(conn, database), sql, schema)
+  } else if (conn.type === 'redis') {
+    return runRedisCommand(await getRedisClient(conn, database), sql)
   }
   throw new Error(`Unsupported connection type: ${conn.type}`)
 }
@@ -1386,10 +1400,13 @@ function substituteWorkflowInput(sql, input) {
   })
 }
 
-// Run one query node against the connection (dialect-dispatched).
+// Run one query node against the connection (dialect-dispatched). On Redis the
+// node's "SQL" is a command line — same {{input.x}} substitution, same result
+// shape, so workflows and dashboards need no Redis-specific handling.
 async function execWorkflowQuery(conn, sql) {
   if (conn.type === 'sqlite') return runSqliteQuery(getSqliteDb(conn.filepath), sql)
   if (conn.type === 'postgresql') return runPostgresQuery(getPostgresPool(conn), sql, 'public')
+  if (conn.type === 'redis') return runRedisCommand(await getRedisClient(conn), sql)
   return { error: `Unsupported connection type: ${conn.type}` }
 }
 
@@ -2408,6 +2425,24 @@ app.post('/api/test-connection', async (req, res) => {
       const { rows } = await client.query('SELECT current_database() AS db')
       await client.end()
       res.json({ ok: true, message: `Connected to PostgreSQL${rows[0]?.db ? ` (${rows[0].db})` : ''}!` })
+    } else if (type === 'redis') {
+      // Probe under a throwaway id so the pooled client (and its reconnect loop)
+      // is discarded with the request — the form may be testing a bad host.
+      const probeId = `test:${randomUUID()}`
+      try {
+        const client = await getRedisClient({ ...req.body, id: probeId })
+        // `database` comes back from the client, not the form — a redis:// URI
+        // can carry its own db selector.
+        const { keyCount, version, database } = await redisOverview(client)
+        res.json({
+          ok: true,
+          message: `Connected to Redis${version ? ` ${version}` : ''} · ${keyCount} key(s) in ${database}.`,
+        })
+      } finally {
+        closeRedisClients(probeId)
+      }
+    } else {
+      res.status(400).json({ ok: false, message: `Unsupported connection type: ${type}` })
     }
   } catch (error) {
     res.json({ ok: false, message: error.message })
@@ -2870,6 +2905,7 @@ app.put('/api/connections/:id', (req, res) => {
   // Drop any cached pool/handle so the next query reconnects with the new
   // config (otherwise edits to host/credentials/database are ignored).
   closePostgresPools(req.params.id)
+  closeRedisClients(req.params.id)
   if (existing.filepath) sqliteConnections.delete(existing.filepath)
   if (updated.filepath && updated.filepath !== existing.filepath) sqliteConnections.delete(updated.filepath)
 
@@ -2885,6 +2921,8 @@ app.delete('/api/connections/:id', (req, res) => {
     sqliteConnections.delete(conn.filepath)
   } else if (conn.type === 'postgresql') {
     closePostgresPools(conn.id)
+  } else if (conn.type === 'redis') {
+    closeRedisClients(conn.id)
   }
 
   deleteConnectionRow(req.params.id)
@@ -4149,6 +4187,8 @@ app.get('/api/connections/:id/ping', async (req, res) => {
       getSqliteDb(conn.filepath).prepare('SELECT 1').get()
     } else if (conn.type === 'postgresql') {
       await getPostgresPool(conn, req.query.database).query('SELECT 1')
+    } else if (conn.type === 'redis') {
+      await (await getRedisClient(conn, req.query.database)).ping()
     }
     res.json({ ok: true })
   } catch (error) {
@@ -4204,6 +4244,9 @@ app.get('/api/connections/:id/table/:table', async (req, res) => {
     } else if (conn.type === 'postgresql') {
       const pool = getPostgresPool(conn, req.query.database)
       result = await getPostgresTableData(pool, req.params.table, parseInt(req.query.limit) || 200, req.query.schema || 'public')
+    } else {
+      // Tableless engines (Redis) browse through their own routes.
+      result = { columns: [], rows: [], error: `Table browsing is not supported for ${conn.type} connections.` }
     }
     res.json(result)
   } catch (error) {
@@ -4286,6 +4329,9 @@ app.get('/api/connections/:id/namespaces', async (req, res) => {
       const name = path.basename(conn.filepath || 'database')
       return res.json({ databases: [name], schemas: ['main'], currentDatabase: name })
     }
+    if (conn.type === 'redis') {
+      return res.json(await redisNamespaces(await getRedisClient(conn, req.query.database)))
+    }
     const database = req.query.database || conn.database || undefined
     const pool = getPostgresPool(conn, database)
     const dbs = await pool.query(
@@ -4319,11 +4365,12 @@ const DATA_TYPES = {
   ],
 }
 
-// Available column types for a connection's dialect.
+// Available column types for a connection's dialect. Schemaless engines (Redis)
+// report none — the schema designer is hidden for them.
 app.get('/api/connections/:id/types', (req, res) => {
   const conn = getConnection(req.params.id)
   if (!conn) return res.status(404).json({ error: 'Connection not found' })
-  res.json({ types: DATA_TYPES[conn.type === 'postgresql' ? 'postgresql' : 'sqlite'] })
+  res.json({ types: DATA_TYPES[conn.type] || [] })
 })
 
 // Schema diagram: every table's columns + foreign-key relationships.
@@ -4402,6 +4449,9 @@ app.post('/api/connections/:id/insert', async (req, res) => {
       const sql = `INSERT INTO "${schema || 'public'}"."${table}" (${colList}) VALUES (${cols.map((_, i) => `$${i + 1}`).join(', ')})`
       const result = await pool.query(sql, cols.map((c) => values[c]))
       res.json({ ok: true, changes: result.rowCount })
+    } else {
+      // Key-value engines have no rows to insert — writes go through the console.
+      res.status(400).json({ error: `Row insert is not supported for ${conn.type} connections.` })
     }
   } catch (error) {
     res.status(400).json({ error: error.message })
@@ -4420,6 +4470,11 @@ app.post('/api/connections/:id/analyze', async (req, res) => {
   }
 
   try {
+    // Checked before parsing, so a non-SQL engine gets a message about itself
+    // rather than one about statement shapes it doesn't have.
+    if (conn.type !== 'sqlite' && conn.type !== 'postgresql') {
+      throw new Error(`Query analysis is not supported for ${conn.type} connections.`)
+    }
     const stripped = stripSqlComments(sql)
     const statements = splitSqlStatements(stripped)
     if (statements.length !== 1) throw new Error('Only a single statement can be analyzed.')
@@ -4427,14 +4482,10 @@ app.post('/api/connections/:id/analyze', async (req, res) => {
     const statement = statements[0].replace(/^explain\s+(query\s+plan\s+|analyze\s+|\([^)]*\)\s*)?/i, '')
     const cls = classifyStatement(statement)
 
-    let result
-    if (conn.type === 'sqlite') {
-      result = await analyzeSqlite(getSqliteDb(conn.filepath), statement, cls)
-    } else if (conn.type === 'postgresql') {
-      result = await analyzePostgres(getPostgresPool(conn, database), statement, schema, cls)
-    } else {
-      throw new Error(`Query analysis is not supported for ${conn.type} connections.`)
-    }
+    const result =
+      conn.type === 'sqlite'
+        ? await analyzeSqlite(getSqliteDb(conn.filepath), statement, cls)
+        : await analyzePostgres(getPostgresPool(conn, database), statement, schema, cls)
     res.json(result)
   } catch (error) {
     res.status(400).json({ error: error.message })
@@ -4456,6 +4507,108 @@ app.post('/api/connections/:id/query', async (req, res) => {
     res.json(result)
   } catch (error) {
     res.status(500).json({ error: error.message })
+  }
+})
+
+// ============================================================================
+// Redis keyspace browsing
+// ============================================================================
+// Redis has no tables, so the generic /tables and /objects routes return nothing
+// for it and the console's sidebar reads the keyspace through these routes
+// instead. Everything else (running commands, workflows, dashboards) goes
+// through the shared /query route.
+
+// Guard: these routes only make sense on a Redis connection.
+const requireRedis = (req, res) => {
+  const conn = getConnection(req.params.id)
+  if (!conn) {
+    res.status(404).json({ error: 'Connection not found' })
+    return null
+  }
+  if (conn.type !== 'redis') {
+    res.status(400).json({ error: `Not a Redis connection (type: ${conn.type}).` })
+    return null
+  }
+  return conn
+}
+
+// One SCAN page of the keyspace: [{ key, type, ttlMs }] plus the cursor to hand
+// back for the next page. SCAN (never KEYS) so a large keyspace stays responsive.
+app.get('/api/connections/:id/redis/keys', async (req, res) => {
+  const conn = requireRedis(req, res)
+  if (!conn) return
+
+  try {
+    const client = await getRedisClient(conn, req.query.database)
+    const page = await scanRedisKeys(client, {
+      pattern: req.query.pattern,
+      cursor: req.query.cursor,
+      count: req.query.count,
+      type: req.query.type,
+    })
+    res.json(page)
+  } catch (error) {
+    res.status(500).json({ error: error.message })
+  }
+})
+
+// Keyspace summary for the sidebar header (db, key count, server version).
+app.get('/api/connections/:id/redis/overview', async (req, res) => {
+  const conn = requireRedis(req, res)
+  if (!conn) return
+
+  try {
+    res.json(await redisOverview(await getRedisClient(conn, req.query.database)))
+  } catch (error) {
+    res.status(500).json({ error: error.message })
+  }
+})
+
+// One key's value as a generic { columns, rows } page (plus type/TTL/length).
+// Every collection type is paged by offset/limit.
+app.get('/api/connections/:id/redis/key', async (req, res) => {
+  const conn = requireRedis(req, res)
+  if (!conn) return
+  if (!req.query.key) return res.status(400).json({ error: 'A key is required.' })
+
+  try {
+    const client = await getRedisClient(conn, req.query.database)
+    res.json(await readRedisKey(client, req.query.key, { offset: req.query.offset, limit: req.query.limit }))
+  } catch (error) {
+    res.status(400).json({ error: error.message })
+  }
+})
+
+// Delete one or more keys. Body: { keys: string[] } → { deleted }.
+app.delete('/api/connections/:id/redis/keys', async (req, res) => {
+  const conn = requireRedis(req, res)
+  if (!conn) return
+  const keys = Array.isArray(req.body?.keys) ? req.body.keys.filter((k) => typeof k === 'string' && k) : []
+  if (!keys.length) return res.status(400).json({ error: 'At least one key is required.' })
+
+  try {
+    const client = await getRedisClient(conn, req.query.database)
+    res.json({ deleted: await client.del(...keys) })
+  } catch (error) {
+    res.status(400).json({ error: error.message })
+  }
+})
+
+// Set or clear a key's expiry. Body: { key, ttlMs } — null/0 removes the expiry.
+app.put('/api/connections/:id/redis/ttl', async (req, res) => {
+  const conn = requireRedis(req, res)
+  if (!conn) return
+  const { key, ttlMs } = req.body || {}
+  if (!key) return res.status(400).json({ error: 'A key is required.' })
+
+  try {
+    const client = await getRedisClient(conn, req.query.database)
+    const ms = Number(ttlMs)
+    const ok = !ms || ms <= 0 ? await client.persist(key) : await client.pexpire(key, Math.round(ms))
+    if (!ok) return res.status(400).json({ error: `Key "${key}" does not exist or already has no expiry.` })
+    res.json({ ok: true, ttlMs: !ms || ms <= 0 ? null : Math.round(ms) })
+  } catch (error) {
+    res.status(400).json({ error: error.message })
   }
 })
 
@@ -4904,6 +5057,7 @@ process.on('SIGINT', () => {
   console.log('\n🛑 Shutting down...')
   for (const [, db] of sqliteConnections) db.close()
   for (const [, pool] of postgresConnections) pool.end()
+  closeAllRedisClients()
   meta.close()
   process.exit(0)
 })

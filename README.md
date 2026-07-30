@@ -22,7 +22,7 @@ Browse data, write queries, design schemas visually, automate workflows, and bac
 
 ## Introduction
 
-**Tabletsgo** is an open, self‑hosted database management platform for teams. Think of it as a modern web console that lives next to your databases: connect to a Postgres or SQLite instance, explore and edit rows in a fast data grid, run and save SQL, and design your schema on a visual ERD — without leaving the browser.
+**Tabletsgo** is an open, self‑hosted database management platform for teams. Think of it as a modern web console that lives next to your databases: connect to a Postgres, SQLite or Redis instance, explore and edit rows in a fast data grid, run and save SQL, browse a Redis keyspace, and design your schema on a visual ERD — without leaving the browser.
 
 It's built for **teams**, not just a single power user. Everything is organized into **workspaces** with per‑workspace members and roles, so you can share a set of connections with your team, invite people by email, and keep environments (dev / staging / prod) tidy in one place.
 
@@ -45,6 +45,7 @@ Self‑hosted, single Docker image, your data stays yours.
 | 📊 | **Data browser** | Fast, spreadsheet‑style data grid — filter, multi‑column sort (click a header, Shift+click to add), edit rows inline, insert & delete, with a staged **Changes** panel before you commit. Drag (or Shift+click) across cells to select a block, then `⌘/Ctrl+C` to copy it as TSV or right‑click for copy as CSV/JSON, set NULL/EMPTY/DEFAULT, and duplicate/delete the rows it spans. |
 | 📁 | **Table folders** | Group a connection's tables into colored, nestable folders (up to 3 levels) — create one inline from the Tables sidebar header, drag tables (and folders) between them, and click a folder's icon to pick its color. The schema designer clusters each folder's tables into its own region on the ERD. |
 | 🧮 | **SQL editor** | CodeMirror‑powered editor with SQL highlighting, formatting, query history, and reusable **saved queries**. |
+| 🔑 | **Redis keyspace & console** | On a Redis connection the sidebar becomes a **key tree** built from the `:` namespacing convention — paged with `SCAN` (never `KEYS`), filtered by a real match pattern, with per‑key type and TTL badges. Click a key to inspect its value (strings, lists, sets, sorted sets, hashes and streams, paged), set or clear its expiry, or delete it. The editor tab becomes a **command console**: every Redis command with autocomplete and argument hints, one command per line, run the whole buffer at once and see each command's reply. |
 | 🎨 | **Schema designer** | Visual ERD (React Flow) to create/edit tables and columns; staged DDL with a **schema version** audit trail and best‑effort rollback SQL. |
 | ⚙️ | **Workflows** | Drag‑and‑drop automation builder: `Manual`/`Schedule`/`Webhook` triggers → `Run query`, `HTTP Request`, `Run JavaScript`, `Switch`, `Loop`, `Export SQL`, `Store to Storage`. Real hourly/daily scheduling, a public **webhook** trigger URL, **folders** to organize them (drag into nested folders), JSON export/import (share or version‑control a workflow's graph — webhook tokens are stripped on export and re‑minted on import), and an **Activity** trail of past runs (every trigger). The JavaScript node has a built‑in `crypto` helper for HMAC/hash signing (e.g. signed HTTP headers). Runs can carry an input payload; query nodes inline it as `{{input.field}}`. |
 | 📈 | **Dashboards** | Per‑connection query dashboards with dynamic `{{variables}}` (single‑ or **multi‑select** with "select all" — multi values expand to a SQL list for `IN (…)`, shown as glanceable filter chips), drag/resize grid, JSON export/import, **auto‑refresh** (10s–5m with a "last updated" indicator) and a fullscreen **kiosk mode** (auto‑hiding toolbar for wall displays). Table widgets support server‑side pagination and per‑row **action buttons** that run a workflow with the clicked row as its input. |
@@ -104,10 +105,12 @@ Tabletsgo speaks a **dialect‑agnostic** connection contract, so support grows 
 |---|:---:|
 | **PostgreSQL** | ✅ Supported |
 | **SQLite** | ✅ Supported |
+| **Redis** | ✅ Supported |
 | MySQL | 🚧 Planned |
 | MariaDB | 🚧 Planned |
 | MongoDB | 🚧 Planned |
-| Redis | 🚧 Planned |
+
+Redis is a key‑value store, not a relational database, so the console adapts: the sidebar shows a **keyspace tree** instead of a table list, and the editor tab is a **command console** rather than a SQL editor. Everything that isn't SQL‑specific still works — saved queries (commands), query history, workflows and dashboards all run against it, because the server normalizes every Redis reply into the same rows/message shape the SQL engines return. What Redis connections don't get: the schema designer, the schema‑version audit trail, row‑level grid editing, query analysis (`EXPLAIN`) and scheduled backups — none of which have a Redis equivalent.
 
 ---
 

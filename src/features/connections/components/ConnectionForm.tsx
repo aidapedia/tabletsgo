@@ -13,6 +13,7 @@ import { Label } from '@/shared/ui/form/Form'
 const DB_TYPES = [
   { id: 'sqlite', label: 'SQLite', abbr: 'SQ', defaultPort: '' },
   { id: 'postgresql', label: 'PostgreSQL', abbr: 'PG', defaultPort: '5432' },
+  { id: 'redis', label: 'Redis', abbr: 'RD', defaultPort: '6379' },
 ]
 
 const ENVIRONMENTS = ['development', 'staging', 'production', 'local']
@@ -21,6 +22,12 @@ const AUTH_MODES = [
   { value: 'none', label: 'No authentication' },
 ]
 const SSL_MODES = ['disable', 'allow', 'prefer', 'require', 'verify-full']
+// Redis's equivalent of sslmode — plain TCP, TLS, or TLS without cert checks.
+const TLS_MODES = [
+  { value: '', label: 'Disabled (plain TCP)' },
+  { value: 'require', label: 'Enabled (verify certificate)' },
+  { value: 'insecure', label: 'Enabled (skip verification)' },
+]
 
 const blankSqlite = {
   name: '',
@@ -48,24 +55,56 @@ const blankPostgres = {
   tags: [],
 }
 
+// Redis reuses the same field names as Postgres — host/port/username/password —
+// so nothing downstream (encryption, export/import, the detail view) needs a
+// Redis-specific branch. `database` is the numeric db index and `tls` its SSL.
+const blankRedis = {
+  name: '',
+  type: 'redis',
+  environment: 'development',
+  uri: '',
+  host: '',
+  port: '6379',
+  auth: 'password',
+  username: '',
+  password: '',
+  database: '0',
+  tls: '',
+  keychain: false,
+  folder: '',
+  tags: [],
+}
+
+const blankFor = (type) => (type === 'postgresql' ? blankPostgres : type === 'redis' ? blankRedis : blankSqlite)
+
 const fieldRow = 'grid grid-cols-[2fr_1fr] gap-3.5 max-[720px]:grid-cols-1'
 
-// Parse a postgres URI into structured fields. Returns null if it doesn't parse.
-function parseUri(uri) {
+// Parse a postgres:// or redis:// URI into structured fields. Returns null if it
+// doesn't parse (or isn't the URI scheme for `type`).
+function parseUri(uri, type) {
   try {
     const u = new URL(uri)
-    if (!/^postgres(ql)?:$/.test(u.protocol)) return null
+    const isRedis = /^rediss?:$/.test(u.protocol)
+    if (type === 'redis' ? !isRedis : !/^postgres(ql)?:$/.test(u.protocol)) return null
     const q = u.searchParams
     const extra: any = {}
     if (q.get('name')) extra.name = q.get('name')
     if (q.get('env')) extra.environment = q.get('env')
-    if (q.get('sslmode')) extra.sslmode = q.get('sslmode')
+    // Redis puts the db index in the path (redis://host:6379/2); Postgres puts
+    // the database name there. Either way it lands in `database`.
+    const pathPart = u.pathname ? decodeURIComponent(u.pathname.replace(/^\//, '')) : ''
+    if (isRedis) {
+      extra.tls = u.protocol === 'rediss:' ? 'require' : ''
+      extra.database = pathPart || '0'
+    } else {
+      extra.database = pathPart
+      if (q.get('sslmode')) extra.sslmode = q.get('sslmode')
+    }
     return {
       host: u.hostname || '',
-      port: u.port || '5432',
+      port: u.port || (isRedis ? '6379' : '5432'),
       username: decodeURIComponent(u.username || ''),
       password: decodeURIComponent(u.password || ''),
-      database: u.pathname ? decodeURIComponent(u.pathname.replace(/^\//, '')) : '',
       ...extra,
     }
   } catch {
@@ -82,8 +121,8 @@ export default function ConnectionForm({ initial, initialType, initialTab, onClo
   const isEdit = !!initial
 
   const [form, setForm] = useState(() => {
-    if (initial) return { ...(initial.type === 'sqlite' ? blankSqlite : blankPostgres), ...initial }
-    return initialType === 'postgresql' ? blankPostgres : blankSqlite
+    if (initial) return { ...blankFor(initial.type), ...initial }
+    return blankFor(initialType)
   })
   const [tab, setTab] = useState(initialTab || 'general') // general | ssh | backup
   const [showPassword, setShowPassword] = useState(false)
@@ -93,10 +132,12 @@ export default function ConnectionForm({ initial, initialType, initialTab, onClo
   const [saving, setSaving] = useState(false)
 
   const isSqlite = form.type === 'sqlite'
+  const isRedis = form.type === 'redis'
+  // Only the dump-based engines can be backed up; Redis has no SQL export.
   const backupSupported = isEdit && (form.type === 'sqlite' || form.type === 'postgresql')
   const tabs = [
     { id: 'general', label: 'General' },
-    ...(isSqlite ? [] : [{ id: 'ssh', label: 'SSH / SSL' }]),
+    ...(isSqlite ? [] : [{ id: 'ssh', label: isRedis ? 'TLS' : 'SSH / SSL' }]),
     ...(backupSupported ? [{ id: 'backup', label: 'Backup' }] : []),
   ]
 
@@ -111,13 +152,13 @@ export default function ConnectionForm({ initial, initialType, initialTab, onClo
 
   const onUriChange = (e) => {
     const uri = e.target.value
-    const parsed = parseUri(uri)
+    const parsed = parseUri(uri, form.type)
     setForm((f) => ({ ...f, uri, ...(parsed || {}) }))
     setTest(null)
   }
 
   const pickType = (t) => {
-    setForm((f) => ({ ...(t.id === 'sqlite' ? blankSqlite : blankPostgres), name: f.name, folder: f.folder, tags: f.tags }))
+    setForm((f) => ({ ...blankFor(t.id), name: f.name, folder: f.folder, tags: f.tags }))
     setTab('general')
     setTest(null)
   }
@@ -190,7 +231,7 @@ export default function ConnectionForm({ initial, initialType, initialTab, onClo
           <BackupConfigForm connectionId={initial.id} connectionType={form.type} workspaceId={initial.workspaceId} />
         ) : (
           <>
-            <div className="mb-[22px] grid grid-cols-2 gap-3">
+            <div className="mb-[22px] grid grid-cols-3 gap-3 max-[480px]:grid-cols-1">
               {DB_TYPES.map((t) => (
                 <button
                   type="button"
@@ -282,7 +323,9 @@ export default function ConnectionForm({ initial, initialType, initialTab, onClo
                   <Input
                     className="font-mono"
                     type="text"
-                    placeholder="postgresql://user:password@host:5432/database"
+                    placeholder={
+                      isRedis ? 'redis://user:password@host:6379/0' : 'postgresql://user:password@host:5432/database'
+                    }
                     value={form.uri || ''}
                     onChange={onUriChange}
                   />
@@ -299,7 +342,7 @@ export default function ConnectionForm({ initial, initialType, initialTab, onClo
                   </div>
                   <div className="mb-[18px]">
                     <Label>Port</Label>
-                    <Input type="text" placeholder="5432" value={form.port} onChange={set('port')} required />
+                    <Input type="text" placeholder={isRedis ? '6379' : '5432'} value={form.port} onChange={set('port')} required />
                   </div>
                 </div>
 
@@ -311,8 +354,15 @@ export default function ConnectionForm({ initial, initialType, initialTab, onClo
                 {(form.auth || 'password') === 'password' && (
                   <>
                     <div className="mb-[18px]">
-                      <Label>User</Label>
-                      <Input type="text" placeholder="postgres" value={form.username} onChange={set('username')} />
+                      <Label>
+                        User{isRedis && <span className="text-ink-faint"> (ACL — leave empty for a password-only server)</span>}
+                      </Label>
+                      <Input
+                        type="text"
+                        placeholder={isRedis ? 'default' : 'postgres'}
+                        value={form.username}
+                        onChange={set('username')}
+                      />
                     </div>
 
                     <div className="mb-2">
@@ -344,16 +394,32 @@ export default function ConnectionForm({ initial, initialType, initialTab, onClo
 
                 <div className="mb-[18px]">
                   <Label>
-                    Database <span className="text-ink-faint">(optional)</span>
+                    {isRedis ? 'Database index' : 'Database'} <span className="text-ink-faint">(optional)</span>
                   </Label>
                   <Input
                     type="text"
-                    placeholder="Leave empty to select database after connecting"
+                    placeholder={isRedis ? '0' : 'Leave empty to select database after connecting'}
                     value={form.database}
                     onChange={set('database')}
                   />
+                  {isRedis && (
+                    <p className="mt-2 text-[11px] text-ink-faint">
+                      The numeric database to open by default (0–15 on a stock server). You can switch databases from the
+                      console.
+                    </p>
+                  )}
                 </div>
               </>
+            ) : isRedis ? (
+              <div className="mb-[18px]">
+                <Label>TLS</Label>
+                <Select className={controlClass} value={form.tls || ''} onChange={(v) => setVal('tls', v)} options={TLS_MODES} />
+                <p className="mt-2 text-[11px] text-ink-faint">
+                  Managed Redis (ElastiCache in-transit encryption, Upstash, Redis Cloud) requires TLS — the same thing a{' '}
+                  <span className="text-ink-dim">rediss://</span> URI selects. Only skip verification for self-signed
+                  certificates you trust.
+                </p>
+              </div>
             ) : (
               <div className="mb-[18px]">
                 <Label>SSL Mode</Label>
