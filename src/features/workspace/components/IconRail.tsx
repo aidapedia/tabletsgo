@@ -1,4 +1,4 @@
-import { CodeIcon, DatabaseIcon, DbLogo, DiagramIcon, GridIcon, HomeIcon, LogoutIcon, WandIcon, WorkflowIcon } from '@/shared/ui/icons'
+import { CodeIcon, DatabaseIcon, DbLogo, DiagramIcon, GridIcon, HomeIcon, KeyIcon, LogoutIcon, WandIcon, WorkflowIcon } from '@/shared/ui/icons'
 import Popover from '@/shared/ui/overlay/Popover'
 import Tooltip from '@/shared/ui/overlay/Tooltip'
 import IconButton from '@/shared/ui/buttons/IconButton'
@@ -28,6 +28,12 @@ export default function IconRail({
   onTemplates,
   onHome,
   onLogout,
+  // Schemaless engines (Redis) have nothing for the schema designer to draw, so
+  // the rail hides that entry rather than opening an empty panel.
+  showSchema = true,
+  // What the browser panel holds — tables for the SQL engines, keys for Redis.
+  browserIcon: BrowserIcon = DatabaseIcon,
+  browserLabel = 'Data browser',
 }) {
   const current = connections.find((c) => c.id === currentId)
   const initial = user?.name?.[0]?.toUpperCase() || 'A'
@@ -47,11 +53,11 @@ export default function IconRail({
       <div className="my-2 h-px w-7 bg-edge" />
 
       <div className="flex flex-col items-center gap-1.5">
-        <RailButton icon={DatabaseIcon} label="Data browser" active={active === 'browser'} onClick={onBrowser} />
+        <RailButton icon={BrowserIcon} label={browserLabel} active={active === 'browser'} onClick={onBrowser} />
         <RailButton icon={CodeIcon} label="Saved queries" active={active === 'queries'} onClick={onQueries} />
         <RailButton icon={WorkflowIcon} label="Workflows" active={active === 'workflows'} onClick={onWorkflows} />
         <RailButton icon={GridIcon} label="Dashboards" active={active === 'dashboards'} onClick={onDashboards} />
-        <RailButton icon={DiagramIcon} label="Schema" active={active === 'schema'} onClick={onSchema} />
+        {showSchema && <RailButton icon={DiagramIcon} label="Schema" active={active === 'schema'} onClick={onSchema} />}
         <RailButton icon={WandIcon} label="Templates" active={active === 'templates'} onClick={onTemplates} />
       </div>
 

@@ -27,16 +27,22 @@ export default function StatusBar({
       </span>
       <span className="text-edge-strong">|</span>
       <span className="truncate text-ink-dim">{conn.name}</span>
+      {/* Schemaless engines (Redis) never run DDL, so their schema version would
+          sit at v1 forever — show the current namespace there instead. */}
       <div className="ml-auto flex shrink-0 items-center">
-        <Tooltip label="Schema version history" placement="top">
-          <button
-            type="button"
-            onClick={onSchemaHistory}
-            className="rounded px-1.5 py-0.5 font-medium transition-colors hover:bg-elevated hover:text-ink"
-          >
-            v{conn.schemaVersion ?? 1}
-          </button>
-        </Tooltip>
+        {conn.type === 'redis' ? (
+          <span className="px-1.5 py-0.5 font-medium">{namespace}</span>
+        ) : (
+          <Tooltip label="Schema version history" placement="top">
+            <button
+              type="button"
+              onClick={onSchemaHistory}
+              className="rounded px-1.5 py-0.5 font-medium transition-colors hover:bg-elevated hover:text-ink"
+            >
+              v{conn.schemaVersion ?? 1}
+            </button>
+          </Tooltip>
+        )}
       </div>
       <EnvBadge environment={conn.environment} dense />
     </footer>

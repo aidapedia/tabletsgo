@@ -6,6 +6,7 @@ import {
   DiagramIcon,
   GridIcon,
   HistoryIcon,
+  KeyIcon,
   TableIcon,
   WandIcon,
   WorkflowIcon,
@@ -23,6 +24,7 @@ const KIND_ICON = {
   workflow: WorkflowIcon,
   dashboard: GridIcon,
   template: WandIcon,
+  redisKey: KeyIcon,
 }
 
 /**

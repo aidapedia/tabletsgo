@@ -286,11 +286,40 @@ export const SqliteLogo = (props) => (
   </svg>
 )
 
+export const RedisLogo = (props) => (
+  <svg viewBox="0 0 48 48" fill="none" {...props}>
+    <rect width="48" height="48" rx="11" fill="#C6302B" />
+    <g fill="#fff">
+      <path d="M24 10.5 38 16l-14 5.5L10 16z" />
+      <path d="m10 21.5 14 5.5 14-5.5V25l-14 5.5L10 25z" opacity=".75" />
+      <path d="m10 30 14 5.5L38 30v3.5L24 39l-14-5.5z" opacity=".5" />
+    </g>
+  </svg>
+)
+
 export function DbLogo({ type, ...props }) {
   if (type === 'postgresql') return <PostgresLogo {...props} />
   if (type === 'sqlite') return <SqliteLogo {...props} />
+  if (type === 'redis') return <RedisLogo {...props} />
   return <DatabaseIcon {...props} />
 }
+
+// Keyspace icons — a Redis key row and the console/terminal tab.
+export const KeyIcon = (props) => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...props}>
+    <circle cx="7.5" cy="15.5" r="4.5" />
+    <path d="m10.8 12.2 8-8M16.5 6.5l2.5 2.5M14 9l2.5 2.5" />
+  </svg>
+)
+
+export const TerminalIcon = (props) => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...props}>
+    <rect x="2.5" y="4" width="19" height="16" rx="2.5" />
+    <path d="m6.5 9.5 3 2.5-3 2.5M13 15h4.5" />
+  </svg>
+)
 
 export const DatabaseIcon = (props) => (
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"

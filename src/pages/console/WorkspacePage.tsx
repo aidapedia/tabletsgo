@@ -48,6 +48,9 @@ const SchemaEditor = lazy(() => import('@/features/schema-designer/components/Sc
 const WorkflowEditor = lazy(() => import('@/features/workflow/components/WorkflowEditor'))
 // Lazy — recharts + react-grid-layout; only load when a dashboard tab opens.
 const DashboardView = lazy(() => import('@/features/dashboard/components/DashboardView'))
+// Lazy — CodeMirror again; only load on a Redis connection's console tab.
+const RedisConsole = lazy(() => import('@/features/redis/components/RedisConsole'))
+import { RedisKeyTree, RedisKeyView } from '@/features/redis'
 import IconRail from '@/features/workspace/components/IconRail'
 import TabBar from '@/features/workspace/components/TabBar'
 import StatusBar from '@/features/workspace/components/StatusBar'
@@ -108,6 +111,7 @@ import {
   FolderPlusIcon,
   GridIcon,
   HistoryIcon,
+  KeyIcon,
   MenuIcon,
   MoreVerticalIcon,
   PlusIcon,
@@ -115,6 +119,7 @@ import {
   SearchIcon,
   TableIcon,
   TagIcon,
+  TerminalIcon,
   TrashIcon,
   WandIcon,
   WorkflowIcon,
@@ -203,8 +208,14 @@ export default function Workspace() {
   const [tableFolders, setTableFolders] = useState([]) // per-connection tableFolders (with grouped table names)
   const [creatingTableFolder, setCreatingTableFolder] = useState(null) // { parentId } while naming a new folder | null
   const [folderPickerTable, setFolderPickerTable] = useState(null) // table whose folder picker is open (schema diagram) | null
+  const [keyspaceVersion, setKeyspaceVersion] = useState(0) // bump to re-scan the Redis key tree
   const searchRef = useRef(null)
   const autoOpenedFor = useRef(null) // connection id we've already auto-opened a tab for
+
+  // Redis is schemaless and tableless: no tables/views/functions browser, no
+  // schema designer, no table folders — the sidebar shows its keyspace instead,
+  // and every write goes through the command console.
+  const isRedis = conn?.type === 'redis'
 
   // Switching connections is destructive: tabs, staged changes and per-tab
   // editor state are all scoped to the current connection. Ask first, then wipe
@@ -235,6 +246,9 @@ export default function Workspace() {
 
   // Rail selects a panel; clicking the active one again collapses it.
   const selectPanel = (p) => {
+    // The schema designer has nothing to show on a schemaless engine — the rail
+    // hides it, and this stops the keyboard shortcut from reaching it either.
+    if (p === 'schema' && isRedis) return
     if (panel === p && tablesVisible) {
       setTablesVisible(false)
     } else {
@@ -390,7 +404,18 @@ export default function Workspace() {
     queryCounter += 1
     const key = `query:${queryCounter}`
     const initialSql = typeof sql === 'string' ? sql : undefined
-    setTabs((prev) => [...prev, { key, kind: 'query', title: `Query ${queryCounter}`, sql: initialSql }])
+    const title = `${isRedis ? 'Console' : 'Query'} ${queryCounter}`
+    setTabs((prev) => [...prev, { key, kind: 'query', title, sql: initialSql }])
+    setActiveTab(key)
+    setSidebarOpen(false)
+  }
+
+  // Open one Redis key in its own tab (focus it if already open).
+  const openRedisKey = (redisKey) => {
+    const key = `rediskey:${redisKey}`
+    setTabs((prev) =>
+      prev.some((t) => t.key === key) ? prev : [...prev, { key, kind: 'redisKey', redisKey, title: redisKey }]
+    )
     setActiveTab(key)
     setSidebarOpen(false)
   }
@@ -472,6 +497,10 @@ export default function Workspace() {
   const runChangeBatch = async (ordered) => {
     const remaining = []
     const succeeded = []
+    // Ran without error but matched no rows. Not a failure — but reporting it
+    // as "committed" is how an edit that never landed (a row someone else
+    // already changed, a stale WHERE) ends up looking like a success.
+    const noop = []
     let failure = null
     for (const ch of ordered) {
       if (failure) {
@@ -484,6 +513,7 @@ export default function Workspace() {
         remaining.push(ch)
       } else {
         succeeded.push(ch)
+        if ((ch.kind === 'update' || ch.kind === 'delete') && res?.rowCount === 0) noop.push(ch)
       }
     }
     setDataVersion((v) => v + 1)
@@ -515,13 +545,14 @@ export default function Workspace() {
     )
     for (const did of deployedDraftIds) removeSaved(did)
 
-    return { succeeded, remaining, failure }
+    return { succeeded, remaining, failure, noop }
   }
 
   // Direct-execute path: run one change immediately, no staging.
   const executeDirect = async (change) => {
-    const { failure } = await runChangeBatch([change])
+    const { failure, noop } = await runChangeBatch([change])
     if (failure) toast.error(`${change.label} failed: ${failure}`)
+    else if (noop.length) toast.info(`${change.label} matched no rows — nothing changed.`)
     else toast.success(`Executed: ${change.label}`)
   }
 
@@ -530,7 +561,7 @@ export default function Workspace() {
   const commitChanges = async () => {
     if (!changes.length || committing) return
     setCommitting(true)
-    const { succeeded, remaining, failure } = await runChangeBatch([...changes].reverse())
+    const { succeeded, remaining, failure, noop } = await runChangeBatch([...changes].reverse())
     setCommitting(false)
     setChanges(remaining.reverse())
 
@@ -538,6 +569,9 @@ export default function Workspace() {
       toast.error(`Committed ${succeeded.length}, then failed: ${failure}`)
     } else {
       toast.success(`Committed ${succeeded.length} change${succeeded.length > 1 ? 's' : ''}.`)
+      if (noop.length) {
+        toast.info(`${noop.length} of them matched no rows — those rows were not changed.`)
+      }
       setChangesOpen(false)
     }
   }
@@ -1330,23 +1364,39 @@ export default function Workspace() {
 
   // Commands surfaced in the ⌘K palette. `hint` mirrors the action's current
   // keymap binding so the palette stays in sync with user-customized shortcuts.
+  // Schema/table entries only exist for the engines that have them; on Redis the
+  // palette offers the console and keyspace instead.
   const commands: Command[] = [
-    { id: 'new-query', group: 'Create', label: 'New SQL query', keywords: 'sql add query tab', icon: <CodeIcon width={15} height={15} />, hint: formatCombo(bindings['general.newTab']), run: () => openQuery() },
-    { id: 'new-schema', group: 'Create', label: 'New schema diagram', keywords: 'erd designer table diagram', icon: <DiagramIcon width={15} height={15} />, run: openSchemaEditor },
+    isRedis
+      ? { id: 'new-query', group: 'Create', label: 'New Redis console', keywords: 'command redis cli tab', icon: <TerminalIcon width={15} height={15} />, hint: formatCombo(bindings['general.newTab']), run: () => openQuery() }
+      : { id: 'new-query', group: 'Create', label: 'New SQL query', keywords: 'sql add query tab', icon: <CodeIcon width={15} height={15} />, hint: formatCombo(bindings['general.newTab']), run: () => openQuery() },
+    ...(isRedis
+      ? []
+      : [
+          { id: 'new-schema', group: 'Create', label: 'New schema diagram', keywords: 'erd designer table diagram', icon: <DiagramIcon width={15} height={15} />, run: openSchemaEditor },
+        ]),
     { id: 'new-workflow', group: 'Create', label: 'New workflow', keywords: 'automation flow', icon: <WorkflowIcon width={15} height={15} />, run: () => newWorkflow() },
     { id: 'new-dashboard', group: 'Create', label: 'New dashboard', keywords: 'charts widgets analytics', icon: <GridIcon width={15} height={15} />, run: () => newDashboard() },
-    { id: 'new-table', group: 'Create', label: 'New table', keywords: 'create table ddl', icon: <PlusIcon width={15} height={15} />, run: () => setCreatingTable(true) },
+    ...(isRedis
+      ? []
+      : [{ id: 'new-table', group: 'Create', label: 'New table', keywords: 'create table ddl', icon: <PlusIcon width={15} height={15} />, run: () => setCreatingTable(true) }]),
 
-    { id: 'go-browser', group: 'Navigate', label: 'Browser', keywords: 'tables data browse', icon: <TableIcon width={15} height={15} />, hint: formatCombo(bindings['workspace.panelBrowser']), run: () => selectPanel('browser') },
+    isRedis
+      ? { id: 'go-browser', group: 'Navigate', label: 'Keyspace', keywords: 'keys redis browse scan', icon: <KeyIcon width={15} height={15} />, hint: formatCombo(bindings['workspace.panelBrowser']), run: () => selectPanel('browser') }
+      : { id: 'go-browser', group: 'Navigate', label: 'Browser', keywords: 'tables data browse', icon: <TableIcon width={15} height={15} />, hint: formatCombo(bindings['workspace.panelBrowser']), run: () => selectPanel('browser') },
     { id: 'go-queries', group: 'Navigate', label: 'Saved queries', keywords: 'queries panel', icon: <CodeIcon width={15} height={15} />, hint: formatCombo(bindings['workspace.panelQueries']), run: () => selectPanel('queries') },
     { id: 'go-workflows', group: 'Navigate', label: 'Workflows', keywords: 'automation', icon: <WorkflowIcon width={15} height={15} />, hint: formatCombo(bindings['workspace.panelWorkflows']), run: () => selectPanel('workflows') },
-    { id: 'go-schema', group: 'Navigate', label: 'Schema', keywords: 'designer diagram', icon: <DiagramIcon width={15} height={15} />, hint: formatCombo(bindings['workspace.panelSchema']), run: () => selectPanel('schema') },
+    ...(isRedis
+      ? []
+      : [{ id: 'go-schema', group: 'Navigate', label: 'Schema', keywords: 'designer diagram', icon: <DiagramIcon width={15} height={15} />, hint: formatCombo(bindings['workspace.panelSchema']), run: () => selectPanel('schema') }]),
     { id: 'go-dashboards', group: 'Navigate', label: 'Dashboards', keywords: 'charts analytics', icon: <GridIcon width={15} height={15} />, hint: formatCombo(bindings['workspace.panelDashboards']), run: () => selectPanel('dashboards') },
     { id: 'go-templates', group: 'Navigate', label: 'Templates', keywords: 'presets starter gallery scaffold', icon: <WandIcon width={15} height={15} />, run: () => selectPanel('templates') },
     { id: 'switch-connection', group: 'Navigate', label: 'Switch connection…', keywords: 'database change connect', icon: <DatabaseIcon width={15} height={15} />, run: () => setSwitcherOpen(true) },
 
-    { id: 'view-history', group: 'View', label: 'Query history', keywords: 'recent past', icon: <HistoryIcon width={15} height={15} />, run: openHistory },
-    { id: 'view-schema-history', group: 'View', label: `Schema version history (v${conn.schemaVersion ?? 1})`, keywords: 'migrations audit', icon: <TagIcon width={15} height={15} />, run: openSchemaHistory },
+    { id: 'view-history', group: 'View', label: isRedis ? 'Command history' : 'Query history', keywords: 'recent past', icon: <HistoryIcon width={15} height={15} />, run: openHistory },
+    ...(isRedis
+      ? []
+      : [{ id: 'view-schema-history', group: 'View', label: `Schema version history (v${conn.schemaVersion ?? 1})`, keywords: 'migrations audit', icon: <TagIcon width={15} height={15} />, run: openSchemaHistory }]),
     { id: 'view-changes', group: 'View', label: 'View staged changes', keywords: 'commit diff pending', icon: <EditIcon width={15} height={15} />, run: () => setChangesOpen(true) },
   ]
 
@@ -1380,6 +1430,9 @@ export default function Workspace() {
           onTemplates={() => selectPanel('templates')}
           onHome={() => navigate('/')}
           onLogout={logout}
+          showSchema={!isRedis}
+          browserIcon={isRedis ? KeyIcon : undefined}
+          browserLabel={isRedis ? 'Keyspace' : undefined}
         />
         <div
           className={`shrink-0 overflow-hidden transition-[width] duration-200 ease-out ${
@@ -1396,16 +1449,29 @@ export default function Workspace() {
             options={(namespaces.databases || []).map((d) => ({ value: d, label: d }))}
             placeholder="database"
           />
-          <span className="text-[11px] text-ink-faint">/</span>
-          <Select
-            className="max-w-[110px] rounded px-1.5 py-0.5 text-[11px] font-medium text-ink hover:bg-elevated"
-            value={ns.schema || ''}
-            onChange={changeSchema}
-            options={(namespaces.schemas || []).map((s) => ({ value: s, label: s }))}
-            placeholder="schema"
-          />
+          {/* Redis has no schemas — only its numbered databases. */}
+          {!isRedis && (
+            <>
+              <span className="text-[11px] text-ink-faint">/</span>
+              <Select
+                className="max-w-[110px] rounded px-1.5 py-0.5 text-[11px] font-medium text-ink hover:bg-elevated"
+                value={ns.schema || ''}
+                onChange={changeSchema}
+                options={(namespaces.schemas || []).map((s) => ({ value: s, label: s }))}
+                placeholder="schema"
+              />
+            </>
+          )}
         </div>
-        {panel === 'browser' ? (
+        {panel === 'browser' && isRedis ? (
+          <RedisKeyTree
+            key={`${id}:${ns.database}:${keyspaceVersion}`}
+            conn={nsConn}
+            activeKey={current?.kind === 'redisKey' ? current.redisKey : null}
+            onOpenKey={openRedisKey}
+            onRunCommand={openQuery}
+          />
+        ) : panel === 'browser' ? (
         <>
         <div className="flex items-center justify-between px-4 pb-2.5 pt-4 text-[11px] font-semibold">
           <span className="text-xs">Tables</span>
@@ -1617,16 +1683,18 @@ export default function Workspace() {
           </div>
           {/* "New …" creators — folded into the ⋮ menu on mobile (see below). */}
           <div className="flex items-center gap-3 max-[720px]:hidden">
-            <Tooltip label="New SQL query" placement="bottom">
-              <IconButton size="toolbar" onClick={() => openQuery()} aria-label="New SQL query">
-                <CodeIcon width={16} height={16} />
+            <Tooltip label={isRedis ? 'New console' : 'New SQL query'} placement="bottom">
+              <IconButton size="toolbar" onClick={() => openQuery()} aria-label={isRedis ? 'New console' : 'New SQL query'}>
+                {isRedis ? <TerminalIcon width={16} height={16} /> : <CodeIcon width={16} height={16} />}
               </IconButton>
             </Tooltip>
-            <Tooltip label="New Schema diagram" placement="bottom">
-              <IconButton size="toolbar" onClick={openSchemaEditor} aria-label="New Schema diagram">
-                <DiagramIcon width={16} height={16} />
-              </IconButton>
-            </Tooltip>
+            {!isRedis && (
+              <Tooltip label="New Schema diagram" placement="bottom">
+                <IconButton size="toolbar" onClick={openSchemaEditor} aria-label="New Schema diagram">
+                  <DiagramIcon width={16} height={16} />
+                </IconButton>
+              </Tooltip>
+            )}
             <Tooltip label="New workflow" placement="bottom">
               <IconButton size="toolbar" onClick={() => newWorkflow()} aria-label="New workflow">
                 <WorkflowIcon width={16} height={16} />
@@ -1694,11 +1762,14 @@ export default function Workspace() {
                 {({ close }) => (
                   <div className="p-1">
                     <MenuItem onClick={() => { openQuery(); close() }}>
-                      <CodeIcon width={14} height={14} /> New SQL query
+                      {isRedis ? <TerminalIcon width={14} height={14} /> : <CodeIcon width={14} height={14} />}
+                      {isRedis ? 'New console' : 'New SQL query'}
                     </MenuItem>
-                    <MenuItem onClick={() => { openSchemaEditor(); close() }}>
-                      <DiagramIcon width={14} height={14} /> New schema diagram
-                    </MenuItem>
+                    {!isRedis && (
+                      <MenuItem onClick={() => { openSchemaEditor(); close() }}>
+                        <DiagramIcon width={14} height={14} /> New schema diagram
+                      </MenuItem>
+                    )}
                     <MenuItem onClick={() => { newWorkflow(); close() }}>
                       <WorkflowIcon width={14} height={14} /> New workflow
                     </MenuItem>
@@ -1779,19 +1850,45 @@ export default function Workspace() {
           )}
           {conn && current?.kind === 'query' && (
             <Suspense fallback={<div className="flex-1 p-8 text-center text-xs text-ink-faint">Loading editor…</div>}>
-              <QueryEditor
-                key={current.key}
-                tabKey={current.key}
-                conn={nsConn}
-                dialect={DIALECT[conn.type]}
-                initialSql={current.sql ?? ''}
-                persisted={queryState[current.key]}
-                onPersist={persistQueryState}
-                onRan={recordRun}
-                onSave={saveQuery}
-                onAnalyze={setAnalyzeSql}
-              />
+              {isRedis ? (
+                <RedisConsole
+                  key={current.key}
+                  tabKey={current.key}
+                  conn={nsConn}
+                  initialCommand={current.sql ?? ''}
+                  persisted={queryState[current.key]}
+                  onPersist={persistQueryState}
+                  onRan={recordRun}
+                  onSave={saveQuery}
+                  onMutated={() => setKeyspaceVersion((v) => v + 1)}
+                />
+              ) : (
+                <QueryEditor
+                  key={current.key}
+                  tabKey={current.key}
+                  conn={nsConn}
+                  dialect={DIALECT[conn.type]}
+                  initialSql={current.sql ?? ''}
+                  persisted={queryState[current.key]}
+                  onPersist={persistQueryState}
+                  onRan={recordRun}
+                  onSave={saveQuery}
+                  onAnalyze={setAnalyzeSql}
+                />
+              )}
             </Suspense>
+          )}
+          {conn && current?.kind === 'redisKey' && (
+            <RedisKeyView
+              key={`${current.key}:${ns.database}:${keyspaceVersion}`}
+              conn={nsConn}
+              redisKey={current.redisKey}
+              onRunCommand={openQuery}
+              onDeleted={(deletedKey) => {
+                dropTab(`rediskey:${deletedKey}`)
+                setKeyspaceVersion((v) => v + 1)
+              }}
+            />
           )}
           {conn && current?.kind === 'history' && (
             <QueryHistoryView
@@ -1844,26 +1941,35 @@ export default function Workspace() {
             <div className="flex h-full w-full items-center justify-center overflow-auto p-8">
               <div className="w-full max-w-[560px] text-center">
                 <div className="mx-auto flex h-[88px] w-[88px] items-center justify-center rounded-[22px] border border-edge bg-elevated text-ink-faint">
-                  <TableIcon width={34} height={34} />
+                  {isRedis ? <KeyIcon width={34} height={34} /> : <TableIcon width={34} height={34} />}
                 </div>
-                <h2 className="mt-7 text-2xl font-bold">No table selected</h2>
+                <h2 className="mt-7 text-2xl font-bold">{isRedis ? 'No key selected' : 'No table selected'}</h2>
                 <p className="mx-auto mt-3 max-w-[420px] text-sm leading-relaxed text-ink-dim">
-                  Pick a table from the sidebar to browse rows, or start a query to explore your data with SQL.
+                  {isRedis
+                    ? 'Pick a key from the keyspace tree to inspect its value, or open a console to run any Redis command.'
+                    : 'Pick a table from the sidebar to browse rows, or start a query to explore your data with SQL.'}
                 </p>
 
                 <div className="mt-7 flex items-center justify-center gap-3">
-                  <Button variant="primary" size="lg" icon={CodeIcon} onClick={() => openQuery()}>
-                    New SQL query
-                  </Button>
                   <Button
-                    variant="ghost"
+                    variant="primary"
                     size="lg"
-                    icon={TableIcon}
-                    onClick={() => tables[0] && openTable(tables[0])}
-                    disabled={tables.length === 0}
+                    icon={isRedis ? TerminalIcon : CodeIcon}
+                    onClick={() => openQuery()}
                   >
-                    Browse tables
+                    {isRedis ? 'New console' : 'New SQL query'}
                   </Button>
+                  {!isRedis && (
+                    <Button
+                      variant="ghost"
+                      size="lg"
+                      icon={TableIcon}
+                      onClick={() => tables[0] && openTable(tables[0])}
+                      disabled={tables.length === 0}
+                    >
+                      Browse tables
+                    </Button>
+                  )}
                 </div>
 
                 <div className="mt-9">

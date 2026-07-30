@@ -22,9 +22,15 @@ endpoint with its request, response, and an example URL.
 - **Path params:** `:id` = connection id, `:table` = table name, `:sid` = saved
   query id, `:fid` = folder id.
 - **Query params** (where supported):
-  - `database` — target database on the same server (PostgreSQL multi-db browsing).
+  - `database` — target database on the same server (PostgreSQL multi-db browsing;
+    on Redis the numbered database, as `db0`…`dbN` or a bare index).
   - `schema` — target schema (PostgreSQL, default `public`).
   - `limit` — row cap for table data (default `200`).
+- **Engines:** `sqlite`, `postgresql`, `redis`. Routes that only make sense for a
+  relational engine (`/columns`, `/indexes`, `/diagram`, `/insert`, `/analyze`,
+  `/table/:table`, backups) reject a Redis connection with a `400` naming the type;
+  `/tables` and `/objects` return `[]`. Redis browses its keyspace through the
+  `/redis/*` routes below and runs commands through the shared `/query` route.
 
 ### Environment variables
 
@@ -83,7 +89,29 @@ reassembles this same shape on every read, so API consumers see no difference:
   "sslmode": "verify-full",  // optional: disable | require | verify-full
   "schemaVersion": 1
 }
+
+// Redis — reuses the same field names as PostgreSQL, so nothing downstream
+// (encryption at rest, export/import, the detail view) needs a Redis branch.
+{
+  "id": "a1b2...uuid",
+  "name": "Session cache",
+  "type": "redis",
+  "environment": "production",
+  "host": "cache.example.com",
+  "port": 6379,
+  "username": "app",        // optional: Redis 6+ ACL user
+  "password": "secret",     // optional
+  "auth": "password",       // optional: "none" skips user/password
+  "database": "0",          // the numeric db index to open by default
+  "tls": "require",         // optional: "" (plain) | "require" | "insecure"
+  "uri": "redis://user:pass@cache.example.com:6379/0", // optional; wins over the fields above
+  "schemaVersion": 1        // never bumps — Redis has no DDL
+}
 ```
+
+A `redis://` / `rediss://` URI's `/N` path is only the *default* database: an
+explicit `?database=` on a request always wins, so the console's database picker
+works on URI-configured connections too.
 
 ### Saved query
 ```jsonc
@@ -153,8 +181,9 @@ sole `INTEGER PRIMARY KEY` on a rowid table). A column is safe to omit from an
 ```jsonc
 // SELECT
 { "type": "rows", "columns": ["id", "name"], "rows": [{ "id": 1, "name": "A" }] }
-// non-SELECT
-{ "type": "message", "message": "Query OK · 3 row(s) affected." }
+// non-SELECT — `rowCount` lets a caller tell a statement that changed nothing
+// (0-row UPDATE/DELETE: not an error, but not a success either) from one that did
+{ "type": "message", "message": "Query OK · 3 row(s) affected.", "rowCount": 3 }
 // failure (HTTP 200, error in body)
 { "error": "no such table: foo" }
 ```
@@ -479,8 +508,11 @@ Test connectivity without saving. Body is a connection-shaped object.
 
 - **Body (SQLite):** `{ "type": "sqlite", "filepath": "./demo.db" }`
 - **Body (PostgreSQL):** `{ "type": "postgresql", "host": "...", "port": 5432, "username": "...", "password": "...", "database": "...", "sslmode": "disable" }`
+- **Body (Redis):** `{ "type": "redis", "host": "...", "port": 6379, "username": "...", "password": "...", "database": "0", "tls": "require" }` — or `{ "type": "redis", "uri": "redis://user:pass@host:6379/0" }`
 - **200 (success):** `{ "ok": true, "message": "Connected! 5 table(s) found." }`
+  (Redis: `{ "ok": true, "message": "Connected to Redis 7.4.2 · 128 key(s) in db0." }`)
 - **200 (failure):** `{ "ok": false, "message": "<driver error>" }` (note: failures still return HTTP 200)
+- **400:** `{ "ok": false, "message": "Unsupported connection type: mysql" }`
 - **Example:** `POST http://localhost:3000/api/test-connection`
 
 ### POST `/api/connections`
@@ -1347,7 +1379,16 @@ Read rows from a table (capped by `limit`).
 - **Query:** `limit` (default `200`), plus optional `database`, `schema`
 - **200:** `{ "columns": ["id", "name"], "rows": [ {…} ] }`
   - On a DB error the body is `{ "columns": [], "rows": [], "error": "<msg>" }` (HTTP 200)
+- **Row order:** ordered by primary key when the table has one. Postgres writes a
+  new tuple version on `UPDATE`, so an unordered read returns an edited row at the
+  end of the heap — it looks like the edit was lost.
+- **`__tg_rowid` (tables with no primary key only):** each row object also carries
+  its physical row id — SQLite `rowid`, Postgres `ctid` (as text, e.g. `"(0,4)"`).
+  It is deliberately **absent from `columns`**, so it never renders or exports; it
+  exists so an edit can target the one row it came from. Views, `WITHOUT ROWID`
+  tables and any table with a PK omit it.
 - **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/table/users?limit=50000`
+- **Example (no PK):** `{ "columns": ["rule_id","value"], "rows": [{ "__tg_rowid": "(0,4)", "rule_id": 2, "value": "…" }] }`
 
 ### GET `/api/connections/:id/columns/:table`
 Column metadata for a table (used for PK detection, inserts, editing).
@@ -1429,13 +1470,47 @@ Insert a single row (parameterized — values are bound, not interpolated).
 Execute arbitrary SQL. SELECTs return rows; other statements return a message.
 For PostgreSQL, a non-`public` `schema` is set on the search path first.
 
+On a **Redis** connection `sql` carries raw command text instead — one command per
+line, `#` comments and blank lines ignored, arguments quoted the way `redis-cli`
+quotes them (SQL's `''` escape inside single quotes is accepted too, so a workflow
+query node's `{{input.x}}` substitution round-trips). Replies are normalized into
+the same shape: collections become rows, scalars/status replies become a message.
+Blocking and connection-mode commands (`SUBSCRIBE`, `MONITOR`, `BLPOP`, `WAIT`, …)
+are rejected — they would hold the pooled connection open indefinitely.
+
 - **Body:** `{ "sql": "SELECT * FROM users", "database": "appdb", "schema": "public" }`
+- **Body (Redis):** `{ "sql": "HGETALL cfg:app", "database": "db2" }`
 - **200 (SELECT):** `{ "type": "rows", "columns": [...], "rows": [...] }`
-- **200 (other):** `{ "type": "message", "message": "Query OK · 3 row(s) affected." }`
+- **200 (other):** `{ "type": "message", "message": "Query OK · 3 row(s) affected.", "rowCount": 3 }` (`rowCount` absent on Redis replies)
 - **200 (SQL error):** `{ "error": "<driver message>" }` (note: HTTP 200, error in body)
 - **400:** `{ "error": "SQL query required" }`
 - **404:** `{ "error": "Connection not found" }`
 - **Example:** `POST http://localhost:3000/api/connections/demo-sqlite/query`
+
+**Redis reply normalization**
+
+| Reply | Result |
+| --- | --- |
+| `nil` | `{ "type": "message", "message": "(nil)" }` |
+| Integer | `{ "type": "message", "message": "(integer) 3" }` |
+| Simple/bulk string | `{ "type": "message", "message": "OK" }` |
+| Multi-line string (`INFO`, `CLIENT LIST`) | `{ "type": "rows", "columns": ["line"], "rows": [{ "line": "..." }] }` |
+| Array (`LRANGE`, `SMEMBERS`, `KEYS`) | `{ "type": "rows", "columns": ["#", "value"], "rows": [...] }` (nested arrays render as JSON in `value`) |
+| Map (`HGETALL`, `CONFIG GET`) | `{ "type": "rows", "columns": ["field", "value"], "rows": [...] }` |
+| More than one command in the buffer | `{ "type": "rows", "columns": ["#", "command", "status", "reply"], "rows": [...] }` — `status` is `OK` or `ERROR` per command, so a failure mid-batch is visible without aborting the rest |
+
+Example — `{ "sql": "SET a 1\nINCR a\nBADCMD x" }`:
+```json
+{
+  "type": "rows",
+  "columns": ["#", "command", "status", "reply"],
+  "rows": [
+    { "#": 1, "command": "SET a 1", "status": "OK", "reply": "OK" },
+    { "#": 2, "command": "INCR a", "status": "OK", "reply": 2 },
+    { "#": 3, "command": "BADCMD x", "status": "ERROR", "reply": "ERR unknown command 'badcmd'..." }
+  ]
+}
+```
 
 ### POST `/api/connections/:id/analyze`
 Analyze one statement's performance. Runs the dialect's EXPLAIN machinery
@@ -1475,6 +1550,98 @@ against the table's existing indexes.
   `{ "error": "Query analysis is not supported for <type> connections." }`, or a driver error message
 - **404:** `{ "error": "Connection not found" }`
 - **Example:** `POST http://localhost:3000/api/connections/demo-sqlite/analyze`
+
+---
+
+## Redis keyspace (per connection)
+
+Redis has no tables, so the generic `/tables` and `/objects` routes return `[]` for
+it and the console's sidebar reads the keyspace through these routes instead.
+Everything else — running commands, workflow query nodes, dashboard widgets — goes
+through the shared `POST /api/connections/:id/query` route above.
+
+All four routes accept the `database` query param (`db0`…`dbN` or a bare index) and
+answer `400 { "error": "Not a Redis connection (type: postgresql)." }` on any other
+engine, `404` when the connection doesn't exist.
+
+### GET `/api/connections/:id/redis/keys`
+One `SCAN` page of the keyspace, each key enriched with its type and TTL (pipelined
+`TYPE` + `PTTL`). Uses `SCAN`, never `KEYS`, so a keyspace with millions of keys
+stays responsive. `cursor` is Redis's own opaque cursor — hand back what you got to
+fetch the next page; `done` is true once it wraps to `"0"`. Note that a page can
+legitimately come back empty while `done` is false.
+
+- **Query:** `pattern` (glob, default `*`), `cursor` (default `"0"`), `count`
+  (SCAN hint, clamped to 10–5000, default 300), `type` (filter to one Redis type),
+  `database`
+- **200:**
+  ```json
+  {
+    "keys": [
+      { "key": "user:1:name", "type": "string", "ttlMs": 299985 },
+      { "key": "queue:jobs", "type": "list", "ttlMs": null }
+    ],
+    "cursor": "0",
+    "done": true
+  }
+  ```
+  `ttlMs` is `null` when the key never expires.
+- **Example:** `GET http://localhost:3000/api/connections/<id>/redis/keys?pattern=user:*&count=500&database=db2`
+
+### GET `/api/connections/:id/redis/overview`
+Keyspace summary for the sidebar header.
+
+- **Query:** `database`
+- **200:** `{ "database": "db0", "keyCount": 128, "version": "7.4.2" }`
+- **Example:** `GET http://localhost:3000/api/connections/<id>/redis/overview`
+
+### GET `/api/connections/:id/redis/key`
+One key's value as a generic `{ columns, rows }` page, plus its metadata. Every
+collection type is paged by `offset`/`limit` so a million-element list can still be
+opened. Columns per type: string → `["value"]`, list → `["index","value"]`, set →
+`["#","member"]`, zset → `["rank","member","score"]`, hash → `["field","value"]`,
+stream → `["id","fields"]`.
+
+- **Query:** `key` (**required**), `offset` (default `0`), `limit` (1–5000, default `200`), `database`
+- **200:**
+  ```json
+  {
+    "key": "cfg:app",
+    "type": "hash",
+    "encoding": "listpack",
+    "ttlMs": null,
+    "length": 2,
+    "offset": 0,
+    "limit": 200,
+    "hasMore": false,
+    "columns": ["field", "value"],
+    "rows": [{ "field": "debug", "value": "true" }, { "field": "ver", "value": "2" }]
+  }
+  ```
+  `length` is the byte size for a string and the entry count for every collection
+  type (`hasMore` is always `false` for a string — it isn't paged).
+- **400:** `{ "error": "A key is required." }` or `{ "error": "Key \"ghost\" does not exist." }`
+- **Example:** `GET http://localhost:3000/api/connections/<id>/redis/key?key=cfg:app&offset=0&limit=200`
+
+### DELETE `/api/connections/:id/redis/keys`
+Delete one or more keys (`DEL`).
+
+- **Query:** `database`
+- **Body:** `{ "keys": ["user:1:name", "user:2:name"] }`
+- **200:** `{ "deleted": 2 }` (the count Redis actually removed — missing keys don't count)
+- **400:** `{ "error": "At least one key is required." }`
+- **Example:** `DELETE http://localhost:3000/api/connections/<id>/redis/keys`
+
+### PUT `/api/connections/:id/redis/ttl`
+Set or clear a key's expiry. `ttlMs` of `null` or `0` runs `PERSIST`; anything
+positive runs `PEXPIRE`.
+
+- **Query:** `database`
+- **Body:** `{ "key": "session:abc", "ttlMs": 60000 }`
+- **200:** `{ "ok": true, "ttlMs": 60000 }` (or `"ttlMs": null` after a clear)
+- **400:** `{ "error": "A key is required." }` or
+  `{ "error": "Key \"session:abc\" does not exist or already has no expiry." }`
+- **Example:** `PUT http://localhost:3000/api/connections/<id>/redis/ttl`
 
 ---
 
@@ -1630,8 +1797,13 @@ Liveness probe. Also reports boot readiness and the running identity.
 | GET    | `/api/connections/:id/types`              | Column data types (per dialect) |
 | GET    | `/api/connections/:id/diagram`            | Tables + foreign keys           |
 | POST   | `/api/connections/:id/insert`             | Insert a row                    |
-| POST   | `/api/connections/:id/query`              | Execute SQL                     |
+| POST   | `/api/connections/:id/query`              | Execute SQL / a Redis command   |
 | POST   | `/api/connections/:id/analyze`            | Analyze query performance       |
+| GET    | `/api/connections/:id/redis/keys`         | SCAN one page of the keyspace   |
+| GET    | `/api/connections/:id/redis/overview`     | Redis db / key count / version  |
+| GET    | `/api/connections/:id/redis/key`          | Read one key's value (paged)    |
+| DELETE | `/api/connections/:id/redis/keys`         | Delete keys                     |
+| PUT    | `/api/connections/:id/redis/ttl`          | Set / clear a key's expiry      |
 | GET    | `/api/connections/:id/dashboards`         | List dashboards                 |
 | POST   | `/api/connections/:id/dashboards`         | Create dashboard (opt. config)  |
 | GET    | `/api/connections/:id/dashboards/:did`    | Fetch dashboard + config        |

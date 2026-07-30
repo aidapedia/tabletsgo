@@ -6,8 +6,9 @@ import { HighlightStyle, syntaxHighlighting } from '@codemirror/language'
 import { Prec } from '@codemirror/state'
 import { tags as t } from '@lezer/highlight'
 
-// Editor chrome themed to match the app (dark).
-const editorTheme = EditorView.theme(
+// Editor chrome themed to match the app (dark). Exported so the Redis console's
+// editor renders as the same surface with a different grammar.
+export const editorTheme = EditorView.theme(
   {
     '&': { backgroundColor: 'var(--color-bg)', color: 'var(--color-ink)', fontSize: '12px' },
     '.cm-scroller': { fontFamily: '"SF Mono", Menlo, Consolas, monospace',overflow: 'auto' },
@@ -74,8 +75,8 @@ const editorTheme = EditorView.theme(
   { dark: true }
 )
 
-// SQL token colors.
-const highlightStyle = HighlightStyle.define([
+// Token colors — shared by every code editor in the app (SQL and Redis).
+export const highlightStyle = HighlightStyle.define([
   { tag: t.keyword, color: '#7aa2f7', fontWeight: '600' },
   { tag: [t.string, t.special(t.string)], color: '#8fe08a' },
   { tag: [t.number, t.bool, t.null], color: '#d6a73a' },

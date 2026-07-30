@@ -48,6 +48,10 @@ export function connectionUrl(c) {
   const cred = c.auth === 'none' ? '' : `${encodeURIComponent(c.username || '')}${c.password ? ':' + encodeURIComponent(c.password) : ''}`
   const auth = cred ? `${cred}@` : ''
   const db = c.database ? `/${c.database}` : ''
+  if (c.type === 'redis') {
+    // TLS is carried by the scheme (rediss://), not a query param.
+    return `${c.tls ? 'rediss' : 'redis'}://${auth}${c.host || ''}${c.port ? ':' + c.port : ''}${db}`
+  }
   const ssl = c.sslmode && c.sslmode !== 'disable' ? `?sslmode=${c.sslmode}` : ''
   return `postgresql://${auth}${c.host || ''}${c.port ? ':' + c.port : ''}${db}${ssl}`
 }
@@ -178,9 +182,13 @@ export default function ConnectionDetail({ conn, onBack, onOpen, onEdit, onDelet
                     <>
                       <DetailRow label="Host" value={conn.host} />
                       <DetailRow label="Port" value={conn.port ? String(conn.port) : undefined} />
-                      <DetailRow label="Database" value={conn.database} />
+                      <DetailRow label={conn.type === 'redis' ? 'Database index' : 'Database'} value={conn.database} />
                       <DetailRow label="Username" value={conn.username} />
-                      <DetailRow label="SSL mode" value={conn.sslmode} />
+                      {conn.type === 'redis' ? (
+                        <DetailRow label="TLS" value={conn.tls ? (conn.tls === 'insecure' ? 'enabled (unverified)' : 'enabled') : undefined} />
+                      ) : (
+                        <DetailRow label="SSL mode" value={conn.sslmode} />
+                      )}
                     </>
                   )}
                   {conn.folder && <DetailRow label="Folder" value={conn.folder} />}
