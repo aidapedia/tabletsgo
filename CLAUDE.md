@@ -85,7 +85,12 @@ src/
 │   │   │                         #   QueryHistoryView, InsertRowPanel, ChangesPanel, SavedQueriesPanel, IconRail,
 │   │   │                         #   TabBar (the open-tab strip: drag a tab left/right to reorder — insertion
 │   │   │                         #   caret on drag-over, committed on drop; right-click closes this/others/
-│   │   │                         #   to-the-right/all)
+│   │   │                         #   to-the-right/all),
+│   │   │                         #   StatusBar (bottom bar of the main area only — the icon rail and Tables
+│   │   │                         #   sidebar keep their full height. DB type + logo,
+│   │   │                         #   connection name, environment pill, current database/schema, and the
+│   │   │                         #   schema version on the right — clicking it opens the schema history tab.
+│   │   │                         #   Env + version live here only; the top toolbar no longer shows them)
 │   │   └── lib/                  #   savedQueries, queryHistory (backend calls)
 │   ├── schema-designer/          # visual schema design (React Flow ERD + table/column editors; tables
 │   │   │                         #   sharing a folder are clustered into a draggable, editable region)

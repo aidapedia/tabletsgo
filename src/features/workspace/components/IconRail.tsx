@@ -3,6 +3,7 @@ import Popover from '@/shared/ui/overlay/Popover'
 import Tooltip from '@/shared/ui/overlay/Tooltip'
 import IconButton from '@/shared/ui/buttons/IconButton'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
+import { EnvBadge } from '@/features/connections'
 
 function RailButton({ icon: Icon, label, active = false, onClick }) {
   return (
@@ -38,7 +39,10 @@ export default function IconRail({
       <Popover
         width={240}
         trigger={({ toggle }) => (
-          <Tooltip label={current?.name || 'Connections'} placement="right">
+          <Tooltip
+            label={current?.environment ? `${current.name} · ${current.environment}` : current?.name || 'Connections'}
+            placement="right"
+          >
             <IconButton size="xl" onClick={toggle} aria-label="Connections">
               <DbLogo type={current?.type} className="h-9 w-9" />
             </IconButton>
@@ -61,6 +65,7 @@ export default function IconRail({
               >
                 <DbLogo type={c.type} className="h-7 w-7 shrink-0" />
                 <span className="flex-1 truncate">{c.name}</span>
+                <EnvBadge environment={c.environment} dense />
               </MenuItem>
             ))}
           </div>

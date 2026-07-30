@@ -50,6 +50,7 @@ const WorkflowEditor = lazy(() => import('@/features/workflow/components/Workflo
 const DashboardView = lazy(() => import('@/features/dashboard/components/DashboardView'))
 import IconRail from '@/features/workspace/components/IconRail'
 import TabBar from '@/features/workspace/components/TabBar'
+import StatusBar from '@/features/workspace/components/StatusBar'
 import { formatCombo, useKeymap, useShortcut } from '@/features/keymap'
 import SavedQueriesPanel from '@/features/workspace/components/SavedQueriesPanel'
 import AnalyzePanel from '@/features/workspace/components/AnalyzePanel'
@@ -1667,16 +1668,8 @@ export default function Workspace() {
             </kbd>
           </button>
           <div className="ml-auto flex items-center gap-2">
+            {/* Environment + schema version now live in the bottom status bar. */}
             <div className="flex items-center gap-2 max-[720px]:hidden">
-              <Tooltip label="Schema version history" placement="bottom">
-                <button
-                  type="button"
-                  onClick={openSchemaHistory}
-                  className="rounded-[20px] border border-edge bg-elevated px-[9px] py-1 text-[11px] font-medium text-ink-faint transition-colors hover:border-edge-strong hover:text-ink"
-                >
-                  v{conn.schemaVersion ?? 1}
-                </button>
-              </Tooltip>
               <Tooltip label="Query history" placement="bottom">
                 <IconButton size="toolbar" onClick={openHistory} aria-label="Query history">
                   <HistoryIcon width={16} height={16} />
@@ -1884,6 +1877,15 @@ export default function Workspace() {
             </div>
           )}
         </div>
+
+        {/* Status bar — bottom of the main area only; the rail and sidebar keep
+            their full height. */}
+        <StatusBar
+          conn={conn}
+          database={ns.database}
+          schema={ns.schema}
+          onSchemaHistory={openSchemaHistory}
+        />
       </main>
 
       {tabMenu && (

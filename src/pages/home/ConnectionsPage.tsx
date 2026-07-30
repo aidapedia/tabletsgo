@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import {
   useConnections, ConnectionForm, ConnectionDetail, DbTypePickerModal,
   ConnectionExportModal, ConnectionImportModal, readConnectionExportFile,
-  StatusBadge, connectionUrl, TYPE_LABEL,
+  StatusBadge, connectionUrl, TYPE_LABEL, EnvBadge,
 } from '@/features/connections'
 import type { ConnectionExport } from '@/features/connections'
 import { pingConnection } from '@/shared/api/database'
@@ -13,7 +13,6 @@ import Button from '@/shared/ui/buttons/Button'
 import IconButton from '@/shared/ui/buttons/IconButton'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
 import Popover from '@/shared/ui/overlay/Popover'
-import Badge from '@/shared/ui/Badge'
 import Select from '@/shared/ui/form/Select'
 import { controlClass } from '@/shared/ui/form/Input'
 import ConfirmDialog from '@/shared/ui/feedback/ConfirmDialog'
@@ -37,14 +36,6 @@ import SearchInput from '@/shared/ui/form/SearchInput'
 import EmptyState from '@/shared/ui/feedback/EmptyState'
 import LoadingState from '@/shared/ui/feedback/LoadingState'
 import { PageHeader } from './ui'
-
-// Environment → badge tone, so the card pill reads at a glance.
-const ENV_TONE: Record<string, 'red' | 'amber' | 'green' | 'neutral'> = {
-  production: 'red',
-  staging: 'amber',
-  development: 'green',
-  local: 'neutral',
-}
 
 // One headline metric with a right-aligned icon medallion.
 function StatCard({ icon: Icon, label, value, sub, tone = 'default' }: any) {
@@ -357,7 +348,6 @@ export default function ConnectionsPage() {
           <div className="mt-6 grid grid-cols-3 gap-4 max-[1080px]:grid-cols-2 max-[720px]:grid-cols-1">
             {filtered.map((conn) => {
               const backup = backups[conn.id]
-              const envTone = ENV_TONE[conn.environment] || 'neutral'
               return (
                 <div
                   key={conn.id}
@@ -372,7 +362,7 @@ export default function ConnectionsPage() {
                   {/* Name + environment */}
                   <div className="mt-4 flex items-center gap-2">
                     <div className="truncate text-[15px] font-bold">{conn.name}</div>
-                    {conn.environment && <Badge tone={envTone}>{conn.environment}</Badge>}
+                    <EnvBadge environment={conn.environment} />
                   </div>
                   <div className="mt-0.5 truncate font-mono text-[12px] text-ink-faint">
                     {TYPE_LABEL[conn.type] || conn.type} · {subtitle(conn)}
