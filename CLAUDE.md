@@ -199,7 +199,80 @@ Conventions:
 - All backend calls go through `shared/api/request.ts`: use `request()` for mutations (throws on failure — caller `try/catch`es and toasts) and `safeRequest(path, fallback)` for reads that should degrade quietly. Don't call `fetch` directly or re-declare `API_URL`.
 - UI styling lives in `shared/ui` components — `Button`, `IconButton`, `Input`/`Textarea`, `Form`/`FormField`/`Label`. Use those instead of shared class-string helpers (the old `shared/lib/styles.ts` is gone). `controlClass` (exported from `shared/ui/form/Input`) is **only** for non-`<input>` controls that need the field look (e.g. `Select`) — never put it on a raw `<input>`/`<textarea>`; use `Input`/`Textarea`.
 - Reuse the shared micro-components instead of re-styling inline: `Avatar` (initial bubble), `Badge` (uppercase pill), `PersonRow` (avatar+name+email), `CheckboxRow` (bordered selectable row), `SearchInput` (input with search icon), `LoadingState`/`EmptyState` (faint placeholders), `ConfirmDialog` (never `window.confirm`), `toggleId` (selection-list toggle).
-- Future decomposition candidates (out of scope so far): `pages/console/WorkspacePage.tsx` (~2200 lines), `schema-designer/SchemaEditor.tsx` (~1470), `workspace/TableView.tsx` (~900), and `server.js` (~5000 — split into route/lib modules; extractions done so far: `server/migrations.js`, the meta-DB migration steps, and `server/redis.js`, the Redis driver + keyspace helpers).
+- Future decomposition candidates (out of scope so far): `pages/console/WorkspacePage.tsx` (~2200 lines), `schema-designer/SchemaEditor.tsx` (~1470), `workspace/TableView.tsx` (~900), and `server.js` (~2900 — the remaining step is moving route handlers into `server/routes/*.js` express routers).
+
+## BACKEND STRUCTURE
+`server.js` is routes and wiring only; everything a route needs lives in a module
+under `server/`. A route should read as: **authorize → validate → call a module →
+respond**, and **no route branches on `conn.type`** — the db layer answers for
+every engine.
+
+```
+server.js                 # express app: 108 routes, static frontend, schedulers, shutdown
+server/
+├── config.js             # every env var + filesystem path, resolved once (imports nothing app-level)
+├── util.js               # safeJson, jsonPreview, describeError, sleep, sanitizeForKey, computeNextRun
+├── crypto.js             # AES-256-GCM: encryptSecret/decryptSecret + streamed file encryption.
+│                         #   One scrypt-derived key per namespace (connections | storage | backup files)
+├── meta.js               # the app's own SQLite handle, initMetaDb(), snapshotMetaSync()
+├── migrations.js         # versioned, append-only meta-schema steps (see META DB MIGRATIONS below)
+├── auth.js               # sessions, requireAuth/requireSystemAdmin, workspace+team+connection-access rules
+├── mail.js               # SMTP resolution (workspace settings → env) + the transactional emails
+├── connections.js        # connection records: rowToConnection/connectionToRow + CRUD + schemaVersion
+├── folders.js            # FOLDER_TYPES + the polymorphic folder tree (depth/height/ancestor checks)
+├── storage.js            # storage destinations (S3-compatible + built-in local disk) and object ops:
+│                         #   store/fetch/list/delete/prune. Every step branches on `dest.local`, not a caller
+├── db/                   # ★ the engine-agnostic database layer — see "THE DB LAYER" below
+│   ├── index.js          #   the driver contract + generic dispatch (the only file routes import)
+│   ├── sql.js            #   dialect-agnostic SQL text utils shared by the SQL drivers
+│   ├── sqlite.js         #   one file per engine; each adapts itself to the contract
+│   ├── postgres.js
+│   └── redis.js
+├── workflow.js           # the node-graph executor (vm sandbox, {{input.x}} substitution),
+│                         #   executeAndRecord, nextRunForGraph, runDueWorkflows
+├── connection-transfer.js  # the portable connection export/import bundle (see CONNECTION EXPORT / IMPORT)
+├── backup/
+│   ├── index.js          #   barrel — what the routes import
+│   ├── schedule.js       #   the backup_schedules row store, clamps and validation
+│   ├── runner.js         #   export → store, retries, run history, failure notification
+│   └── restore.js        #   fetch artifact → decrypt → hand to the driver
+└── system-update.js      # GitHub release checking (cached) + Docker-socket self-update
+```
+
+Conventions:
+- **`config.js` is the only place that reads `process.env`** for tunables (the
+  SMTP/admin-seed fallbacks are the exception, read where they're used).
+- A module owns its table(s): if a route is writing raw SQL against
+  `backup_schedules` or `storage_destinations`, that belongs in the module.
+- Dependencies point one way: `config → crypto → meta → {auth, mail, connections,
+  folders, storage} → db → workflow/backup/transfer → server.js`. No cycles —
+  `backup/schedule.js` is split out from the runner precisely so
+  `connection-transfer.js` can read a schedule without importing the pipeline.
+
+## THE DB LAYER
+`server/db/index.js` defines one vocabulary; `sqlite.js` / `postgres.js` /
+`redis.js` each adapt a single engine to it. **Adding an engine is one driver
+file plus one entry in `DRIVERS`** — no caller changes.
+
+A driver is a plain object whose methods take `(conn, ctx, …)`, where `ctx` is
+`{ database, schema }` and each engine reads only what it understands (SQLite
+ignores both; Postgres pools per database and defaults `schema` to `'public'`;
+Redis reads `database` as its numbered db). The full method list is documented at
+the top of `server/db/index.js` — keep it accurate, it's the contract.
+
+A driver **omits** what its engine doesn't have, and the generic layer decides
+what that means at the API edge:
+- **optional** ops answer with the empty result (`listTables` → `[]`,
+  `getDiagram` → `{tables:[],foreignKeys:[]}`), so Redis just shows nothing.
+- **required** ops throw `UnsupportedError` (status 400) naming the type —
+  `insertRow`, `analyze`, `runQuery`, `dump`, `restore`. Use
+  `db.requireCapability(conn, op)` to fail *before* unrelated work (that's how
+  `/analyze` tells a Redis user about Redis instead of about SQL syntax), and
+  `db.supports(conn, 'dump')` to gate a feature without naming an engine.
+
+Never leave a route without an answer for an engine — a missing branch used to
+mean `res.json(undefined)` and a hung request; the generic layer is what makes
+that impossible now.
 
 ## CONFIGURATION (env / Docker)
 Configurable values live in env vars, wired through `docker-compose.yml` (see `.env.example`); don't hardcode them:
@@ -211,28 +284,28 @@ Configurable values live in env vars, wired through `docker-compose.yml` (see `.
 - `TABLETSGO_TAG` — **optional**. Published image tag `docker compose` runs (and pulls on self-update). Default `latest`; one-click self-update works best on a moving tag.
 - `UPDATE_AUTO_CHECK` — **optional**. Instance-wide default (truthy `1/true/yes/on`; default off) for the per-user "auto-check for updates" toggle in Settings > Updates, surfaced via `/api/system/version`'s `autoCheckUpdates`. Leave off when an orchestrator (e.g. Coolify) manages updates; users can still override per browser.
 - `UPDATE_IMAGE` / `UPDATE_REPO` / `UPDATE_HELPER_IMAGE` — **optional** in-app update checker tuning (default to the official image/repo; override only for a fork). The checker compares the running `(version, sha)` against the latest GitHub Release + its `release.json` contract. Apply method is auto-detected: Docker socket mounted ⇒ one-click self-update via `UPDATE_HELPER_IMAGE` (default `docker:cli`); otherwise the wizard shows a manual `docker compose pull` command. `APP_VERSION` / `GIT_SHA` are baked into the image at build time and reported by `/api/system/version`.
-When you add a new tunable, thread it through server.js env, the Dockerfile/compose, and `.env.example`.
+When you add a new tunable, thread it through `server/config.js`, the Dockerfile/compose, and `.env.example`.
 
 ## AUTH MODEL
 Login/setup/accept-invite return `{ user, token }`; the token is stored in localStorage (`dbm.token`) and attached as `Authorization: Bearer` by `shared/api/request.ts`. Workspace/member and per-connection routes require it (server `requireAuth` / the `/api/connections/:id` membership middleware). Roles are **per workspace** (`admin` | `member`) via `workspace_members`. Connections carry a `workspace_id` column and are filtered by the caller's current workspace.
 
 ## CONNECTIONS & SCHEMA VERSIONING
-The `connections` table stores dialect-agnostic fields (`type`, `name`, `workspace_id`, `environment`, `folder`, `tags`, `schema_version`) as plain columns and everything else (host/port/username/password/filepath/database/uri/sslmode/tls/auth/keychain) as one AES-256-GCM-encrypted JSON blob in `credentials`. `server.js`'s `rowToConnection`/`connectionToRow` reassemble/split the flat connection shape the frontend has always used — the API contract for `/api/connections*` didn't change, only storage. Redis deliberately **reuses the same field names** as PostgreSQL (host/port/username/password/database/uri) so nothing downstream needs a Redis branch; only `tls` (`'' | 'require' | 'insecure'`) is its own, standing in for `sslmode`.
+The `connections` table stores dialect-agnostic fields (`type`, `name`, `workspace_id`, `environment`, `folder`, `tags`, `schema_version`) as plain columns and everything else (host/port/username/password/filepath/database/uri/sslmode/tls/auth/keychain) as one AES-256-GCM-encrypted JSON blob in `credentials`. `server/connections.js`'s `rowToConnection`/`connectionToRow` reassemble/split the flat connection shape the frontend has always used — the API contract for `/api/connections*` didn't change, only storage. Redis deliberately **reuses the same field names** as PostgreSQL (host/port/username/password/database/uri) so nothing downstream needs a Redis branch; only `tls` (`'' | 'require' | 'insecure'`) is its own, standing in for `sslmode`.
 
 Every connection has a `schemaVersion` starting at 1. DDL staged from the schema designer / create-table panel / drop-table / empty-table actions is tagged `ddl: true` with a computed `rollbackSql` (see `src/features/schema-designer/lib/rollback.ts`) when staged. After `commitChanges` in `WorkspacePage.tsx` successfully executes a batch containing DDL, it calls `POST /api/connections/:id/schema/migrations` once, which records the batch (forward + rollback SQL) in `schema_migrations` and bumps `schema_version` — one version per successful commit, not per statement. Each migration carries a `status` (`active` | `rollbacked`; NULL on legacy rows = active). `GET .../schema/migrations` lists the trail; `POST .../schema/rollback { toVersion }` undoes every still-active migration newer than the target (newest first), refuses to cross an irreversible one (`reversible = 0`), marks the undone rows `rollbacked`, and resets `schema_version` to the target. Version numbers are reused after a rollback (roll 3→1, commit again ⇒ a new v2), so they're only unique among `active` rows. Plain row-level data edits (insert/update/delete via `TableView`) are never tagged `ddl` and never affect `schemaVersion`.
 
 ## REDIS (the non-relational engine)
-Redis is the first supported engine with no tables and no SQL, so it's the shape every future non-relational engine should follow. **The rule: adapt at the edges, never fork the contract.** `server/redis.js` owns everything Redis-specific and returns the *same* generic result shape the SQL engines do (`{ type: 'rows', columns, rows }` | `{ type: 'message', message }` | `{ error }`) — which is exactly why the `/query` route, workflow query nodes and dashboard widgets work against Redis with no Redis-aware code in them.
+Redis is the first supported engine with no tables and no SQL, so it's the shape every future non-relational engine should follow. **The rule: adapt at the edges, never fork the contract.** `server/db/redis.js` owns everything Redis-specific and returns the *same* generic result shape the SQL engines do (`{ type: 'rows', columns, rows }` | `{ type: 'message', message }` | `{ error }`) — which is exactly why the `/query` route, workflow query nodes and dashboard widgets work against Redis with no Redis-aware code in them.
 
-- **Commands ride the SQL route.** `POST /api/connections/:id/query` takes command text in `sql` for a Redis connection; `execSqlOnConnection` / `execWorkflowQuery` dispatch on `conn.type` like they do for the other engines. One command per line (`#` comments dropped); a multi-command buffer returns one summary row per command (`#`/`command`/`status`/`reply`) so a mid-batch failure is visible rather than aborting. Blocking/connection-mode commands (`SUBSCRIBE`, `MONITOR`, `BLPOP`, `WAIT`, …) are rejected — they'd hold the pooled client open forever.
-- **Browsing gets its own routes**, not overloaded table ones: `GET/DELETE .../redis/keys`, `.../redis/key`, `.../redis/overview`, `PUT .../redis/ttl`. `/tables` and `/objects` return `[]` for Redis and the relational-only routes (`/columns`, `/indexes`, `/diagram`, `/insert`, `/analyze`, `/table/:table`, backups) answer `400` naming the type — **never** leave a route with no `else` branch, or the request hangs on `res.json(undefined)`.
+- **Commands ride the SQL route.** `POST /api/connections/:id/query` takes command text in `sql` for a Redis connection; it reaches the driver through the same `db.runQuery(conn, ctx, sql)` the SQL engines use, so the route has no Redis branch at all. One command per line (`#` comments dropped); a multi-command buffer returns one summary row per command (`#`/`command`/`status`/`reply`) so a mid-batch failure is visible rather than aborting. Blocking/connection-mode commands (`SUBSCRIBE`, `MONITOR`, `BLPOP`, `WAIT`, …) are rejected — they'd hold the pooled client open forever.
+- **Browsing gets its own routes**, not overloaded table ones: `GET/DELETE .../redis/keys`, `.../redis/key`, `.../redis/overview`, `PUT .../redis/ttl`. The relational routes answer for Redis too, via the generic layer's optional/required split (see THE DB LAYER): `/tables`, `/objects`, `/columns`, `/indexes` and `/diagram` return the empty result, while `/insert`, `/analyze` and the backup schedule `400` naming the type. The keyspace routes reach the driver's Redis-only ops (`scanKeys`/`readKey`/`overview`/`deleteKeys`/`setTtl`) through `db.drivers.redis`, guarded by `requireRedis`.
 - **Always `SCAN`, never `KEYS`.** `KEYS` blocks the server on a large keyspace. The key list is cursor-paged; the frontend keeps pulling pages until it has a screenful because a `SCAN` page can legitimately come back empty before the cursor wraps.
 - **`database` is the numbered db.** Clients are pooled per `(connection, resolved db)`. A `redis://…/N` URI's path is only the *default* — `redisConfig` strips it and passes `db` explicitly, because ioredis otherwise lets the URI override the option and pins the connection to one database, silently breaking the console's db picker. The pool key uses the resolved db so a client is never handed back for a database it isn't on.
 - **Frontend:** `src/features/redis` swaps two console pieces on `conn.type === 'redis'` — `RedisKeyTree` for the tables sidebar and `RedisConsole` for the query tab (plus a `redisKey` tab kind). The schema designer, table folders, create-table and query analysis are hidden rather than stubbed, since Redis has no equivalent. `RedisConsole`/`RedisEditor` stay **out of the feature barrel** (they pull in CodeMirror) — same code-split rule as `WorkflowEditor` and `DashboardView`.
-- **Not supported, on purpose:** schema migrations (no DDL, so `schemaVersion` never moves and the status bar shows the namespace instead), `EXPLAIN`-style analysis, row-grid editing, and the S3 backup schedule (`execExportSql` has no Redis dump).
+- **Not supported, on purpose:** schema migrations (no DDL, so `schemaVersion` never moves and the status bar shows the namespace instead), `EXPLAIN`-style analysis, row-grid editing, and the S3 backup schedule (the driver has no `dump`, so `db.supports(conn, 'dump')` is false).
 
 ## CONNECTION EXPORT / IMPORT
-A connection moves between instances as one JSON document (`kind: 'connection'`, versioned by `CONNECTION_EXPORT_VERSION` in `server.js`). `GET /api/connections/:id/export` builds it; `POST /api/connections/import` creates a **new** connection from it, in one `meta.transaction` — a rejected document leaves nothing behind. The import route is mounted **above** the `/api/connections/:id` guard so `import` isn't read as an id.
+A connection moves between instances as one JSON document (`kind: 'connection'`, versioned by `CONNECTION_EXPORT_VERSION` in `server/connection-transfer.js`). `GET /api/connections/:id/export` builds it; `POST /api/connections/import` creates a **new** connection from it, in one `meta.transaction` — a rejected document leaves nothing behind. The import route is mounted **above** the `/api/connections/:id` guard so `import` isn't read as an id.
 
 - **In the bundle:** connection settings (as an opaque, dialect-agnostic `connection.settings` object), folders of all four types with their tree + colors, table→folder assignments, saved queries, workflows, dashboards, backup schedule.
 - **Not in the bundle:** history/audit rows (`query_history`, `workflow_runs`, `backup_runs`, `schema_migrations`) and `connection_access` — they describe one instance, and their principals don't exist in the importing workspace. Storage destinations are workspace-scoped too: references the target workspace lacks are dropped (with a warning), never invented.
@@ -242,7 +315,7 @@ A connection moves between instances as one JSON document (`kind: 'connection'`,
 
 When you add a new per-connection resource, add it to the bundle (`buildConnectionExport` + `importConnectionDoc`) alongside the `DELETE /api/connections/:id` cascade — the two lists should stay in sync.
 
-The backup schedule can ship the same document on a schedule: `backup_schedules.include_config` (meta migration v6) makes each run upload `<uuid>.connection.json` beside the dump via `execExportConnectionConfig` → the existing `execStoreToStorage`. It's recorded **on** the destination's upload entry (`configKey`/`configSizeBytes`/`configEncrypted`/`configError`), never as its own entry, so every `uploads.find(u => u.destinationId === …)` lookup (download/delete/restore) still resolves the dump. Downloads take `?artifact=config`; deleting an upload deletes both objects; retention is left to the dump's prune pass (it sweeps the folder by date). A failed config upload does not fail the run — the dump succeeded, and failing would re-dump the database on every retry.
+The backup schedule can ship the same document on a schedule: `backup_schedules.include_config` (meta migration v6) makes each run upload `<uuid>.connection.json` beside the dump via `exportConnectionConfigToFile` → the existing `storeFile`. It's recorded **on** the destination's upload entry (`configKey`/`configSizeBytes`/`configEncrypted`/`configError`), never as its own entry, so every `uploads.find(u => u.destinationId === …)` lookup (download/delete/restore) still resolves the dump. Downloads take `?artifact=config`; deleting an upload deletes both objects; retention is left to the dump's prune pass (it sweeps the folder by date). A failed config upload does not fail the run — the dump succeeded, and failing would re-dump the database on every retry.
 
 ## META DB MIGRATIONS (app's own SQLite)
 Metadata-schema evolution lives in `server/migrations.js` as a versioned, append-only `MIGRATIONS` step array. `PRAGMA user_version` records the last applied step; on boot `migrate()` runs every pending step (oldest first), each in its own transaction, stamping `user_version` as it goes. Before the first pending step touches an existing install, the meta DB is snapshotted to `data/backups/pre-migrate-v{N}-{ts}.db` automatically — no constant to remember. To change the meta schema:
@@ -257,4 +330,3 @@ Metadata-schema evolution lives in `server/migrations.js` as a versioned, append
 ## EXTRA ACTION
 - Every time you add endpoint on server, create a structure of request response and sample url on BACKEND_DOCUMENTATION.MD
 - Update README.MD if you have any changes about features, instalation etc.
-- Update C

@@ -1,5 +1,5 @@
 /**
- * Redis support — connection pooling, command execution and keyspace browsing.
+ * Redis driver — connection pooling, command execution and keyspace browsing.
  *
  * Redis is not SQL, so nothing here parses statements. Instead every entry point
  * returns the *same* dialect-agnostic result shape the SQL engines return
@@ -10,8 +10,14 @@
  * Everything is command-driven: the console sends whatever the user typed, and
  * the keyspace browser is built from SCAN + TYPE + TTL (never KEYS — it blocks
  * the server on large keyspaces).
+ *
+ * The driver object at the bottom implements the generic contract described in
+ * server/db/index.js. It deliberately implements only the parts that mean
+ * something for a key-value store: no tables, no columns, no diagram, no dump —
+ * the generic layer answers those for the routes that ask.
  */
 
+import { randomUUID } from 'crypto'
 import Redis from 'ioredis'
 
 // One client per (connection, db index). Redis connections are cheap but
@@ -467,3 +473,59 @@ export async function redisOverview(client) {
   const version = /redis_version:([^\r\n]+)/.exec(info || '')?.[1] || null
   return { database: `db${db}`, keyCount: size, version }
 }
+
+// ---- Driver ----------------------------------------------------------------
+
+export const redisDriver = {
+  type: 'redis',
+  label: 'Redis',
+  // Schemaless — the schema designer is hidden for connections that report none.
+  dataTypes: [],
+
+  async testConnection(config) {
+    // Probe under a throwaway id so the pooled client (and its reconnect loop)
+    // is discarded with the request — the form may be testing a bad host.
+    const probeId = `test:${randomUUID()}`
+    try {
+      const client = await getRedisClient({ ...config, id: probeId })
+      // `database` comes back from the client, not the form — a redis:// URI
+      // can carry its own db selector.
+      const { keyCount, version, database } = await redisOverview(client)
+      return { ok: true, message: `Connected to Redis${version ? ` ${version}` : ''} · ${keyCount} key(s) in ${database}.` }
+    } finally {
+      closeRedisClients(probeId)
+    }
+  },
+
+  release: (conn) => closeRedisClients(conn.id),
+  closeAll: () => closeAllRedisClients(),
+
+  async ping(conn, ctx) {
+    await (await client(conn, ctx)).ping()
+    return { ok: true }
+  },
+
+  namespaces: async (conn, ctx) => redisNamespaces(await client(conn, ctx)),
+
+  runQuery: async (conn, ctx, text) => runRedisCommand(await client(conn, ctx), text),
+
+  // ---- Keyspace browsing (no SQL equivalent — see the /redis/* routes) ----
+  overview: async (conn, ctx) => redisOverview(await client(conn, ctx)),
+
+  scanKeys: async (conn, ctx, options) => scanRedisKeys(await client(conn, ctx), options),
+
+  readKey: async (conn, ctx, key, window) => readRedisKey(await client(conn, ctx), key, window),
+
+  deleteKeys: async (conn, ctx, keys) => ({ deleted: await (await client(conn, ctx)).del(...keys) }),
+
+  async setTtl(conn, ctx, key, ttlMs) {
+    const c = await client(conn, ctx)
+    const ms = Number(ttlMs)
+    const clear = !ms || ms <= 0
+    const ok = clear ? await c.persist(key) : await c.pexpire(key, Math.round(ms))
+    if (!ok) throw Object.assign(new Error(`Key "${key}" does not exist or already has no expiry.`), { status: 400 })
+    return { ok: true, ttlMs: clear ? null : Math.round(ms) }
+  },
+}
+
+const client = (conn, ctx) => getRedisClient(conn, ctx?.database)
