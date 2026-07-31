@@ -5,7 +5,7 @@ import { WorkspaceSwitcher } from '@/features/workspaces'
 import { UpdateBanner } from '@/features/system-update'
 import NavItem from '@/shared/ui/navigation/NavItem'
 import IconButton from '@/shared/ui/buttons/IconButton'
-import { BellIcon, BuildingIcon, CloudIcon, DatabaseIcon, GridIcon, Logo, LogoutIcon, MenuIcon, SettingsIcon } from '@/shared/ui/icons'
+import { BellIcon, BuildingIcon, CloudIcon, DatabaseIcon, GridIcon, Logo, LogoutIcon, MenuIcon, SettingsIcon, ShieldIcon, UsersIcon } from '@/shared/ui/icons'
 
 // Sidebar navigation model — one clickable item per section. Each section is its
 // own route; the id doubles as the path segment (`dashboard` → `/`). Integration
@@ -19,7 +19,15 @@ const NAV = [
   { id: 'settings', label: 'Setting', Icon: SettingsIcon, path: '/settings' },
 ] as const
 
-function Sidebar({ activeTab, onNavigate, user, onLogout, open, onClose }: any) {
+// An instance admin belongs to no workspace, so none of the sections above have
+// anything to show them — they get their own two, plus personal settings.
+const ADMIN_NAV = [
+  { id: 'admin', label: 'Workspaces', Icon: BuildingIcon, path: '/admin' },
+  { id: 'users', label: 'Users', Icon: UsersIcon, path: '/admin/users' },
+  { id: 'settings', label: 'Setting', Icon: SettingsIcon, path: '/settings' },
+] as const
+
+function Sidebar({ activeTab, onNavigate, user, onLogout, open, onClose, isAdmin }: any) {
   const NavLeaf = ({ id, label, Icon, path, soon }: any) => (
     <NavItem active={activeTab === id} icon={Icon} badge={soon && 'Soon'} onClick={() => onNavigate(path)}>
       {label}
@@ -47,15 +55,28 @@ function Sidebar({ activeTab, onNavigate, user, onLogout, open, onClose }: any) 
           </div>
         </div>
 
-        {/* Workspace switcher */}
+        {/* Workspace switcher — an admin has no workspaces to switch between,
+            so they get the admin badge in its place. */}
         <div className="px-3 py-3">
-          <WorkspaceSwitcher />
+          {isAdmin ? (
+            <div className="flex w-full items-center gap-2.5 rounded-soft border border-edge bg-elevated px-2.5 py-2">
+              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] bg-green text-white">
+                <ShieldIcon width={14} height={14} />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[12px] font-semibold text-ink">Administration</span>
+                <span className="block text-[10px] text-ink-faint">Instance admin</span>
+              </span>
+            </div>
+          ) : (
+            <WorkspaceSwitcher />
+          )}
         </div>
 
         {/* Nav */}
         <nav className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
           <div className="flex flex-col gap-0.5">
-            {NAV.map((entry) => (
+            {(isAdmin ? ADMIN_NAV : NAV).map((entry) => (
               <NavLeaf key={entry.id} {...entry} />
             ))}
           </div>
@@ -86,8 +107,13 @@ export default function HomeLayout() {
   const location = useLocation()
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
+  const isAdmin = user?.role === 'admin'
+
   // Active section = first path segment (`/workspace/member` → `workspace`, `/` → `dashboard`).
-  const activeTab = location.pathname.split('/').filter(Boolean)[0] || 'dashboard'
+  // The admin area is two sections under one segment, so `/admin/users` picks
+  // the second one out of the path rather than the first.
+  const segments = location.pathname.split('/').filter(Boolean)
+  const activeTab = (isAdmin && segments[0] === 'admin' ? segments[1] || 'admin' : segments[0]) || 'dashboard'
 
   const go = (path: string) => {
     setSidebarOpen(false)
@@ -101,6 +127,7 @@ export default function HomeLayout() {
         onNavigate={go}
         user={user}
         onLogout={logout}
+        isAdmin={isAdmin}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
       />

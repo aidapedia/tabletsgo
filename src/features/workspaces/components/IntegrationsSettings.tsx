@@ -8,9 +8,9 @@ export default function IntegrationsSettings() {
   const { current } = useWorkspaces()
   if (!current) return <LoadingState className="" />
 
-  const isAdmin = current.role === 'admin'
+  const isOwner = current.role === 'owner'
 
-  return isAdmin ? (
+  return isOwner ? (
     <SmtpSettings workspaceId={current.id} />
   ) : (
     <p className="text-[12px] text-ink-faint">Only workspace admins can change email settings.</p>

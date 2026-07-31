@@ -29,7 +29,7 @@ export default function NotificationSettings({ workspaceId }: { workspaceId: str
   }, [current])
 
   if (!current) return <LoadingState className="" />
-  const isAdmin = current.role === 'admin'
+  const isOwner = current.role === 'owner'
 
   const toggleMember = (userId: string) => setMemberIds((prev) => toggleId(prev, userId))
 
@@ -53,10 +53,10 @@ export default function NotificationSettings({ workspaceId }: { workspaceId: str
           <div className="text-[13px] font-semibold">Notify on backup failure</div>
           <p className="mt-0.5 text-[11px] leading-relaxed text-ink-dim">
             Email the selected members whenever a scheduled backup ends up failed (after any configured retries).
-            {!isAdmin && ' Only workspace admins can change this.'}
+            {!isOwner && ' Only workspace admins can change this.'}
           </p>
         </div>
-        <Toggle checked={enabled} onChange={setEnabled} disabled={!isAdmin} ariaLabel="Notify on backup failure" />
+        <Toggle checked={enabled} onChange={setEnabled} disabled={!isOwner} ariaLabel="Notify on backup failure" />
       </div>
 
       {enabled && (
@@ -67,7 +67,7 @@ export default function NotificationSettings({ workspaceId }: { workspaceId: str
           ) : (
             <div className="flex flex-col gap-2">
               {members.map((m) => (
-                <CheckboxRow key={m.userId} checked={memberIds.includes(m.userId)} onChange={() => toggleMember(m.userId)} disabled={!isAdmin} ariaLabel={m.email}>
+                <CheckboxRow key={m.userId} checked={memberIds.includes(m.userId)} onChange={() => toggleMember(m.userId)} disabled={!isOwner} ariaLabel={m.email}>
                   <PersonRow name={m.name} email={m.email} />
                 </CheckboxRow>
               ))}
@@ -76,7 +76,7 @@ export default function NotificationSettings({ workspaceId }: { workspaceId: str
         </div>
       )}
 
-      {isAdmin && (
+      {isOwner && (
         <Button variant="primary" size="sm" className="self-start" onClick={save} disabled={saving}>
           {saving ? 'Saving…' : 'Save'}
         </Button>

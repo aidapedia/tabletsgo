@@ -47,7 +47,12 @@ src/
 │   └── types/                    # ambient/shared TS types (globals.d.ts)
 │
 ├── features/                     # self-contained business features (each has index.ts barrel)
-│   ├── auth/                     # stores/AuthContext + api (login/setup/invite); session token
+│   ├── auth/                     # stores/AuthContext + api (login/setup/invite); session token.
+│   │                             #   `user.role` is the SYSTEM role ('admin' | 'user') — see AUTH MODEL
+│   ├── admin/                    # the instance-admin area (system role 'admin' only): AdminWorkspacesPanel
+│   │                             #   (every workspace + who owns it; create/rename/delete, grant ownership)
+│   │                             #   and AdminUsersPanel (accounts, system role, invites, password reset).
+│   │                             #   Reaches nothing inside a workspace — an admin has no membership
 │   ├── workspaces/               # org/tenant layer (multi-workspace): WorkspaceContext (current
 │   │                             #   workspace + switch), WorkspaceSwitcher, MembersPanel, TeamsPanel,
 │   │                             #   SmtpSettings, IntegrationsSettings (SMTP), NotificationSettings,
@@ -190,6 +195,11 @@ src/
 └── pages/                        # route-level composition (thin — just assemble features), grouped by area
     ├── auth/                     # unauthenticated flows: LoginPage, SetupPage, AcceptInvitePage,
     │                             #   ForgotPasswordPage, ResetPasswordPage
+    ├── admin/                    # the instance-admin area, one file per sidebar section (same rule
+    │                             #   as home/): AdminWorkspacesPage (/admin) + AdminUsersPage
+    │                             #   (/admin/users) — no tabs, the sidebar switches. Only reachable
+    │                             #   with the system role 'admin'; AppRoutes' RequireSystemAdmin /
+    │                             #   RequireWorkspaceUser send each audience to the other's home
     ├── console/                  # WorkspacePage — the per-connection DB console (route /connection/:id)
     └── home/                     # the authenticated home shell — one file per sidebar section
         ├── HomeLayout            #   sidebar + <Outlet/>; every section route renders inside it
@@ -230,13 +240,21 @@ server/
 │                         #   One scrypt-derived key per namespace (connections | storage | backup files)
 ├── meta.js               # the app's own SQLite handle, initMetaDb(), snapshotMetaSync()
 ├── migrations.js         # versioned, append-only meta-schema steps (see META DB MIGRATIONS below)
-├── auth.js               # requireAuth/requireSystemAdmin + the workspace/team/connection-access
-│                         #   rules. Logins live in sessions/, not the meta DB; `sessionMiddleware`
-│                         #   resolves the bearer token once per request so the ~100 sync guards work
+├── auth.js               # the guards — requireAuth, requireSystemAdmin (system role),
+│                         #   requireOwner/requireMember (workspace role) — plus the team /
+│                         #   connection-access rules. `sessionMiddleware` resolves the bearer
+│                         #   token once per request so the ~100 sync guards stay sync
+├── workspaces.js         # workspaces + workspace_members + teams: the admin listing, ownership
+│                         #   changes, and the one delete cascade both delete routes share
+├── users.js              # the instance user directory (`users`): system roles, invites,
+│                         #   promote/demote (promoting to admin strips every membership)
 ├── sessions/             # ★ the session store — logins + open-connection sessions (see SESSIONS)
 │   ├── index.js          #   the registry: auth tokens, connection sessions, the limit, the sweeper
-│   ├── memory.js         #   in-process backend (default)
-│   ├── redis.js          #   SESSION_REDIS_URL backend (shared across replicas)
+│   ├── db.js             #   durable backend: the meta DB's `sessions` table — the source of
+│   │                     #     truth for logins (survives a restart / a flushed cache)
+│   ├── hybrid.js         #   composes cache + source; decides which namespaces are durable
+│   ├── memory.js         #   in-process cache (default)
+│   ├── redis.js          #   SESSION_REDIS_URL cache (shared across replicas)
 │   └── limits.js         #   resolveMaxSessions: connection → workspace → instance → unlimited
 ├── mail.js               # SMTP resolution (workspace settings → env) + the transactional emails
 ├── connections.js        # connection records: rowToConnection/connectionToRow + CRUD + schemaVersion
@@ -321,7 +339,7 @@ Configurable values live in env vars, wired through `docker-compose.yml` (see `.
 - `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` / `SMTP_SECURE` — **optional** fallback SMTP for member-invite emails (per-workspace UI settings override these). Invites always return a copyable link even without SMTP.
 - `VITE_API_URL` — frontend API base, **baked at build time** via Dockerfile `ARG` (not runtime). Default `/api`.
 - `TABLETSGO_TAG` — **optional**. Published image tag `docker compose` runs (and pulls on self-update). Default `latest`; one-click self-update works best on a moving tag.
-- `SESSION_REDIS_URL` / `SESSION_REDIS_PREFIX` — **optional**. Puts sessions (logins + connection sessions) in Redis instead of in-process; required if you run more than one replica. `docker-compose.yml` sets it to its bundled `redis` service — clear it to fall back to the in-process store (a restart then signs everyone out). See SESSIONS.
+- `SESSION_REDIS_URL` / `SESSION_REDIS_PREFIX` — **optional**. Makes the session *cache* Redis instead of in-process. Logins live in the meta DB either way, so clearing it never signs anyone out; what it buys is replicas sharing one cache and — the part that actually needs it — seeing each other's connection sessions, which are cache-only. Required if you run more than one replica. `docker-compose.yml` points it at its bundled `redis` service. See SESSIONS.
 - `SESSION_TTL_MS` / `SESSION_IDLE_TTL_MS` — **optional**. Sliding login lifetime (default 30 days) and how long an idle connection session keeps its database handle open (default 15 min).
 - `MAX_SESSIONS_PER_CONNECTION` — **optional**. Instance-wide default cap on concurrent sessions per connection (0 = unlimited, the default). A workspace or an individual connection overrides it.
 - `HANDSHAKE_TIMEOUT_MS` — **optional**. How long the pre-flight connection handshake (`GET /api/connections/:id/handshake`) waits for a database before reporting a timeout. Default `8000`; it runs while the user waits on the "Connect" button, so keep it short.
@@ -330,16 +348,30 @@ Configurable values live in env vars, wired through `docker-compose.yml` (see `.
 When you add a new tunable, thread it through `server/config.js`, the Dockerfile/compose, and `.env.example`.
 
 ## AUTH MODEL
-Login/setup/accept-invite return `{ user, token }`; the token is stored in localStorage (`dbm.token`) and attached as `Authorization: Bearer` by `shared/api/request.ts`. Server-side the token lives in the **session store** (`server/sessions`), not the meta DB — so replicas share logins and the store expires them (`SESSION_TTL_MS`, sliding). The store is async while `requireAuth` is called synchronously by ~100 routes, so `sessionMiddleware` resolves the token once per request onto `req.authUser`; **never make `requireAuth` async** — resolve in middleware and keep the guards sync. Workspace/member and per-connection routes require it (server `requireAuth` / the `/api/connections/:id` membership middleware). Roles are **per workspace** (`admin` | `member`) via `workspace_members`. Connections carry a `workspace_id` column and are filtered by the caller's current workspace.
+Login/setup/accept-invite return `{ user, token }`; the token is stored in localStorage (`dbm.token`) and attached as `Authorization: Bearer` by `shared/api/request.ts`. Server-side the token's source of truth is the meta DB's `sessions` table, read through a cache (see SESSIONS). The store is async while `requireAuth` is called synchronously by ~100 routes, so `sessionMiddleware` resolves the token once per request onto `req.authUser`; **never make `requireAuth` async** — resolve in middleware and keep the guards sync.
+
+**Roles are two independent tiers. Don't collapse them.**
+
+| Tier | Column | Values | Scope |
+| --- | --- | --- | --- |
+| System | `users.role` (surfaced as `user.role`) | `admin` \| `user` | The instance. An `admin` manages workspaces and accounts through `/api/admin/*` and **holds no workspace membership at all** — `memberRole()` returns null for them, so every workspace-scoped guard denies them. Instance administration deliberately carries no data access. |
+| Workspace | `workspace_members.role` | `owner` \| `member` | One workspace. `owner` manages it (members, teams, settings, connections, storage destinations); a workspace may have **any number of owners but never zero**. `member` uses the connections they've been granted: full database access (query, row edits, workflows, dashboards, schema changes) but no create/edit/delete of the connection *record*. |
+
+The guards live in `server/auth.js`: `requireSystemAdmin` (system), `requireOwner`/`requireMember` (workspace), plus `requireConnectionOwner` in `server.js` for the routes that change a connection record. **A route should use a guard, not compare role strings** — the one place a literal is still read is `memberRole`, which normalizes the pre-v8 spelling `admin` → `owner`.
+
+Two invariants the routes enforce, both of which are easy to break from a new code path: an instance admin can never be added to a workspace (invite, role change, and workspace creation all refuse), and a workspace can never lose its last owner (demote, remove, delete-user and promote-to-admin all refuse, the last two with `409` + the affected workspaces).
+
+Connections carry a `workspace_id` column and are filtered by the caller's current workspace.
 
 ## SESSIONS
-Two things share one pluggable store (`server/sessions`): **logins** (bearer tokens)
-and **connection sessions**. The backend is in-process by default and Redis when
-`SESSION_REDIS_URL` is set — `docker-compose.yml` ships a `redis` service and points
-at it, so the default deployment keeps logins across restarts. Both backends
-implement the same tiny contract (`put/get/touch/del/list/count/clear`), so nothing
-above them knows which is running; adding a backend is one file plus one line in
-`sessions/index.js`.
+Two things share one store (`server/sessions`) but are **stored differently, on purpose**:
+
+- **Logins** (bearer tokens) are *durable*: the meta DB's `sessions` table is the source of truth (`sessions/db.js`), read through a cache (`sessions/hybrid.js`). A login survives a restart, a flushed cache, and a Redis outage — a cache failure degrades to a slower DB read and warns once; it never signs anyone out.
+- **Connection sessions** are *cache-only*: one describes a live driver handle in one process, so persisting it would let a restart resurrect sessions whose sockets are gone, and the limit count phantoms. Losing them on restart is correct.
+
+The cache is in-process by default and Redis when `SESSION_REDIS_URL` is set — `docker-compose.yml` ships a `redis` service and points at it. With more than one replica Redis is what lets them see each other's *connection* sessions (logins are already shared through the DB). Every backend implements the same tiny contract (`put/get/touch/del/list/count/clear`), so nothing above them knows which is running; adding one is a file plus a line in `sessions/index.js`.
+
+Rules that keep the durable layer honest: the DB is written before the cache, `list`/`count` always read the DB (the cache is a partial view by design), a cached copy is capped at 60s so an out-of-band revocation takes effect, and the sliding expiry only rewrites the DB once ~10% of the TTL has elapsed — otherwise every authenticated request would be a write. Expired rows are ignored on read and reclaimed by the minutely sweeper (SQLite has no TTL).
 
 **A session is one open connection to a database — not a browser tab.** It maps to
 the driver handle: the Postgres pool for a database, the ioredis client for a db

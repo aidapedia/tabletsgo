@@ -2,11 +2,18 @@
  * Sessions — who is logged in, and what the app currently holds open against a
  * database.
  *
- * Two kinds share one pluggable store (in-process by default, Redis when
- * SESSION_REDIS_URL is set — see memory.js / redis.js):
+ * Two kinds share one pluggable store, but they are stored differently because
+ * they mean different things:
  *
  *   auth        one record per bearer token. Sliding TTL, refreshed on use.
- *   conn:<id>   one record per *open driver handle* for a connection: the
+ *               *Durable*: the meta DB is the source of truth (db.js), with
+ *               memory — or Redis, when SESSION_REDIS_URL is set — as a cache
+ *               in front (hybrid.js). A login survives a restart, a flushed
+ *               cache, and a Redis outage.
+ *   conn:<id>   *cache-only*, because it describes a live socket in one
+ *               process: persisting it would let a restart resurrect sessions
+ *               whose handles are gone. One record per *open driver handle*
+ *               for a connection: the
  *               Postgres pool for a database, the ioredis client for a db
  *               index, the SQLite file handle. This is what "max sessions"
  *               counts — sessions track real connections to the database, not
@@ -25,6 +32,8 @@ import { randomUUID } from 'crypto'
 import { SESSION_IDLE_TTL_MS, SESSION_REDIS_URL, SESSION_TTL_MS } from '../config.js'
 import { memoryStore } from './memory.js'
 import { redisStore } from './redis.js'
+import { dbStore } from './db.js'
+import { hybridStore } from './hybrid.js'
 import { resolveMaxSessions } from './limits.js'
 
 export { resolveMaxSessions, workspaceMaxSessions } from './limits.js'
@@ -33,9 +42,14 @@ export { resolveMaxSessions, workspaceMaxSessions } from './limits.js'
 // replica's sessions from another's.
 export const INSTANCE_ID = randomUUID().slice(0, 8)
 
-export const store = SESSION_REDIS_URL ? redisStore() : memoryStore()
-
 const AUTH_NS = 'auth'
+
+// The cache layer: Redis when configured (so replicas share one), otherwise
+// in-process. Either way the meta DB underneath it holds the real records, so
+// swapping or losing the cache never signs anyone out.
+export const cache = SESSION_REDIS_URL ? redisStore() : memoryStore()
+
+export const store = hybridStore({ cache, source: dbStore(), durable: [AUTH_NS] })
 const connNs = (connectionId) => `conn:${connectionId}`
 
 // Raised when a connection is already at its session limit. 429 rather than 403:
@@ -68,12 +82,12 @@ export async function readAuthSession(token) {
 
 export const destroyAuthSession = (token) => (token ? store.del(AUTH_NS, token) : Promise.resolve(false))
 
-// Sign a user out everywhere (password reset, deactivation).
+// Sign a user out everywhere (password reset, role change, deactivation).
+// Goes through the indexed `user_id` column rather than scanning every session.
 export async function destroyAuthSessionsForUser(userId) {
-  const all = await store.list(AUTH_NS)
-  const mine = all.filter((e) => e.value?.userId === userId)
-  await Promise.all(mine.map((e) => store.del(AUTH_NS, e.id)))
-  return mine.length
+  const ids = await store.idsForUser(userId, AUTH_NS)
+  await Promise.all(ids.map((id) => store.del(AUTH_NS, id)))
+  return ids.length
 }
 
 // ---- Connection sessions --------------------------------------------------
@@ -234,6 +248,9 @@ export async function sweepConnectionSessions(now = Date.now()) {
     await store.del(h.ns, h.id).catch(() => {})
     await releaseLocal(h.conn.id, h.id)
   }
+  // Expired login rows are ignored on read but still occupy the table — the
+  // same pass reclaims them, since SQLite has no TTL of its own.
+  await store.sweepExpired().catch(() => {})
   return dead.length
 }
 

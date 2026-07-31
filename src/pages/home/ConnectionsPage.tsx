@@ -6,6 +6,7 @@ import {
   StatusBadge, connectionUrl, TYPE_LABEL, EnvBadge,
 } from '@/features/connections'
 import type { ConnectionExport } from '@/features/connections'
+import { useWorkspaces } from '@/features/workspaces'
 import { pingConnection } from '@/shared/api/database'
 import { listBackupRuns } from '@/features/backup'
 import { relativeTime } from '@/shared/lib/recents'
@@ -71,6 +72,9 @@ export default function ConnectionsPage() {
   // database answered; a failure opens ConnectHandshakeDialog with the cause.
   const { connect, connectingId, failure, dismiss, openAnyway } = useConnectHandshake()
   const { connections, loading, addConnection, updateConnection, removeConnection } = useConnections()
+  // Owners define connections; members open the ones they've been granted.
+  const { current } = useWorkspaces()
+  const isOwner = current?.role === 'owner'
 
   const [detailConn, setDetailConn] = useState<any>(null) // open connection detail view
   const [query, setQuery] = useState('')
@@ -310,18 +314,25 @@ export default function ConnectionsPage() {
                   <MenuItem onClick={() => { close(); setDetailConn(c) }}>
                     <InfoIcon width={14} height={14} /> Details
                   </MenuItem>
-                  <MenuItem onClick={() => { close(); setFormConn({ mode: 'edit', conn: c }) }}>
-                    <EditIcon width={14} height={14} /> Edit
-                  </MenuItem>
+                  {/* Defining a connection is the owner's job; a member uses it. */}
+                  {isOwner && (
+                    <MenuItem onClick={() => { close(); setFormConn({ mode: 'edit', conn: c }) }}>
+                      <EditIcon width={14} height={14} /> Edit
+                    </MenuItem>
+                  )}
                   <MenuItem onClick={() => { close(); copyUrl(c) }}>
                     <CopyIcon width={14} height={14} /> Copy as URL
                   </MenuItem>
-                  <MenuItem onClick={() => { close(); setExporting(c) }}>
-                    <DownloadIcon width={14} height={14} /> Export as JSON
-                  </MenuItem>
-                  <MenuItem danger onClick={() => { close(); setDeleting(c) }}>
-                    <TrashIcon width={14} height={14} /> Delete
-                  </MenuItem>
+                  {isOwner && (
+                    <MenuItem onClick={() => { close(); setExporting(c) }}>
+                      <DownloadIcon width={14} height={14} /> Export as JSON
+                    </MenuItem>
+                  )}
+                  {isOwner && (
+                    <MenuItem danger onClick={() => { close(); setDeleting(c) }}>
+                      <TrashIcon width={14} height={14} /> Delete
+                    </MenuItem>
+                  )}
                 </div>
               )}
             </Popover>
@@ -329,7 +340,7 @@ export default function ConnectionsPage() {
         ),
       },
     ],
-    [statuses, backups, connectingId],
+    [statuses, backups, connectingId, isOwner],
   )
 
   // Client-side sort + paging; changing a filter sends the table back to page 1.
@@ -406,27 +417,29 @@ export default function ConnectionsPage() {
       <div className="w-full">
         <PageHeader
           title="Connections"
-          desc="Manage the databases connected to this workspace."
+          desc={isOwner ? 'Manage the databases connected to this workspace.' : 'The databases you can open in this workspace.'}
           action={
-            <div className="flex items-center gap-2">
-              <input
-                ref={importFileRef}
-                type="file"
-                accept=".json,application/json"
-                className="hidden"
-                onChange={(e) => {
-                  const f = e.target.files?.[0]
-                  if (f) pickImportFile(f)
-                  e.target.value = ''
-                }}
-              />
-              <Button size="lg" icon={UploadIcon} onClick={() => importFileRef.current?.click()}>
-                Import
-              </Button>
-              <Button variant="primary" size="lg" icon={PlusIcon} onClick={() => setPicker(true)}>
-                New connection
-              </Button>
-            </div>
+            isOwner && (
+              <div className="flex items-center gap-2">
+                <input
+                  ref={importFileRef}
+                  type="file"
+                  accept=".json,application/json"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0]
+                    if (f) pickImportFile(f)
+                    e.target.value = ''
+                  }}
+                />
+                <Button size="lg" icon={UploadIcon} onClick={() => importFileRef.current?.click()}>
+                  Import
+                </Button>
+                <Button variant="primary" size="lg" icon={PlusIcon} onClick={() => setPicker(true)}>
+                  New connection
+                </Button>
+              </div>
+            )
           }
         />
 

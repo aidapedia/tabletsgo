@@ -9,7 +9,7 @@ export default function WorkspaceSettingsPage() {
   const navigate = useNavigate()
   const { sub } = useParams()
   const { current } = useWorkspaces()
-  const isAdmin = current?.role === 'admin'
+  const isOwner = current?.role === 'owner'
 
   const tabs = [
     {
@@ -29,7 +29,7 @@ export default function WorkspaceSettingsPage() {
         <div>
           <SubHead title="Members" desc="Invite teammates and manage who can access this workspace." />
           {current ? (
-            <MembersPanel workspaceId={current.id} canManage={isAdmin} />
+            <MembersPanel workspaceId={current.id} canManage={isOwner} />
           ) : (
             <LoadingState className="" />
           )}
@@ -43,7 +43,7 @@ export default function WorkspaceSettingsPage() {
         <div>
           <SubHead title="Teams" desc="Group members into teams to assign connection access and notifications together." />
           {current ? (
-            <TeamsPanel workspaceId={current.id} canManage={isAdmin} />
+            <TeamsPanel workspaceId={current.id} canManage={isOwner} />
           ) : (
             <LoadingState className="" />
           )}

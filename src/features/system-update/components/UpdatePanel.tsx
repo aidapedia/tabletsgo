@@ -4,7 +4,7 @@ import Badge from '@/shared/ui/Badge'
 import Toggle from '@/shared/ui/form/Toggle'
 import { RefreshIcon } from '@/shared/ui/icons'
 import { MarkdownText } from '@/features/dashboard'
-import { useWorkspaces } from '@/features/workspaces'
+import { useAuth } from '@/features/auth'
 import { useUpdate } from '../stores/UpdateContext'
 import UpdateWizard from './UpdateWizard'
 
@@ -12,8 +12,11 @@ import UpdateWizard from './UpdateWizard'
 // entry point into the guided update wizard.
 export default function UpdatePanel() {
   const { info, identity, loading, lastChecked, check, autoCheck, setAutoCheck } = useUpdate()
-  const { current } = useWorkspaces()
-  const isAdmin = current?.role === 'admin'
+  // Updating is instance-wide, so it's the *system* admin's call — not a
+  // workspace owner's. (An admin holds no workspace, so the old workspace-role
+  // check would have locked the only person allowed to do it out of it.)
+  const { user } = useAuth()
+  const isAdmin = user?.role === 'admin'
   const [wizardOpen, setWizardOpen] = useState(false)
 
   const upToDate = info && !info.updateAvailable && !info.unreachable
