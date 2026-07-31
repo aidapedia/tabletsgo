@@ -49,6 +49,8 @@ export function rowToConnection(row) {
     folder: row.folder || '',
     tags,
     schemaVersion: row.schema_version || 1,
+    // 0 = inherit the workspace default (see server/sessions/limits.js).
+    maxSessions: row.max_sessions || 0,
     ...credentials,
     ownerId: row.owner_id || undefined,
     ownerName,
@@ -60,7 +62,7 @@ export function rowToConnection(row) {
 // Owner + resolved owner display fields are peeled off so they never end up in
 // the encrypted credentials blob.
 export function connectionToRow(conn) {
-  const { id, type, name, workspaceId, environment, folder, tags, schemaVersion, ownerId, ownerName, ownerEmail, ...credentials } = conn
+  const { id, type, name, workspaceId, environment, folder, tags, schemaVersion, maxSessions, ownerId, ownerName, ownerEmail, ...credentials } = conn
   return {
     id,
     type: type || null,
@@ -71,6 +73,7 @@ export function connectionToRow(conn) {
     tags: JSON.stringify(tags || []),
     credentials: encryptSecret(JSON.stringify(credentials)),
     schema_version: schemaVersion || 1,
+    max_sessions: Math.max(0, parseInt(maxSessions, 10) || 0),
     owner_id: ownerId || null,
   }
 }
@@ -87,10 +90,10 @@ export const saveConnection = (conn) => {
       // `data` is a placeholder — installs predating this migration created it
       // as `data TEXT NOT NULL`, so every write must still supply *something*.
       `INSERT OR REPLACE INTO connections
-       (id, type, name, workspace_id, environment, folder, tags, credentials, schema_version, owner_id, data, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', COALESCE((SELECT created_at FROM connections WHERE id = ?), ?), ?)`
+       (id, type, name, workspace_id, environment, folder, tags, credentials, schema_version, max_sessions, owner_id, data, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', COALESCE((SELECT created_at FROM connections WHERE id = ?), ?), ?)`
     )
-    .run(row.id, row.type, row.name, row.workspace_id, row.environment, row.folder, row.tags, row.credentials, row.schema_version, row.owner_id, row.id, now, now)
+    .run(row.id, row.type, row.name, row.workspace_id, row.environment, row.folder, row.tags, row.credentials, row.schema_version, row.max_sessions, row.owner_id, row.id, now, now)
 }
 
 export const deleteConnectionRow = (id) => meta.prepare('DELETE FROM connections WHERE id = ?').run(id)

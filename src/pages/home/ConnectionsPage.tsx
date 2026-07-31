@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
 import {
   useConnections, ConnectionForm, ConnectionDetail, DbTypePickerModal,
   ConnectionExportModal, ConnectionImportModal, readConnectionExportFile,
+  ConnectHandshakeDialog, useConnectHandshake,
   StatusBadge, connectionUrl, TYPE_LABEL, EnvBadge,
 } from '@/features/connections'
 import type { ConnectionExport } from '@/features/connections'
@@ -64,8 +64,10 @@ function StatCard({ icon: Icon, label, value, sub, tone = 'default' }: any) {
 // ---- Connections section: list + detail + create/edit forms (thin composition;
 // the detail view and db-type picker live in features/connections) ----
 export default function ConnectionsPage() {
-  const navigate = useNavigate()
   const toast = useToast()
+  // "Connect" handshakes first and only routes into the console once the
+  // database answered; a failure opens ConnectHandshakeDialog with the cause.
+  const { connect, connectingId, failure, dismiss, openAnyway } = useConnectHandshake()
   const { connections, loading, addConnection, updateConnection, removeConnection } = useConnections()
 
   const [detailConn, setDetailConn] = useState<any>(null) // open connection detail view
@@ -193,7 +195,7 @@ export default function ConnectionsPage() {
     }
   }
 
-  const openConsole = (conn) => navigate(`/connection/${conn.id}`)
+  const openConsole = (conn) => connect(conn)
   const subtitle = (c) => (c.type === 'sqlite' ? c.filepath : c.host)
   const dbName = (c) => (c.type === 'sqlite' ? (c.filepath || '').split('/').pop() : c.database)
   const hasFilters =
@@ -211,10 +213,24 @@ export default function ConnectionsPage() {
     )
   }
 
-  // Export/import dialogs live outside the list ↔ detail switch below, so both
-  // views can open them.
+  // Export/import + handshake dialogs live outside the list ↔ detail switch
+  // below, so both views can open them.
   const modals = (
     <>
+      {failure && (
+        <ConnectHandshakeDialog
+          conn={failure.conn}
+          result={failure.result}
+          busy={connectingId === failure.conn.id}
+          onRetry={() => connect(failure.conn)}
+          onEdit={() => {
+            dismiss()
+            setFormConn({ mode: 'edit', conn: failure.conn })
+          }}
+          onOpenAnyway={() => openAnyway(failure.conn)}
+          onClose={dismiss}
+        />
+      )}
       {exporting && <ConnectionExportModal conn={exporting} onClose={() => setExporting(null)} />}
       {importDoc && (
         <ConnectionImportModal
@@ -236,6 +252,7 @@ export default function ConnectionsPage() {
           conn={detailConn}
           onBack={() => setDetailConn(null)}
           onOpen={openConsole}
+          connecting={connectingId === detailConn.id}
           onEdit={(c, tab) => setFormConn({ mode: 'edit', conn: c, tab })}
           onDelete={(c) => setDeleting(c)}
           onExport={(c) => setExporting(c)}
@@ -394,8 +411,15 @@ export default function ConnectionsPage() {
                     <Button variant="ghost" size="sm" className="flex-1" onClick={() => setDetailConn(conn)}>
                       Details
                     </Button>
-                    <Button variant="primary" size="sm" className="flex-1" icon={ExternalLinkIcon} onClick={() => openConsole(conn)}>
-                      Connect
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      className="flex-1"
+                      icon={ExternalLinkIcon}
+                      disabled={connectingId === conn.id}
+                      onClick={() => openConsole(conn)}
+                    >
+                      {connectingId === conn.id ? 'Connecting…' : 'Connect'}
                     </Button>
                     <Popover
                       align="right"

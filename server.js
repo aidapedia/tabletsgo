@@ -37,6 +37,7 @@ import {
   BACKUP_TMP_DIR,
   DIST_DIR,
   GIT_SHA,
+  MAX_SESSIONS_PER_CONNECTION,
   META_DB_PATH,
   PORT,
   SCHEDULER_ENABLED,
@@ -56,10 +57,22 @@ import {
   publicUser,
   requireAuth,
   requireSystemAdmin,
+  sessionMiddleware,
   setConnectionAccess,
   userCanAccessConnection,
   workspaceForUser,
 } from './server/auth.js'
+import {
+  connectionSessionStats,
+  destroyAuthSessionsForUser,
+  endAllConnectionSessions,
+  endConnectionSession,
+  listConnectionSessions,
+  resolveMaxSessions,
+  sweepConnectionSessions,
+  closeSessionStore,
+  store as sessionStore,
+} from './server/sessions/index.js'
 import { sendInviteEmail, sendMail, sendResetEmail, smtpConfig, smtpForUser } from './server/mail.js'
 import {
   bumpSchemaVersion,
@@ -118,6 +131,9 @@ import {
 const app = express()
 app.use(cors())
 app.use(express.json({ limit: '10mb' }))
+// Resolve the bearer token once per request (the session store is async, the
+// ~100 `requireAuth` call sites are not — see server/auth.js).
+app.use(sessionMiddleware)
 
 // Boot readiness — flipped true once the meta DB's migrations are done.
 let bootReady = false
@@ -125,8 +141,32 @@ initMetaDb()
 bootReady = true
 
 // The database/schema a request is aimed at. Every db layer call takes one, and
-// each engine reads only the parts that mean something to it.
-const queryCtx = (req) => ({ database: req.query.database, schema: req.query.schema })
+// each engine reads only the parts that mean something to it. `actor` is who to
+// credit on the connection session the call opens/refreshes (drivers ignore it).
+const queryCtx = (req) => {
+  const user = authUser(req)
+  return {
+    database: req.query.database,
+    schema: req.query.schema,
+    actor: user ? { id: user.id, name: user.name || user.username } : null,
+  }
+}
+
+// Same, for routes that carry the target in the body rather than the query.
+const bodyCtx = (req) => {
+  const user = authUser(req)
+  return {
+    database: req.body?.database,
+    schema: req.body?.schema,
+    actor: user ? { id: user.id, name: user.name || user.username } : null,
+  }
+}
+
+// What a login session records about where it was created, for the session list.
+const sessionContext = (req) => ({
+  ip: req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket?.remoteAddress || null,
+  userAgent: req.headers['user-agent'] || null,
+})
 
 // Route error → response. `status` is set by the db layer for "this engine
 // can't do that" and by the import/restore paths for bad input.
@@ -137,19 +177,19 @@ const fail = (res, error, fallbackStatus = 500) => res.status(error.status || fa
 // ============================================================================
 
 // Authenticate a user (by email, stored in `username`). Returns a session token.
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', async (req, res) => {
   const { username, password } = req.body || {}
   const row = meta.prepare('SELECT id, username, name, role, status, password_hash FROM users WHERE username = ?').get(username)
   if (!row || row.status === 'pending' || row.password_hash !== sha256(password)) {
     return res.status(401).json({ error: 'Invalid email or password' })
   }
-  res.json({ user: publicUser(row), token: createSession(row.id) })
+  res.json({ user: publicUser(row), token: await createSession(row.id, sessionContext(req)) })
 })
 
 // Log out — invalidate the current session token.
-app.post('/api/auth/logout', (req, res) => {
+app.post('/api/auth/logout', async (req, res) => {
   const token = bearerToken(req)
-  if (token) deleteSession(token)
+  if (token) await deleteSession(token)
   res.json({ ok: true })
 })
 
@@ -186,7 +226,7 @@ app.get('/api/auth/reset/:token', (req, res) => {
 })
 
 // Set a new password, invalidate existing sessions, and log the user in.
-app.post('/api/auth/reset/:token', (req, res) => {
+app.post('/api/auth/reset/:token', async (req, res) => {
   const u = meta.prepare('SELECT id, reset_expires FROM users WHERE reset_token = ?').get(req.params.token)
   if (!u || (u.reset_expires && u.reset_expires < Date.now())) {
     return res.status(404).json({ error: 'This reset link is invalid or has expired.' })
@@ -196,9 +236,9 @@ app.post('/api/auth/reset/:token', (req, res) => {
   meta
     .prepare("UPDATE users SET password_hash = ?, status = 'active', reset_token = NULL, reset_expires = NULL WHERE id = ?")
     .run(sha256(password), u.id)
-  meta.prepare('DELETE FROM sessions WHERE user_id = ?').run(u.id) // sign out other sessions
+  await destroyAuthSessionsForUser(u.id) // sign out everywhere else
   const user = meta.prepare('SELECT id, username, name, role FROM users WHERE id = ?').get(u.id)
-  res.json({ user: publicUser(user), token: createSession(u.id) })
+  res.json({ user: publicUser(user), token: await createSession(u.id, sessionContext(req)) })
 })
 
 // First-run status — true when no users exist yet (setup wizard needed).
@@ -208,7 +248,7 @@ app.get('/api/setup', (req, res) => {
 
 // First-run setup — creates the admin account + first workspace. Only allowed
 // while no users exist, so it can't be used to hijack an initialized instance.
-app.post('/api/setup', (req, res) => {
+app.post('/api/setup', async (req, res) => {
   if (meta.prepare('SELECT 1 FROM users LIMIT 1').get()) {
     return res.status(403).json({ error: 'Setup has already been completed.' })
   }
@@ -227,7 +267,7 @@ app.post('/api/setup', (req, res) => {
     .prepare('INSERT INTO workspace_members (id, workspace_id, user_id, role, created_at) VALUES (?, ?, ?, ?, ?)')
     .run(randomUUID(), wid, uid, 'admin', now)
   const user = meta.prepare('SELECT id, username, name, role FROM users WHERE id = ?').get(uid)
-  res.json({ user: publicUser(user), token: createSession(uid) })
+  res.json({ user: publicUser(user), token: await createSession(uid, sessionContext(req)) })
 })
 
 // Validate an invite token → who it's for and which workspace.
@@ -243,7 +283,7 @@ app.get('/api/invite/:token', (req, res) => {
 })
 
 // Accept an invite — set name + password, activate the account, log in.
-app.post('/api/invite/:token/accept', (req, res) => {
+app.post('/api/invite/:token/accept', async (req, res) => {
   const u = meta
     .prepare('SELECT id, username, name, token_expires FROM users WHERE invite_token = ?')
     .get(req.params.token)
@@ -256,7 +296,7 @@ app.post('/api/invite/:token/accept', (req, res) => {
     .prepare("UPDATE users SET password_hash = ?, name = ?, status = 'active', invite_token = NULL, invite_workspace = NULL, token_expires = NULL WHERE id = ?")
     .run(sha256(password), name?.trim() || u.name || u.username, u.id)
   const user = meta.prepare('SELECT id, username, name, role FROM users WHERE id = ?').get(u.id)
-  res.json({ user: publicUser(user), token: createSession(u.id) })
+  res.json({ user: publicUser(user), token: await createSession(u.id, sessionContext(req)) })
 })
 
 // ============================================================================
@@ -314,6 +354,11 @@ app.get('/api/workspaces/:id', (req, res) => {
   // Notification preferences (e.g. who to email on backup failure) — visible
   // to every member, toggleable by admins only (enforced in the PUT route).
   ws.notifications = settings.notifications || {}
+  // Session policy: the workspace-wide default cap on concurrent sessions per
+  // connection (0 = unlimited). `instanceDefault` is the env fallback that
+  // applies when the workspace leaves it at 0, so the form can show what's
+  // actually in effect.
+  ws.sessions = { maxPerConnection: settings.sessions?.maxPerConnection || 0, instanceDefault: MAX_SESSIONS_PER_CONNECTION }
   // Admins also get the (password-masked) SMTP config for the settings form.
   if (ws.role === 'admin') {
     const smtp = settings.smtp || {}
@@ -341,9 +386,9 @@ app.put('/api/workspaces/:id', (req, res) => {
   if (memberRole(req.params.id, user.id) !== 'admin') return res.status(403).json({ error: 'Admin only' })
   const row = meta.prepare('SELECT settings FROM workspaces WHERE id = ?').get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Workspace not found' })
-  const { name, smtp, experiments, notifications } = req.body || {}
+  const { name, smtp, experiments, notifications, sessions } = req.body || {}
   if (name?.trim()) meta.prepare('UPDATE workspaces SET name = ? WHERE id = ?').run(name.trim(), req.params.id)
-  if (smtp || experiments || notifications) {
+  if (smtp || experiments || notifications || sessions) {
     const settings = safeJson(row.settings)
     if (smtp) {
       const prev = settings.smtp || {}
@@ -358,6 +403,10 @@ app.put('/api/workspaces/:id', (req, res) => {
       }
     }
     if (experiments) settings.experiments = { ...(settings.experiments || {}), ...experiments }
+    if (sessions) {
+      // 0 = unlimited; negatives and junk clamp to it.
+      settings.sessions = { maxPerConnection: Math.max(0, parseInt(sessions.maxPerConnection, 10) || 0) }
+    }
     if (notifications) {
       settings.notifications = { ...(settings.notifications || {}) }
       if (notifications.backupFailure) {
@@ -759,26 +808,30 @@ app.use('/api/connections/:id', (req, res, next) => {
 })
 
 // Update connection
-app.put('/api/connections/:id', (req, res) => {
+app.put('/api/connections/:id', async (req, res) => {
   const existing = getConnection(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Connection not found' })
   const updated = { ...existing, ...req.body, id: req.params.id }
   saveConnection(updated)
 
   // Drop any cached pool/handle so the next query reconnects with the new
-  // config (otherwise edits to host/credentials/database are ignored).
+  // config (otherwise edits to host/credentials/database are ignored), and end
+  // the sessions that were using those handles — they describe connections that
+  // no longer exist.
   db.releaseConnection(existing)
   db.releaseConnection(updated)
+  await endAllConnectionSessions(req.params.id)
 
   res.json(updated)
 })
 
 // Delete connection
-app.delete('/api/connections/:id', (req, res) => {
+app.delete('/api/connections/:id', async (req, res) => {
   const conn = getConnection(req.params.id)
   if (!conn) return res.status(404).json({ error: 'Connection not found' })
 
   db.releaseConnection(conn)
+  await endAllConnectionSessions(req.params.id)
 
   deleteConnectionRow(req.params.id)
   meta.prepare('DELETE FROM saved_queries WHERE connection_id = ?').run(req.params.id)
@@ -1697,7 +1750,6 @@ app.post('/api/connections/:id/schema/rollback', async (req, res) => {
   if (!Number.isInteger(toVersion) || toVersion < 0) {
     return res.status(400).json({ error: 'A valid target version is required' })
   }
-  const { database, schema } = req.body || {}
 
   // Still-active migrations newer than the target, newest first — these get undone.
   const rows = meta
@@ -1723,7 +1775,7 @@ app.post('/api/connections/:id/schema/rollback', async (req, res) => {
     for (const r of rows) {
       const downs = (safeJson(r.rollback_sql) || []).filter(Boolean).reverse()
       for (const sql of downs) {
-        await db.runQueryOrThrow(conn, { database, schema }, sql)
+        await db.runQueryOrThrow(conn, bodyCtx(req), sql)
       }
     }
   } catch (error) {
@@ -1775,6 +1827,53 @@ app.get('/api/connections/:id/ping', async (req, res) => {
     res.json(await db.ping(conn, queryCtx(req)))
   } catch (error) {
     res.json({ ok: false, error: error.message })
+  }
+})
+
+// Pre-flight handshake the console runs before it opens a connection. Same
+// probe as /ping, but a failure explains itself: { ok:false, reason, cause,
+// hint } — see server/db/diagnose.js. Never throws, so the UI always has
+// something to show.
+app.get('/api/connections/:id/handshake', async (req, res) => {
+  const conn = connOr404(req, res)
+  if (!conn) return
+  res.json(await db.handshake(conn, queryCtx(req)))
+})
+
+// ---- Connection sessions ----
+// A session is one open driver handle (a Postgres pool for a database, an
+// ioredis client for a db index, a SQLite file handle) — what "max sessions"
+// counts. Everyone browsing the same target shares one session and appears as
+// a participant on it. See server/sessions.
+
+// Who's currently connected, and against what cap.
+app.get('/api/connections/:id/sessions', async (req, res) => {
+  const conn = connOr404(req, res)
+  if (!conn) return
+  try {
+    res.json(await connectionSessionStats(conn))
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+// Leave a session (or, for a workspace admin, close it for everyone). Leaving
+// only drops the caller's participation; the handle is released once the last
+// participant is gone.
+app.delete('/api/connections/:id/sessions/:sessionId', async (req, res) => {
+  const conn = connOr404(req, res)
+  if (!conn) return
+  const user = authUser(req)
+  const force = ['1', 'true', 'yes'].includes(String(req.query.force || '').toLowerCase())
+  if (force && conn.workspaceId && memberRole(conn.workspaceId, user.id) !== 'admin') {
+    return res.status(403).json({ error: 'Admin only' })
+  }
+  try {
+    const actor = force ? null : { id: user.id, name: user.name || user.username }
+    const ended = await endConnectionSession(conn.id, req.params.sessionId, actor)
+    res.json({ ok: ended, ...(await connectionSessionStats(conn)) })
+  } catch (error) {
+    fail(res, error)
   }
 })
 
@@ -1876,12 +1975,12 @@ app.get('/api/connections/:id/diagram', async (req, res) => {
 app.post('/api/connections/:id/insert', async (req, res) => {
   const conn = connOr404(req, res)
   if (!conn) return
-  const { table, values, database, schema } = req.body
+  const { table, values } = req.body
   if (!table || Object.keys(values || {}).length === 0) {
     return res.status(400).json({ error: 'A table and at least one value are required' })
   }
   try {
-    res.json(await db.insertRow(conn, { database, schema }, { table, values }))
+    res.json(await db.insertRow(conn, bodyCtx(req), { table, values }))
   } catch (error) {
     res.status(400).json({ error: error.message })
   }
@@ -1892,7 +1991,7 @@ app.post('/api/connections/:id/insert', async (req, res) => {
 app.post('/api/connections/:id/analyze', async (req, res) => {
   const conn = connOr404(req, res)
   if (!conn) return
-  const { sql, database, schema } = req.body
+  const { sql } = req.body
   if (!sql || !sql.trim()) return res.status(400).json({ error: 'SQL query required' })
 
   try {
@@ -1903,7 +2002,7 @@ app.post('/api/connections/:id/analyze', async (req, res) => {
     if (statements.length !== 1) throw new Error('Only a single statement can be analyzed.')
     // Drop any EXPLAIN prefix the user already typed so we don't explain an EXPLAIN.
     const statement = statements[0].replace(/^explain\s+(query\s+plan\s+|analyze\s+|\([^)]*\)\s*)?/i, '')
-    res.json(await db.analyze(conn, { database, schema }, { sql: statement, cls: classifyStatement(statement) }))
+    res.json(await db.analyze(conn, bodyCtx(req), { sql: statement, cls: classifyStatement(statement) }))
   } catch (error) {
     res.status(400).json({ error: error.message })
   }
@@ -1913,10 +2012,10 @@ app.post('/api/connections/:id/analyze', async (req, res) => {
 app.post('/api/connections/:id/query', async (req, res) => {
   const conn = connOr404(req, res)
   if (!conn) return
-  const { sql, database, schema } = req.body
+  const { sql } = req.body
   if (!sql || !sql.trim()) return res.status(400).json({ error: 'SQL query required' })
   try {
-    res.json(await db.runQuery(conn, { database, schema }, sql))
+    res.json(await db.runQuery(conn, bodyCtx(req), sql))
   } catch (error) {
     fail(res, error)
   }
@@ -1930,8 +2029,11 @@ app.post('/api/connections/:id/query', async (req, res) => {
 // instead. Everything else (running commands, workflows, dashboards) goes
 // through the shared /query route.
 
-// Guard: these routes only make sense on a Redis connection.
-const requireRedis = (req, res) => {
+// Guard: these routes only make sense on a Redis connection. They reach the
+// driver directly (a keyspace has no SQL equivalent), so this is also where
+// they register their session — the gate the generic dispatchers apply for
+// every other route.
+const requireRedis = async (req, res) => {
   const conn = getConnection(req.params.id)
   if (!conn) {
     res.status(404).json({ error: 'Connection not found' })
@@ -1941,6 +2043,12 @@ const requireRedis = (req, res) => {
     res.status(400).json({ error: `Not a Redis connection (type: ${conn.type}).` })
     return null
   }
+  try {
+    await db.enterSession(conn, queryCtx(req))
+  } catch (error) {
+    fail(res, error)
+    return null
+  }
   return conn
 }
 const redis = db.drivers.redis
@@ -1948,7 +2056,7 @@ const redis = db.drivers.redis
 // One SCAN page of the keyspace: [{ key, type, ttlMs }] plus the cursor to hand
 // back for the next page. SCAN (never KEYS) so a large keyspace stays responsive.
 app.get('/api/connections/:id/redis/keys', async (req, res) => {
-  const conn = requireRedis(req, res)
+  const conn = await requireRedis(req, res)
   if (!conn) return
   try {
     res.json(
@@ -1966,7 +2074,7 @@ app.get('/api/connections/:id/redis/keys', async (req, res) => {
 
 // Keyspace summary for the sidebar header (db, key count, server version).
 app.get('/api/connections/:id/redis/overview', async (req, res) => {
-  const conn = requireRedis(req, res)
+  const conn = await requireRedis(req, res)
   if (!conn) return
   try {
     res.json(await redis.overview(conn, queryCtx(req)))
@@ -1978,7 +2086,7 @@ app.get('/api/connections/:id/redis/overview', async (req, res) => {
 // One key's value as a generic { columns, rows } page (plus type/TTL/length).
 // Every collection type is paged by offset/limit.
 app.get('/api/connections/:id/redis/key', async (req, res) => {
-  const conn = requireRedis(req, res)
+  const conn = await requireRedis(req, res)
   if (!conn) return
   if (!req.query.key) return res.status(400).json({ error: 'A key is required.' })
   try {
@@ -1990,7 +2098,7 @@ app.get('/api/connections/:id/redis/key', async (req, res) => {
 
 // Delete one or more keys. Body: { keys: string[] } → { deleted }.
 app.delete('/api/connections/:id/redis/keys', async (req, res) => {
-  const conn = requireRedis(req, res)
+  const conn = await requireRedis(req, res)
   if (!conn) return
   const keys = Array.isArray(req.body?.keys) ? req.body.keys.filter((k) => typeof k === 'string' && k) : []
   if (!keys.length) return res.status(400).json({ error: 'At least one key is required.' })
@@ -2003,7 +2111,7 @@ app.delete('/api/connections/:id/redis/keys', async (req, res) => {
 
 // Set or clear a key's expiry. Body: { key, ttlMs } — null/0 removes the expiry.
 app.put('/api/connections/:id/redis/ttl', async (req, res) => {
-  const conn = requireRedis(req, res)
+  const conn = await requireRedis(req, res)
   if (!conn) return
   const { key, ttlMs } = req.body || {}
   if (!key) return res.status(400).json({ error: 'A key is required.' })
@@ -2154,9 +2262,17 @@ if (SCHEDULER_ENABLED) {
   })
 }
 
+// Expire idle connection sessions and close the driver handles behind them.
+// Runs regardless of SCHEDULER_ENABLED: that flag is about *doing work on a
+// schedule*, while this only releases resources this process is holding.
+cron.schedule('* * * * *', () => {
+  sweepConnectionSessions().catch((e) => console.error('Session sweep error:', e.message))
+})
+
 app.listen(PORT, () => {
   console.log(`✅ Server running on http://localhost:${PORT}`)
   console.log(`📊 API available at http://localhost:${PORT}/api`)
+  console.log(`🔑 Sessions: ${sessionStore.kind === 'redis' ? `redis (${sessionStore.url})` : 'in-process (set SESSION_REDIS_URL to share across replicas)'}`)
   // Open what can be opened eagerly (SQLite files) so the first query is fast.
   for (const conn of listConnections()) {
     try {
@@ -2168,9 +2284,10 @@ app.listen(PORT, () => {
 })
 
 // Graceful shutdown
-process.on('SIGINT', () => {
+process.on('SIGINT', async () => {
   console.log('\n🛑 Shutting down...')
   db.closeAllConnections()
+  await closeSessionStore().catch(() => {})
   meta.close()
   process.exit(0)
 })

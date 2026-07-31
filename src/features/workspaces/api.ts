@@ -5,6 +5,12 @@ export type NotificationSettings = {
   backupFailure?: { enabled: boolean; memberIds: string[] }
 }
 
+// Workspace-wide session policy. `maxPerConnection` 0 = unlimited;
+// `instanceDefault` is the MAX_SESSIONS_PER_CONNECTION env fallback that applies
+// when the workspace leaves it at 0 (read-only — shown so the form can say what
+// is actually in effect).
+export type SessionSettings = { maxPerConnection: number; instanceDefault?: number }
+
 export type Workspace = {
   id: string
   name: string
@@ -12,6 +18,7 @@ export type Workspace = {
   createdAt?: number
   experiments?: Record<string, boolean>
   notifications?: NotificationSettings
+  sessions?: SessionSettings
 }
 
 export async function listWorkspaces() {
@@ -25,7 +32,13 @@ export async function createWorkspace(name: string) {
 }
 export async function updateWorkspace(
   id: string,
-  patch: { name?: string; smtp?: any; experiments?: Record<string, boolean>; notifications?: NotificationSettings }
+  patch: {
+    name?: string
+    smtp?: any
+    experiments?: Record<string, boolean>
+    notifications?: NotificationSettings
+    sessions?: { maxPerConnection: number }
+  }
 ) {
   return request(`/workspaces/${id}`, { method: 'PUT', body: patch })
 }

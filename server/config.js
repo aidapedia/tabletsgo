@@ -68,5 +68,27 @@ export const DOCKER_SOCKET = process.env.DOCKER_SOCKET || '/var/run/docker.sock'
 // GitHub on every sign-in; the Settings > Updates toggle overrides it per browser.
 export const AUTO_CHECK_UPDATES = /^(1|true|yes|on)$/i.test(String(process.env.UPDATE_AUTO_CHECK || ''))
 
+// ---- Sessions ----
+// Where sessions live. Set SESSION_REDIS_URL (redis:// or rediss://) to keep
+// them in Redis — required if you run more than one app replica, since the
+// default in-process store is per-process and dies with it. See server/sessions.
+export const SESSION_REDIS_URL = process.env.SESSION_REDIS_URL || ''
+export const SESSION_REDIS_PREFIX = process.env.SESSION_REDIS_PREFIX || 'tabletsgo:'
+// Sliding lifetime of a login (bearer) session — refreshed on every request.
+export const SESSION_TTL_MS = parseInt(process.env.SESSION_TTL_MS, 10) || 30 * 24 * 60 * 60 * 1000
+// How long a *connection* session (one open driver handle/pool) survives with
+// no activity before it's swept and its handle released.
+export const SESSION_IDLE_TTL_MS = parseInt(process.env.SESSION_IDLE_TTL_MS, 10) || 15 * 60 * 1000
+// Instance-wide fallback for "max concurrent sessions per connection", used
+// when neither the connection nor its workspace sets one. 0 = unlimited.
+export const MAX_SESSIONS_PER_CONNECTION = parseInt(process.env.MAX_SESSIONS_PER_CONNECTION, 10) || 0
+
+// ---- Connections ----
+// How long the pre-flight handshake (GET /api/connections/:id/handshake) waits
+// for a database to answer before it reports a timeout. Kept short: it runs
+// while the user waits on the "Connect" button, and a black-holed host would
+// otherwise ride the driver's own multi-minute TCP timeout.
+export const HANDSHAKE_TIMEOUT_MS = parseInt(process.env.HANDSHAKE_TIMEOUT_MS, 10) || 8000
+
 // ---- Schedulers ----
 export const SCHEDULER_ENABLED = process.env.WORKFLOW_SCHEDULER_ENABLED !== 'false'

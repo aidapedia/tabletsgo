@@ -43,6 +43,52 @@ export const sqliteDriver = {
     }
   },
 
+  // SQLite fails at the filesystem, not the network, so its errors need their
+  // own words — the transport classifier in ./diagnose.js has nothing to read.
+  explainError(error, conn) {
+    const code = error?.code || ''
+    const message = error?.message || ''
+    const at = conn?.filepath ? ` at "${conn.filepath}"` : ''
+    // A missing parent directory arrives as a plain TypeError with no code —
+    // better-sqlite3 rejects it before SQLite ever sees the path.
+    if (code === 'SQLITE_CANTOPEN' || code === 'ENOENT' || /cannot open database/i.test(message)) {
+      return {
+        reason: 'missing_file',
+        cause: `The database file${at} could not be opened${/directory does not exist/i.test(message) ? ' — its folder does not exist' : ''}.`,
+        hint: 'Check the path — it is resolved on the server, so in Docker it must be a path inside the container (mount the file as a volume).',
+      }
+    }
+    if (code === 'SQLITE_NOTADB' || /file is (not a database|encrypted)/i.test(message)) {
+      return {
+        reason: 'unsupported',
+        cause: `The file${at} is not a SQLite database.`,
+        hint: 'It may be encrypted, truncated or simply the wrong file.',
+      }
+    }
+    if (code === 'SQLITE_READONLY' || code === 'SQLITE_PERM' || code === 'SQLITE_AUTH') {
+      return {
+        reason: 'permission',
+        cause: `The server cannot write to the database file${at}.`,
+        hint: 'Give the user the app runs as read/write access to the file and its directory.',
+      }
+    }
+    if (code === 'SQLITE_BUSY' || code === 'SQLITE_LOCKED') {
+      return {
+        reason: 'busy',
+        cause: 'The database file is locked by another process.',
+        hint: 'Close whatever else is writing to it and try again.',
+      }
+    }
+    if (code === 'SQLITE_CORRUPT' || code === 'SQLITE_IOERR') {
+      return {
+        reason: 'unsupported',
+        cause: `The database file${at} is corrupt or unreadable.`,
+        hint: 'Restore it from a backup.',
+      }
+    }
+    return null
+  },
+
   // Opened eagerly at boot so the first query doesn't pay for it.
   prewarm(conn) {
     if (conn.filepath) openDb(conn.filepath)
