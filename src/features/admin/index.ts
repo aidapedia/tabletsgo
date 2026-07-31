@@ -4,7 +4,8 @@
 // see CLAUDE.md "AUTH MODEL".
 export { default as AdminWorkspacesPanel } from './components/AdminWorkspacesPanel'
 export { default as AdminUsersPanel } from './components/AdminUsersPanel'
-export type { AdminUser, AdminWorkspace, AdminWorkspaceMember, SystemRole } from './api'
+export { default as AdminSmtpPanel } from './components/AdminSmtpPanel'
+export type { AdminUser, AdminWorkspace, AdminWorkspaceMember, GlobalSmtp, GlobalSmtpInfo, SystemRole } from './api'
 export {
   listAllWorkspaces,
   createWorkspaceAs,
@@ -15,3 +16,4 @@ export {
   removeWorkspaceMemberAs,
 } from './api'
 export { listUsers, createUser, updateUser, deleteUser } from './api'
+export { getGlobalSmtp, updateGlobalSmtp, clearGlobalSmtp, testGlobalSmtp } from './api'

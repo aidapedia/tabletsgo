@@ -24,7 +24,8 @@ services:
       - ADMIN_USERNAME=${ADMIN_USERNAME:-}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
       - WORKSPACE_NAME=${WORKSPACE_NAME:-}
-      # Optional SMTP for member-invite emails (also settable per-workspace in the UI).
+      # Optional SMTP for member-invite emails — the fallback under the mail
+      # server an admin configures in Administration > Email (that one wins).
       - SMTP_HOST=${SMTP_HOST:-}
       - SMTP_PORT=${SMTP_PORT:-}
       - SMTP_USER=${SMTP_USER:-}

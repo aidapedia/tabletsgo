@@ -261,6 +261,17 @@ function ensureBaseSchema(db) {
       -- inlined here so v8's plain ALTER doesn't collide on fresh installs
       -- (which also run v8).
     );
+    -- Instance-wide settings an admin edits from the admin area — the
+    -- instance-level counterpart of workspaces.settings. Deliberately a
+    -- key/value store (value is JSON) so a future instance-wide setting is a
+    -- new key, not a new table. Today: 'smtp' (see server/app-settings.js).
+    -- CREATE ... IF NOT EXISTS is idempotent with v9, so fresh + existing
+    -- installs agree.
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT,                  -- JSON; secrets inside it are AES-256-GCM sealed
+      updated_at INTEGER
+    );
   `)
 }
 
@@ -578,9 +589,75 @@ export const MIGRATIONS = [
       db.exec(`CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)`)
     },
   },
-  // v9+: append plain, run-exactly-once steps here, e.g.
+  {
+    version: 9,
+    name: 'app_settings (instance-wide settings, starting with global SMTP)',
+    up(db) {
+      // The instance-level counterpart of workspaces.settings: one row per
+      // setting key, value is JSON. The first key is 'smtp' — the global mail
+      // server an admin configures in the admin area, used whenever a workspace
+      // hasn't set its own. Nothing is backfilled: the SMTP_* env vars stay
+      // readable as the last fallback, so an existing install keeps sending
+      // mail with no admin action.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS app_settings (
+          key TEXT PRIMARY KEY,
+          value TEXT,
+          updated_at INTEGER
+        )
+      `)
+    },
+  },
+  {
+    version: 10,
+    name: 'SMTP becomes instance-level: adopt a workspace config as the global one',
+    up(db, ctx) {
+      // SMTP used to be configurable per workspace. It is now one instance-wide
+      // mail server owned by an admin, so `workspaces.settings.smtp` is no
+      // longer read by anything. An install whose ONLY mail config was a
+      // workspace's own would otherwise stop sending email at this upgrade —
+      // adopt it as the global config instead.
+      //
+      // Only when nothing else answers: a saved global config or SMTP_HOST in
+      // the environment already covers the whole instance, and with several
+      // workspaces configured there is no principled way to pick between them
+      // (the oldest one wins, and the admin can correct it in the UI).
+      // The stale `settings.smtp` blocks are left in place — data nothing reads
+      // is harmless, and dropping them would make a downgrade lossy.
+      const hasGlobal = db.prepare("SELECT 1 FROM app_settings WHERE key = 'smtp'").get()
+      if (hasGlobal || process.env.SMTP_HOST) return
+
+      const rows = db.prepare('SELECT name, settings FROM workspaces ORDER BY created_at').all()
+      for (const row of rows) {
+        let smtp
+        try {
+          smtp = JSON.parse(row.settings || '{}').smtp
+        } catch {
+          continue
+        }
+        if (!smtp?.host) continue
+        db.prepare('INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)').run(
+          'smtp',
+          JSON.stringify({
+            host: smtp.host,
+            port: smtp.port || '',
+            secure: !!smtp.secure,
+            user: smtp.user || '',
+            from: smtp.from || '',
+            // Workspace passwords were stored in the clear; the instance config
+            // seals them like every other secret.
+            pass: smtp.pass && ctx.encryptAppSetting ? ctx.encryptAppSetting(smtp.pass) : '',
+          }),
+          Date.now()
+        )
+        console.log(`📧 Adopted "${row.name}"'s SMTP settings as the instance-wide mail server (Administration → Email).`)
+        break
+      }
+    },
+  },
+  // v11+: append plain, run-exactly-once steps here, e.g.
   // {
-  //   version: 9,
+  //   version: 11,
   //   name: 'connections: last_used_at',
   //   up(db) {
   //     db.exec(`ALTER TABLE connections ADD COLUMN last_used_at INTEGER`)

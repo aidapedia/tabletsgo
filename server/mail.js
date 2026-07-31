@@ -1,51 +1,69 @@
 /**
- * Outbound email. SMTP is optional everywhere: a workspace's own settings win,
- * the Docker env vars are the fallback, and with neither configured the caller
- * degrades gracefully (invites still return a copyable link).
+ * Outbound email. There is exactly **one** mail server per instance, owned by
+ * an instance admin (Administration → Email, `/api/admin/smtp`):
+ *
+ *   global (admin) settings → SMTP_* env vars
+ *
+ * Mail is an instance-level concern — a workspace owner has no business
+ * choosing which server sends the instance's password resets — so nothing
+ * below this file knows about layers or workspaces. The env vars stay readable
+ * underneath the admin config so an install that has always configured SMTP
+ * through docker-compose keeps working untouched. With neither configured the
+ * caller degrades gracefully (invites still return a copyable link).
  */
 
 import nodemailer from 'nodemailer'
-import { meta } from './meta.js'
+import { globalSmtp } from './app-settings.js'
 
 // Nodemailer's defaults (2min connect/socket timeout) make a bad host hang
 // the request for minutes instead of failing fast — cap it well below that.
 const SMTP_TIMEOUTS = { connectionTimeout: 10000, greetingTimeout: 10000, socketTimeout: 15000 }
 
-// Resolve SMTP config from the workspace settings row, falling back to Docker
-// env. Returns null when no host is configured anywhere.
-export const smtpConfig = (wsRow) => {
-  let ws = {}
-  try {
-    ws = JSON.parse(wsRow?.settings || '{}').smtp || {}
-  } catch {
-    ws = {}
-  }
-  const host = ws.host || process.env.SMTP_HOST
-  if (!host) return null
-  const user = ws.user || process.env.SMTP_USER || ''
+// The Docker env layer, or null when SMTP_HOST is unset.
+export const envSmtp = () => {
+  if (!process.env.SMTP_HOST) return null
   return {
-    host,
-    port: Number(ws.port || process.env.SMTP_PORT || 587),
-    secure: ws.secure ?? process.env.SMTP_SECURE === 'true',
-    user,
-    pass: ws.pass || process.env.SMTP_PASS || '',
-    from: ws.from || process.env.SMTP_FROM || user || 'no-reply@tabletsgo.local',
+    host: process.env.SMTP_HOST,
+    port: process.env.SMTP_PORT || '',
+    secure: process.env.SMTP_SECURE === 'true',
+    user: process.env.SMTP_USER || '',
+    pass: process.env.SMTP_PASS || '',
+    from: process.env.SMTP_FROM || '',
   }
 }
 
-// SMTP usable for an app-level email to a user (password reset): env first,
-// then any of the user's workspaces that has SMTP configured.
-export const smtpForUser = (userId) => {
-  const envCfg = smtpConfig(null)
-  if (envCfg) return envCfg
-  const rows = meta
-    .prepare('SELECT w.settings FROM workspaces w JOIN workspace_members m ON m.workspace_id = w.id WHERE m.user_id = ?')
-    .all(userId)
-  for (const r of rows) {
-    const cfg = smtpConfig(r)
-    if (cfg) return cfg
+/**
+ * The mail server in effect, or null when neither layer names a host. This is
+ * the one resolver — every email in the app goes through it, and no caller
+ * passes a workspace, because mail isn't workspace-scoped.
+ *
+ * `source` says which layer answered ('global' | 'env'), which is all the UI
+ * needs to explain where the settings came from.
+ */
+export const smtpConfig = () => {
+  const global = globalSmtp()
+  const env = global ? null : envSmtp()
+  const cfg = global ? { source: 'global', ...global } : env ? { source: 'env', ...env } : null
+  if (!cfg) return null
+  const user = cfg.user || ''
+  return {
+    source: cfg.source,
+    host: cfg.host,
+    port: Number(cfg.port || 587),
+    secure: !!cfg.secure,
+    user,
+    pass: cfg.pass || '',
+    from: cfg.from || user || 'no-reply@tabletsgo.local',
   }
-  return null
+}
+
+// The same config with the password stripped — what routes hand a client so a
+// settings form can show what's in effect without the secret leaving the server.
+export const publicSmtpConfig = () => {
+  const cfg = smtpConfig()
+  if (!cfg) return null
+  const { pass, ...rest } = cfg
+  return rest
 }
 
 // Generic send. `cfg` from smtpConfig(); `message` is { to, subject, text, html }.
@@ -59,6 +77,25 @@ export const sendMail = async (cfg, message) => {
   })
   await transport.sendMail({ from: cfg.from, ...message })
 }
+
+// "wrong version number" is OpenSSL-speak for "the TLS mode doesn't match what
+// the server expects on that port" — translate it, since the raw error is
+// meaningless to anyone who isn't reading OpenSSL source.
+export const describeSmtpError = (err) => {
+  const raw = err?.message || 'Failed to send test email.'
+  return /wrong version number/i.test(raw)
+    ? "SSL/TLS handshake failed — the encryption mode probably doesn't match the port. Try switching between STARTTLS (587) and Implicit TLS/SSL (465)."
+    : raw
+}
+
+// The "does this config work" probe behind both SMTP settings forms.
+export const sendTestEmail = (cfg, { to, scope = 'SMTP settings' }) =>
+  sendMail(cfg, {
+    to,
+    subject: 'Tabletsgo test email',
+    text: `This is a test email from your Tabletsgo ${scope}. If you received it, the configuration works.`,
+    html: `<p>This is a test email from your Tabletsgo ${scope}.</p><p>If you received it, the configuration works.</p>`,
+  })
 
 export const sendInviteEmail = (cfg, { to, workspaceName, link }) =>
   sendMail(cfg, {

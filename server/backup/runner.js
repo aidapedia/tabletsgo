@@ -114,7 +114,7 @@ async function notifyBackupFailure(conn, result) {
     if (!wsRow) return
     const cfg = safeJson(wsRow.settings).notifications?.backupFailure
     if (!cfg?.enabled || !cfg.memberIds?.length) return
-    const smtp = smtpConfig(wsRow)
+    const smtp = smtpConfig()
     if (!smtp) return
     const placeholders = cfg.memberIds.map(() => '?').join(',')
     const recipients = meta.prepare(`SELECT username FROM users WHERE id IN (${placeholders})`).all(...cfg.memberIds)

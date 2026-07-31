@@ -29,7 +29,7 @@ src/
 ├── shared/                       # reusable, feature-agnostic code
 │   ├── ui/                       # presentational components, grouped by kind:
 │   │   ├── buttons/              #   Button, IconButton, TextButton
-│   │   ├── form/                 #   Form/FormField/Label, Input/Textarea, Select, Checkbox,
+│   │   ├── form/                 #   Form/FormField/Label, Input/Textarea, PasswordInput, Select, Checkbox,
 │   │   │                         #     CheckboxRow, SearchInput, Toggle, NumberStepper, Segmented
 │   │   ├── navigation/           #   NavItem, Tab, MenuItem
 │   │   ├── overlay/              #   Popover, Tooltip, ContextMenu
@@ -51,11 +51,14 @@ src/
 │   │                             #   `user.role` is the SYSTEM role ('admin' | 'user') — see AUTH MODEL
 │   ├── admin/                    # the instance-admin area (system role 'admin' only): AdminWorkspacesPanel
 │   │                             #   (every workspace + who owns it; create/rename/delete, grant ownership)
-│   │                             #   and AdminUsersPanel (accounts, system role, invites, password reset).
+│   │                             #   AdminUsersPanel (accounts, system role, invites, password reset)
+│   │                             #   and AdminSmtpPanel + SmtpForm (the instance's one mail server —
+│   │                             #     the only place SMTP is configurable; see EMAIL / SMTP).
 │   │                             #   Reaches nothing inside a workspace — an admin has no membership
 │   ├── workspaces/               # org/tenant layer (multi-workspace): WorkspaceContext (current
 │   │                             #   workspace + switch), WorkspaceSwitcher, MembersPanel, TeamsPanel,
-│   │                             #   SmtpSettings, IntegrationsSettings (SMTP), NotificationSettings,
+│   │                             #   NotificationSettings (backup-failure emails — the mail server
+│   │                             #     itself is instance-level, see EMAIL / SMTP),
 │   │                             #   WorkspaceGeneral (rename + the default "max sessions per
 │   │                             #     connection" every connection inherits — see SESSIONS);
 │   │                             #   api (workspaces/members/teams CRUD)
@@ -196,8 +199,9 @@ src/
     ├── auth/                     # unauthenticated flows: LoginPage, SetupPage, AcceptInvitePage,
     │                             #   ForgotPasswordPage, ResetPasswordPage
     ├── admin/                    # the instance-admin area, one file per sidebar section (same rule
-    │                             #   as home/): AdminWorkspacesPage (/admin) + AdminUsersPage
-    │                             #   (/admin/users) — no tabs, the sidebar switches. Only reachable
+    │                             #   as home/): AdminWorkspacesPage (/admin), AdminUsersPage
+    │                             #   (/admin/users) + AdminEmailPage (/admin/email — the instance-wide
+    │                             #   SMTP config) — no tabs, the sidebar switches. Only reachable
     │                             #   with the system role 'admin'; AppRoutes' RequireSystemAdmin /
     │                             #   RequireWorkspaceUser send each audience to the other's home
     ├── console/                  # WorkspacePage — the per-connection DB console (route /connection/:id)
@@ -248,6 +252,9 @@ server/
 │                         #   changes, and the one delete cascade both delete routes share
 ├── users.js              # the instance user directory (`users`): system roles, invites,
 │                         #   promote/demote (promoting to admin strips every membership)
+├── app-settings.js       # instance-wide settings (`app_settings`, key → JSON): the admin-owned
+│                         #   counterpart of workspaces.settings. Today one key, 'smtp' — the global
+│                         #   mail server, its password sealed under its own scrypt namespace
 ├── sessions/             # ★ the session store — logins + open-connection sessions (see SESSIONS)
 │   ├── index.js          #   the registry: auth tokens, connection sessions, the limit, the sweeper
 │   ├── db.js             #   durable backend: the meta DB's `sessions` table — the source of
@@ -256,7 +263,8 @@ server/
 │   ├── memory.js         #   in-process cache (default)
 │   ├── redis.js          #   SESSION_REDIS_URL cache (shared across replicas)
 │   └── limits.js         #   resolveMaxSessions: connection → workspace → instance → unlimited
-├── mail.js               # SMTP resolution (workspace settings → env) + the transactional emails
+├── mail.js               # SMTP resolution (workspace settings → global app-settings → env) +
+│                         #   the transactional emails. See EMAIL / SMTP below
 ├── connections.js        # connection records: rowToConnection/connectionToRow + CRUD + schemaVersion
 ├── folders.js            # FOLDER_TYPES + the polymorphic folder tree (depth/height/ancestor checks)
 ├── storage.js            # storage destinations (S3-compatible + built-in local disk) and object ops:
@@ -285,8 +293,8 @@ Conventions:
   SMTP/admin-seed fallbacks are the exception, read where they're used).
 - A module owns its table(s): if a route is writing raw SQL against
   `backup_schedules` or `storage_destinations`, that belongs in the module.
-- Dependencies point one way: `config → crypto → meta → sessions → {auth, mail,
-  connections, folders, storage} → db → workflow/backup/transfer → server.js`. No cycles —
+- Dependencies point one way: `config → crypto → meta → sessions → {auth, app-settings,
+  connections, folders, storage} → mail → db → workflow/backup/transfer → server.js`. No cycles —
   `sessions` never imports `db`; the db layer hands it a release callback instead
   (`setReleaseHandler`), which is what lets the sweeper close idle handles. Also
   `backup/schedule.js` is split out from the runner precisely so
@@ -336,7 +344,7 @@ Configurable values live in env vars, wired through `docker-compose.yml` (see `.
 - `PORT` (server), `META_DB` (metadata SQLite path), `NODE_ENV` — server runtime.
 - `ENCRYPTION_KEY` — **required**. Encrypts connection credentials (host/port/username/password/…) at rest (AES-256-GCM); the server refuses to boot without it.
 - `ADMIN_USERNAME` (email) / `ADMIN_PASSWORD` / `WORKSPACE_NAME` — **optional** pre-seed of the admin + first workspace. Unset ⇒ the in-browser first-run setup wizard runs (default). Don't bake defaults into the Dockerfile.
-- `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` / `SMTP_SECURE` — **optional** fallback SMTP for member-invite emails (per-workspace UI settings override these). Invites always return a copyable link even without SMTP.
+- `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` / `SMTP_SECURE` — **optional** SMTP, and the *fallback* under the admin's config (`/api/admin/smtp`, stored in `app_settings`), which is where SMTP is meant to be set — it changes without a redeploy. The env vars stay supported so existing deployments keep working. Invites always return a copyable link even without SMTP. See EMAIL / SMTP.
 - `VITE_API_URL` — frontend API base, **baked at build time** via Dockerfile `ARG` (not runtime). Default `/api`.
 - `TABLETSGO_TAG` — **optional**. Published image tag `docker compose` runs (and pulls on self-update). Default `latest`; one-click self-update works best on a moving tag.
 - `SESSION_REDIS_URL` / `SESSION_REDIS_PREFIX` — **optional**. Makes the session *cache* Redis instead of in-process. Logins live in the meta DB either way, so clearing it never signs anyone out; what it buys is replicas sharing one cache and — the part that actually needs it — seeing each other's connection sessions, which are cache-only. Required if you run more than one replica. `docker-compose.yml` points it at its bundled `redis` service. See SESSIONS.
@@ -362,6 +370,20 @@ The guards live in `server/auth.js`: `requireSystemAdmin` (system), `requireOwne
 Two invariants the routes enforce, both of which are easy to break from a new code path: an instance admin can never be added to a workspace (invite, role change, and workspace creation all refuse), and a workspace can never lose its last owner (demote, remove, delete-user and promote-to-admin all refuse, the last two with `409` + the affected workspaces).
 
 Connections carry a `workspace_id` column and are filtered by the caller's current workspace.
+
+## EMAIL / SMTP
+**There is exactly one mail server per instance, and only an instance admin sets it.** Mail is an instance-level concern — who sends the instance's password resets isn't a workspace owner's decision — so nothing outside `server/mail.js` + `server/app-settings.js` knows how it's configured, and **no caller passes a workspace**.
+
+| Layer | Where it lives | Who edits it |
+| --- | --- | --- |
+| Admin config | `app_settings` key `'smtp'` (`server/app-settings.js`) | an instance admin (`/api/admin/smtp`, Administration → Email) |
+| Env | `SMTP_*` | whoever deploys the container |
+
+`smtpConfig()` in `server/mail.js` is the only resolver: the admin config if it names a host, else the env vars, else `null`. It tags the result with `source` (`'global' | 'env'`) purely so the UI can say where the settings came from — never branch on it. `publicSmtpConfig()` is the password-stripped form routes hand a client (a workspace owner sees it read-only on the Notification page, so "no mail server configured" is visible where it matters).
+
+Rules: the saved password is AES-256-GCM sealed under its own scrypt namespace (`APP_SETTINGS_KEY`) and **never** leaves the server — reads report `hasPassword`, and a save that omits `pass` keeps the stored one. The env layer stays supported forever (an existing deployment must keep sending mail after an upgrade); it's the *fallback*, not the source of truth, so anything an operator might want to change belongs in the admin config, where it changes without a redeploy. Mail is optional at both layers: with neither configured, invites still return a copyable link.
+
+Per-workspace SMTP was removed in meta migration v10, which promotes a workspace's config to the instance config when nothing else answers (see the step for why "nothing else"). `workspaces.settings.smtp` may still exist in old rows — **dead data, never read it.**
 
 ## SESSIONS
 Two things share one store (`server/sessions`) but are **stored differently, on purpose**:
