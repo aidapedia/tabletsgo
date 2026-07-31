@@ -1,5 +1,7 @@
+import Button from '@/shared/ui/buttons/Button'
 import IconButton from '@/shared/ui/buttons/IconButton'
-import Select from '@/shared/ui/form/Select'
+import MenuItem from '@/shared/ui/navigation/MenuItem'
+import Popover from '@/shared/ui/overlay/Popover'
 import { ChevronLeft, ChevronRight } from '@/shared/ui/icons'
 
 /**
@@ -54,12 +56,35 @@ export default function Pagination({
         {onPageSizeChange && (
           <>
             <span className="text-ink-faint">·</span>
-            <Select
-              className="w-auto rounded-soft border border-edge bg-bg px-2 py-1 text-[11px]"
-              value={pageSize}
-              onChange={(v) => onPageSizeChange(Number(v))}
-              options={pageSizeOptions.map((n) => ({ value: n, label: `${n} / page` }))}
-            />
+            {/* Same rows-per-page control as the console's table toolbar: a
+                subtle chevron button opening a menu. It drops *up* — the footer
+                sits at the bottom of the card. */}
+            <Popover
+              placement="top"
+              width={120}
+              trigger={({ open, toggle }) => (
+                <Button variant="subtle" size="sm" chevron active={open} onClick={toggle}>
+                  {pageSize} rows
+                </Button>
+              )}
+            >
+              {({ close }) => (
+                <div className="p-1">
+                  {pageSizeOptions.map((n) => (
+                    <MenuItem
+                      key={n}
+                      active={n === pageSize}
+                      onClick={() => {
+                        onPageSizeChange(n)
+                        close()
+                      }}
+                    >
+                      {n} rows
+                    </MenuItem>
+                  ))}
+                </div>
+              )}
+            </Popover>
           </>
         )}
       </div>
