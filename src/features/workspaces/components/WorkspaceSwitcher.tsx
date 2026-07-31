@@ -1,27 +1,13 @@
-import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
 import Popover from '@/shared/ui/overlay/Popover'
-import Button from '@/shared/ui/buttons/Button'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
-import { CheckIcon, ChevronDown, PlusIcon, SettingsIcon } from '@/shared/ui/icons'
-import { Input } from '@/shared/ui/form/Input'
+import { CheckIcon, ChevronDown } from '@/shared/ui/icons'
 import { useWorkspaces } from '@/features/workspaces'
 
-// Current-workspace picker + create + link to workspace settings.
+// Current-workspace picker: only the workspaces the user is a member of.
+// Creating a workspace lives in the admin area, settings in the sidebar's
+// Workspace section — neither belongs in a switcher.
 export default function WorkspaceSwitcher() {
-  const navigate = useNavigate()
-  const { workspaces, current, switchWorkspace, createWorkspace } = useWorkspaces()
-  const [creating, setCreating] = useState(false)
-  const [name, setName] = useState('')
-
-  const submitCreate = async (close) => {
-    const n = name.trim()
-    if (!n) return
-    await createWorkspace(n)
-    setName('')
-    setCreating(false)
-    close()
-  }
+  const { workspaces, current, switchWorkspace } = useWorkspaces()
 
   return (
     <Popover
@@ -58,34 +44,6 @@ export default function WorkspaceSwitcher() {
               </MenuItem>
             ))}
           </div>
-
-          <div className="my-1 h-px bg-edge" />
-
-          {creating ? (
-            <div className="flex items-center gap-1.5 px-1 py-0.5">
-              <Input
-                autoFocus
-                className="!py-1.5"
-                placeholder="Workspace name"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') submitCreate(close)
-                  if (e.key === 'Escape') { setCreating(false); setName('') }
-                }}
-              />
-              <Button variant="primary" size="sm" className="shrink-0" onClick={() => submitCreate(close)}>
-                Add
-              </Button>
-            </div>
-          ) : (
-            <MenuItem onClick={() => setCreating(true)}>
-              <PlusIcon width={14} height={14} /> New workspace
-            </MenuItem>
-          )}
-          <MenuItem onClick={() => { navigate('/workspace'); close() }}>
-            <SettingsIcon width={14} height={14} /> Workspace settings
-          </MenuItem>
         </div>
       )}
     </Popover>

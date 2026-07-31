@@ -94,6 +94,9 @@ export function AppRoutes() {
         <Route path="/workspace" element={<WorkspaceSettingsPage />} />
         <Route path="/workspace/:sub" element={<WorkspaceSettingsPage />} />
         <Route path="/notifications" element={<NotificationsPage />} />
+        {/* The section lost its tabs when SMTP moved to the admin area; the
+            :sub route stays so old links (e.g. /notifications/smtp) still land
+            here instead of bouncing to the dashboard. */}
         <Route path="/notifications/:sub" element={<NotificationsPage />} />
         <Route path="/storage" element={<StoragePage />} />
       </Route>
