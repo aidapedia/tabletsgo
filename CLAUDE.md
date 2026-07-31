@@ -34,6 +34,10 @@ src/
 │   │   ├── navigation/           #   NavItem, Tab, MenuItem
 │   │   ├── overlay/              #   Popover, Tooltip, ContextMenu
 │   │   ├── feedback/             #   Toast, ConfirmDialog, TypeToConfirmDialog, LoadingState, EmptyState, Wizard
+│   │   ├── table/                #   DataTable (the shared list-as-table: sortable columns, row click,
+│   │   │                         #     pagination footer), Pagination, useDataTable (client-side
+│   │   │                         #     sort/paging state — spread its result into DataTable; pass the
+│   │   │                         #     props yourself for server-side paging)
 │   │   └── (root)                #   Avatar, Badge, PersonRow, RowLabel, SaveQueryPanel, SqlEditor,
 │   │                             #     JsonEditor, icons — no group yet
 │   ├── hooks/                    # generic hooks (useSlideOver)
@@ -191,8 +195,10 @@ src/
         ├── HomeLayout            #   sidebar + <Outlet/>; every section route renders inside it
         ├── ui                    #   shared page primitives: PageHeader, Section, TabbedSection, SubHead, ComingSoon
         ├── DashboardPage (/)     #   connection + member counts
-        ├── ConnectionsPage       #   connection list (cards + filters); detail/picker/form come
-        │                         #   from features/connections
+        ├── ConnectionsPage       #   stat cards + filter bar (search / env / folder / type / status)
+        │                         #   over the connection list, rendered with shared/ui/table's DataTable
+        │                         #   (sortable columns, 10/page, row click → detail); detail/picker/form
+        │                         #   come from features/connections
         ├── StoragePage           # /storage → S3 storage destinations (StorageList), top-level sidebar item
         ├── WorkspaceSettingsPage # /workspace → General / Member / Integrations / Notification tabs
         └── SettingsPage          # /settings → Theme / Data / Updates tabs (Updates renders UpdatePanel)
