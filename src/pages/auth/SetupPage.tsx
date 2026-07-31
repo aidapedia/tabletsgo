@@ -4,6 +4,7 @@ import { useAuth, submitSetup } from '@/features/auth'
 import { Logo } from '@/shared/ui/icons'
 import Button from '@/shared/ui/buttons/Button'
 import { Input } from '@/shared/ui/form/Input'
+import PasswordInput from '@/shared/ui/form/PasswordInput'
 import { Form, FormField } from '@/shared/ui/form/Form'
 
 // First-run wizard: create the admin account and the first workspace. Shown
@@ -70,7 +71,7 @@ export default function SetupPage() {
         </div>
 
         <FormField label="Password" className="mb-6">
-          <Input type="password" autoComplete="new-password" placeholder="••••••••" value={form.password} onChange={set('password')} required />
+          <PasswordInput autoComplete="new-password" placeholder="••••••••" value={form.password} onChange={set('password')} required />
         </FormField>
 
         <Button type="submit" variant="primary" size="lg" className="w-full" disabled={loading}>

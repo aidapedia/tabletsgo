@@ -5,6 +5,7 @@ import Button from '@/shared/ui/buttons/Button'
 import Checkbox from '@/shared/ui/form/Checkbox'
 import SlideOverPanel from '@/shared/ui/overlay/SlideOverPanel'
 import { Input, controlClass } from '@/shared/ui/form/Input'
+import PasswordInput from '@/shared/ui/form/PasswordInput'
 import { Label } from '@/shared/ui/form/Form'
 import { createStorage, updateStorage, testStorage } from '@/features/backup/lib/api'
 import type { StorageDestination } from '@/features/backup/lib/types'
@@ -146,7 +147,7 @@ export default function StorageModal({
             </div>
             <div className="mb-[18px]">
               <Label>Secret access key</Label>
-              <Input className="font-mono" type="password" value={form.secretAccessKey} onChange={set('secretAccessKey')} required />
+              <PasswordInput className="font-mono" value={form.secretAccessKey} onChange={set('secretAccessKey')} required />
             </div>
 
       {test && test !== 'loading' && (

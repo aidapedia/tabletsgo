@@ -4,6 +4,7 @@ import { useAuth, getInvite, acceptInvite } from '@/features/auth'
 import { Logo } from '@/shared/ui/icons'
 import Button from '@/shared/ui/buttons/Button'
 import { Input } from '@/shared/ui/form/Input'
+import PasswordInput from '@/shared/ui/form/PasswordInput'
 import { Form, FormField } from '@/shared/ui/form/Form'
 import LoadingState from '@/shared/ui/feedback/LoadingState'
 
@@ -80,7 +81,7 @@ export default function AcceptInvitePage() {
         <Input type="text" placeholder="Jane Doe" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} autoFocus />
       </FormField>
       <FormField label="Password" className="mb-6">
-        <Input type="password" autoComplete="new-password" placeholder="••••••••" value={form.password} onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))} required />
+        <PasswordInput autoComplete="new-password" placeholder="••••••••" value={form.password} onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))} required />
       </FormField>
 
       <Button type="submit" variant="primary" size="lg" className="w-full" disabled={loading}>

@@ -4,6 +4,7 @@ import { useAuth, getReset, resetPassword } from '@/features/auth'
 import { Logo } from '@/shared/ui/icons'
 import Button from '@/shared/ui/buttons/Button'
 import { Input } from '@/shared/ui/form/Input'
+import PasswordInput from '@/shared/ui/form/PasswordInput'
 import { Form, FormField } from '@/shared/ui/form/Form'
 import LoadingState from '@/shared/ui/feedback/LoadingState'
 
@@ -79,8 +80,7 @@ export default function ResetPasswordPage() {
       )}
 
       <FormField label="New password" className="mb-6">
-        <Input
-          type="password"
+        <PasswordInput
           autoComplete="new-password"
           placeholder="••••••••"
           value={password}

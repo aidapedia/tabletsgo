@@ -4,6 +4,7 @@ import { TYPE_LABEL } from './DbTypePickerModal'
 import Button from '@/shared/ui/buttons/Button'
 import IconButton from '@/shared/ui/buttons/IconButton'
 import { Input } from '@/shared/ui/form/Input'
+import PasswordInput from '@/shared/ui/form/PasswordInput'
 import { FormField } from '@/shared/ui/form/Form'
 import { useToast } from '@/shared/ui/feedback/Toast'
 import { CloseIcon, DbLogo, UploadIcon } from '@/shared/ui/icons'
@@ -106,7 +107,7 @@ export default function ConnectionImportModal({
         ) : (
           !doc.includesSecrets && (
             <FormField label="Password" className="mt-4" hint="This export was taken without the password. Leave blank to fill it in later.">
-              <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" />
+              <PasswordInput value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" />
             </FormField>
           )
         )}
