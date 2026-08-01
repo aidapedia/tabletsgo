@@ -13,9 +13,9 @@
  *            their own workspace (members, teams, settings, connections);
  *            members only use the connections they've been granted.
  *
- * A login is a bearer token in the session store (server/sessions — in-process
- * by default, Redis when SESSION_REDIS_URL is set), *not* a meta-DB row:
- * replicas then share logins, and the store expires them on its own.
+ * A login is a bearer token in the session store (server/sessions): a row in
+ * the meta DB's `sessions` table, read through an in-process cache, so it
+ * survives a restart and the store expires it on its own.
  *
  * The store is async while `requireAuth` is called synchronously by ~100 routes,
  * so the token is resolved once per request by `sessionMiddleware` and parked on

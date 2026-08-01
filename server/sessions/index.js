@@ -6,10 +6,10 @@
  * they mean different things:
  *
  *   auth        one record per bearer token. Sliding TTL, refreshed on use.
- *               *Durable*: the meta DB is the source of truth (db.js), with
- *               memory — or Redis, when SESSION_REDIS_URL is set — as a cache
- *               in front (hybrid.js). A login survives a restart, a flushed
- *               cache, and a Redis outage.
+ *               *Durable*: the meta DB is the source of truth (db.js), with an
+ *               in-process cache in front (hybrid.js) so the hot path isn't a
+ *               read per request. A login survives a restart and a dropped
+ *               cache.
  *   conn:<id>   *cache-only*, because it describes a live socket in one
  *               process: persisting it would let a restart resurrect sessions
  *               whose handles are gone. One record per *open driver handle*
@@ -21,33 +21,33 @@
  *               one session (and appear as its participants).
  *
  * A handle belongs to the process that opened it, so the local `handles` map is
- * the authority for *releasing* one; the store is the shared view that makes
- * counting and listing work across replicas. That split is why the limit is
- * best-effort under a race: two replicas can open a handle at the same instant
- * and briefly exceed `max` by one. It never under-counts, which is the side
- * that matters.
+ * the authority for releasing one, and the cache is where its record lives.
+ * Both are per-process, which is the honest model: another replica's handles
+ * aren't ours to count or close. With more than one replica, `maxSessions` is
+ * therefore enforced per replica.
  */
 
 import { randomUUID } from 'crypto'
-import { SESSION_IDLE_TTL_MS, SESSION_REDIS_URL, SESSION_TTL_MS } from '../config.js'
+import { SESSION_IDLE_TTL_MS, SESSION_TTL_MS } from '../config.js'
 import { memoryStore } from './memory.js'
-import { redisStore } from './redis.js'
 import { dbStore } from './db.js'
 import { hybridStore } from './hybrid.js'
 import { resolveMaxSessions } from './limits.js'
 
 export { resolveMaxSessions, workspaceMaxSessions } from './limits.js'
 
-// Which process holds a handle — shown in listings so an operator can tell one
-// replica's sessions from another's.
+// Which process holds a handle. Every session in a listing carries it, so an
+// operator behind a load balancer can tell which replica answered — and, since
+// the id changes on restart, tell a stale session record from a live one.
 export const INSTANCE_ID = randomUUID().slice(0, 8)
 
 const AUTH_NS = 'auth'
 
-// The cache layer: Redis when configured (so replicas share one), otherwise
-// in-process. Either way the meta DB underneath it holds the real records, so
-// swapping or losing the cache never signs anyone out.
-export const cache = SESSION_REDIS_URL ? redisStore() : memoryStore()
+// The cache layer is in-process: the meta DB underneath it holds the real
+// records, so losing the cache never signs anyone out. It stays behind the
+// store contract (`put/get/touch/del/list/count/clear`) so a shared/out-of-
+// process cache is a file plus a line here if one is ever needed again.
+export const cache = memoryStore()
 
 export const store = hybridStore({ cache, source: dbStore(), durable: [AUTH_NS] })
 const connNs = (connectionId) => `conn:${connectionId}`
