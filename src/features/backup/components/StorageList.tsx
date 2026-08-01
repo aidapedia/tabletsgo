@@ -17,7 +17,12 @@ export type StorageListHandle = { openCreate: () => void }
 
 // List + create/edit/delete for a workspace's S3-compatible storage destinations.
 // Exposes `openCreate` via ref so a page header can drive the "new" action.
-const StorageList = forwardRef<StorageListHandle, { workspaceId: string }>(function StorageList({ workspaceId }, ref) {
+// `canManage` (workspace owner) gates the write actions — members can see which
+// destinations exist, since backups they look at land there, but not repoint them.
+const StorageList = forwardRef<StorageListHandle, { workspaceId: string; canManage?: boolean }>(function StorageList(
+  { workspaceId, canManage = true },
+  ref
+) {
   const toast = useToast()
   const [storages, setStorages] = useState<StorageDestination[]>([])
   const [query, setQuery] = useState('')
@@ -96,6 +101,7 @@ const StorageList = forwardRef<StorageListHandle, { workspaceId: string }>(funct
                 <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[12px] bg-elevated text-sky-400">
                   <CloudIcon width={20} height={20} />
                 </span>
+                {canManage && (
                 <Popover
                   align="right"
                   width={160}
@@ -117,6 +123,7 @@ const StorageList = forwardRef<StorageListHandle, { workspaceId: string }>(funct
                     </div>
                   )}
                 </Popover>
+                )}
               </div>
               <div className="mt-4">
                 <div className="truncate text-[15px] font-bold">{s.name}</div>

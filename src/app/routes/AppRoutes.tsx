@@ -14,10 +14,31 @@ import NotificationsPage from '@/pages/home/NotificationsPage'
 import StoragePage from '@/pages/home/StoragePage'
 import SettingsPage from '@/pages/home/SettingsPage'
 import WorkspacePage from '@/pages/console/WorkspacePage'
+import AdminWorkspacesPage from '@/pages/admin/AdminWorkspacesPage'
+import AdminUsersPage from '@/pages/admin/AdminUsersPage'
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { user } = useAuth()
   return user ? children : <Navigate to="/login" replace />
+}
+
+/**
+ * The two role tiers split the app into two non-overlapping halves, so each
+ * guard sends the wrong audience to the other's home rather than showing an
+ * empty shell. An instance admin holds no workspace membership: every
+ * workspace-scoped page would render nothing and every call behind it would
+ * 403, so `/admin` *is* their home.
+ */
+function RequireSystemAdmin({ children }: { children: React.ReactNode }) {
+  const { user } = useAuth()
+  if (!user) return <Navigate to="/login" replace />
+  return user.role === 'admin' ? children : <Navigate to="/" replace />
+}
+
+function RequireWorkspaceUser({ children }: { children: React.ReactNode }) {
+  const { user } = useAuth()
+  if (!user) return <Navigate to="/login" replace />
+  return user.role === 'admin' ? <Navigate to="/admin" replace /> : children
 }
 
 export function AppRoutes() {
@@ -47,12 +68,23 @@ export function AppRoutes() {
       <Route path="/forgot" element={user ? <Navigate to="/" replace /> : <ForgotPasswordPage />} />
       <Route path="/reset/:token" element={<ResetPasswordPage />} />
       <Route path="/login" element={user ? <Navigate to="/" replace /> : <LoginPage />} />
+      {/* Instance administration — the admin's half of the app, same shell. */}
+      <Route
+        element={
+          <RequireSystemAdmin>
+            <HomeLayout />
+          </RequireSystemAdmin>
+        }
+      >
+        <Route path="/admin" element={<AdminWorkspacesPage />} />
+        <Route path="/admin/users" element={<AdminUsersPage />} />
+      </Route>
       {/* Home shell — each sidebar section is its own page rendered into the layout's <Outlet/>. */}
       <Route
         element={
-          <RequireAuth>
+          <RequireWorkspaceUser>
             <HomeLayout />
-          </RequireAuth>
+          </RequireWorkspaceUser>
         }
       >
         <Route path="/" element={<DashboardPage />} />
@@ -62,15 +94,25 @@ export function AppRoutes() {
         <Route path="/notifications" element={<NotificationsPage />} />
         <Route path="/notifications/:sub" element={<NotificationsPage />} />
         <Route path="/storage" element={<StoragePage />} />
+      </Route>
+      {/* Personal settings (theme, local data, updates) belong to the account,
+          not to a workspace — so both halves of the app get them. */}
+      <Route
+        element={
+          <RequireAuth>
+            <HomeLayout />
+          </RequireAuth>
+        }
+      >
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/settings/:sub" element={<SettingsPage />} />
       </Route>
       <Route
         path="/connection/:id"
         element={
-          <RequireAuth>
+          <RequireWorkspaceUser>
             <WorkspacePage />
-          </RequireAuth>
+          </RequireWorkspaceUser>
         }
       />
       <Route path="*" element={<Navigate to="/" replace />} />

@@ -38,7 +38,7 @@ export default function WorkspaceSwitcher() {
           </span>
           <span className="min-w-0 flex-1">
             <span className="block truncate text-[12px] font-semibold text-ink">{current?.name || 'Workspace'}</span>
-            <span className="block text-[10px] text-ink-faint">{current?.role === 'admin' ? 'Admin' : 'Member'}</span>
+            <span className="block text-[10px] text-ink-faint">{current?.role === 'owner' ? 'Owner' : 'Member'}</span>
           </span>
           <ChevronDown width={14} height={14} className="shrink-0 text-ink-faint" />
         </button>

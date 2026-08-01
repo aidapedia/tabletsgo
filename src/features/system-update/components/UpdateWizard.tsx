@@ -5,7 +5,7 @@ import Badge from '@/shared/ui/Badge'
 import { useToast } from '@/shared/ui/feedback/Toast'
 import { CheckIcon, DownloadIcon, RefreshIcon } from '@/shared/ui/icons'
 import { MarkdownText } from '@/features/dashboard'
-import { useWorkspaces } from '@/features/workspaces'
+import { useAuth } from '@/features/auth'
 import { useUpdate } from '../stores/UpdateContext'
 import { applyUpdate, downloadBackup, pollUntilVersion, runBackup, runPreflight } from '../lib/api'
 import type { ApplyResult, BackupResult, PreflightCheck, PreflightStatus } from '../lib/types'
@@ -21,12 +21,15 @@ const STEPS = [
 const STATUS_TONE: Record<PreflightStatus, 'green' | 'amber' | 'red'> = { pass: 'green', warn: 'amber', fail: 'red' }
 
 // Guided update flow. Owns the step machine and all async work; renders inside
-// the generic <Wizard/> shell. Only workspace admins can run mutating steps.
+// the generic <Wizard/> shell. Only instance admins can run mutating steps.
 export default function UpdateWizard({ onClose }: { onClose: () => void }) {
   const { info } = useUpdate()
-  const { current } = useWorkspaces()
   const toast = useToast()
-  const isAdmin = current?.role === 'admin'
+  // Updating is instance-wide, so it's the *system* admin's call — not a
+  // workspace owner's. (An admin holds no workspace, so the old workspace-role
+  // check would have locked the only person allowed to do it out of it.)
+  const { user } = useAuth()
+  const isAdmin = user?.role === 'admin'
 
   const [step, setStep] = useState(0)
   const [busy, setBusy] = useState(false)

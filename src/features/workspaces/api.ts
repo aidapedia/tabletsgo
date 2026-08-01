@@ -11,10 +11,16 @@ export type NotificationSettings = {
 // is actually in effect).
 export type SessionSettings = { maxPerConnection: number; instanceDefault?: number }
 
+// A workspace membership is either 'owner' (manages the workspace: members,
+// teams, settings, connections) or 'member' (uses the connections they've been
+// granted). Distinct from the *system* role on the account — see
+// `features/admin`. Pre-v8 servers spelled 'owner' as 'admin'.
+export type WorkspaceRole = 'owner' | 'member'
+
 export type Workspace = {
   id: string
   name: string
-  role: 'admin' | 'member'
+  role: WorkspaceRole
   createdAt?: number
   experiments?: Record<string, boolean>
   notifications?: NotificationSettings
@@ -49,7 +55,14 @@ export async function deleteWorkspace(id: string) {
   return request(`/workspaces/${id}`, { method: 'DELETE' })
 }
 
-export type Member = { userId: string; email: string; name: string; role: 'admin' | 'member'; status: 'active' | 'pending' }
+export type Member = {
+  userId: string
+  email: string
+  name: string
+  role: WorkspaceRole
+  status: 'active' | 'pending'
+  systemRole?: 'admin' | 'user'
+}
 
 export async function listMembers(workspaceId: string) {
   return safeRequest<Member[]>(`/workspaces/${workspaceId}/members`, [])
@@ -59,6 +72,11 @@ export async function inviteMember(workspaceId: string, email: string) {
     method: 'POST',
     body: { email },
   })
+}
+// Promote a member to owner, or demote one back. A workspace can have any
+// number of owners but never zero.
+export async function setMemberRole(workspaceId: string, userId: string, role: WorkspaceRole) {
+  return request(`/workspaces/${workspaceId}/members/${userId}`, { method: 'PUT', body: { role } })
 }
 export async function removeMember(workspaceId: string, userId: string) {
   return request(`/workspaces/${workspaceId}/members/${userId}`, { method: 'DELETE' })

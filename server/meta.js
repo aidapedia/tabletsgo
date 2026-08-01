@@ -62,11 +62,12 @@ function seedAdminFromEnv() {
   meta
     .prepare('INSERT INTO users (id, username, password_hash, name, role, status) VALUES (?, ?, ?, ?, ?, ?)')
     .run(uid, process.env.ADMIN_USERNAME, sha256(process.env.ADMIN_PASSWORD), 'Admin', 'admin', 'active')
+  // The workspace is created without an owner: an instance admin administers
+  // workspaces but never belongs to one (CLAUDE.md "AUTH MODEL"), so making the
+  // seeded admin its owner would contradict the model. Signing in as the admin,
+  // the first task is to invite someone and hand them the workspace.
   meta
     .prepare('INSERT INTO workspaces (id, name, settings, created_at) VALUES (?, ?, ?, ?)')
     .run(wid, process.env.WORKSPACE_NAME || 'My Workspace', '{}', now)
-  meta
-    .prepare('INSERT INTO workspace_members (id, workspace_id, user_id, role, created_at) VALUES (?, ?, ?, ?, ?)')
-    .run(randomUUID(), wid, uid, 'admin', now)
-  console.log(`🌱 Seeded admin ${process.env.ADMIN_USERNAME} + workspace`)
+  console.log(`🌱 Seeded admin ${process.env.ADMIN_USERNAME} + workspace (assign an owner from Admin → Workspaces)`)
 }

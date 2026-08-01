@@ -17,7 +17,7 @@ export default function ConnectionAccessPanel({ conn }: { conn: any }) {
   const toast = useToast()
   const { current } = useWorkspaces()
   const workspaceId = current?.id
-  const isAdmin = current?.role === 'admin'
+  const isOwner = current?.role === 'owner'
 
   const [teams, setTeams] = useState<Team[]>([])
   const [members, setMembers] = useState<Member[]>([])
@@ -72,7 +72,8 @@ export default function ConnectionAccessPanel({ conn }: { conn: any }) {
   const assignedTeams = teams.filter((t) => teamIds.includes(t.id))
   // Admins already have access to every connection, so there's no point listing
   // them as grantable individuals.
-  const selectableMembers = members.filter((m) => m.role !== 'admin')
+  // Owners already see every connection, so they're never in the grant list.
+  const selectableMembers = members.filter((m) => m.role !== 'owner')
   const assignedMembers = selectableMembers.filter((m) => userIds.includes(m.userId))
   const ownerName = conn.ownerName || conn.ownerEmail
   const ownerId = conn.ownerId
@@ -100,7 +101,7 @@ export default function ConnectionAccessPanel({ conn }: { conn: any }) {
       <div className="rounded-card border border-edge bg-card p-5">
         <div className="mb-1 flex items-center justify-between gap-3">
           <div className="text-[13px] font-bold">Who can access</div>
-          {isAdmin && !editing && (
+          {isOwner && !editing && (
             <Button variant="subtle" size="sm" icon={EditIcon} onClick={startEdit}>
               Edit access
             </Button>

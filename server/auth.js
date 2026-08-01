@@ -2,16 +2,27 @@
  * Sessions, request guards and the workspace/team membership rules that decide
  * who may see a connection.
  *
- * Roles are per workspace (`admin` | `member`) via `workspace_members`. A login
- * is a bearer token in the session store (server/sessions — in-process by
- * default, Redis when SESSION_REDIS_URL is set), *not* a meta-DB row: replicas
- * then share logins, and the store expires them on its own.
+ * Roles come in two independent tiers (CLAUDE.md "AUTH MODEL"):
+ *
+ *   system   `users.role` — 'admin' | 'user'. An 'admin' administers the
+ *            instance (workspaces + accounts) and deliberately holds no
+ *            workspace membership, so `memberRole` returns null for them and
+ *            every workspace-scoped guard below denies them. Instance
+ *            administration carries no data access, by design.
+ *   workspace `workspace_members.role` — 'owner' | 'member'. Owners manage
+ *            their own workspace (members, teams, settings, connections);
+ *            members only use the connections they've been granted.
+ *
+ * A login is a bearer token in the session store (server/sessions — in-process
+ * by default, Redis when SESSION_REDIS_URL is set), *not* a meta-DB row:
+ * replicas then share logins, and the store expires them on its own.
  *
  * The store is async while `requireAuth` is called synchronously by ~100 routes,
  * so the token is resolved once per request by `sessionMiddleware` and parked on
  * `req`. Everything downstream reads that — no route had to change.
  */
 
+import { randomUUID } from 'crypto'
 import { createAuthSession, destroyAuthSession, readAuthSession } from './sessions/index.js'
 import { meta } from './meta.js'
 
@@ -66,15 +77,13 @@ export const requireAuth = (req, res) => {
   return user
 }
 
-// A user is an "instance admin" for update purposes if they're an admin of any
-// workspace (updates are instance-wide, not scoped to one workspace).
-export const isAnyWorkspaceAdmin = (userId) =>
-  !!meta.prepare("SELECT 1 FROM workspace_members WHERE user_id = ? AND role = 'admin' LIMIT 1").get(userId)
+// ---- System role ----
+export const isSystemAdmin = (user) => !!user && user.role === 'admin'
 
 export const requireSystemAdmin = (req, res) => {
   const user = requireAuth(req, res)
   if (!user) return null
-  if (!isAnyWorkspaceAdmin(user.id)) {
+  if (!isSystemAdmin(user)) {
     res.status(403).json({ error: 'Admin access required' })
     return null
   }
@@ -82,9 +91,48 @@ export const requireSystemAdmin = (req, res) => {
 }
 
 // ---- Workspace helpers ----
+/**
+ * The caller's role in a workspace, or null if they aren't a member — which is
+ * always the case for an instance admin, and is what stops instance
+ * administration from reaching workspace data.
+ *
+ * 'admin' is the pre-v8 spelling of 'owner'; normalizing here means a DB that
+ * has been rolled back and forward again never exposes a mixed vocabulary.
+ */
 export const memberRole = (workspaceId, userId) => {
   const m = meta.prepare('SELECT role FROM workspace_members WHERE workspace_id = ? AND user_id = ?').get(workspaceId, userId)
-  return m ? m.role : null
+  if (!m) return null
+  return m.role === 'admin' ? 'owner' : m.role
+}
+
+export const isWorkspaceOwner = (workspaceId, userId) => memberRole(workspaceId, userId) === 'owner'
+
+/**
+ * Guard for anything that changes a workspace or what's in it — members, teams,
+ * settings, connections, storage destinations. Sends the response and returns
+ * null when the caller isn't an owner, so routes read
+ * `if (!requireOwner(req, res, id)) return`.
+ */
+export const requireOwner = (req, res, workspaceId) => {
+  const user = requireAuth(req, res)
+  if (!user) return null
+  const role = memberRole(workspaceId, user.id)
+  if (role !== 'owner') {
+    res.status(403).json({ error: role ? 'Only a workspace owner can do that.' : 'Forbidden' })
+    return null
+  }
+  return user
+}
+
+// Guard for anything any member of the workspace may do.
+export const requireMember = (req, res, workspaceId) => {
+  const user = requireAuth(req, res)
+  if (!user) return null
+  if (!memberRole(workspaceId, user.id)) {
+    res.status(403).json({ error: 'Forbidden' })
+    return null
+  }
+  return user
 }
 
 export const workspaceForUser = (id, userId) => {
@@ -129,7 +177,7 @@ export const setConnectionAccess = (connectionId, { teams = [], users = [] }) =>
   tx()
 }
 
-// Can this user see/open the connection? Admins always can; an unassigned
+// Can this user see/open the connection? Owners always can; an unassigned
 // connection is open to every workspace member; otherwise the user must be a
 // listed individual or belong to a listed team.
 export const userCanAccessConnection = (conn, userId) => {
@@ -137,7 +185,7 @@ export const userCanAccessConnection = (conn, userId) => {
   if (!conn.workspaceId) return true
   const role = memberRole(conn.workspaceId, userId)
   if (!role) return false
-  if (role === 'admin') return true
+  if (role === 'owner') return true
   const { teams, users } = connectionAccess(conn.id)
   if (teams.length === 0 && users.length === 0) return true
   if (users.includes(userId)) return true

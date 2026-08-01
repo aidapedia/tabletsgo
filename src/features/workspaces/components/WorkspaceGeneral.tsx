@@ -46,7 +46,7 @@ export default function WorkspaceGeneral() {
 
   if (!current) return <LoadingState className="" />
 
-  const isAdmin = current.role === 'admin'
+  const isOwner = current.role === 'owner'
 
   const saveName = async () => {
     if (!name.trim() || name.trim() === current.name) return
@@ -63,7 +63,7 @@ export default function WorkspaceGeneral() {
   }
 
   const saveSessions = async () => {
-    if (!isAdmin || maxSessions === savedMaxSessions) return
+    if (!isOwner || maxSessions === savedMaxSessions) return
     setSavingSessions(true)
     try {
       await updateWorkspace(current.id, { sessions: { maxPerConnection: maxSessions } })
@@ -93,14 +93,14 @@ export default function WorkspaceGeneral() {
       <div className="max-w-[360px]">
         <Label>Workspace name</Label>
         <div className="flex gap-2">
-          <Input value={name} disabled={!isAdmin} onChange={(e) => setName(e.target.value)} />
-          {isAdmin && (
+          <Input value={name} disabled={!isOwner} onChange={(e) => setName(e.target.value)} />
+          {isOwner && (
             <Button variant="primary" size="sm" onClick={saveName} disabled={savingName || !name.trim() || name.trim() === current.name}>
               Save
             </Button>
           )}
         </div>
-        {!isAdmin && <p className="mt-2 text-[11px] text-ink-faint">Only workspace admins can change these settings.</p>}
+        {!isOwner && <p className="mt-2 text-[11px] text-ink-faint">Only workspace admins can change these settings.</p>}
       </div>
 
       {/* Default session limit — every connection that doesn't set its own inherits this. */}
@@ -114,7 +114,7 @@ export default function WorkspaceGeneral() {
             ariaLabel="Max sessions per connection"
             onChange={(n) => setMaxSessions(n || 0)}
           />
-          {isAdmin && (
+          {isOwner && (
             <Button variant="primary" size="sm" onClick={saveSessions} disabled={savingSessions || maxSessions === savedMaxSessions}>
               Save
             </Button>
@@ -126,7 +126,7 @@ export default function WorkspaceGeneral() {
         </p>
       </div>
 
-      {isAdmin && (
+      {isOwner && (
         <div className="rounded-card border border-red/30 bg-red/5 p-5">
           <div className="text-[13px] font-bold text-red">Delete workspace</div>
           <p className="mt-1.5 text-[11px] text-ink-dim">

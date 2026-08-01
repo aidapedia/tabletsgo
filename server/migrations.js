@@ -35,7 +35,7 @@ function ensureBaseSchema(db) {
       username TEXT UNIQUE NOT NULL,
       password_hash TEXT NOT NULL,
       name TEXT,
-      role TEXT
+      role TEXT                    -- 'admin' (instance admin) | 'user'
     );
     CREATE TABLE IF NOT EXISTS connections (
       id TEXT PRIMARY KEY,
@@ -218,7 +218,7 @@ function ensureBaseSchema(db) {
       id TEXT PRIMARY KEY,
       workspace_id TEXT NOT NULL,
       user_id TEXT NOT NULL,
-      role TEXT NOT NULL,          -- 'admin' | 'member'
+      role TEXT NOT NULL,          -- 'owner' | 'member' (legacy 'admin' reads as 'owner')
       created_at INTEGER,
       UNIQUE(workspace_id, user_id)
     );
@@ -248,10 +248,18 @@ function ensureBaseSchema(db) {
       UNIQUE(connection_id, principal_type, principal_id)
     );
     CREATE INDEX IF NOT EXISTS idx_connection_access_conn ON connection_access(connection_id);
+    -- The durable login store: one row per bearer token, read through a cache
+    -- (memory, or Redis when SESSION_REDIS_URL is set). See server/sessions/.
+    -- The ns column keeps the store contract generic; only 'auth' is stored
+    -- durably — connection sessions describe live sockets and are cache-only.
     CREATE TABLE IF NOT EXISTS sessions (
       token TEXT PRIMARY KEY,
       user_id TEXT NOT NULL,
       created_at INTEGER
+      -- ns / context / expires_at (and their indexes) are added by migration v8
+      -- via ALTER; like dashboards.folder_id above, they are intentionally NOT
+      -- inlined here so v8's plain ALTER doesn't collide on fresh installs
+      -- (which also run v8).
     );
   `)
 }
@@ -501,9 +509,78 @@ export const MIGRATIONS = [
       db.exec(`ALTER TABLE connections ADD COLUMN max_sessions INTEGER DEFAULT 0`)
     },
   },
-  // v8+: append plain, run-exactly-once steps here, e.g.
+  {
+    version: 8,
+    name: 'two-tier roles + sessions become the durable login store',
+    up(db) {
+      // ---- Part 1: roles ----
+      // Roles split into two independent dimensions (see CLAUDE.md "AUTH MODEL"):
+      //   users.role            'admin' = instance admin | 'user' = everyone else
+      //   workspace_members.role 'owner' | 'member'
+      // Both columns already exist; this step only normalizes their values.
+
+      // 1. Workspace 'admin' becomes 'owner'. (memberRole() also normalizes on
+      //    read, so a rolled-back-then-forward DB never sees a mixed vocabulary.)
+      db.prepare("UPDATE workspace_members SET role = 'owner' WHERE role = 'admin'").run()
+
+      // 2. Every non-admin account gets the explicit 'user' role (it was NULL for
+      //    invited members, which read as "no role" rather than "regular user").
+      db.prepare("UPDATE users SET role = 'user' WHERE role IS NULL OR role <> 'admin'").run()
+
+      // 3. An instance admin may not own or belong to a workspace — the whole
+      //    point of the split is that instance administration carries no data
+      //    access. Hand each workspace they owned to its longest-standing
+      //    remaining member (promoted if needed) so nothing is left ownerless,
+      //    then drop the admin's membership + team rows.
+      const admins = db.prepare("SELECT id FROM users WHERE role = 'admin'").all()
+      for (const admin of admins) {
+        const owned = db.prepare('SELECT workspace_id FROM workspace_members WHERE user_id = ?').all(admin.id)
+        for (const { workspace_id: wid } of owned) {
+          db.prepare('DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?').run(wid, admin.id)
+          db.prepare(
+            `DELETE FROM team_members WHERE user_id = ?
+               AND team_id IN (SELECT id FROM teams WHERE workspace_id = ?)`
+          ).run(admin.id, wid)
+          const owners = db.prepare("SELECT COUNT(*) c FROM workspace_members WHERE workspace_id = ? AND role = 'owner'").get(wid).c
+          if (owners > 0) continue
+          // No owner left — promote the oldest remaining member. A workspace with
+          // no members at all stays ownerless; an instance admin assigns one from
+          // the admin area.
+          const heir = db
+            .prepare('SELECT user_id FROM workspace_members WHERE workspace_id = ? ORDER BY created_at LIMIT 1')
+            .get(wid)
+          if (heir) db.prepare("UPDATE workspace_members SET role = 'owner' WHERE workspace_id = ? AND user_id = ?").run(wid, heir.user_id)
+        }
+      }
+
+      // ---- Part 2: the sessions table ----
+      // Step 7 moved logins into the session store and left this table behind
+      // for rollback only. It comes back as the *source of truth*: the store
+      // now reads through a cache (memory, or Redis when SESSION_REDIS_URL is
+      // set) to these rows, so a login survives a restart or a flushed cache.
+      // See server/sessions/{db,hybrid}.js.
+      //
+      // The table may hold pre-v7 rows; the three columns below are additive
+      // and the backfill gives those rows a namespace and an expiry rather
+      // than leaving them to be read as already-expired.
+      db.exec(`ALTER TABLE sessions ADD COLUMN ns TEXT`)
+      db.exec(`ALTER TABLE sessions ADD COLUMN context TEXT`)
+      db.exec(`ALTER TABLE sessions ADD COLUMN expires_at INTEGER`)
+      db.prepare(
+        `UPDATE sessions
+            SET ns = 'auth',
+                context = COALESCE(context, json_object('userId', user_id, 'createdAt', COALESCE(created_at, ?))),
+                expires_at = COALESCE(created_at, ?) + ?`
+      ).run(Date.now(), Date.now(), 30 * 24 * 60 * 60 * 1000)
+      // list/count/sweep filter on (ns, expires_at); signing a user out
+      // everywhere filters on user_id. Both run on the authenticated path.
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_sessions_ns_expires ON sessions(ns, expires_at)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)`)
+    },
+  },
+  // v9+: append plain, run-exactly-once steps here, e.g.
   // {
-  //   version: 8,
+  //   version: 9,
   //   name: 'connections: last_used_at',
   //   up(db) {
   //     db.exec(`ALTER TABLE connections ADD COLUMN last_used_at INTEGER`)
@@ -517,9 +594,8 @@ export const MIGRATIONS = [
 // shopping list for an eventual cleanup step once the release floor has
 // moved past every image that still used the table.
 export const DEPRECATED_TABLES = [
-  // Login tokens moved to the session store (server/sessions) in step 7 — kept
-  // so an older image can still sign users in after a rollback.
-  { table: 'sessions', supersededBy: 'server/sessions store', sinceStep: 7 },
+  // NOTE: `sessions` was deprecated in step 7 and un-deprecated in step 8 — it
+  // is once again live code's source of truth for logins (server/sessions/db.js).
   { table: 'saved_folders', supersededBy: 'folders', sinceStep: 3 },
   { table: 'domains', supersededBy: 'folders', sinceStep: 5 },
   { table: 'table_domains', supersededBy: 'connection_tables', sinceStep: 5 },

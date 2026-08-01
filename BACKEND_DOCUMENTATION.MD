@@ -14,8 +14,19 @@ endpoint with its request, response, and an example URL.
 - **Auth:** login/setup/accept-invite return `{ user, token }`. Send the token as
   `Authorization: Bearer <token>` on subsequent calls. Workspace, member and every
   per-connection route (`/api/connections/:id/*`) require it and enforce workspace
-  membership; unauthenticated → `401`, non-member → `403`. Roles are per workspace
-  (`admin` | `member`).
+  membership; unauthenticated → `401`, non-member → `403`.
+- **Roles** come in two independent tiers:
+
+  | Tier | Stored in | Values | Can do |
+  | --- | --- | --- | --- |
+  | System | `users.role` (on `user.role` in every auth response) | `admin` \| `user` | `admin` manages workspaces and accounts via `/api/admin/*` — and *nothing else*. An instance admin holds **no** workspace membership, so every workspace-scoped route `403`s for them by design. |
+  | Workspace | `workspace_members.role` | `owner` \| `member` | `owner` manages the workspace: members, teams, settings, connections and storage destinations. A workspace may have **any number of owners but never zero**. `member` uses the connections they've been granted — full database access (query, edit rows, workflows, dashboards, schema changes) but no create/edit/delete of the connection record itself. |
+
+  Owner-only refusals return `403 { "error": "Only a workspace owner can …" }`;
+  admin-only routes return `403 { "error": "Admin access required" }`.
+  The workspace role used to be spelled `admin`; meta migration v8 rewrites it
+  to `owner` in place, and the server also normalizes it on read so a
+  rolled-back-then-forward DB never exposes a mixed vocabulary.
 - **Error shape:** errors return `{ "error": "<message>" }` with an HTTP status of
   `400` (bad input), `401` (bad login), `404` (not found), or `500` (server error).
   The query/insert/test routes return DB errors in the body too (see each route).
@@ -215,7 +226,18 @@ CREATE TABLE users (
   username TEXT UNIQUE NOT NULL,
   password_hash TEXT NOT NULL,  -- sha256(password) hex
   name TEXT,
-  role TEXT
+  role TEXT                     -- system role: "admin" (instance admin) | "user"
+);
+-- The durable login store. One row per bearer token; the server reads it
+-- through a cache (in-process, or Redis when SESSION_REDIS_URL is set), so a
+-- login survives a restart, a flushed cache and a Redis outage.
+CREATE TABLE sessions (
+  token TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,        -- indexed: "sign this user out everywhere"
+  created_at INTEGER,
+  ns TEXT,                      -- "auth" (the store's namespace)
+  context TEXT,                 -- JSON: the session value (userId, ip, userAgent, …)
+  expires_at INTEGER            -- SQLite has no TTL, so reads filter on this
 );
 CREATE TABLE connections (
   id TEXT PRIMARY KEY,
@@ -381,9 +403,10 @@ CREATE TABLE connection_access (
 );
 ```
 
-**Seeds on first run:** user `admin` / `admin123` (role `admin`), and a
+**Seeds on first run:** user `admin` / `admin123` (system role `admin`), and a
 `demo-sqlite` connection pointing at `./demo.db` (auto-seeded with sample data
-when empty).
+when empty). Note the seeded admin is an *instance* admin, so the seeded
+workspace has no owner until the admin assigns one (`PUT /api/admin/workspaces/:id/members/:userId`).
 
 ---
 
@@ -391,8 +414,28 @@ when empty).
 
 ## Auth & setup
 
-`user` shape: `{ id, email, name, role }`. `{ user, token }` is returned by login,
+`user` shape: `{ id, email, name, role }` — `role` here is the **system** role
+(`admin` | `user`), not a workspace role. `{ user, token }` is returned by login,
 setup and accept-invite; store the token and send it as `Authorization: Bearer`.
+
+**Where the token lives.** The meta DB's `sessions` table is the source of truth,
+read through a cache — in-process by default, or Redis when `SESSION_REDIS_URL`
+is set (`server/sessions/`). The practical consequences:
+
+- a login survives a server restart, a flushed cache, and a Redis outage (a cache
+  failure degrades to a slower DB read, it never signs anyone out);
+- with more than one replica, set `SESSION_REDIS_URL` so they share the cache —
+  but they already share the logins themselves through the DB;
+- the lifetime slides on every request (`SESSION_TTL_MS`, default 30 days). The
+  DB is only rewritten once ~10% of that has elapsed, so the sliding expiry
+  doesn't put a write in front of every authenticated request;
+- revocation (logout, password reset, role change) deletes the row and evicts the
+  cached copy. Another replica stops honouring the token once its cached copy
+  lapses (≤60s).
+
+**Setup** creates the first account as an *instance admin*, which by design holds
+no workspace membership — so the workspace it names is created ownerless, and the
+admin's first job is `POST /api/admin/users` + `PUT /api/admin/workspaces/:id/members/:userId`.
 
 ### POST `/api/auth/login`
 - **Body:** `{ "username": "you@example.com", "password": "…" }` (`username` is the email)
@@ -438,16 +481,18 @@ Set password, activate, log in. **Body:** `{ "name", "password" }` → **200:** 
   whole workspace sees. `notifications` ships here too (not just the detail route)
   so a settings panel that only calls `refresh()`/`listWorkspaces()` after saving
   sees the persisted value instead of it reverting to empty.
-- `POST /api/workspaces` `{ name }` → creates one; caller becomes `admin`.
+- `POST /api/workspaces` `{ name }` → creates one; caller becomes `owner`.
+  An instance admin gets `403` here (they cannot own a workspace) — they use
+  `POST /api/admin/workspaces`, which names someone else as the owner.
 - `GET /api/workspaces/:id` → `{ id, name, role, createdAt, experiments, notifications, sessions }`;
   `sessions` is `{ maxPerConnection, instanceDefault }` — the workspace-wide cap on
   concurrent sessions per connection (0 = unlimited) plus the read-only
   `MAX_SESSIONS_PER_CONNECTION` env fallback that applies while it's 0, so the
   settings form can show what's actually in effect. See "Connection sessions".
-  Admins also get `smtp` (password-masked) + `smtpEnvFallback` + `smtpEnvDefaults`
+  Owners also get `smtp` (password-masked) + `smtpEnvFallback` + `smtpEnvDefaults`
   (non-secret env values — `host`, `port`, `secure`, `user`, `from` — present
   only when `smtpEnvFallback` is true).
-- `PUT /api/workspaces/:id` (admin) `{ name?, smtp?, experiments?, notifications?, sessions? }` → `{ ok: true }`.
+- `PUT /api/workspaces/:id` (owner) `{ name?, smtp?, experiments?, notifications?, sessions? }` → `{ ok: true }`.
   `sessions` is `{ maxPerConnection }` (integer, 0 = unlimited; negatives and junk
   clamp to 0) — the default every connection in the workspace inherits unless it
   sets its own `maxSessions`.
@@ -467,37 +512,101 @@ Set password, activate, log in. **Body:** `{ "name", "password" }` → **200:** 
   that ends up failed (after any configured retries — see the Backup section) emails
   every listed member via the workspace's SMTP config (see `smtpConfig`). Manual
   "Run now" failures never trigger this.
-- `POST /api/workspaces/:id/smtp/test` (admin) `{ to?, smtp? }` → `{ ok: true }`
+- `POST /api/workspaces/:id/smtp/test` (owner) `{ to?, smtp? }` → `{ ok: true }`
   or `400 { error }`. Sends a one-off test email. `to` defaults to the caller's
   own email. `smtp` (same shape as `PUT`, minus `pass` falling back to the
   stored one) lets the UI test unsaved form values; omit it entirely to test
   the saved/env config as-is.
-- `DELETE /api/workspaces/:id` (admin) → deletes it + its connections/queries.
-  `400` if it's the caller's only workspace.
+- `DELETE /api/workspaces/:id` (owner) → deletes it + its connections/queries.
+  `400` if it's the caller's only workspace. Live driver handles for its
+  connections are released and their sessions ended before the cascade runs.
 
 ### Members
-- `GET /api/workspaces/:id/members` → `[{ userId, email, name, role, status }]`.
-- `POST /api/workspaces/:id/members` (admin) `{ email }` → `{ member, inviteLink, emailed }`.
-  Existing accounts are added directly; otherwise a pending user + invite link is
-  created (and emailed when SMTP is configured; `inviteLink` returned regardless).
-- `DELETE /api/workspaces/:id/members/:userId` (admin) → `{ ok: true }`. Can't
-  remove yourself or the last admin. Also drops the removed user from every team
-  in this workspace.
+- `GET /api/workspaces/:id/members` → `[{ userId, email, name, role, status, systemRole, createdAt }]`.
+  `role` is the workspace role (`owner` | `member`); `systemRole` is the account's
+  system role, so the UI can tell an instance admin apart.
+- `POST /api/workspaces/:id/members` (owner) `{ email }` → `{ member, inviteLink, emailed }`.
+  Existing accounts are added directly as `member`; otherwise a pending user +
+  invite link is created (and emailed when SMTP is configured; `inviteLink`
+  returned regardless). `400` if the email belongs to an instance admin — such an
+  account cannot join a workspace.
+- `PUT /api/workspaces/:id/members/:userId` (owner) `{ role }` → `{ ok: true, role }`.
+  Promotes a member to `owner` or demotes an owner back to `member`. `400` when
+  demoting the **last** owner ("The workspace needs at least one owner.") or when
+  the target is an instance admin.
+- `DELETE /api/workspaces/:id/members/:userId` (owner) → `{ ok: true }`. Can't
+  remove yourself or the last owner. Also drops the removed user from every team
+  in this workspace and from any individual connection grants.
+- **Example:** `PUT http://localhost:3000/api/workspaces/ws_123/members/u_456` body `{ "role": "owner" }`.
 
 ### Teams
 Workspace-scoped groups of members. A team can be assigned as an access principal
 to a connection (see Connection access) and as a notification recipient. Managed
-from the frontend's Workspace → Teams tab. Any member can read; only admins mutate.
+from the frontend's Workspace → Teams tab. Any member can read; only owners mutate.
 - `GET /api/workspaces/:id/teams` → `[{ id, name, memberCount, createdAt }]`.
-- `POST /api/workspaces/:id/teams` (admin) `{ name }` → `{ id, name, memberCount: 0, createdAt }`.
-- `PUT /api/workspaces/:id/teams/:teamId` (admin) `{ name }` → `{ ok: true }`.
-- `DELETE /api/workspaces/:id/teams/:teamId` (admin) → `{ ok: true }`. Cascades:
+- `POST /api/workspaces/:id/teams` (owner) `{ name }` → `{ id, name, memberCount: 0, createdAt }`.
+- `PUT /api/workspaces/:id/teams/:teamId` (owner) `{ name }` → `{ ok: true }`.
+- `DELETE /api/workspaces/:id/teams/:teamId` (owner) → `{ ok: true }`. Cascades:
   removes the team's members and any `connection_access` rows assigning it.
 - `GET /api/workspaces/:id/teams/:teamId/members` → `[{ userId, email, name }]`.
-- `POST /api/workspaces/:id/teams/:teamId/members` (admin) `{ userId }` → `{ ok: true }`.
+- `POST /api/workspaces/:id/teams/:teamId/members` (owner) `{ userId }` → `{ ok: true }`.
   `400` if the user isn't a member of the workspace.
-- `DELETE /api/workspaces/:id/teams/:teamId/members/:userId` (admin) → `{ ok: true }`.
+- `DELETE /api/workspaces/:id/teams/:teamId/members/:userId` (owner) → `{ ok: true }`.
 - **Example:** `POST http://localhost:3000/api/workspaces/ws_123/teams` body `{ "name": "Backend" }`.
+
+---
+
+## Instance administration (`/api/admin/*`, system admin only)
+
+Every route below requires an account whose **system** role is `admin`; anything
+else gets `403 { "error": "Admin access required" }`. The surface is deliberately
+narrow — which workspaces exist and who runs them, plus the accounts on the
+instance. An instance admin holds no workspace membership, so there is no route
+here that reaches a connection or a database.
+
+### Workspaces
+
+- `GET /api/admin/workspaces` → `[{ id, name, createdAt, memberCount, teamCount, connectionCount, owners }]`
+  for **every** workspace on the instance. `owners` is the member objects whose
+  role is `owner` — an empty array means the workspace is currently ownerless
+  (its owners left, or it was just created), which is the state an admin acts on.
+- `POST /api/admin/workspaces` `{ name, ownerEmail }` → `{ workspace, inviteLink, emailed }`.
+  Creates the workspace and hands it to `ownerEmail`. An unknown address gets a
+  pending account plus an `inviteLink` (emailed when SMTP is configured; returned
+  either way). `400` if `ownerEmail` belongs to an instance admin.
+- `PUT /api/admin/workspaces/:id` `{ name }` → `{ ok: true, name }`.
+- `DELETE /api/admin/workspaces/:id` → `{ ok: true, connectionsDeleted }`. Releases
+  the live driver handles and ends the sessions first, then cascades the metadata
+  (connections, queries, folders, workflows, dashboards, history, teams, storage
+  destinations).
+- `GET /api/admin/workspaces/:id/members` → `[{ userId, email, name, role, status, systemRole, createdAt }]`.
+- `PUT /api/admin/workspaces/:id/members/:userId` `{ role }` → `{ ok: true, role }`.
+  `role` is `owner` | `member`. Adds the user to the workspace if they aren't in
+  it yet — this is how an admin rescues a workspace whose owners have all left.
+  `400` when demoting the last owner, or when the target is an instance admin.
+- `DELETE /api/admin/workspaces/:id/members/:userId` → `{ ok: true }`. `400` when
+  it would remove the last owner.
+- **Example:** `POST http://localhost:3000/api/admin/workspaces` body
+  `{ "name": "Engineering", "ownerEmail": "olive@example.com" }`.
+
+### Users
+
+- `GET /api/admin/users` → `[{ id, email, name, role, status, workspaces }]` where
+  `workspaces` is `[{ id, name, role }]` — what the account would lose if promoted.
+- `POST /api/admin/users` `{ email, name?, password?, role? }` → `{ user, inviteLink }`.
+  With `password` the account is active immediately; without it the account is
+  `pending` and `inviteLink` is how they set one. `role` is `admin` | `user`
+  (default `user`). `400` if the email already has an account.
+- `PUT /api/admin/users/:id` `{ name?, password?, role? }` → the updated user.
+  Changing `password` or `role` signs the account out everywhere.
+  - `409` when promoting an account to `admin` that is the **only** owner of a
+    workspace — promotion strips every membership, so it would orphan it. The body
+    carries `workspaces: [{ id, name }]`; reassign ownership first.
+  - `400` when demoting the last instance admin.
+- `DELETE /api/admin/users/:id` → `{ ok: true }`. `400` for your own account or the
+  last instance admin; `409` (same shape as above) when the account is the only
+  owner of a workspace.
+- **Example:** `PUT http://localhost:3000/api/admin/users/u_123` body `{ "role": "admin" }`.
 
 ---
 
@@ -506,7 +615,7 @@ from the frontend's Workspace → Teams tab. Any member can read; only admins mu
 ### GET `/api/connections`
 List connections in a workspace the caller belongs to. Results are further filtered
 by **connection access** (see below): a connection with no access rows is visible to
-every workspace member; one with access rows is visible only to workspace admins, its
+every workspace member; one with access rows is visible only to workspace owners, its
 assigned individual members, and members of its assigned teams.
 - **Query:** `workspace` (required — the workspace id). Missing → `[]`.
 
@@ -1882,6 +1991,17 @@ Liveness probe. Also reports boot readiness and the running identity.
 | GET    | `/api/workspaces/:id/teams/:teamId/members` | List team members             |
 | POST   | `/api/workspaces/:id/teams/:teamId/members` | Add team member (admin)       |
 | DELETE | `/api/workspaces/:id/teams/:teamId/members/:userId` | Remove team member (admin) |
+| GET    | `/api/admin/workspaces`                   | Every workspace + its owners    |
+| POST   | `/api/admin/workspaces`                   | Create one, assign an owner     |
+| PUT    | `/api/admin/workspaces/:id`               | Rename a workspace              |
+| DELETE | `/api/admin/workspaces/:id`               | Delete a workspace + contents   |
+| GET    | `/api/admin/workspaces/:id/members`       | Its membership list             |
+| PUT    | `/api/admin/workspaces/:id/members/:uid`  | Grant / revoke ownership        |
+| DELETE | `/api/admin/workspaces/:id/members/:uid`  | Remove a member                 |
+| GET    | `/api/admin/users`                        | Every account on the instance   |
+| POST   | `/api/admin/users`                        | Create an account               |
+| PUT    | `/api/admin/users/:id`                    | Rename / reset password / role  |
+| DELETE | `/api/admin/users/:id`                    | Delete an account               |
 | GET    | `/api/connections/:id/saved`              | List saved queries              |
 | POST   | `/api/connections/:id/saved`              | Create saved query              |
 | PUT    | `/api/connections/:id/saved/:sid`         | Update saved query / move       |
@@ -1900,7 +2020,7 @@ Liveness probe. Also reports boot readiness and the running identity.
 | GET    | `/api/connections/:id/ping`               | Connectivity check `{ ok }`     |
 | GET    | `/api/connections/:id/handshake`          | Pre-flight check + root cause   |
 | GET    | `/api/connections/:id/sessions`           | Open sessions + the limit       |
-| DELETE | `/api/connections/:id/sessions/:sid`      | Leave (or admin-close) a session|
+| DELETE | `/api/connections/:id/sessions/:sid`      | Leave (or owner-close) a session|
 | GET    | `/api/connections/:id/tables`             | List tables                     |
 | GET    | `/api/connections/:id/objects`            | List objects (tables/views/fns) |
 | GET    | `/api/connections/:id/function/:name`     | Function definition(s)          |
