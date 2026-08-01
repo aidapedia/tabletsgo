@@ -32,12 +32,23 @@ export type AdminWorkspace = {
   owners: AdminWorkspaceMember[]
 }
 
+/**
+ * `status` is the invite lifecycle ('pending' until they set a password);
+ * `blocked` is separate — the brute-force guard blocked the account after
+ * `failedAttempts` bad sign-ins. `blockedUntil` is null for the ordinary block,
+ * which only an admin lifts; an instance admin is only ever thrown a cooldown,
+ * so theirs always carries a timestamp.
+ */
 export type AdminUser = {
   id: string
   email: string
   name: string
   role: SystemRole
   status: 'active' | 'pending'
+  blocked: boolean
+  blockedAt: number | null
+  blockedUntil: number | null
+  failedAttempts: number
   workspaces: { id: string; name: string; role: WorkspaceRole }[]
 }
 
@@ -94,6 +105,12 @@ export async function updateUser(id: string, patch: { name?: string; password?: 
 
 export async function deleteUser(id: string) {
   return request(`/admin/users/${id}`, { method: 'DELETE' })
+}
+
+// Lift a brute-force block and clear the failed-attempt counter. Setting a new
+// password does the same, so this is the "it was really them" path.
+export async function unblockUser(id: string) {
+  return request<AdminUser>(`/admin/users/${id}/unblock`, { method: 'POST' })
 }
 
 // ---- Global email (SMTP) ----

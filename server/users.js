@@ -14,19 +14,24 @@
 import { randomUUID } from 'crypto'
 import { meta } from './meta.js'
 import { sha256 } from './crypto.js'
+import { LOCK_COLUMNS, clearFailures, lockStatus } from './login-guard.js'
 import { removeAllMemberships } from './workspaces.js'
 
 export const SYSTEM_ROLES = ['admin', 'user']
 
 export const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000
 
-// Never leaks password_hash or a live token.
+// Never leaks password_hash or a live token. `blocked` and friends come from
+// the brute-force guard (server/login-guard.js) — an account blocked by failed
+// sign-ins keeps its 'active' status, so the invite flow's pending/active
+// meaning is untouched.
 const toPublic = (u) => ({
   id: u.id,
   email: u.username,
   name: u.name || u.username,
   role: u.role === 'admin' ? 'admin' : 'user',
   status: u.status || 'active',
+  ...lockStatus(u),
   workspaces: workspacesOf(u.id),
 })
 
@@ -42,10 +47,10 @@ const workspacesOf = (userId) =>
     .map((r) => ({ id: r.id, name: r.name, role: r.role === 'admin' ? 'owner' : r.role }))
 
 export const listUsers = () =>
-  meta.prepare('SELECT id, username, name, role, status FROM users ORDER BY role DESC, username').all().map(toPublic)
+  meta.prepare(`SELECT id, username, name, role, status, ${LOCK_COLUMNS} FROM users ORDER BY role DESC, username`).all().map(toPublic)
 
 export const getUser = (id) => {
-  const u = meta.prepare('SELECT id, username, name, role, status FROM users WHERE id = ?').get(id)
+  const u = meta.prepare(`SELECT id, username, name, role, status, ${LOCK_COLUMNS} FROM users WHERE id = ?`).get(id)
   return u ? toPublic(u) : null
 }
 
@@ -80,7 +85,12 @@ export const createUser = ({ email, name, password, role = 'user', inviteWorkspa
 
 export const updateUser = (id, { name, password }) => {
   if (name !== undefined) meta.prepare('UPDATE users SET name = ? WHERE id = ?').run(name, id)
-  if (password) meta.prepare("UPDATE users SET password_hash = ?, status = 'active' WHERE id = ?").run(sha256(password), id)
+  if (password) {
+    meta.prepare("UPDATE users SET password_hash = ?, status = 'active' WHERE id = ?").run(sha256(password), id)
+    // A new password hands the account back to its owner — the failed-attempt
+    // counter (and any block it caused) is about the old one.
+    clearFailures(id)
+  }
   return getUser(id)
 }
 

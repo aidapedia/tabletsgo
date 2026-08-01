@@ -655,9 +655,25 @@ export const MIGRATIONS = [
       }
     },
   },
-  // v11+: append plain, run-exactly-once steps here, e.g.
+  {
+    version: 11,
+    name: 'users: failed-login counters + account lock (brute-force protection)',
+    up(db) {
+      // Consecutive failed sign-ins are counted on the account itself; past the
+      // threshold the account is blocked (locked_at set) until an instance admin
+      // unblocks it. locked_until is the expiry for the locks that do expire on
+      // their own — an instance admin's cooldown, and LOGIN_LOCKOUT_MS when an
+      // operator opts into self-healing blocks. NULL there = "until an admin
+      // unblocks". Every existing account starts clean. See server/login-guard.js.
+      db.exec(`ALTER TABLE users ADD COLUMN failed_logins INTEGER DEFAULT 0`)
+      db.exec(`ALTER TABLE users ADD COLUMN last_failed_at INTEGER`)
+      db.exec(`ALTER TABLE users ADD COLUMN locked_at INTEGER`)
+      db.exec(`ALTER TABLE users ADD COLUMN locked_until INTEGER`)
+    },
+  },
+  // v12+: append plain, run-exactly-once steps here, e.g.
   // {
-  //   version: 11,
+  //   version: 12,
   //   name: 'connections: last_used_at',
   //   up(db) {
   //     db.exec(`ALTER TABLE connections ADD COLUMN last_used_at INTEGER`)

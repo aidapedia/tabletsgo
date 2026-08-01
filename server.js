@@ -81,6 +81,13 @@ import {
   setMemberRole as setWorkspaceMemberRole,
 } from './server/workspaces.js'
 import {
+  LOCK_COLUMNS,
+  clearFailures,
+  loginRefusal,
+  recordFailure,
+  unlockUser as unblockUser,
+} from './server/login-guard.js'
+import {
   SYSTEM_ROLES,
   countAdmins,
   createUser,
@@ -214,13 +221,33 @@ const fail = (res, error, fallbackStatus = 500) => res.status(error.status || fa
 // Authentication
 // ============================================================================
 
+// The lock the guard just created, in row shape, so the refusal message for the
+// attempt that tripped it is built the same way as every later one.
+const lockRow = (lock) => ({ locked_at: lock.lockedAt, locked_until: lock.lockedUntil, failed_logins: lock.attempts })
+
 // Authenticate a user (by email, stored in `username`). Returns a session token.
+//
+// Repeated failures block the account (server/login-guard.js). The block is
+// checked before the password is verified, so a locked account can neither be
+// probed nor signed into with a guessed password; an unknown address is never
+// counted and gets the same generic answer as a wrong password.
 app.post('/api/auth/login', async (req, res) => {
   const { username, password } = req.body || {}
-  const row = meta.prepare('SELECT id, username, name, role, status, password_hash FROM users WHERE username = ?').get(username)
+  const row = meta
+    .prepare(`SELECT id, username, name, role, status, password_hash, ${LOCK_COLUMNS} FROM users WHERE username = ?`)
+    .get(username)
+  if (row) {
+    const refusal = loginRefusal(row)
+    if (refusal) return res.status(refusal.status).json(refusal.body)
+  }
   if (!row || row.status === 'pending' || row.password_hash !== sha256(password)) {
+    if (row && row.status !== 'pending') {
+      const lock = recordFailure(row)
+      if (lock) return res.status(423).json(loginRefusal({ ...row, ...lockRow(lock) }).body)
+    }
     return res.status(401).json({ error: 'Invalid email or password' })
   }
+  clearFailures(row.id)
   res.json({ user: publicUser(row), token: await createSession(row.id, sessionContext(req)) })
 })
 
@@ -274,6 +301,10 @@ app.post('/api/auth/reset/:token', async (req, res) => {
   meta
     .prepare("UPDATE users SET password_hash = ?, status = 'active', reset_token = NULL, reset_expires = NULL WHERE id = ?")
     .run(sha256(password), u.id)
+  // Setting a new password through an emailed link proves control of the
+  // mailbox, so it lifts a brute-force block as well — otherwise the one
+  // self-service recovery path would dead-end at the login page.
+  clearFailures(u.id)
   await destroyAuthSessionsForUser(u.id) // sign out everywhere else
   const user = meta.prepare('SELECT id, username, name, role FROM users WHERE id = ?').get(u.id)
   res.json({ user: publicUser(user), token: await createSession(u.id, sessionContext(req)) })
@@ -490,6 +521,17 @@ app.put('/api/admin/users/:id', async (req, res) => {
   // A changed password or a changed role invalidates what the open sessions
   // were authorized for — make them sign in again.
   if (password || (role !== undefined && role !== target.role)) await destroyAuthSessionsForUser(req.params.id)
+  res.json(getUser(req.params.id))
+})
+
+// Lift a brute-force block: clears the failed-attempt counter and lets the
+// account sign in again. The only way back in for a blocked account other than
+// a password reset — an admin is never blocked indefinitely, so this can't be
+// the door that locks itself.
+app.post('/api/admin/users/:id/unblock', (req, res) => {
+  const target = userRow(req.params.id)
+  if (!target) return res.status(404).json({ error: 'User not found' })
+  unblockUser(req.params.id)
   res.json(getUser(req.params.id))
 })
 

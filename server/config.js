@@ -85,6 +85,31 @@ export const SESSION_IDLE_TTL_MS = parseInt(process.env.SESSION_IDLE_TTL_MS, 10)
 // when neither the connection nor its workspace sets one. 0 = unlimited.
 export const MAX_SESSIONS_PER_CONNECTION = parseInt(process.env.MAX_SESSIONS_PER_CONNECTION, 10) || 0
 
+// ---- Login protection (brute force) ----
+// These read 0 as a real setting ("disabled"), not as "unset", so they can't use
+// the `parseInt(…) || default` shorthand above. docker-compose passes an unset
+// variable through as an empty string, which counts as unset here.
+const envInt = (name, fallback) => {
+  const raw = process.env[name]
+  if (raw === undefined || raw === '') return fallback
+  const n = parseInt(raw, 10)
+  return Number.isFinite(n) ? n : fallback
+}
+
+// Consecutive failed sign-ins that block an account, and the window they have to
+// happen in (an older failure doesn't count — the counter restarts). 0 attempts
+// disables account blocking entirely.
+export const LOGIN_MAX_ATTEMPTS = envInt('LOGIN_MAX_ATTEMPTS', 5)
+export const LOGIN_ATTEMPT_WINDOW_MS = envInt('LOGIN_ATTEMPT_WINDOW_MS', 15 * 60 * 1000)
+// How long a blocked account stays blocked. 0 (the default) = until an instance
+// admin unblocks it — the deliberate choice, so a block is always seen by a human.
+export const LOGIN_LOCKOUT_MS = envInt('LOGIN_LOCKOUT_MS', 0)
+// An instance admin is never blocked (nobody could unblock the last one). They
+// get a cooldown instead — same threshold, but it always expires on its own, so
+// the admin account can't be brute-forced *or* locked out by an attacker.
+// 0 disables the cooldown, leaving admin sign-ins unthrottled.
+export const LOGIN_ADMIN_COOLDOWN_MS = envInt('LOGIN_ADMIN_COOLDOWN_MS', 15 * 60 * 1000)
+
 // ---- Connections ----
 // How long the pre-flight handshake (GET /api/connections/:id/handshake) waits
 // for a database to answer before it reports a timeout. Kept short: it runs

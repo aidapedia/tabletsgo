@@ -252,6 +252,9 @@ server/
 │                         #   changes, and the one delete cascade both delete routes share
 ├── users.js              # the instance user directory (`users`): system roles, invites,
 │                         #   promote/demote (promoting to admin strips every membership)
+├── login-guard.js        # sign-in brute-force protection: counts consecutive failures on
+│                         #   the account and blocks it past the threshold. An instance admin
+│                         #   only ever gets a self-expiring cooldown — see AUTH MODEL
 ├── app-settings.js       # instance-wide settings (`app_settings`, key → JSON): the admin-owned
 │                         #   counterpart of workspaces.settings. Today one key, 'smtp' — the global
 │                         #   mail server, its password sealed under its own scrypt namespace
@@ -349,6 +352,7 @@ Configurable values live in env vars, wired through `docker-compose.yml` (see `.
 - `SESSION_TTL_MS` / `SESSION_IDLE_TTL_MS` — **optional**. Sliding login lifetime (default 30 days) and how long an idle connection session keeps its database handle open (default 15 min).
 - `MAX_SESSIONS_PER_CONNECTION` — **optional**. Instance-wide default cap on concurrent sessions per connection (0 = unlimited, the default). A workspace or an individual connection overrides it. Connection sessions are per-process, so with more than one replica this applies per replica.
 - **The app runs no Redis of its own** — the meta DB plus an in-process cache is the whole session layer, and there is nothing to point at (`REDIS_URL`/`SESSION_REDIS_URL` were removed in 0.21). Don't reintroduce an external store for state the meta DB can hold; the one thing it deliberately does *not* hold is a connection session, because that describes a live socket in one process. See SESSIONS.
+- `LOGIN_MAX_ATTEMPTS` / `LOGIN_ATTEMPT_WINDOW_MS` / `LOGIN_LOCKOUT_MS` / `LOGIN_ADMIN_COOLDOWN_MS` — **optional** brute-force protection (defaults: 5 failures within 15 min, blocked until an admin unblocks, admins get a 15-min cooldown instead). These read `0` as a real value ("disabled"), so `config.js` parses them with `envInt`, not the `parseInt(…) || default` shorthand — compose passes an unset variable as an empty string. See AUTH MODEL.
 - `HANDSHAKE_TIMEOUT_MS` — **optional**. How long the pre-flight connection handshake (`GET /api/connections/:id/handshake`) waits for a database before reporting a timeout. Default `8000`; it runs while the user waits on the "Connect" button, so keep it short.
 - `UPDATE_AUTO_CHECK` — **optional**. Instance-wide default (truthy `1/true/yes/on`; default off) for the per-user "auto-check for updates" toggle in Settings > Updates, surfaced via `/api/system/version`'s `autoCheckUpdates`. Leave off when an orchestrator (e.g. Coolify) manages updates; users can still override per browser.
 - `UPDATE_IMAGE` / `UPDATE_REPO` / `UPDATE_HELPER_IMAGE` — **optional** in-app update checker tuning (default to the official image/repo; override only for a fork). The checker compares the running `(version, sha)` against the latest GitHub Release + its `release.json` contract. Apply method is auto-detected: Docker socket mounted ⇒ one-click self-update via `UPDATE_HELPER_IMAGE` (default `docker:cli`); otherwise the wizard shows a manual `docker compose pull` command. `APP_VERSION` / `GIT_SHA` are baked into the image at build time and reported by `/api/system/version`.
@@ -369,6 +373,8 @@ The guards live in `server/auth.js`: `requireSystemAdmin` (system), `requireOwne
 Two invariants the routes enforce, both of which are easy to break from a new code path: an instance admin can never be added to a workspace (invite, role change, and workspace creation all refuse), and a workspace can never lose its last owner (demote, remove, delete-user and promote-to-admin all refuse, the last two with `409` + the affected workspaces).
 
 Connections carry a `workspace_id` column and are filtered by the caller's current workspace.
+
+**Brute-force blocking** (`server/login-guard.js`) is a third, orthogonal thing — not a role and not `users.status`. `LOGIN_MAX_ATTEMPTS` consecutive failures inside `LOGIN_ATTEMPT_WINDOW_MS` set `users.locked_at` and the account can't sign in until an instance admin lifts it (`POST /api/admin/users/:id/unblock`) or its password is changed. It lives on the account, not in memory, so a block survives a restart and is visible in the admin user list; `users.status` keeps meaning the invite lifecycle (`active` | `pending`) only. The check runs **before** the password is verified — a blocked account can't be probed, and a correct password doesn't bypass the block. **An instance admin is never blocked indefinitely**: blocking the last one would leave nobody able to unblock anyone, so they get `LOGIN_ADMIN_COOLDOWN_MS` (a `locked_until` that always expires) instead. Keep that asymmetry if you touch this — it is what stops an attacker from locking the operator out on purpose.
 
 ## EMAIL / SMTP
 **There is exactly one mail server per instance, and only an instance admin sets it.** Mail is an instance-level concern — who sends the instance's password resets isn't a workspace owner's decision — so nothing outside `server/mail.js` + `server/app-settings.js` knows how it's configured, and **no caller passes a workspace**.

@@ -13,9 +13,9 @@ import ConfirmDialog from '@/shared/ui/feedback/ConfirmDialog'
 import { useToast } from '@/shared/ui/feedback/Toast'
 import DataTable, { type Column } from '@/shared/ui/table/DataTable'
 import useDataTable from '@/shared/ui/table/useDataTable'
-import { CopyIcon, KeyIcon, PlusIcon, TrashIcon } from '@/shared/ui/icons'
+import { CopyIcon, KeyIcon, PlusIcon, TrashIcon, UnlockIcon } from '@/shared/ui/icons'
 import { useAuth } from '@/features/auth'
-import { createUser, deleteUser, listUsers, updateUser, type AdminUser, type SystemRole } from '../api'
+import { createUser, deleteUser, listUsers, unblockUser, updateUser, type AdminUser, type SystemRole } from '../api'
 
 /**
  * Every account on the instance.
@@ -26,6 +26,14 @@ import { createUser, deleteUser, listUsers, updateUser, type AdminUser, type Sys
  * "Workspaces" column is what that costs, so it's shown right next to the
  * control and the change is confirmed.
  */
+// Why the account can't sign in, on the badge. A block with an expiry lifts
+// itself (that's what an instance admin gets, so the instance can't be locked
+// out); the ordinary one waits for an admin.
+const blockedHint = (u: AdminUser) =>
+  u.blockedUntil
+    ? `Too many failed sign-in attempts (${u.failedAttempts}). Signing in is blocked until ${new Date(u.blockedUntil).toLocaleString()}.`
+    : `Blocked after ${u.failedAttempts} failed sign-in attempts. Unblock or set a new password to let them back in.`
+
 export default function AdminUsersPanel() {
   const toast = useToast()
   const { user: me } = useAuth()
@@ -38,6 +46,7 @@ export default function AdminUsersPanel() {
     role: SystemRole
   } | null>(null)
   const [resetting, setResetting] = useState<AdminUser | null>(null)
+  const [unblocking, setUnblocking] = useState<AdminUser | null>(null)
   const [deleting, setDeleting] = useState<AdminUser | null>(null)
 
   const load = async () => {
@@ -70,6 +79,19 @@ export default function AdminUsersPanel() {
     }
   }
 
+  const confirmUnblock = async () => {
+    const u = unblocking
+    setUnblocking(null)
+    if (!u) return
+    try {
+      await unblockUser(u.id)
+      toast.success(`${u.name || u.email} can sign in again.`)
+      load()
+    } catch (err) {
+      toast.error(err.message)
+    }
+  }
+
   const confirmDelete = async () => {
     const u = deleting
     setDeleting(null)
@@ -95,6 +117,13 @@ export default function AdminUsersPanel() {
             <Badge tone="amber" className="shrink-0">
               pending
             </Badge>
+          )}
+          {/* Blocked by the brute-force guard. An instance admin only ever gets
+              a cooldown that lifts itself, hence the different word. */}
+          {u.blocked && (
+            <span className="shrink-0" title={blockedHint(u)}>
+              <Badge tone="red">{u.blockedUntil ? 'cooling down' : 'blocked'}</Badge>
+            </span>
           )}
         </div>
       ),
@@ -175,6 +204,11 @@ export default function AdminUsersPanel() {
       align: 'right',
       render: (u) => (
         <div className="flex items-center justify-end gap-1">
+          {u.blocked && (
+            <TextButton tone="faint" className="hover:!text-green" aria-label={`Unblock ${u.email}`} onClick={() => setUnblocking(u)}>
+              <UnlockIcon width={15} height={15} />
+            </TextButton>
+          )}
           <TextButton tone="faint" aria-label={`Set a password for ${u.email}`} onClick={() => setResetting(u)}>
             <KeyIcon width={15} height={15} />
           </TextButton>
@@ -254,6 +288,18 @@ export default function AdminUsersPanel() {
           danger={promoting.role === 'admin'}
           onConfirm={applyRole}
           onCancel={() => setPromoting(null)}
+        />
+      )}
+
+      {unblocking && (
+        <ConfirmDialog
+          title="Unblock this account?"
+          message={`${unblocking.name || unblocking.email} was blocked after ${unblocking.failedAttempts} failed sign-in attempts${
+            unblocking.blockedAt ? ` on ${new Date(unblocking.blockedAt).toLocaleString()}` : ''
+          }. Unblocking clears the counter and lets them sign in with their existing password — if you're not sure it was them, set a new password instead.`}
+          confirmLabel="Unblock"
+          onConfirm={confirmUnblock}
+          onCancel={() => setUnblocking(null)}
         />
       )}
 

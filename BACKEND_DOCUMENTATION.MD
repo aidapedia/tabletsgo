@@ -51,6 +51,10 @@ endpoint with its request, response, and an example URL.
 | `META_DB` | `./data/app.db`    | SQLite file storing app metadata (below).|
 | `ENCRYPTION_KEY` | *(required)* | AES-256-GCM key encrypting connection credentials at rest — server refuses to start without it. Also derives (with a distinct salt) the key used for storage-destination credentials. |
 | `WORKFLOW_SCHEDULER_ENABLED` | `true` | Set to `false` to disable the minutely cron tick that fires workflows with an active hourly/daily schedule (including backups). Useful for local dev/CI. |
+| `LOGIN_MAX_ATTEMPTS` | `5` | Consecutive failed sign-ins that block an account. `0` disables blocking. |
+| `LOGIN_ATTEMPT_WINDOW_MS` | `900000` (15 min) | How close together those failures must be — an older failure restarts the counter. |
+| `LOGIN_LOCKOUT_MS` | `0` | How long a block lasts. `0` = until an instance admin unblocks the account. |
+| `LOGIN_ADMIN_COOLDOWN_MS` | `900000` (15 min) | An instance admin is never blocked indefinitely — they get this cooldown instead. `0` leaves admin sign-ins unthrottled. |
 
 **System requirement:** PostgreSQL backup/restore shells out to `pg_dump`/`pg_restore`, so the `postgresql-client` package must be installed on the host/image running `server.js` (already added to the provided `Dockerfile`).
 
@@ -226,7 +230,13 @@ CREATE TABLE users (
   username TEXT UNIQUE NOT NULL,
   password_hash TEXT NOT NULL,  -- sha256(password) hex
   name TEXT,
-  role TEXT                     -- system role: "admin" (instance admin) | "user"
+  role TEXT,                    -- system role: "admin" (instance admin) | "user"
+  -- Brute-force guard (server/login-guard.js). On the account rather than in
+  -- memory, so a block survives a restart and an admin can see it.
+  failed_logins INTEGER DEFAULT 0, -- consecutive failures inside the window
+  last_failed_at INTEGER,       -- when the last one was (older than the window ⇒ counter restarts)
+  locked_at INTEGER,            -- NULL = not blocked
+  locked_until INTEGER          -- NULL = blocked until an admin lifts it; set = self-expiring
 );
 -- The durable login store. One row per bearer token; the server reads it
 -- through a cache (in-process, or Redis when SESSION_REDIS_URL is set), so a
@@ -448,6 +458,32 @@ admin's first job is `POST /api/admin/users` + `PUT /api/admin/workspaces/:id/me
 ### POST `/api/auth/login`
 - **Body:** `{ "username": "you@example.com", "password": "…" }` (`username` is the email)
 - **200:** `{ "user": { … }, "token": "uuid" }` · **401:** `{ "error": "Invalid email or password" }`
+- **423:** `{ "error": "…", "blocked": true, "lockedUntil": 1735689600000 | null }` — the
+  account is blocked by the brute-force guard (below). `lockedUntil` is `null`
+  when only an admin can lift it.
+- **Example:** `POST http://localhost:3000/api/auth/login`
+
+**Brute-force protection** (`server/login-guard.js`). `LOGIN_MAX_ATTEMPTS`
+consecutive failures (default 5) inside `LOGIN_ATTEMPT_WINDOW_MS` (default 15
+min) block the account; an older failure doesn't count, so the counter restarts
+rather than accumulating over weeks. The state lives on the account
+(`users.failed_logins / last_failed_at / locked_at / locked_until`), so a block
+survives a restart and is visible in `GET /api/admin/users`.
+
+- The block is checked **before** the password is verified: a blocked account
+  can't be probed, and a guessed-correctly password doesn't bypass it.
+- A blocked account is *told* it's blocked, which does reveal the address exists
+  — deliberate, since the person needs to know why and whom to ask. An unknown
+  address is never counted and always gets the generic 401.
+- **An instance admin is never blocked indefinitely** (nobody would be left to
+  unblock them). They get `LOGIN_ADMIN_COOLDOWN_MS` (default 15 min) instead —
+  same threshold, always self-expiring, so the account is neither brute-forceable
+  nor lockable-out by an attacker. Set it to `0` to leave admin logins unthrottled.
+- **Clearing it:** `POST /api/admin/users/:id/unblock`, or any password change
+  (`PUT /api/admin/users/:id` with `password`, or the reset-link flow). A
+  successful sign-in resets the counter.
+- `LOGIN_LOCKOUT_MS` (default `0` = until an admin unblocks) makes ordinary
+  blocks self-expire too.
 
 ### POST `/api/auth/logout`
 Invalidate the current session token. **200:** `{ "ok": true }`
@@ -600,8 +636,11 @@ here that reaches a connection or a database.
 
 ### Users
 
-- `GET /api/admin/users` → `[{ id, email, name, role, status, workspaces }]` where
-  `workspaces` is `[{ id, name, role }]` — what the account would lose if promoted.
+- `GET /api/admin/users` → `[{ id, email, name, role, status, blocked, blockedAt,
+  blockedUntil, failedAttempts, workspaces }]` where `workspaces` is
+  `[{ id, name, role }]` — what the account would lose if promoted. `status` is the
+  invite lifecycle (`active` | `pending`); `blocked` is the brute-force guard and
+  is independent of it (`blockedUntil: null` = only an admin can lift it).
 - `POST /api/admin/users` `{ email, name?, password?, role? }` → `{ user, inviteLink }`.
   With `password` the account is active immediately; without it the account is
   `pending` and `inviteLink` is how they set one. `role` is `admin` | `user`
@@ -612,10 +651,14 @@ here that reaches a connection or a database.
     workspace — promotion strips every membership, so it would orphan it. The body
     carries `workspaces: [{ id, name }]`; reassign ownership first.
   - `400` when demoting the last instance admin.
+- `POST /api/admin/users/:id/unblock` → the updated user. Lifts a brute-force
+  block and clears the failed-attempt counter; a no-op on an account that isn't
+  blocked. `404` when the user doesn't exist.
 - `DELETE /api/admin/users/:id` → `{ ok: true }`. `400` for your own account or the
   last instance admin; `409` (same shape as above) when the account is the only
   owner of a workspace.
 - **Example:** `PUT http://localhost:3000/api/admin/users/u_123` body `{ "role": "admin" }`.
+- **Example:** `POST http://localhost:3000/api/admin/users/u_123/unblock`.
 
 ### Email (SMTP)
 
@@ -2043,6 +2086,7 @@ Liveness probe. Also reports boot readiness and the running identity.
 | GET    | `/api/admin/users`                        | Every account on the instance   |
 | POST   | `/api/admin/users`                        | Create an account               |
 | PUT    | `/api/admin/users/:id`                    | Rename / reset password / role  |
+| POST   | `/api/admin/users/:id/unblock`            | Lift a brute-force block        |
 | DELETE | `/api/admin/users/:id`                    | Delete an account               |
 | GET    | `/api/admin/smtp`                         | The mail server + the env layer |
 | PUT    | `/api/admin/smtp`                         | Save the mail server config     |
