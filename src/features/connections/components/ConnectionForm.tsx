@@ -4,7 +4,6 @@ import { BackupConfigForm } from '@/features/backup'
 import { useToast } from '@/shared/ui/feedback/Toast'
 import { ChevronLeft, CloseIcon, DbLogo, PlusSmall, ShieldIcon } from '@/shared/ui/icons'
 import Select from '@/shared/ui/form/Select'
-import NumberStepper from '@/shared/ui/form/NumberStepper'
 import Button from '@/shared/ui/buttons/Button'
 import TextButton from '@/shared/ui/buttons/TextButton'
 import Tab from '@/shared/ui/navigation/Tab'
@@ -38,7 +37,6 @@ const blankSqlite = {
   filepath: '',
   folder: '',
   tags: [],
-  maxSessions: 0,
 }
 
 const blankPostgres = {
@@ -56,7 +54,6 @@ const blankPostgres = {
   keychain: false,
   folder: '',
   tags: [],
-  maxSessions: 0,
 }
 
 // Redis reuses the same field names as Postgres — host/port/username/password —
@@ -77,7 +74,6 @@ const blankRedis = {
   keychain: false,
   folder: '',
   tags: [],
-  maxSessions: 0,
 }
 
 const blankFor = (type) => (type === 'postgresql' ? blankPostgres : type === 'redis' ? blankRedis : blankSqlite)
@@ -117,8 +113,9 @@ function parseUri(uri, type) {
   }
 }
 
-// Full-page create/edit connection form (General / SSH·SSL / Backup tabs —
-// Backup only once the connection exists). Replaces the old slide-over modal;
+// Full-page create/edit connection form (General / Backup tabs — Backup only
+// once the connection exists). General holds everything that identifies and
+// reaches the database, SSL/TLS included. Replaces the old slide-over modal;
 // rendered inline by ConnectionsPage the same way ConnectionDetail is.
 export default function ConnectionForm({ initial, initialType, initialTab, onClose, onSave }) {
   const { testConnection } = useConnections()
@@ -129,7 +126,7 @@ export default function ConnectionForm({ initial, initialType, initialTab, onClo
     if (initial) return { ...blankFor(initial.type), ...initial }
     return blankFor(initialType)
   })
-  const [tab, setTab] = useState(initialTab || 'general') // general | ssh | backup
+  const [tab, setTab] = useState(initialTab || 'general') // general | backup
   const [tagDraft, setTagDraft] = useState('')
   const [addingTag, setAddingTag] = useState(false)
   const [test, setTest] = useState(null) // { ok, message } | 'loading'
@@ -141,9 +138,11 @@ export default function ConnectionForm({ initial, initialType, initialTab, onClo
   const backupSupported = isEdit && (form.type === 'sqlite' || form.type === 'postgresql')
   const tabs = [
     { id: 'general', label: 'General' },
-    ...(isSqlite ? [] : [{ id: 'ssh', label: isRedis ? 'TLS' : 'SSH / SSL' }]),
     ...(backupSupported ? [{ id: 'backup', label: 'Backup' }] : []),
   ]
+  // Changing the type can drop the tab you're on (Backup is Postgres/SQLite only),
+  // so never render a tab that isn't in the list.
+  const activeTab = tabs.some((t) => t.id === tab) ? tab : 'general'
 
   const set = (key) => (e) => {
     setForm((f) => ({ ...f, [key]: e.target.value }))
@@ -195,7 +194,6 @@ export default function ConnectionForm({ initial, initialType, initialTab, onClo
       filepath: form.filepath?.trim() || '',
       database: form.database?.trim() || '',
       folder: form.folder.trim(),
-      maxSessions: Math.max(0, parseInt(form.maxSessions, 10) || 0),
     }
     // Verify the connection works before saving so we never store a broken one.
     setSaving(true)
@@ -224,7 +222,7 @@ export default function ConnectionForm({ initial, initialType, initialTab, onClo
       {tabs.length > 1 && (
         <div className="mt-6 flex items-center gap-5 border-b border-edge">
           {tabs.map((t) => (
-            <Tab key={t.id} active={tab === t.id} onClick={() => setTab(t.id)}>
+            <Tab key={t.id} active={activeTab === t.id} onClick={() => setTab(t.id)}>
               {t.label}
             </Tab>
           ))}
@@ -232,242 +230,220 @@ export default function ConnectionForm({ initial, initialType, initialTab, onClo
       )}
 
       <div className="mt-6 max-w-[640px]">
-        {tab === 'backup' ? (
+        {activeTab === 'backup' ? (
           <BackupConfigForm connectionId={initial.id} connectionType={form.type} workspaceId={initial.workspaceId} />
         ) : (
           <>
-            {tab === 'general' && (
-              <>
-                <div className="mb-[22px] grid grid-cols-3 gap-3 max-[480px]:grid-cols-1">
-                  {DB_TYPES.map((t) => (
-                    <button
-                      type="button"
-                      key={t.id}
-                      onClick={() => pickType(t)}
-                      className={`flex items-center gap-3 rounded-soft border p-3.5 transition-all ${
-                        form.type === t.id
-                          ? 'border-green bg-card-hover shadow-[0_0_0_3px_rgba(111,207,106,0.22)]'
-                          : 'border-edge bg-elevated hover:border-edge-strong'
-                      }`}
-                    >
-                      <DbLogo type={t.id} className="h-9 w-9 shrink-0" />
-                      <span className="text-[11px] font-semibold">{t.label}</span>
-                    </button>
-                  ))}
-                </div>
+            <div className="mb-[22px] grid grid-cols-3 gap-3 max-[480px]:grid-cols-1">
+              {DB_TYPES.map((t) => (
+                <button
+                  type="button"
+                  key={t.id}
+                  onClick={() => pickType(t)}
+                  className={`flex items-center gap-3 rounded-soft border p-3.5 transition-all ${
+                    form.type === t.id
+                      ? 'border-green bg-card-hover shadow-[0_0_0_3px_rgba(111,207,106,0.22)]'
+                      : 'border-edge bg-elevated hover:border-edge-strong'
+                  }`}
+                >
+                  <DbLogo type={t.id} className="h-9 w-9 shrink-0" />
+                  <span className="text-[11px] font-semibold">{t.label}</span>
+                </button>
+              ))}
+            </div>
 
+            <div className="mb-[18px]">
+              <Label>Connection Name</Label>
+              <Input
+                type="text"
+                placeholder={isSqlite ? 'e.g. Demo DB' : 'My Production Database'}
+                value={form.name}
+                onChange={set('name')}
+                required
+              />
+            </div>
+
+            {/* Tags */}
+            <div className="mb-[18px] flex flex-wrap items-center gap-2">
+              {tags.map((t) => (
+                <span
+                  key={t}
+                  className="inline-flex items-center gap-1.5 rounded-[8px] border border-edge bg-elevated px-2.5 py-1 text-[11px] text-ink-dim"
+                >
+                  {t}
+                  <TextButton tone="faint" className="hover:!text-red" onClick={() => removeTag(t)}>
+                    <CloseIcon width={11} height={11} />
+                  </TextButton>
+                </span>
+              ))}
+              {addingTag ? (
+                <input
+                  autoFocus
+                  value={tagDraft}
+                  onChange={(e) => setTagDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault()
+                      addTag()
+                    } else if (e.key === 'Escape') {
+                      setTagDraft('')
+                      setAddingTag(false)
+                    }
+                  }}
+                  onBlur={() => {
+                    addTag()
+                    setAddingTag(false)
+                  }}
+                  placeholder="tag name"
+                  className="w-[120px] rounded-[8px] border border-edge bg-elevated px-2.5 py-1 text-[11px] text-ink outline-none focus:border-green-dim"
+                />
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setAddingTag(true)}
+                  className="inline-flex items-center gap-1.5 rounded-[8px] border border-dashed border-edge-strong px-2.5 py-1 text-[11px] text-ink-dim hover:border-green-dim hover:text-ink"
+                >
+                  <PlusSmall width={12} height={12} /> Add tags
+                </button>
+              )}
+            </div>
+
+            {isSqlite ? (
+              <div className="mb-[18px]">
+                <Label>Database File Path</Label>
+                <Input
+                  type="text"
+                  placeholder="./demo.db"
+                  value={form.filepath}
+                  onChange={set('filepath')}
+                  required
+                />
+              </div>
+            ) : (
+              <>
                 <div className="mb-[18px]">
-                  <Label>Connection Name</Label>
+                  <Label>Connection URI</Label>
                   <Input
+                    className="font-mono"
                     type="text"
-                    placeholder={isSqlite ? 'e.g. Demo DB' : 'My Production Database'}
-                    value={form.name}
-                    onChange={set('name')}
-                    required
+                    placeholder={
+                      isRedis ? 'redis://user:password@host:6379/0' : 'postgresql://user:password@host:5432/database'
+                    }
+                    value={form.uri || ''}
+                    onChange={onUriChange}
                   />
                 </div>
 
-                {/* Tags */}
-                <div className="mb-[18px] flex flex-wrap items-center gap-2">
-                  {tags.map((t) => (
-                    <span
-                      key={t}
-                      className="inline-flex items-center gap-1.5 rounded-[8px] border border-edge bg-elevated px-2.5 py-1 text-[11px] text-ink-dim"
-                    >
-                      {t}
-                      <TextButton tone="faint" className="hover:!text-red" onClick={() => removeTag(t)}>
-                        <CloseIcon width={11} height={11} />
-                      </TextButton>
-                    </span>
-                  ))}
-                  {addingTag ? (
-                    <input
-                      autoFocus
-                      value={tagDraft}
-                      onChange={(e) => setTagDraft(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault()
-                          addTag()
-                        } else if (e.key === 'Escape') {
-                          setTagDraft('')
-                          setAddingTag(false)
-                        }
-                      }}
-                      onBlur={() => {
-                        addTag()
-                        setAddingTag(false)
-                      }}
-                      placeholder="tag name"
-                      className="w-[120px] rounded-[8px] border border-edge bg-elevated px-2.5 py-1 text-[11px] text-ink outline-none focus:border-green-dim"
-                    />
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => setAddingTag(true)}
-                      className="inline-flex items-center gap-1.5 rounded-[8px] border border-dashed border-edge-strong px-2.5 py-1 text-[11px] text-ink-dim hover:border-green-dim hover:text-ink"
-                    >
-                      <PlusSmall width={12} height={12} /> Add tags
-                    </button>
-                  )}
+                <div className="my-4 flex items-center gap-3 text-[11px] text-ink-faint">
+                  <span className="h-px flex-1 bg-edge" /> or <span className="h-px flex-1 bg-edge" />
                 </div>
-
-                {isSqlite ? (
-                  <div className="mb-[18px]">
-                    <Label>Database File Path</Label>
-                    <Input
-                      type="text"
-                      placeholder="./demo.db"
-                      value={form.filepath}
-                      onChange={set('filepath')}
-                      required
-                    />
-                  </div>
-                ) : (
-                  <>
-                    <div className="mb-[18px]">
-                      <Label>Connection URI</Label>
-                      <Input
-                        className="font-mono"
-                        type="text"
-                        placeholder={
-                          isRedis ? 'redis://user:password@host:6379/0' : 'postgresql://user:password@host:5432/database'
-                        }
-                        value={form.uri || ''}
-                        onChange={onUriChange}
-                      />
-                    </div>
-
-                    <div className="my-4 flex items-center gap-3 text-[11px] text-ink-faint">
-                      <span className="h-px flex-1 bg-edge" /> or <span className="h-px flex-1 bg-edge" />
-                    </div>
-
-                    <div className={fieldRow}>
-                      <div className="mb-[18px]">
-                        <Label>Host</Label>
-                        <Input type="text" placeholder="localhost" value={form.host} onChange={set('host')} required />
-                      </div>
-                      <div className="mb-[18px]">
-                        <Label>Port</Label>
-                        <Input type="text" placeholder={isRedis ? '6379' : '5432'} value={form.port} onChange={set('port')} required />
-                      </div>
-                    </div>
-
-                    <div className="mb-[18px]">
-                      <Label>Authentication</Label>
-                      <Select className={controlClass} value={form.auth || 'password'} onChange={(v) => setVal('auth', v)} options={AUTH_MODES} />
-                    </div>
-
-                    {(form.auth || 'password') === 'password' && (
-                      <>
-                        <div className="mb-[18px]">
-                          <Label>
-                            User{isRedis && <span className="text-ink-faint"> (ACL — leave empty for a password-only server)</span>}
-                          </Label>
-                          <Input
-                            type="text"
-                            placeholder={isRedis ? 'default' : 'postgres'}
-                            value={form.username}
-                            onChange={set('username')}
-                          />
-                        </div>
-
-                        <div className="mb-2">
-                          <Label>Password</Label>
-                          <PasswordInput placeholder="••••••••" value={form.password} onChange={set('password')} />
-                        </div>
-
-                        <TextButton tone={form.keychain ? 'green' : 'faint'} className="mb-[18px] !text-[11px]" onClick={() => setVal('keychain', !form.keychain)}>
-                          <ShieldIcon width={14} height={14} /> Enable keychain
-                        </TextButton>
-                      </>
-                    )}
-
-                    <div className="mb-[18px]">
-                      <Label>
-                        {isRedis ? 'Database index' : 'Database'} <span className="text-ink-faint">(optional)</span>
-                      </Label>
-                      <Input
-                        type="text"
-                        placeholder={isRedis ? '0' : 'Leave empty to select database after connecting'}
-                        value={form.database}
-                        onChange={set('database')}
-                      />
-                      {isRedis && (
-                        <p className="mt-2 text-[11px] text-ink-faint">
-                          The numeric database to open by default (0–15 on a stock server). You can switch databases from the
-                          console.
-                        </p>
-                      )}
-                    </div>
-                  </>
-                )}
 
                 <div className={fieldRow}>
                   <div className="mb-[18px]">
-                    <Label>Environment</Label>
-                    <Select
-                      className={controlClass}
-                      value={form.environment}
-                      onChange={(v) => setVal('environment', v)}
-                      options={ENVIRONMENTS.map((env) => ({ value: env, label: env[0].toUpperCase() + env.slice(1) }))}
-                    />
+                    <Label>Host</Label>
+                    <Input type="text" placeholder="localhost" value={form.host} onChange={set('host')} required />
                   </div>
                   <div className="mb-[18px]">
-                    <Label>
-                      Folder <span className="text-ink-faint">(optional)</span>
-                    </Label>
-                    <Input type="text" placeholder="e.g. Demo" value={form.folder} onChange={set('folder')} />
+                    <Label>Port</Label>
+                    <Input type="text" placeholder={isRedis ? '6379' : '5432'} value={form.port} onChange={set('port')} required />
                   </div>
                 </div>
 
-                <div className="mb-[18px] max-w-[260px]">
-                  <Label>
-                    Max concurrent sessions <span className="text-ink-faint">(0 = workspace default)</span>
-                  </Label>
-                  <NumberStepper
-                    value={Number(form.maxSessions) || 0}
-                    min={0}
-                    max={999}
-                    ariaLabel="Max concurrent sessions"
-                    onChange={(n) => setVal('maxSessions', n || 0)}
-                  />
-                  <p className="mt-2 text-[11px] text-ink-faint">
-                    Caps how many connections to this database the app keeps open at once (one per database it browses).
-                    Leave at 0 to inherit the workspace default.
-                  </p>
+                <div className="mb-[18px]">
+                  <Label>Authentication</Label>
+                  <Select className={controlClass} value={form.auth || 'password'} onChange={(v) => setVal('auth', v)} options={AUTH_MODES} />
                 </div>
+
+                {(form.auth || 'password') === 'password' && (
+                  <>
+                    <div className="mb-[18px]">
+                      <Label>
+                        User{isRedis && <span className="text-ink-faint"> (ACL — leave empty for a password-only server)</span>}
+                      </Label>
+                      <Input
+                        type="text"
+                        placeholder={isRedis ? 'default' : 'postgres'}
+                        value={form.username}
+                        onChange={set('username')}
+                      />
+                    </div>
+
+                    <div className="mb-2">
+                      <Label>Password</Label>
+                      <PasswordInput placeholder="••••••••" value={form.password} onChange={set('password')} />
+                    </div>
+
+                    <TextButton tone={form.keychain ? 'green' : 'faint'} className="mb-[18px] !text-[11px]" onClick={() => setVal('keychain', !form.keychain)}>
+                      <ShieldIcon width={14} height={14} /> Enable keychain
+                    </TextButton>
+                  </>
+                )}
+
+                <div className="mb-[18px]">
+                  <Label>
+                    {isRedis ? 'Database index' : 'Database'} <span className="text-ink-faint">(optional)</span>
+                  </Label>
+                  <Input
+                    type="text"
+                    placeholder={isRedis ? '0' : 'Leave empty to select database after connecting'}
+                    value={form.database}
+                    onChange={set('database')}
+                  />
+                  {isRedis && (
+                    <p className="mt-2 text-[11px] text-ink-faint">
+                      The numeric database to open by default (0–15 on a stock server). You can switch databases from the
+                      console.
+                    </p>
+                  )}
+                </div>
+
+                {/* Transport security — part of how you reach the server, so it
+                    lives with the rest of the connection fields. */}
+                {isRedis ? (
+                  <div className="mb-[18px]">
+                    <Label>TLS</Label>
+                    <Select className={controlClass} value={form.tls || ''} onChange={(v) => setVal('tls', v)} options={TLS_MODES} />
+                    <p className="mt-2 text-[11px] text-ink-faint">
+                      Managed Redis (ElastiCache in-transit encryption, Upstash, Redis Cloud) requires TLS — the same thing a{' '}
+                      <span className="text-ink-dim">rediss://</span> URI selects. Only skip verification for self-signed
+                      certificates you trust.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="mb-[18px]">
+                    <Label>SSL Mode</Label>
+                    <Select
+                      className={controlClass}
+                      value={form.sslmode || 'disable'}
+                      onChange={(v) => setVal('sslmode', v)}
+                      options={SSL_MODES.map((m) => ({ value: m, label: m }))}
+                    />
+                    <p className="mt-2 text-[11px] text-ink-faint">
+                      Choose how the client negotiates SSL with the server. Use <span className="text-ink-dim">require</span> or{' '}
+                      <span className="text-ink-dim">verify-full</span> for production databases.
+                    </p>
+                  </div>
+                )}
               </>
             )}
 
-            {/* SSH / SSL (Postgres) or TLS (Redis) — transport security only; the
-                identity of the connection stays on the General tab. */}
-            {tab === 'ssh' &&
-              (isRedis ? (
-                <div className="mb-[18px]">
-                  <Label>TLS</Label>
-                  <Select className={controlClass} value={form.tls || ''} onChange={(v) => setVal('tls', v)} options={TLS_MODES} />
-                  <p className="mt-2 text-[11px] text-ink-faint">
-                    Managed Redis (ElastiCache in-transit encryption, Upstash, Redis Cloud) requires TLS — the same thing a{' '}
-                    <span className="text-ink-dim">rediss://</span> URI selects. Only skip verification for self-signed
-                    certificates you trust.
-                  </p>
-                </div>
-              ) : (
-                <div className="mb-[18px]">
-                  <Label>SSL Mode</Label>
-                  <Select
-                    className={controlClass}
-                    value={form.sslmode || 'disable'}
-                    onChange={(v) => setVal('sslmode', v)}
-                    options={SSL_MODES.map((m) => ({ value: m, label: m }))}
-                  />
-                  <p className="mt-2 text-[11px] text-ink-faint">
-                    Choose how the client negotiates SSL with the server. Use <span className="text-ink-dim">require</span> or{' '}
-                    <span className="text-ink-dim">verify-full</span> for production databases.
-                  </p>
-                </div>
-              ))}
+            <div className={fieldRow}>
+              <div className="mb-[18px]">
+                <Label>Environment</Label>
+                <Select
+                  className={controlClass}
+                  value={form.environment}
+                  onChange={(v) => setVal('environment', v)}
+                  options={ENVIRONMENTS.map((env) => ({ value: env, label: env[0].toUpperCase() + env.slice(1) }))}
+                />
+              </div>
+              <div className="mb-[18px]">
+                <Label>
+                  Folder <span className="text-ink-faint">(optional)</span>
+                </Label>
+                <Input type="text" placeholder="e.g. Demo" value={form.folder} onChange={set('folder')} />
+              </div>
+            </div>
 
             {test && test !== 'loading' && (
               <div

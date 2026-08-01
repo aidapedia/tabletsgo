@@ -80,8 +80,8 @@ src/
 │   │                             #     probes /handshake and only then routes to the console — see
 │   │                             #     "The connection handshake" under THE DB LAYER); api (connection
 │   │                             #   access get/set, export/import client + file read/download helpers).
-│   │                             #   ConnectionForm carries "Max concurrent sessions" (0 = inherit the
-│   │                             #     workspace default) and ConnectionDetail shows the live count
+│   │                             #   ConnectionDetail shows the live session count against the
+│   │                             #     workspace/instance limit — a connection sets no cap of its own
 │   ├── settings/                 # stores/SettingsContext
 │   ├── redis/                    # everything Redis-shaped in the console. Redis has no tables and
 │   │   │                         #   no SQL, so it replaces two pieces of the console rather than
@@ -418,9 +418,13 @@ lifecycle would drift out of sync with the actual sockets. An idle session expir
 after `SESSION_IDLE_TTL_MS` and the minutely sweeper releases its handle; the next
 query transparently opens a new one.
 
-**The limit** (`maxSessions`) resolves most-specific-first: connection →
-workspace (`settings.sessions.maxPerConnection`) → `MAX_SESSIONS_PER_CONNECTION` →
-unlimited. 0 at every level = unlimited, which is the shipped default. Exceeding it
+**The limit** resolves most-specific-first: workspace
+(`settings.sessions.maxPerConnection`) → `MAX_SESSIONS_PER_CONNECTION` → unlimited.
+0 at both levels = unlimited, which is the shipped default. A connection carries
+**no override of its own** — a cap protects the database server, so it's a
+workspace-owner decision rather than one re-answered on every connection.
+(`connections.max_sessions` survives as an unread column: migrations are
+additive-only.) Exceeding it
 throws `SessionLimitError` (429); the handshake reports it as `reason:'at_capacity'`
 with the session list, so the connect dialog can name who's holding them. Backup and
 restore are **not** gated — a scheduled dump must not fail because people are

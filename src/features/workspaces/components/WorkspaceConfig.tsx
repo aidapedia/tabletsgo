@@ -78,8 +78,8 @@ export default function WorkspaceConfig() {
         desc={
           <>
             How many connections to a database this workspace keeps open at once — one per database being browsed. 0 means{' '}
-            {instanceDefault ? `the server default (${instanceDefault})` : 'unlimited'}. A connection can override it in its
-            own settings.
+            {instanceDefault ? `the server default (${instanceDefault})` : 'unlimited'}. This applies to every connection in
+            the workspace.
           </>
         }
       >

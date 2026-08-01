@@ -73,7 +73,7 @@ export const AUTO_CHECK_UPDATES = /^(1|true|yes|on)$/i.test(String(process.env.U
 // (the source of truth) and are read through an in-process cache, so a restart
 // never signs anyone out and there's nothing to point at. Connection sessions
 // are cache-only, because one describes a live driver handle *this* process
-// holds — which also means `maxSessions` is enforced per replica. See
+// holds — which also means the session limit is enforced per replica. See
 // server/sessions. (The app has no Redis of its own; server/db/redis.js is the
 // Redis a *user* connects to as a database, which is unrelated.)
 // Sliding lifetime of a login (bearer) session — refreshed on every request.

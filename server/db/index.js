@@ -44,9 +44,10 @@
  *
  * Every op that takes `ctx` is dispatched through `gatedRequired`/`gatedOptional`,
  * which register a *session* for the handle the call is about to use (see
- * server/sessions) and refuse to open a new one past the connection's
- * `maxSessions`. Drivers know nothing about it — sessions are counted where the
- * decision to open a handle is made, not inside each engine.
+ * server/sessions) and refuse to open a new one past the connection's resolved
+ * session limit (a workspace/instance setting — see server/sessions/limits.js).
+ * Drivers know nothing about it — sessions are counted where the decision to
+ * open a handle is made, not inside each engine.
  *
  * A driver simply omits what its engine doesn't have. Two kinds of omission are
  * distinguished here, because the two behave differently at the API edge:
@@ -134,7 +135,7 @@ const optional = (op, empty) => (conn, ...args) => {
  * could drift out of sync with the sockets.
  *
  * Throws SessionLimitError (429) when a *new* handle would exceed the
- * connection's `maxSessions`. Backup/restore stay ungated on purpose: a
+ * connection's resolved session limit. Backup/restore stay ungated on purpose: a
  * scheduled dump must not fail because people are browsing.
  */
 export const enterSession = (conn, ctx = {}) => touchConnectionSession(conn, ctx, ctx.actor)
@@ -211,9 +212,9 @@ export async function handshake(conn, ctx) {
         reason: 'at_capacity',
         cause: error.message,
         hint:
-          error.info?.source === 'connection'
-            ? 'Wait for a session to end, or raise "Max concurrent sessions" in the connection settings.'
-            : 'Wait for a session to end, or raise the workspace default for max sessions per connection.',
+          error.info?.source === 'workspace'
+            ? 'Wait for a session to end, or raise the workspace default for max sessions per connection.'
+            : 'Wait for a session to end, or raise this instance\'s MAX_SESSIONS_PER_CONNECTION.',
         detail: error.message,
         sessions: error.info?.sessions || [],
         limit: { max: error.info?.max, source: error.info?.source, active: error.info?.active },

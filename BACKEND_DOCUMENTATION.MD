@@ -84,9 +84,6 @@ reassembles this same shape on every read, so API consumers see no difference:
   "filepath": "./demo.db",
   "folder": "Demo",
   "schemaVersion": 1,          // bumped by POST .../schema/migrations
-  "maxSessions": 0,            // concurrent open connections to this database;
-                               //   0 = inherit the workspace default (see
-                               //   "Connection sessions")
   "ownerId": "user_1",         // creator by default; see POST /api/connections
   "ownerName": "Alice",        // resolved read-only (owner's display name)
   "ownerEmail": "alice@x.com"  // resolved read-only (owner's email)
@@ -576,8 +573,8 @@ Set password, activate, log in. **Body:** `{ "name", "password" }` → **200:** 
   the Notification tab can say what will send, or that nothing will.
 - `PUT /api/workspaces/:id` (owner) `{ name?, experiments?, notifications?, sessions? }` → `{ ok: true }`.
   `sessions` is `{ maxPerConnection }` (integer, 0 = unlimited; negatives and junk
-  clamp to 0) — the default every connection in the workspace inherits unless it
-  sets its own `maxSessions`.
+  clamp to 0) — the cap every connection in the workspace is held to. It is the
+  only place this is configurable: there is no per-connection override.
   There is no `smtp` here — the mail server is instance-level, set at
   `PUT /api/admin/smtp`; an older client still sending one is ignored, not
   rejected. `experiments` is a partial `{ [key]: boolean }`, merged onto the
@@ -1623,9 +1620,11 @@ There is no "open session" endpoint — nothing to leak or get out of sync with 
 real sockets. They live in the session store (in-process, or Redis when
 `SESSION_REDIS_URL` is set), which is what makes the count correct across replicas.
 
-**The limit** resolves most-specific-first: the connection's `maxSessions` → the
-workspace's `settings.sessions.maxPerConnection` → `MAX_SESSIONS_PER_CONNECTION`
-→ unlimited. 0 at every level means unlimited (the shipped default). Opening a
+**The limit** resolves most-specific-first: the workspace's
+`settings.sessions.maxPerConnection` → `MAX_SESSIONS_PER_CONNECTION` → unlimited.
+0 at both levels means unlimited (the shipped default). A connection carries no
+override of its own — a cap protects the database server, so it's a workspace
+decision, not one to re-answer per connection. Opening a
 *new* session past the limit fails with `429` (`GET /handshake` reports it as
 `reason: "at_capacity"` instead — see above). Backup/restore are deliberately
 exempt: a scheduled dump must not fail because people are browsing.

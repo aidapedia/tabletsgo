@@ -209,7 +209,7 @@ export default function ConnectionsPage() {
         sortValue: (c) => dbName(c) || '',
         width: 170,
         className: 'max-[1080px]:hidden',
-        render: (c) => <span className="block truncate font-mono text-[12px]">{dbName(c) || '—'}</span>,
+        render: (c) => <span className="block truncate text-[12px]">{dbName(c) || '—'}</span>,
       },
       {
         key: 'status',
@@ -250,7 +250,6 @@ export default function ConnectionsPage() {
             <Button
               variant="primary"
               size="sm"
-              icon={ExternalLinkIcon}
               disabled={connectingId === c.id}
               onClick={() => openConsole(c)}
             >
