@@ -1,0 +1,290 @@
+# Architecture — annotated file map
+
+The full, annotated version of the map summarized in `CLAUDE.md`. Read this when
+you need to know what a specific component or module does before touching it;
+`CLAUDE.md` carries only the top-level routing.
+
+Keep this in sync whenever you add, remove, or rename a folder.
+
+## Frontend (`src/`)
+
+Feature-sliced React + TypeScript. Imports use the `@/` alias (→ `src/`). Each
+feature exposes a public API through its `index.ts` barrel; reach into another
+feature via that barrel, not its internal files.
+
+```
+src/
+├── app/                          # app wiring (no business logic)
+│   ├── main.tsx                  # entry: mounts <AppProviders><App/>
+│   ├── App.tsx                   # renders <AppRoutes/>
+│   ├── providers/                # ThemeContext + AppProviders (composes every provider)
+│   └── routes/                   # AppRoutes (route table + RequireAuth guard)
+│
+├── shared/                       # reusable, feature-agnostic code
+│   ├── ui/                       # presentational components, grouped by kind:
+│   │   ├── buttons/              #   Button, IconButton, TextButton
+│   │   ├── form/                 #   Form/FormField/Label, Input/Textarea, PasswordInput, Select, Checkbox,
+│   │   │                         #     CheckboxRow, SearchInput, Toggle, NumberStepper, Segmented
+│   │   ├── navigation/           #   NavItem, Tab, MenuItem
+│   │   ├── overlay/              #   Popover, Tooltip, ContextMenu
+│   │   ├── feedback/             #   Toast, ConfirmDialog, TypeToConfirmDialog, LoadingState, EmptyState, Wizard
+│   │   ├── table/                #   DataTable (the shared list-as-table: sortable columns, row click,
+│   │   │                         #     pagination footer), Pagination, useDataTable (client-side
+│   │   │                         #     sort/paging state — spread its result into DataTable; pass the
+│   │   │                         #     props yourself for server-side paging), RowActions/RowAction/RowMenu
+│   │   │                         #     (the action cell — every table's row buttons come from here so they
+│   │   │                         #     share one look; the strip stops the click reaching the row)
+│   │   └── (root)                #   Avatar, Badge, PersonRow, RowLabel, SaveQueryPanel, SqlEditor,
+│   │                             #     JsonEditor, icons — no group yet
+│   ├── hooks/                    # generic hooks (useSlideOver)
+│   ├── lib/                      # helpers: recents, schemaDraft, toggleId
+│   ├── api/                      # backend client: request.ts (fetch wrapper) + database.ts
+│   ├── config/                   # runtime config / env (API_URL from VITE_API_URL)
+│   └── types/                    # ambient/shared TS types (globals.d.ts)
+│
+├── features/                     # self-contained business features (each has index.ts barrel)
+│   ├── auth/                     # stores/AuthContext + api (login/setup/invite); session token.
+│   │                             #   `user.role` is the SYSTEM role ('admin' | 'user') — see the
+│   │                             #   `auth-sessions` skill.
+│   │                             #   components/ProfileSetting + PasswordSetting: the caller's own
+│   │                             #     account (rename / change password), rendered by Setting > Account.
+│   │                             #     Email and system role stay read-only — an admin changes those
+│   ├── admin/                    # the instance-admin area (system role 'admin' only): AdminWorkspacesPanel
+│   │                             #   (every workspace + who owns it; create/rename/delete, grant ownership)
+│   │                             #   AdminUsersPanel (accounts, system role, invites, password reset)
+│   │                             #   and AdminSmtpPanel + SmtpForm (the instance's one mail server —
+│   │                             #     the only place SMTP is configurable; see `auth-sessions` skill).
+│   │                             #   Reaches nothing inside a workspace — an admin has no membership
+│   ├── workspaces/               # org/tenant layer (multi-workspace): WorkspaceContext (current
+│   │                             #   workspace + switch), WorkspaceSwitcher, MembersPanel, TeamsPanel,
+│   │                             #   NotificationSettings (backup-failure emails — the mail server
+│   │                             #     itself is instance-level, see `auth-sessions` skill),
+│   │                             #   WorkspaceGeneral (rename + the default "max sessions per
+│   │                             #     connection" every connection inherits);
+│   │                             #   api (workspaces/members/teams CRUD)
+│   ├── connections/              # stores/ConnectionsContext (scoped to current workspace); components:
+│   │                             #   ConnectionForm, ConnectionDetail (Data/Access/Backup tabs),
+│   │                             #   ConnectionAccessPanel, DbTypePickerModal (owns DB_CATALOG/TYPE_LABEL),
+│   │                             #   ConnectionSwitcherModal (the console's "switch connection" overlay:
+│   │                             #     search + database-type filter chips + a collapsible folder tree —
+│   │                             #     a connection's `folder` string nests on "/"; ↑/↓/Enter/Esc),
+│   │                             #   ConnectionExportModal + ConnectionImportModal (whole-connection JSON
+│   │                             #   bundle — see the `connection-transfer` skill),
+│   │                             #   ConnectHandshakeDialog (root cause + retry/edit/open-anyway when the
+│   │                             #     pre-flight handshake fails); hooks/useConnectHandshake ("Connect"
+│   │                             #     probes /handshake and only then routes to the console — see the
+│   │                             #     `db-engine` skill); api (connection
+│   │                             #   access get/set, export/import client + file read/download helpers).
+│   │                             #   ConnectionDetail shows the live session count against the
+│   │                             #     workspace/instance limit — a connection sets no cap of its own
+│   ├── settings/                 # stores/SettingsContext
+│   ├── redis/                    # everything Redis-shaped in the console. Redis has no tables and
+│   │   │                         #   no SQL, so it replaces two pieces of the console rather than
+│   │   │                         #   extending them: the browser sidebar and the query tab.
+│   │   ├── components/           #   RedisKeyTree (sidebar: the keyspace as a tree, SCAN-paged with a
+│   │   │                         #     MATCH pattern box, type/TTL badges, delete + "load more"),
+│   │   │                         #     RedisKeyView (main-area tab for one key: metadata + value in
+│   │   │                         #     the shared DataGrid, paged; TTL edit + delete. Read-only —
+│   │   │                         #     writes go through the console so the command is visible),
+│   │   │                         #     RedisConsole (the query tab: one command per line, runs the
+│   │   │                         #     whole buffer; lazy-imported, NOT in the barrel — it pulls in
+│   │   │                         #     CodeMirror), RedisEditor (CodeMirror with a Redis StreamLanguage
+│   │   │                         #     + command autocomplete; reuses SqlEditor's exported theme)
+│   │   └── lib/                  #   api (/redis/* client), commands (command catalog for autocomplete
+│   │                             #     + argument hints), tree (buildKeyTree: split keys on ':' — one
+│   │                             #     folder level per segment, no chain folding; TTL/type formatting)
+│   ├── table-folders/            # the connected DB's tables grouped by the generic folders tree
+│   │                             #   (type='table', 3-level cap, one folder per table), each folder
+│   │                             #   carrying an optional color. Replaced the old "domains" feature —
+│   │                             #   meta migration v5 folded every domain into the folders tree,
+│   │                             #   keeping its id/name/color. Components: TableFolderList (the console
+│   │                             #   Tables sidebar — always folder-grouped, like the dashboards/workflows
+│   │                             #   panels: collapsible color-tinted folders + subfolders, drag a table
+│   │                             #   into a folder / a folder into a folder, un-foldered tables listed
+│   │                             #   plainly beneath as the root drop zone, inline new folder (name only —
+│   │                             #   the row is controlled via `creating`/`onCreatingChange` so the panel
+│   │                             #   header's folder+ button starts it) + rename, and a swatch picker
+│   │                             #   under ⋮ > "Change color" (a ContextMenuSub flyout); the folder icon
+│   │                             #   itself is plain, clicking it just expands/collapses the folder),
+│   │                             #   TableFolderPickerPanel + TableFolderEditPanel (right-side
+│   │                             #   slide-overs, now only reached from the schema diagram's node menu /
+│   │                             #   region label), FolderDot; lib/api (wraps shared/api/folders with the
+│   │                             #   'table' type bound + set-table-folder), lib/assign, lib/tree
+│   │                             #   (path/tree order). Drives the sidebar folder view and the
+│   │                             #   schema-designer's draggable/editable folder regions.
+│   ├── keymap/                   # stores/KeymapContext (useKeymap/useShortcut) + KeymapSetting
+│   ├── workspace/                # the DB console (one connection): data browsing + querying
+│   │   ├── components/           #   DataGrid (drag / Shift+click selects a rectangular cell range —
+│   │   │                         #     ⌘/Ctrl+C copies it as TSV, Esc clears; the range rides along in
+│   │   │                         #     onCellContextMenu's payload as `selection`), TableView (its cell
+│   │   │                         #     context menu acts on that selection: copy as TSV/CSV/JSON, set
+│   │   │                         #     NULL/EMPTY/DEFAULT, duplicate/delete the spanned rows),
+│   │   │                         #   SchemaView, QueryEditor, FunctionView,
+│   │   │                         #   QueryHistoryView, InsertRowPanel, ChangesPanel, SavedQueriesPanel,
+│   │   │                         #   IconRail (its DB logo at the top opens the ConnectionSwitcherModal via
+│   │   │                         #     onBrowseConnections — no inline connection popover anymore),
+│   │   │                         #   TabBar (the open-tab strip: drag a tab left/right to reorder — insertion
+│   │   │                         #   caret on drag-over, committed on drop; right-click closes this/others/
+│   │   │                         #   to-the-right/all),
+│   │   │                         #   StatusBar (bottom bar of the main area only — the icon rail and Tables
+│   │   │                         #   sidebar keep their full height. DB type + logo,
+│   │   │                         #   connection name, environment pill, current database/schema, and the
+│   │   │                         #   schema version on the right — clicking it opens the schema history tab.
+│   │   │                         #   Env + version live here only; the top toolbar no longer shows them)
+│   │   └── lib/                  #   savedQueries, queryHistory (backend calls)
+│   ├── schema-designer/          # visual schema design (React Flow ERD + table/column editors; tables
+│   │   │                         #   sharing a folder are clustered into a draggable, editable region)
+│   │   ├── components/           #   SchemaEditor, SchemaSidebar (accordion: Draft Schema / Table List /
+│   │   │                         #     References / Table Folders — click to focus/edit), CreateTablePanel,
+│   │   │                         #     TableEditPanel, columnFields, SchemaHistoryPanel (schema-version audit trail)
+│   │   └── lib/                  #   rollback (best-effort rollback SQL for staged DDL)
+│   ├── workflow/                 # workflow automations (React Flow builder + server-side runner, incl.
+│   │   │                         #   real hourly/daily scheduling via the Schedule trigger node's Active toggle;
+│   │   │                         #   JSON export/import of a workflow's graph; folders — grouped via the generic
+│   │   │                         #   folders tree (type='workflow'), 3-level cap — mirroring the dashboard feature)
+│   │   ├── components/           #   WorkflowEditor (export/import toolbar buttons), WorkflowsPanel (folder
+│   │   │                         #     tree: create/rename/delete/drag into folders + "Import from JSON…"),
+│   │   │                         #     NodePalette, NodeConfigPanel, RunLogPanel, nodes/WorkflowNode (spec card)
+│   │   └── lib/                  #   api (per-connection CRUD + run + folder CRUD via shared/api/folders),
+│   │                             #     nodeSpec (node catalog: manual, schedule, query, http, js, switch, loop,
+│   │                             #     export "Export SQL", storage "Store to Storage"), exportImport
+│   │                             #     (WorkflowExport type + sanitizeGraph/stripSecrets — webhook tokens
+│   │                             #     never round-trip a file)
+│   ├── dashboard/                # per-connection query dashboards (New Relic style): dynamic variables
+│   │   │                         #   ({{name}} in widget SQL, query-backed or static lists), free-placement
+│   │   │                         #   12-col drag/resize grid (hard collision blocking), fullscreen, JSON
+│   │   │                         #   export/import. Charts are hand-rolled SVG (no chart/grid deps).
+│   │   │                         #   Table widgets: optional server-side pagination (LIMIT/OFFSET wrap,
+│   │   │                         #   N+1 has-more probe) + per-row action buttons (up to 3, styled via
+│   │   │                         #   variant/icon, optional per-row condition that disables/hides by a
+│   │   │                         #   column value) that run a workflow with the clicked row as its trigger
+│   │   │                         #   input (Widget.pageSize/rowActions; icons in lib/rowActionIcons).
+│   │   ├── components/           #   DashboardView (tab content: toolbar + VariableBar + WidgetGrid),
+│   │   │                         #     DashboardsPanel (rail list), WidgetCard (runs its query), WidgetChart,
+│   │   │                         #     WidgetEditor + DashboardSettings (modals), MarkdownText,
+│   │   │                         #     charts/ (XYChart area|line|bar, PieDonut, SankeyChart, chrome)
+│   │   └── lib/                  #   api (per-connection CRUD), variables ({{}} substitution + option
+│   │                             #     resolution), queryData (result → chart shapes), palette (validated
+│   │                             #     CVD-safe series colors), grid (collision math), scale, useSize
+│   ├── backup/                   # S3-compatible storage destinations (workspace-scoped) + the
+│   │   │                         #   per-connection backup schedule built from generic workflow nodes
+│   │   │                         #   (Schedule → Export SQL → Store to Storage)
+│   │   ├── components/           #   StorageList, StorageModal, BackupPanel, BackupConfigForm,
+│   │   │                         #     BackupCalendarHeatmap, BackupVersionList (run-based restore),
+│   │   │                         #     RestorePanel (restore from uploaded file or browsed storage object)
+│   │   └── lib/                  #   api (storages CRUD, backup schedule/runs/calendar/restore), types
+│   ├── templates/                # built-in, read-only template catalog (browse + apply only — no
+│   │   │                         #   authoring). A template bundles workflows + dashboards; applying
+│   │   │                         #   creates the workflows first, resolves `{{workflow:<key>}}`
+│   │   │                         #   placeholders in dashboard row-action `workflowId`s against the
+│   │   │                         #   newly created ids, then creates the dashboards. Filterable by
+│   │   │                         #   DB type ("postgresql" | "sqlite") against Template.databases.
+│   │   │                         #   VSCode-style entry: a Templates icon in the console IconRail opens
+│   │   │                         #   TemplatesPanel in the sidebar; picking a template opens its detail
+│   │   │                         #   in a main-area tab (kind: 'template').
+│   │   ├── catalog/               #   TEMPLATES: Template[] — the shipped templates (plain TS objects)
+│   │   ├── components/            #   TemplatesPanel (sidebar list + DB-type filter chips),
+│   │   │                         #     TemplateDetailView (main-area tab: contents + Apply button)
+│   │   └── lib/                   #   apply (applyTemplate: create workflows → resolve refs → create dashboards)
+│   └── system-update/            # in-app update checking + guided update wizard (backup → pre-flight →
+│       │                         #   apply → verify). Compares running (version, sha) to the latest GitHub
+│       │                         #   Release; docker-socket-mounted ⇒ one-click self-update, else a manual
+│       │                         #   `docker compose pull` command. Admin-only apply.
+│       ├── components/           #   UpdateBanner (dismissible home-shell banner), UpdatePanel (Settings >
+│       │                         #     Updates: version + changelog + re-check), UpdateWizard (guided flow)
+│       ├── stores/               #   UpdateContext (useUpdate: info + check + per-version dismiss)
+│       └── lib/                  #   api (/api/system/* client + version polling), types
+│
+└── pages/                        # route-level composition (thin — just assemble features), grouped by area
+    ├── auth/                     # unauthenticated flows: LoginPage, SetupPage, AcceptInvitePage,
+    │                             #   ForgotPasswordPage, ResetPasswordPage
+    ├── admin/                    # the instance-admin area, one file per sidebar section (same rule
+    │                             #   as home/): AdminWorkspacesPage (/admin), AdminUsersPage
+    │                             #   (/admin/users) + AdminEmailPage (/admin/email — the instance-wide
+    │                             #   SMTP config) — no tabs, the sidebar switches. Only reachable
+    │                             #   with the system role 'admin'; AppRoutes' RequireSystemAdmin /
+    │                             #   RequireWorkspaceUser send each audience to the other's home
+    ├── console/                  # WorkspacePage — the per-connection DB console (route /connection/:id)
+    └── home/                     # the authenticated home shell — one file per sidebar section
+        ├── HomeLayout            #   sidebar + <Outlet/>; every section route renders inside it
+        ├── ui                    #   shared page primitives: PageHeader, Section, TabbedSection, SubHead, ComingSoon
+        ├── DashboardPage (/)     #   connection + member counts
+        ├── ConnectionsPage       #   stat cards + filter bar (search / env / folder / type / status)
+        │                         #   over the connection list, rendered with shared/ui/table's DataTable
+        │                         #   (sortable columns, 10/page, row click → detail); detail/picker/form
+        │                         #   come from features/connections
+        ├── StoragePage           # /storage → S3 storage destinations (StorageList), top-level sidebar item
+        ├── WorkspaceSettingsPage # /workspace → General / Member / Integrations / Notification tabs
+        └── SettingsPage          # /settings → Account / Theme / Data / Keymap / Updates tabs (Account
+                                  #   renders features/auth's ProfileSetting + PasswordSetting; Updates
+                                  #   renders UpdatePanel)
+```
+
+Note: `features/workspaces` (plural) is the org/tenant layer (workspaces, members,
+invites); `features/workspace` (singular) is the per-connection DB console. Don't
+conflate them.
+
+### Future decomposition candidates
+Out of scope so far: `pages/console/WorkspacePage.tsx` (~2200 lines),
+`schema-designer/SchemaEditor.tsx` (~1470), `workspace/TableView.tsx` (~900), and
+`server.js` (~2900 — the remaining step is moving route handlers into
+`server/routes/*.js` express routers).
+
+## Backend (`server.js` + `server/`)
+
+`server.js` is routes and wiring only; everything a route needs lives in a module
+under `server/`.
+
+```
+server.js                 # express app: 108 routes, static frontend, schedulers, shutdown
+server/
+├── config.js             # every env var + filesystem path, resolved once (imports nothing app-level)
+├── util.js               # safeJson, jsonPreview, describeError, sleep, sanitizeForKey, computeNextRun
+├── crypto.js             # AES-256-GCM: encryptSecret/decryptSecret + streamed file encryption.
+│                         #   One scrypt-derived key per namespace (connections | storage | backup files)
+├── meta.js               # the app's own SQLite handle, initMetaDb(), snapshotMetaSync()
+├── migrations.js         # versioned, append-only meta-schema steps (see the `meta-schema` skill)
+├── auth.js               # the guards — requireAuth, requireSystemAdmin (system role),
+│                         #   requireOwner/requireMember (workspace role) — plus the team /
+│                         #   connection-access rules. `sessionMiddleware` resolves the bearer
+│                         #   token once per request so the ~100 sync guards stay sync
+├── workspaces.js         # workspaces + workspace_members + teams: the admin listing, ownership
+│                         #   changes, and the one delete cascade both delete routes share
+├── users.js              # the instance user directory (`users`): system roles, invites,
+│                         #   promote/demote (promoting to admin strips every membership)
+├── login-guard.js        # sign-in brute-force protection: counts consecutive failures on
+│                         #   the account and blocks it past the threshold. An instance admin
+│                         #   only ever gets a self-expiring cooldown — see the `auth-sessions` skill
+├── app-settings.js       # instance-wide settings (`app_settings`, key → JSON): the admin-owned
+│                         #   counterpart of workspaces.settings. Today one key, 'smtp' — the global
+│                         #   mail server, its password sealed under its own scrypt namespace
+├── sessions/             # ★ the session store — logins + open-connection sessions
+│   ├── index.js          #   the registry: auth tokens, connection sessions, the limit, the sweeper
+│   ├── db.js             #   durable backend: the meta DB's `sessions` table — the source of
+│   │                     #     truth for logins (survives a restart / a flushed cache)
+│   ├── hybrid.js         #   composes cache + source; decides which namespaces are durable
+│   ├── memory.js         #   the cache: in-process, the only one (no external store)
+│   └── limits.js         #   resolveMaxSessions: connection → workspace → instance → unlimited
+├── mail.js               # SMTP resolution (admin app-settings → env) + the transactional emails
+├── connections.js        # connection records: rowToConnection/connectionToRow + CRUD + schemaVersion
+├── folders.js            # FOLDER_TYPES + the polymorphic folder tree (depth/height/ancestor checks)
+├── storage.js            # storage destinations (S3-compatible + built-in local disk) and object ops:
+│                         #   store/fetch/list/delete/prune. Every step branches on `dest.local`, not a caller
+├── db/                   # ★ the engine-agnostic database layer — see the `db-engine` skill
+│   ├── index.js          #   the driver contract + generic dispatch (the only file routes import)
+│   ├── diagnose.js       #   why a connection attempt failed: engine-agnostic transport
+│   │                     #     classification + the driver's own `explainError`
+│   ├── sql.js            #   dialect-agnostic SQL text utils shared by the SQL drivers
+│   ├── sqlite.js         #   one file per engine; each adapts itself to the contract
+│   ├── postgres.js
+│   └── redis.js
+├── workflow.js           # the node-graph executor (vm sandbox, {{input.x}} substitution),
+│                         #   executeAndRecord, nextRunForGraph, runDueWorkflows
+├── connection-transfer.js  # the portable connection export/import bundle (see that skill)
+├── backup/
+│   ├── index.js          #   barrel — what the routes import
+│   ├── schedule.js       #   the backup_schedules row store, clamps and validation
+│   ├── runner.js         #   export → store, retries, run history, failure notification
+│   └── restore.js        #   fetch artifact → decrypt → hand to the driver
+└── system-update.js      # GitHub release checking (cached) + Docker-socket self-update
+```
