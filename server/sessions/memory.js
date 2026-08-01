@@ -1,9 +1,10 @@
 /**
- * In-process session store — the default when SESSION_REDIS_URL isn't set.
+ * In-process session store — the cache layer under sessions/index.js.
  *
- * Fast and dependency-free, with the two limits that come with it: sessions are
- * lost when the process restarts, and a second replica can't see them. Point
- * SESSION_REDIS_URL at a Redis to get either.
+ * Fast and dependency-free, with the limit that comes with it: what lives only
+ * here is lost on restart and invisible to another replica. That's why logins
+ * are durable in the meta DB (hybrid.js) and only connection sessions — which
+ * describe this process's own live handles — are cache-only.
  */
 
 // namespace → Map<id, { value, expiresAt }>

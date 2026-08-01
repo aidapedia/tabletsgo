@@ -2492,11 +2492,7 @@ cron.schedule('* * * * *', () => {
 app.listen(PORT, () => {
   console.log(`✅ Server running on http://localhost:${PORT}`)
   console.log(`📊 API available at http://localhost:${PORT}/api`)
-  console.log(
-    `🔑 Sessions: logins in ${META_DB_PATH}, cached in ${
-      sessionCache.kind === 'redis' ? `redis (${sessionCache.url})` : 'process memory (set SESSION_REDIS_URL to share the cache across replicas)'
-    }`
-  )
+  console.log(`🔑 Sessions: logins in ${META_DB_PATH}, cached in ${sessionCache.kind}`)
   // Open what can be opened eagerly (SQLite files) so the first query is fast.
   for (const conn of listConnections()) {
     try {

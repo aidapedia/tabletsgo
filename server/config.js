@@ -69,14 +69,13 @@ export const DOCKER_SOCKET = process.env.DOCKER_SOCKET || '/var/run/docker.sock'
 export const AUTO_CHECK_UPDATES = /^(1|true|yes|on)$/i.test(String(process.env.UPDATE_AUTO_CHECK || ''))
 
 // ---- Sessions ----
-// Logins are stored in the meta DB (the source of truth) and read through a
-// cache. SESSION_REDIS_URL (redis:// or rediss://) makes that cache Redis so
-// replicas share it; without it the cache is per-process, which is still
-// correct — a cache miss just falls through to the DB. Connection sessions are
-// cache-only either way, so with more than one replica Redis is what lets them
-// see each other's open handles (and enforce the limit). See server/sessions.
-export const SESSION_REDIS_URL = process.env.SESSION_REDIS_URL || ''
-export const SESSION_REDIS_PREFIX = process.env.SESSION_REDIS_PREFIX || 'tabletsgo:'
+// There is no session infrastructure to configure: logins live in the meta DB
+// (the source of truth) and are read through an in-process cache, so a restart
+// never signs anyone out and there's nothing to point at. Connection sessions
+// are cache-only, because one describes a live driver handle *this* process
+// holds — which also means `maxSessions` is enforced per replica. See
+// server/sessions. (The app has no Redis of its own; server/db/redis.js is the
+// Redis a *user* connects to as a database, which is unrelated.)
 // Sliding lifetime of a login (bearer) session — refreshed on every request.
 export const SESSION_TTL_MS = parseInt(process.env.SESSION_TTL_MS, 10) || 30 * 24 * 60 * 60 * 1000
 // How long a *connection* session (one open driver handle/pool) survives with

@@ -260,8 +260,7 @@ server/
 │   ├── db.js             #   durable backend: the meta DB's `sessions` table — the source of
 │   │                     #     truth for logins (survives a restart / a flushed cache)
 │   ├── hybrid.js         #   composes cache + source; decides which namespaces are durable
-│   ├── memory.js         #   in-process cache (default)
-│   ├── redis.js          #   SESSION_REDIS_URL cache (shared across replicas)
+│   ├── memory.js         #   the cache: in-process, the only one (no external store)
 │   └── limits.js         #   resolveMaxSessions: connection → workspace → instance → unlimited
 ├── mail.js               # SMTP resolution (workspace settings → global app-settings → env) +
 │                         #   the transactional emails. See EMAIL / SMTP below
@@ -347,9 +346,9 @@ Configurable values live in env vars, wired through `docker-compose.yml` (see `.
 - `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` / `SMTP_SECURE` — **optional** SMTP, and the *fallback* under the admin's config (`/api/admin/smtp`, stored in `app_settings`), which is where SMTP is meant to be set — it changes without a redeploy. The env vars stay supported so existing deployments keep working. Invites always return a copyable link even without SMTP. See EMAIL / SMTP.
 - `VITE_API_URL` — frontend API base, **baked at build time** via Dockerfile `ARG` (not runtime). Default `/api`.
 - `TABLETSGO_TAG` — **optional**. Published image tag `docker compose` runs (and pulls on self-update). Default `latest`; one-click self-update works best on a moving tag.
-- `SESSION_REDIS_URL` / `SESSION_REDIS_PREFIX` — **optional**. Makes the session *cache* Redis instead of in-process. Logins live in the meta DB either way, so clearing it never signs anyone out; what it buys is replicas sharing one cache and — the part that actually needs it — seeing each other's connection sessions, which are cache-only. Required if you run more than one replica. `docker-compose.yml` points it at its bundled `redis` service. See SESSIONS.
 - `SESSION_TTL_MS` / `SESSION_IDLE_TTL_MS` — **optional**. Sliding login lifetime (default 30 days) and how long an idle connection session keeps its database handle open (default 15 min).
-- `MAX_SESSIONS_PER_CONNECTION` — **optional**. Instance-wide default cap on concurrent sessions per connection (0 = unlimited, the default). A workspace or an individual connection overrides it.
+- `MAX_SESSIONS_PER_CONNECTION` — **optional**. Instance-wide default cap on concurrent sessions per connection (0 = unlimited, the default). A workspace or an individual connection overrides it. Connection sessions are per-process, so with more than one replica this applies per replica.
+- **The app runs no Redis of its own** — the meta DB plus an in-process cache is the whole session layer, and there is nothing to point at (`REDIS_URL`/`SESSION_REDIS_URL` were removed in 0.21). Don't reintroduce an external store for state the meta DB can hold; the one thing it deliberately does *not* hold is a connection session, because that describes a live socket in one process. See SESSIONS.
 - `HANDSHAKE_TIMEOUT_MS` — **optional**. How long the pre-flight connection handshake (`GET /api/connections/:id/handshake`) waits for a database before reporting a timeout. Default `8000`; it runs while the user waits on the "Connect" button, so keep it short.
 - `UPDATE_AUTO_CHECK` — **optional**. Instance-wide default (truthy `1/true/yes/on`; default off) for the per-user "auto-check for updates" toggle in Settings > Updates, surfaced via `/api/system/version`'s `autoCheckUpdates`. Leave off when an orchestrator (e.g. Coolify) manages updates; users can still override per browser.
 - `UPDATE_IMAGE` / `UPDATE_REPO` / `UPDATE_HELPER_IMAGE` — **optional** in-app update checker tuning (default to the official image/repo; override only for a fork). The checker compares the running `(version, sha)` against the latest GitHub Release + its `release.json` contract. Apply method is auto-detected: Docker socket mounted ⇒ one-click self-update via `UPDATE_HELPER_IMAGE` (default `docker:cli`); otherwise the wizard shows a manual `docker compose pull` command. `APP_VERSION` / `GIT_SHA` are baked into the image at build time and reported by `/api/system/version`.
@@ -388,10 +387,10 @@ Per-workspace SMTP was removed in meta migration v10, which promotes a workspace
 ## SESSIONS
 Two things share one store (`server/sessions`) but are **stored differently, on purpose**:
 
-- **Logins** (bearer tokens) are *durable*: the meta DB's `sessions` table is the source of truth (`sessions/db.js`), read through a cache (`sessions/hybrid.js`). A login survives a restart, a flushed cache, and a Redis outage — a cache failure degrades to a slower DB read and warns once; it never signs anyone out.
+- **Logins** (bearer tokens) are *durable*: the meta DB's `sessions` table is the source of truth (`sessions/db.js`), read through a cache (`sessions/hybrid.js`). A login survives a restart and a dropped cache — a cache failure degrades to a slower DB read and warns once; it never signs anyone out.
 - **Connection sessions** are *cache-only*: one describes a live driver handle in one process, so persisting it would let a restart resurrect sessions whose sockets are gone, and the limit count phantoms. Losing them on restart is correct.
 
-The cache is in-process by default and Redis when `SESSION_REDIS_URL` is set — `docker-compose.yml` ships a `redis` service and points at it. With more than one replica Redis is what lets them see each other's *connection* sessions (logins are already shared through the DB). Every backend implements the same tiny contract (`put/get/touch/del/list/count/clear`), so nothing above them knows which is running; adding one is a file plus a line in `sessions/index.js`.
+**There is no external session store, and adding one is not the answer to a new requirement.** The cache is in-process (`sessions/memory.js`); the meta DB underneath it is what makes logins durable, so the app needs no infrastructure beyond its own SQLite file. The consequence is deliberate: with more than one replica each replica sees only its own connection sessions and enforces `maxSessions` on its own — which is honest, since another replica's handles aren't ours to count or close. The store contract (`put/get/touch/del/list/count/clear`) is still the seam, so a shared cache would be one file plus one line in `sessions/index.js` if that trade ever stops being the right one.
 
 Rules that keep the durable layer honest: the DB is written before the cache, `list`/`count` always read the DB (the cache is a partial view by design), a cached copy is capped at 60s so an out-of-band revocation takes effect, and the sliding expiry only rewrites the DB once ~10% of the TTL has elapsed — otherwise every authenticated request would be a write. Expired rows are ignored on read and reclaimed by the minutely sweeper (SQLite has no TTL).
 
@@ -412,8 +411,8 @@ unlimited. 0 at every level = unlimited, which is the shipped default. Exceeding
 throws `SessionLimitError` (429); the handshake reports it as `reason:'at_capacity'`
 with the session list, so the connect dialog can name who's holding them. Backup and
 restore are **not** gated — a scheduled dump must not fail because people are
-browsing. The limit is best-effort under a cross-replica race (it can over-admit by
-one, never under-count).
+browsing. The limit counts what *this* process holds, so across replicas it applies
+per replica.
 
 Rules of thumb: sessions must never depend on the db layer (it hands them a release
 callback instead); a store write on the hot path is skipped for `TOUCH_INTERVAL_MS`,

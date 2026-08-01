@@ -1,6 +1,6 @@
 /**
  * Composes two stores into one: a durable `source` (the meta DB) with a fast
- * `cache` (in-process, or Redis when SESSION_REDIS_URL is set) in front.
+ * in-process `cache` in front.
  *
  * Only the namespaces listed in `durable` go through the source. Everything
  * else is cache-only, and that split is deliberate:
