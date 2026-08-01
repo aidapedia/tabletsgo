@@ -5,6 +5,7 @@ import { Logo, TableIcon, CodeIcon, ShieldIcon, CheckIcon } from '@/shared/ui/ic
 import Button from '@/shared/ui/buttons/Button'
 import TextButton from '@/shared/ui/buttons/TextButton'
 import { Input } from '@/shared/ui/form/Input'
+import PasswordInput from '@/shared/ui/form/PasswordInput'
 import { Form, FormField } from '@/shared/ui/form/Form'
 
 const HIGHLIGHTS = [
@@ -107,9 +108,8 @@ export default function Login() {
           </FormField>
 
           <FormField label="Password" htmlFor="password" className="mb-[18px]">
-            <Input
+            <PasswordInput
               id="password"
-              type="password"
               autoComplete="current-password"
               placeholder="••••••••"
               value={password}

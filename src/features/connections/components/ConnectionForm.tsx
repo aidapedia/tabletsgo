@@ -2,13 +2,14 @@ import { useState } from 'react'
 import { useConnections } from '../stores/ConnectionsContext'
 import { BackupConfigForm } from '@/features/backup'
 import { useToast } from '@/shared/ui/feedback/Toast'
-import { ChevronLeft, CloseIcon, DbLogo, EyeIcon, EyeOffIcon, PlusSmall, ShieldIcon } from '@/shared/ui/icons'
+import { ChevronLeft, CloseIcon, DbLogo, PlusSmall, ShieldIcon } from '@/shared/ui/icons'
 import Select from '@/shared/ui/form/Select'
 import NumberStepper from '@/shared/ui/form/NumberStepper'
 import Button from '@/shared/ui/buttons/Button'
 import TextButton from '@/shared/ui/buttons/TextButton'
 import Tab from '@/shared/ui/navigation/Tab'
 import { controlClass, Input } from '@/shared/ui/form/Input'
+import PasswordInput from '@/shared/ui/form/PasswordInput'
 import { Label } from '@/shared/ui/form/Form'
 
 const DB_TYPES = [
@@ -129,7 +130,6 @@ export default function ConnectionForm({ initial, initialType, initialTab, onClo
     return blankFor(initialType)
   })
   const [tab, setTab] = useState(initialTab || 'general') // general | ssh | backup
-  const [showPassword, setShowPassword] = useState(false)
   const [tagDraft, setTagDraft] = useState('')
   const [addingTag, setAddingTag] = useState(false)
   const [test, setTest] = useState(null) // { ok, message } | 'loading'
@@ -372,23 +372,7 @@ export default function ConnectionForm({ initial, initialType, initialTab, onClo
 
                     <div className="mb-2">
                       <Label>Password</Label>
-                      <div className="relative">
-                        <Input
-                          className="pr-10"
-                          type={showPassword ? 'text' : 'password'}
-                          placeholder="••••••••"
-                          value={form.password}
-                          onChange={set('password')}
-                        />
-                        <TextButton
-                          tone="faint"
-                          className="absolute right-3 top-1/2 -translate-y-1/2"
-                          onClick={() => setShowPassword((s) => !s)}
-                          aria-label={showPassword ? 'Hide password' : 'Show password'}
-                        >
-                          {showPassword ? <EyeOffIcon /> : <EyeIcon />}
-                        </TextButton>
-                      </div>
+                      <PasswordInput placeholder="••••••••" value={form.password} onChange={set('password')} />
                     </div>
 
                     <TextButton tone={form.keychain ? 'green' : 'faint'} className="mb-[18px] !text-[11px]" onClick={() => setVal('keychain', !form.keychain)}>

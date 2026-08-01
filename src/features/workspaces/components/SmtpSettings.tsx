@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import Button from '@/shared/ui/buttons/Button'
 import { Input, controlClass } from '@/shared/ui/form/Input'
+import PasswordInput from '@/shared/ui/form/PasswordInput'
 import { FormField } from '@/shared/ui/form/Form'
 import Select from '@/shared/ui/form/Select'
 import { useToast } from '@/shared/ui/feedback/Toast'
@@ -135,7 +136,7 @@ export default function SmtpSettings({ workspaceId }: { workspaceId: string }) {
           <Input value={smtp.user} onChange={set('user')} placeholder={envDefaults?.user || 'apikey / user'} />
         </FormField>
         <FormField label="Password">
-          <Input type="password" value={smtp.pass} onChange={set('pass')} placeholder={hasPassword ? '•••••••• (unchanged)' : envDefaults ? '(from env)' : ''} />
+          <PasswordInput value={smtp.pass} onChange={set('pass')} placeholder={hasPassword ? '•••••••• (unchanged)' : envDefaults ? '(from env)' : ''} />
         </FormField>
         <FormField label="From address" className="col-span-2">
           <Input value={smtp.from} onChange={set('from')} placeholder={envDefaults?.from || 'Tabletsgo <no-reply@example.com>'} />

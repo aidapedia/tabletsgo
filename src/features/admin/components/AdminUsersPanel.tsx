@@ -5,6 +5,7 @@ import Badge from '@/shared/ui/Badge'
 import PersonRow from '@/shared/ui/PersonRow'
 import Select from '@/shared/ui/form/Select'
 import { Input, controlClass } from '@/shared/ui/form/Input'
+import PasswordInput from '@/shared/ui/form/PasswordInput'
 import { FormField } from '@/shared/ui/form/Form'
 import SearchInput from '@/shared/ui/form/SearchInput'
 import EmptyState from '@/shared/ui/feedback/EmptyState'
@@ -348,8 +349,7 @@ function CreateUserDialog({ onClose, onCreated }: { onClose: () => void; onCreat
             <Input value={form.name} onChange={(e) => set('name', e.target.value)} placeholder="Optional" />
           </FormField>
           <FormField label="Password" hint="Leave blank to send an invite link instead." className="mt-3">
-            <Input
-              type="password"
+            <PasswordInput
               value={form.password}
               onChange={(e) => set('password', e.target.value)}
               autoComplete="new-password"
@@ -412,9 +412,8 @@ function SetPasswordDialog({ user, onClose, onSaved }: { user: AdminUser; onClos
     <Modal title={`Set a password for ${user.name || user.email}`} onClose={onClose}>
       <form onSubmit={submit}>
         <FormField label="New password" hint="Their open sessions are signed out.">
-          <Input
+          <PasswordInput
             autoFocus
-            type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             autoComplete="new-password"
