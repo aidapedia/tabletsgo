@@ -31,6 +31,20 @@ services:
       - SMTP_PASS=${SMTP_PASS:-}
       - SMTP_FROM=${SMTP_FROM:-}
       - SMTP_SECURE=${SMTP_SECURE:-}
+      # How long (ms) the pre-flight connection handshake waits before it reports
+      # a timeout. Raise only for databases behind a slow tunnel/VPN.
+      - HANDSHAKE_TIMEOUT_MS=${HANDSHAKE_TIMEOUT_MS:-}
+      # Session store (logins + open-connection sessions). Points at the redis
+      # service below; logins then survive a container restart and are shared by
+      # every replica. Set to an empty value to fall back to the in-process store
+      # (fine for a single container, but sessions are lost on restart).
+      - SESSION_REDIS_URL=${SESSION_REDIS_URL-redis://redis:6379/0}
+      # Optional session tuning: login lifetime, idle timeout before an open
+      # database handle is released, and the instance-wide cap on concurrent
+      # sessions per connection (0 = unlimited; workspace/connection override it).
+      - SESSION_TTL_MS=${SESSION_TTL_MS:-}
+      - SESSION_IDLE_TTL_MS=${SESSION_IDLE_TTL_MS:-}
+      - MAX_SESSIONS_PER_CONNECTION=${MAX_SESSIONS_PER_CONNECTION:-}
       # In-app update checker. UPDATE_IMAGE/UPDATE_REPO default to the official
       # image + repo; override only for a fork. One-click apply needs the Docker
       # socket mounted (see the volumes section) — otherwise the wizard shows the
@@ -52,7 +66,21 @@ services:
       # already restricted to workspace admins. Leave commented to keep updates
       # manual (the wizard then shows a `docker compose pull` command instead).
       # - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  # Session store — logins and open-connection sessions. This is TabletsGo's own
+  # Redis; it has nothing to do with a Redis you connect to *as a database*.
+  # Drop this service (and clear SESSION_REDIS_URL) to keep sessions in-process.
+  redis:
+    image: redis:7-alpine
+    # appendonly so signed-in users survive a restart of this container.
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - tabletsgo-sessions:/data
     restart: unless-stopped
 
 volumes:
   tabletsgo-data:
+  tabletsgo-sessions:

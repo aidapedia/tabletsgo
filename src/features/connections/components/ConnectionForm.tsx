@@ -4,6 +4,7 @@ import { BackupConfigForm } from '@/features/backup'
 import { useToast } from '@/shared/ui/feedback/Toast'
 import { ChevronLeft, CloseIcon, DbLogo, EyeIcon, EyeOffIcon, PlusSmall, ShieldIcon } from '@/shared/ui/icons'
 import Select from '@/shared/ui/form/Select'
+import NumberStepper from '@/shared/ui/form/NumberStepper'
 import Button from '@/shared/ui/buttons/Button'
 import TextButton from '@/shared/ui/buttons/TextButton'
 import Tab from '@/shared/ui/navigation/Tab'
@@ -36,6 +37,7 @@ const blankSqlite = {
   filepath: '',
   folder: '',
   tags: [],
+  maxSessions: 0,
 }
 
 const blankPostgres = {
@@ -53,6 +55,7 @@ const blankPostgres = {
   keychain: false,
   folder: '',
   tags: [],
+  maxSessions: 0,
 }
 
 // Redis reuses the same field names as Postgres — host/port/username/password —
@@ -73,6 +76,7 @@ const blankRedis = {
   keychain: false,
   folder: '',
   tags: [],
+  maxSessions: 0,
 }
 
 const blankFor = (type) => (type === 'postgresql' ? blankPostgres : type === 'redis' ? blankRedis : blankSqlite)
@@ -191,6 +195,7 @@ export default function ConnectionForm({ initial, initialType, initialTab, onClo
       filepath: form.filepath?.trim() || '',
       database: form.database?.trim() || '',
       folder: form.folder.trim(),
+      maxSessions: Math.max(0, parseInt(form.maxSessions, 10) || 0),
     }
     // Verify the connection works before saving so we never store a broken one.
     setSaving(true)
@@ -452,6 +457,23 @@ export default function ConnectionForm({ initial, initialType, initialTab, onClo
                 </Label>
                 <Input type="text" placeholder="e.g. Demo" value={form.folder} onChange={set('folder')} />
               </div>
+            </div>
+
+            <div className="mb-[18px] max-w-[260px]">
+              <Label>
+                Max concurrent sessions <span className="text-ink-faint">(0 = workspace default)</span>
+              </Label>
+              <NumberStepper
+                value={Number(form.maxSessions) || 0}
+                min={0}
+                max={999}
+                ariaLabel="Max concurrent sessions"
+                onChange={(n) => setVal('maxSessions', n || 0)}
+              />
+              <p className="mt-2 text-[11px] text-ink-faint">
+                Caps how many connections to this database the app keeps open at once (one per database it browses).
+                Leave at 0 to inherit the workspace default.
+              </p>
             </div>
 
             {test && test !== 'loading' && (

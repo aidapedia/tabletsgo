@@ -2,36 +2,56 @@
  * Sessions, request guards and the workspace/team membership rules that decide
  * who may see a connection.
  *
- * Roles are per workspace (`admin` | `member`) via `workspace_members`; the
- * session token is a bearer token stored in `sessions`.
+ * Roles are per workspace (`admin` | `member`) via `workspace_members`. A login
+ * is a bearer token in the session store (server/sessions — in-process by
+ * default, Redis when SESSION_REDIS_URL is set), *not* a meta-DB row: replicas
+ * then share logins, and the store expires them on its own.
+ *
+ * The store is async while `requireAuth` is called synchronously by ~100 routes,
+ * so the token is resolved once per request by `sessionMiddleware` and parked on
+ * `req`. Everything downstream reads that — no route had to change.
  */
 
-import { randomUUID } from 'crypto'
+import { createAuthSession, destroyAuthSession, readAuthSession } from './sessions/index.js'
 import { meta } from './meta.js'
 
 // ---- Sessions ----
-export const createSession = (userId) => {
-  const token = randomUUID()
-  meta.prepare('INSERT INTO sessions (token, user_id, created_at) VALUES (?, ?, ?)').run(token, userId, Date.now())
-  return token
-}
+export const createSession = (userId, context) => createAuthSession(userId, context)
 
-export const deleteSession = (token) => meta.prepare('DELETE FROM sessions WHERE token = ?').run(token)
+export const deleteSession = (token) => destroyAuthSession(token)
 
 export const bearerToken = (req) => {
   const h = req.headers.authorization || ''
   return h.startsWith('Bearer ') ? h.slice(7) : null
 }
 
-export const userFromToken = (token) => {
-  if (!token) return null
-  const s = meta.prepare('SELECT user_id FROM sessions WHERE token = ?').get(token)
-  if (!s) return null
-  return meta.prepare('SELECT id, username, name, role, status FROM users WHERE id = ?').get(s.user_id) || null
+export const userRow = (id) =>
+  meta.prepare('SELECT id, username, name, role, status FROM users WHERE id = ?').get(id) || null
+
+export async function userFromToken(token) {
+  const session = await readAuthSession(token)
+  return session ? userRow(session.userId) : null
+}
+
+/**
+ * Resolve the caller once per request, before any route runs. A store failure is
+ * not fatal: it means "not signed in" (401 from the guards), never a 500.
+ */
+export async function sessionMiddleware(req, _res, next) {
+  const token = bearerToken(req)
+  if (token) {
+    try {
+      req.authUser = await userFromToken(token)
+      req.authToken = token
+    } catch (error) {
+      console.error('Session lookup failed:', error.message)
+    }
+  }
+  next()
 }
 
 // Resolve the caller from the Bearer token (null if unauthenticated).
-export const authUser = (req) => userFromToken(bearerToken(req))
+export const authUser = (req) => req.authUser || null
 
 // Public shape returned to the client (never the password hash).
 export const publicUser = (u) => (u ? { id: u.id, email: u.username, name: u.name, role: u.role } : null)

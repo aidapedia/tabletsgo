@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 import ConnectionAccessPanel from './ConnectionAccessPanel'
 import { TYPE_LABEL } from './DbTypePickerModal'
 import { BackupPanel } from '@/features/backup'
-import { listTables, pingConnection } from '@/shared/api/database'
+import { listConnectionSessions, listTables, pingConnection } from '@/shared/api/database'
+import type { SessionStats } from '@/shared/api/database'
 import Button from '@/shared/ui/buttons/Button'
 import IconButton from '@/shared/ui/buttons/IconButton'
 import TextButton from '@/shared/ui/buttons/TextButton'
@@ -25,9 +26,11 @@ import {
   TrashIcon,
 } from '@/shared/ui/icons'
 
+// `bg-status-ok` (a fixed green), not `bg-green` — the latter follows the
+// workspace accent, and "Connected" has to read as green whatever that is.
 const STATUS = {
   checking: { dot: 'bg-ink-faint animate-pulse', text: 'text-ink-faint', label: 'Checking…' },
-  connected: { dot: 'bg-green', text: 'text-ink-dim', label: 'Connected' },
+  connected: { dot: 'bg-status-ok', text: 'text-ink-dim', label: 'Connected' },
   offline: { dot: 'bg-red', text: 'text-ink-dim', label: 'Offline' },
 }
 
@@ -68,11 +71,12 @@ function DetailRow({ label, value }: { label: string; value?: string }) {
 
 // Full-page connection detail: Data Connection / Access / Backup tabs, each laid
 // out as a main column + a context sidebar.
-export default function ConnectionDetail({ conn, onBack, onOpen, onEdit, onDelete, onExport }) {
+export default function ConnectionDetail({ conn, onBack, onOpen, onEdit, onDelete, onExport, connecting }: any) {
   const toast = useToast()
   const [tab, setTab] = useState<'data' | 'access' | 'backup'>('data')
   const [status, setStatus] = useState<'checking' | 'connected' | 'offline'>('checking')
   const [tableCount, setTableCount] = useState<number | null>(null)
+  const [sessions, setSessions] = useState<SessionStats | null>(null)
 
   useEffect(() => {
     let alive = true
@@ -88,6 +92,16 @@ export default function ConnectionDetail({ conn, onBack, onOpen, onEdit, onDelet
       alive = false
     }
   }, [conn.id])
+
+  // Live session picture. Re-read after the ping so the console's own session
+  // (opened by that ping) is already counted.
+  useEffect(() => {
+    let alive = true
+    listConnectionSessions(conn).then((s) => alive && setSessions(s))
+    return () => {
+      alive = false
+    }
+  }, [conn.id, status])
 
   const copyUrl = () => {
     navigator.clipboard?.writeText(connectionUrl(conn))
@@ -149,8 +163,8 @@ export default function ConnectionDetail({ conn, onBack, onOpen, onEdit, onDelet
               </div>
             )}
           </Popover>
-          <Button variant="primary" size="sm" icon={ExternalLinkIcon} onClick={() => onOpen(conn)}>
-            Connect
+          <Button variant="primary" size="sm" icon={ExternalLinkIcon} disabled={connecting} onClick={() => onOpen(conn)}>
+            {connecting ? 'Connecting…' : 'Connect'}
           </Button>
         </div>
       </div>
@@ -202,8 +216,15 @@ export default function ConnectionDetail({ conn, onBack, onOpen, onEdit, onDelet
               <div className="rounded-card border border-edge bg-card p-5">
                 <div className="text-[13px] font-bold">Quick actions</div>
                 <div className="mt-3 flex flex-col gap-2">
-                  <Button variant="primary" size="md" className="w-full" icon={ExternalLinkIcon} onClick={() => onOpen(conn)}>
-                    Open console
+                  <Button
+                    variant="primary"
+                    size="md"
+                    className="w-full"
+                    icon={ExternalLinkIcon}
+                    disabled={connecting}
+                    onClick={() => onOpen(conn)}
+                  >
+                    {connecting ? 'Connecting…' : 'Open console'}
                   </Button>
                   <Button variant="ghost" size="md" className="w-full" icon={EditIcon} onClick={() => onEdit(conn)}>
                     Edit connection
@@ -221,6 +242,12 @@ export default function ConnectionDetail({ conn, onBack, onOpen, onEdit, onDelet
                   {conn.environment && <OverviewRow label="Environment" value={conn.environment} />}
                   {conn.folder && <OverviewRow label="Folder" value={conn.folder} />}
                   <OverviewRow label="Owner" value={conn.ownerName || conn.ownerEmail || '—'} />
+                  {sessions && (
+                    <OverviewRow
+                      label="Sessions"
+                      value={sessions.max ? `${sessions.active} of ${sessions.max}` : `${sessions.active} (no limit)`}
+                    />
+                  )}
                   {typeof conn.schemaVersion === 'number' && <OverviewRow label="Schema version" value={`v${conn.schemaVersion}`} />}
                 </div>
                 {tags.length > 0 && (

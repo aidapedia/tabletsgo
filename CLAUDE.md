@@ -46,7 +46,9 @@ src/
 │   ├── auth/                     # stores/AuthContext + api (login/setup/invite); session token
 │   ├── workspaces/               # org/tenant layer (multi-workspace): WorkspaceContext (current
 │   │                             #   workspace + switch), WorkspaceSwitcher, MembersPanel, TeamsPanel,
-│   │                             #   SmtpSettings, IntegrationsSettings (SMTP), NotificationSettings;
+│   │                             #   SmtpSettings, IntegrationsSettings (SMTP), NotificationSettings,
+│   │                             #   WorkspaceGeneral (rename + the default "max sessions per
+│   │                             #     connection" every connection inherits — see SESSIONS);
 │   │                             #   api (workspaces/members/teams CRUD)
 │   ├── connections/              # stores/ConnectionsContext (scoped to current workspace); components:
 │   │                             #   ConnectionForm, ConnectionDetail (Data/Access/Backup tabs),
@@ -55,8 +57,14 @@ src/
 │   │                             #     search + database-type filter chips + a collapsible folder tree —
 │   │                             #     a connection's `folder` string nests on "/"; ↑/↓/Enter/Esc),
 │   │                             #   ConnectionExportModal + ConnectionImportModal (whole-connection JSON
-│   │                             #   bundle — see "CONNECTION EXPORT / IMPORT" below); api (connection
-│   │                             #   access get/set, export/import client + file read/download helpers)
+│   │                             #   bundle — see "CONNECTION EXPORT / IMPORT" below),
+│   │                             #   ConnectHandshakeDialog (root cause + retry/edit/open-anyway when the
+│   │                             #     pre-flight handshake fails); hooks/useConnectHandshake ("Connect"
+│   │                             #     probes /handshake and only then routes to the console — see
+│   │                             #     "The connection handshake" under THE DB LAYER); api (connection
+│   │                             #   access get/set, export/import client + file read/download helpers).
+│   │                             #   ConnectionForm carries "Max concurrent sessions" (0 = inherit the
+│   │                             #     workspace default) and ConnectionDetail shows the live count
 │   ├── settings/                 # stores/SettingsContext
 │   ├── redis/                    # everything Redis-shaped in the console. Redis has no tables and
 │   │   │                         #   no SQL, so it replaces two pieces of the console rather than
@@ -216,7 +224,14 @@ server/
 │                         #   One scrypt-derived key per namespace (connections | storage | backup files)
 ├── meta.js               # the app's own SQLite handle, initMetaDb(), snapshotMetaSync()
 ├── migrations.js         # versioned, append-only meta-schema steps (see META DB MIGRATIONS below)
-├── auth.js               # sessions, requireAuth/requireSystemAdmin, workspace+team+connection-access rules
+├── auth.js               # requireAuth/requireSystemAdmin + the workspace/team/connection-access
+│                         #   rules. Logins live in sessions/, not the meta DB; `sessionMiddleware`
+│                         #   resolves the bearer token once per request so the ~100 sync guards work
+├── sessions/             # ★ the session store — logins + open-connection sessions (see SESSIONS)
+│   ├── index.js          #   the registry: auth tokens, connection sessions, the limit, the sweeper
+│   ├── memory.js         #   in-process backend (default)
+│   ├── redis.js          #   SESSION_REDIS_URL backend (shared across replicas)
+│   └── limits.js         #   resolveMaxSessions: connection → workspace → instance → unlimited
 ├── mail.js               # SMTP resolution (workspace settings → env) + the transactional emails
 ├── connections.js        # connection records: rowToConnection/connectionToRow + CRUD + schemaVersion
 ├── folders.js            # FOLDER_TYPES + the polymorphic folder tree (depth/height/ancestor checks)
@@ -224,6 +239,8 @@ server/
 │                         #   store/fetch/list/delete/prune. Every step branches on `dest.local`, not a caller
 ├── db/                   # ★ the engine-agnostic database layer — see "THE DB LAYER" below
 │   ├── index.js          #   the driver contract + generic dispatch (the only file routes import)
+│   ├── diagnose.js       #   why a connection attempt failed: engine-agnostic transport
+│   │                     #     classification + the driver's own `explainError` (see HANDSHAKE)
 │   ├── sql.js            #   dialect-agnostic SQL text utils shared by the SQL drivers
 │   ├── sqlite.js         #   one file per engine; each adapts itself to the contract
 │   ├── postgres.js
@@ -244,8 +261,10 @@ Conventions:
   SMTP/admin-seed fallbacks are the exception, read where they're used).
 - A module owns its table(s): if a route is writing raw SQL against
   `backup_schedules` or `storage_destinations`, that belongs in the module.
-- Dependencies point one way: `config → crypto → meta → {auth, mail, connections,
-  folders, storage} → db → workflow/backup/transfer → server.js`. No cycles —
+- Dependencies point one way: `config → crypto → meta → sessions → {auth, mail,
+  connections, folders, storage} → db → workflow/backup/transfer → server.js`. No cycles —
+  `sessions` never imports `db`; the db layer hands it a release callback instead
+  (`setReleaseHandler`), which is what lets the sweeper close idle handles. Also
   `backup/schedule.js` is split out from the runner precisely so
   `connection-transfer.js` can read a schedule without importing the pipeline.
 
@@ -270,6 +289,20 @@ what that means at the API edge:
   `/analyze` tells a Redis user about Redis instead of about SQL syntax), and
   `db.supports(conn, 'dump')` to gate a feature without naming an engine.
 
+### The connection handshake
+`GET /api/connections/:id/handshake` (→ `db.handshake`) is the pre-flight the
+console runs **before** routing into a connection: `ping` says yes/no, the
+handshake says *why not*. It never throws — a failure is a normal 200
+`{ ok:false, reason, cause, hint, code?, detail }`, timed out after
+`HANDSHAKE_TIMEOUT_MS`. The diagnosis follows the same edge rule as everything
+else: `server/db/diagnose.js` classifies what's engine-agnostic (refused, DNS,
+timeout, TLS, unreachable), and a driver adds only what its engine alone can
+explain through the optional `explainError(error, conn)` — Postgres SQLSTATEs,
+Redis error replies, SQLite file errors. `reason` is a stable code the UI maps
+to a headline; `cause`/`hint` are prose it renders as-is, so a new reason never
+breaks an older client. Frontend side: `useConnectHandshake` +
+`ConnectHandshakeDialog` in `features/connections`.
+
 Never leave a route without an answer for an engine — a missing branch used to
 mean `res.json(undefined)` and a hung request; the generic layer is what makes
 that impossible now.
@@ -282,12 +315,50 @@ Configurable values live in env vars, wired through `docker-compose.yml` (see `.
 - `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` / `SMTP_SECURE` — **optional** fallback SMTP for member-invite emails (per-workspace UI settings override these). Invites always return a copyable link even without SMTP.
 - `VITE_API_URL` — frontend API base, **baked at build time** via Dockerfile `ARG` (not runtime). Default `/api`.
 - `TABLETSGO_TAG` — **optional**. Published image tag `docker compose` runs (and pulls on self-update). Default `latest`; one-click self-update works best on a moving tag.
+- `SESSION_REDIS_URL` / `SESSION_REDIS_PREFIX` — **optional**. Puts sessions (logins + connection sessions) in Redis instead of in-process; required if you run more than one replica. `docker-compose.yml` sets it to its bundled `redis` service — clear it to fall back to the in-process store (a restart then signs everyone out). See SESSIONS.
+- `SESSION_TTL_MS` / `SESSION_IDLE_TTL_MS` — **optional**. Sliding login lifetime (default 30 days) and how long an idle connection session keeps its database handle open (default 15 min).
+- `MAX_SESSIONS_PER_CONNECTION` — **optional**. Instance-wide default cap on concurrent sessions per connection (0 = unlimited, the default). A workspace or an individual connection overrides it.
+- `HANDSHAKE_TIMEOUT_MS` — **optional**. How long the pre-flight connection handshake (`GET /api/connections/:id/handshake`) waits for a database before reporting a timeout. Default `8000`; it runs while the user waits on the "Connect" button, so keep it short.
 - `UPDATE_AUTO_CHECK` — **optional**. Instance-wide default (truthy `1/true/yes/on`; default off) for the per-user "auto-check for updates" toggle in Settings > Updates, surfaced via `/api/system/version`'s `autoCheckUpdates`. Leave off when an orchestrator (e.g. Coolify) manages updates; users can still override per browser.
 - `UPDATE_IMAGE` / `UPDATE_REPO` / `UPDATE_HELPER_IMAGE` — **optional** in-app update checker tuning (default to the official image/repo; override only for a fork). The checker compares the running `(version, sha)` against the latest GitHub Release + its `release.json` contract. Apply method is auto-detected: Docker socket mounted ⇒ one-click self-update via `UPDATE_HELPER_IMAGE` (default `docker:cli`); otherwise the wizard shows a manual `docker compose pull` command. `APP_VERSION` / `GIT_SHA` are baked into the image at build time and reported by `/api/system/version`.
 When you add a new tunable, thread it through `server/config.js`, the Dockerfile/compose, and `.env.example`.
 
 ## AUTH MODEL
-Login/setup/accept-invite return `{ user, token }`; the token is stored in localStorage (`dbm.token`) and attached as `Authorization: Bearer` by `shared/api/request.ts`. Workspace/member and per-connection routes require it (server `requireAuth` / the `/api/connections/:id` membership middleware). Roles are **per workspace** (`admin` | `member`) via `workspace_members`. Connections carry a `workspace_id` column and are filtered by the caller's current workspace.
+Login/setup/accept-invite return `{ user, token }`; the token is stored in localStorage (`dbm.token`) and attached as `Authorization: Bearer` by `shared/api/request.ts`. Server-side the token lives in the **session store** (`server/sessions`), not the meta DB — so replicas share logins and the store expires them (`SESSION_TTL_MS`, sliding). The store is async while `requireAuth` is called synchronously by ~100 routes, so `sessionMiddleware` resolves the token once per request onto `req.authUser`; **never make `requireAuth` async** — resolve in middleware and keep the guards sync. Workspace/member and per-connection routes require it (server `requireAuth` / the `/api/connections/:id` membership middleware). Roles are **per workspace** (`admin` | `member`) via `workspace_members`. Connections carry a `workspace_id` column and are filtered by the caller's current workspace.
+
+## SESSIONS
+Two things share one pluggable store (`server/sessions`): **logins** (bearer tokens)
+and **connection sessions**. The backend is in-process by default and Redis when
+`SESSION_REDIS_URL` is set — `docker-compose.yml` ships a `redis` service and points
+at it, so the default deployment keeps logins across restarts. Both backends
+implement the same tiny contract (`put/get/touch/del/list/count/clear`), so nothing
+above them knows which is running; adding a backend is one file plus one line in
+`sessions/index.js`.
+
+**A session is one open connection to a database — not a browser tab.** It maps to
+the driver handle: the Postgres pool for a database, the ioredis client for a db
+index, the SQLite file handle. Five people browsing the same database share one
+session and appear as its `participants`. The db layer registers them itself:
+`gatedRequired`/`gatedOptional` call `enterSession` before the driver opens
+anything, so a session exists exactly as long as the app really uses the
+connection. There is deliberately **no "open session" endpoint** — an explicit
+lifecycle would drift out of sync with the actual sockets. An idle session expires
+after `SESSION_IDLE_TTL_MS` and the minutely sweeper releases its handle; the next
+query transparently opens a new one.
+
+**The limit** (`maxSessions`) resolves most-specific-first: connection →
+workspace (`settings.sessions.maxPerConnection`) → `MAX_SESSIONS_PER_CONNECTION` →
+unlimited. 0 at every level = unlimited, which is the shipped default. Exceeding it
+throws `SessionLimitError` (429); the handshake reports it as `reason:'at_capacity'`
+with the session list, so the connect dialog can name who's holding them. Backup and
+restore are **not** gated — a scheduled dump must not fail because people are
+browsing. The limit is best-effort under a cross-replica race (it can over-admit by
+one, never under-count).
+
+Rules of thumb: sessions must never depend on the db layer (it hands them a release
+callback instead); a store write on the hot path is skipped for `TOUCH_INTERVAL_MS`,
+which is clamped to a third of the idle TTL so a live session can't expire underneath
+the process holding it.
 
 ## CONNECTIONS & SCHEMA VERSIONING
 The `connections` table stores dialect-agnostic fields (`type`, `name`, `workspace_id`, `environment`, `folder`, `tags`, `schema_version`) as plain columns and everything else (host/port/username/password/filepath/database/uri/sslmode/tls/auth/keychain) as one AES-256-GCM-encrypted JSON blob in `credentials`. `server/connections.js`'s `rowToConnection`/`connectionToRow` reassemble/split the flat connection shape the frontend has always used — the API contract for `/api/connections*` didn't change, only storage. Redis deliberately **reuses the same field names** as PostgreSQL (host/port/username/password/database/uri) so nothing downstream needs a Redis branch; only `tls` (`'' | 'require' | 'insecure'`) is its own, standing in for `sslmode`.

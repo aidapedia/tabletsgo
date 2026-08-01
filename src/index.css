@@ -21,6 +21,10 @@
   --color-green-dim: color-mix(in oklab, var(--accent, #6fcf6a) 22%, var(--color-bg));
   --color-red: #ef4444;
   --color-amber: #d6a73a;
+  /* Live-connectivity signal. Deliberately NOT --accent: "connected" has to
+     read as green whatever accent the workspace picked (an orange dot next to
+     "Connected" reads as a warning). */
+  --color-status-ok: #22c55e;
 
   --radius-card: 14px;
   --radius-soft: 10px;
@@ -79,6 +83,7 @@ html.theme-light {
   --color-ink-faint: #939aa1;
   --color-red: #e03131;
   --color-amber: #b8860b;
+  --color-status-ok: #16a34a;
   --accent-tint: #000000;
 }
 

@@ -497,6 +497,70 @@ export const redisDriver = {
     }
   },
 
+  // Redis reports refusals as error *replies*, not error codes — the generic
+  // classifier in ./diagnose.js can only see the transport, so translate the
+  // replies that have a specific fix here.
+  explainError(error) {
+    const message = error?.message || ''
+    if (/NOAUTH|Authentication required/i.test(message)) {
+      return {
+        reason: 'auth',
+        cause: 'This Redis server requires authentication.',
+        hint: 'Add the password (and username, for ACL users on Redis 6+) in the connection settings.',
+      }
+    }
+    if (/WRONGPASS|invalid (username-)?password/i.test(message)) {
+      return {
+        reason: 'auth',
+        cause: 'Redis rejected the username or password.',
+        hint: 'Re-enter the credentials; for an ACL user both the username and password must match.',
+      }
+    }
+    if (/without any password configured|but no password is set/i.test(message)) {
+      return {
+        reason: 'auth',
+        cause: 'This server has no password set, but this connection sends one.',
+        hint: 'Clear the password (or set Authentication to "none") in the connection settings.',
+      }
+    }
+    if (/NOPERM/i.test(message)) {
+      return {
+        reason: 'permission',
+        cause: "This Redis user's ACL does not allow the commands the console needs.",
+        hint: 'Grant the user at least read access to the commands and keys you want to browse.',
+      }
+    }
+    if (/DENIED/i.test(message)) {
+      return {
+        reason: 'permission',
+        cause: 'The server refused the client (protected mode or a bind restriction).',
+        hint: 'Disable protected-mode, set a password, or bind Redis to an address this server can reach.',
+      }
+    }
+    if (/DB index is out of range|invalid DB index/i.test(message)) {
+      return {
+        reason: 'missing_database',
+        cause: 'The selected database index does not exist on this server.',
+        hint: 'Lower the database index, or raise the server\'s "databases" setting.',
+      }
+    }
+    if (/max number of clients/i.test(message)) {
+      return {
+        reason: 'busy',
+        cause: 'The server has reached its client limit.',
+        hint: 'Free up clients (or raise maxclients) and try again.',
+      }
+    }
+    if (/CLUSTERDOWN|MOVED|CROSSSLOT/i.test(message)) {
+      return {
+        reason: 'unsupported',
+        cause: 'This looks like a Redis Cluster, which the console does not drive yet.',
+        hint: 'Point the connection at a single node, or use a cluster proxy endpoint.',
+      }
+    }
+    return null
+  },
+
   release: (conn) => closeRedisClients(conn.id),
   closeAll: () => closeAllRedisClients(),
 

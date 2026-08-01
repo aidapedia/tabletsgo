@@ -34,6 +34,71 @@ export async function pingConnection(conn) {
   return safeRequest(withNs(conn, `/connections/${conn.id}/ping`), { ok: false, error: 'Unable to reach the server.' })
 }
 
+// One open driver handle for a connection (a pool for a database, a Redis
+// client for a db index, a SQLite file handle) — what "max sessions" counts.
+// Everyone browsing the same target shares one session as a participant.
+export type ConnectionSession = {
+  id: string
+  connectionId: string
+  connectionName?: string
+  type?: string
+  target: string
+  instanceId?: string
+  openedAt: number
+  lastSeenAt: number
+  participants: Record<string, { name: string; lastSeenAt: number }>
+}
+
+export type SessionStats = {
+  active: number
+  max: number // 0 = unlimited
+  source: 'connection' | 'workspace' | 'instance' | 'unlimited'
+  sessions: ConnectionSession[]
+}
+
+export async function listConnectionSessions(conn): Promise<SessionStats> {
+  return safeRequest<SessionStats>(`/connections/${conn.id}/sessions`, {
+    active: 0,
+    max: 0,
+    source: 'unlimited',
+    sessions: [],
+  })
+}
+
+// Leave a session (`force` closes it for everyone — workspace admins only).
+export async function endConnectionSession(conn, sessionId: string, force = false) {
+  const qs = force ? '?force=1' : ''
+  return request(`/connections/${conn.id}/sessions/${encodeURIComponent(sessionId)}${qs}`, { method: 'DELETE' })
+}
+
+// A failed handshake explains itself: `reason` is a stable code to branch on,
+// `cause`/`hint` are prose to render, `detail` is the raw driver error.
+export type Handshake = {
+  ok: boolean
+  latencyMs?: number
+  type?: string
+  target?: string
+  reason?: string
+  cause?: string
+  hint?: string
+  detail?: string
+  code?: string
+  // reason === 'at_capacity' only: who is holding the sessions, and the cap.
+  sessions?: ConnectionSession[]
+  limit?: { max?: number; source?: string; active?: number }
+}
+
+// Pre-flight probe before opening a connection — same check as `pingConnection`,
+// but a failure comes back with a root cause instead of a bare `ok: false`.
+export async function handshakeConnection(conn): Promise<Handshake> {
+  return safeRequest<Handshake>(withNs(conn, `/connections/${conn.id}/handshake`), {
+    ok: false,
+    reason: 'network',
+    cause: 'The TabletsGo server could not be reached.',
+    hint: 'Check that the server is running and that your session has not expired, then try again.',
+  })
+}
+
 // Generic browsable objects: [{ name, type, ... }] (tables, views, functions, …).
 export async function listObjects(conn) {
   return safeRequest(withNs(conn, `/connections/${conn.id}/objects`), [])

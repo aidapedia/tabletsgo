@@ -18,6 +18,9 @@
  *
  *   type, label, dataTypes        identity + the column types the schema editor offers
  *   testConnection(config)        → { ok, message }; `config` is unsaved form input
+ *   explainError(error, conn)     → { reason, cause, hint } for an engine-specific
+ *                                   failure the generic classifier can't read (optional;
+ *                                   see ./diagnose.js)
  *   prewarm(conn)                 open eagerly at boot (optional)
  *   release(conn)                 drop cached handles/pools for this connection
  *   closeAll()                    shutdown
@@ -39,6 +42,12 @@
  *   dump(conn, destPath)          write a restorable dump of the whole database
  *   restore(conn, dumpPath)       overwrite the live database with one
  *
+ * Every op that takes `ctx` is dispatched through `gatedRequired`/`gatedOptional`,
+ * which register a *session* for the handle the call is about to use (see
+ * server/sessions) and refuse to open a new one past the connection's
+ * `maxSessions`. Drivers know nothing about it — sessions are counted where the
+ * decision to open a handle is made, not inside each engine.
+ *
  * A driver simply omits what its engine doesn't have. Two kinds of omission are
  * distinguished here, because the two behave differently at the API edge:
  *
@@ -51,7 +60,9 @@
 import fs from 'fs'
 import path from 'path'
 import { randomUUID } from 'crypto'
-import { BACKUP_TMP_DIR } from '../config.js'
+import { BACKUP_TMP_DIR, HANDSHAKE_TIMEOUT_MS } from '../config.js'
+import { SessionLimitError, setReleaseHandler, touchConnectionSession } from '../sessions/index.js'
+import { diagnose, targetOf } from './diagnose.js'
 import { sqliteDriver } from './sqlite.js'
 import { postgresDriver } from './postgres.js'
 import { redisDriver } from './redis.js'
@@ -115,6 +126,36 @@ const optional = (op, empty) => (conn, ...args) => {
   return driver[op](conn, ...args)
 }
 
+/**
+ * Register the session for the handle this call needs, before the driver opens
+ * it. Every op whose second argument is `ctx` goes through one of the `gated`
+ * dispatchers below, so a session exists for exactly as long as the app is
+ * really using the connection — there's no separate "open session" call that
+ * could drift out of sync with the sockets.
+ *
+ * Throws SessionLimitError (429) when a *new* handle would exceed the
+ * connection's `maxSessions`. Backup/restore stay ungated on purpose: a
+ * scheduled dump must not fail because people are browsing.
+ */
+export const enterSession = (conn, ctx = {}) => touchConnectionSession(conn, ctx, ctx.actor)
+
+const gatedRequired = (op) => async (conn, ctx, ...args) => {
+  const driver = requireCapability(conn, op)
+  await enterSession(conn, ctx)
+  return driver[op](conn, ctx, ...args)
+}
+
+const gatedOptional = (op, empty) => async (conn, ctx, ...args) => {
+  const driver = driverFor(conn)
+  if (typeof driver[op] !== 'function') return typeof empty === 'function' ? empty(conn) : empty
+  await enterSession(conn, ctx)
+  return driver[op](conn, ctx, ...args)
+}
+
+// Releasing a handle is the db layer's job; deciding *when* is the session
+// sweeper's. Wire the two without making sessions depend on this module.
+setReleaseHandler((conn) => releaseConnection(conn))
+
 // ---- Lifecycle ----
 export const testConnection = (config) => requireCapability(config, 'testConnection').testConnection(config)
 export const prewarmConnection = optional('prewarm', undefined)
@@ -127,32 +168,87 @@ export const closeAllConnections = () => {
 export const dataTypesFor = (conn) => drivers[conn?.type]?.dataTypes || []
 
 // ---- Introspection ----
-export const ping = optional('ping', { ok: true })
-export const namespaces = required('namespaces')
-export const listTables = optional('listTables', [])
-export const listObjects = optional('listObjects', [])
-export const listFunctions = optional('listFunctions', [])
-export const getColumns = optional('getColumns', [])
-export const getIndexes = optional('getIndexes', [])
-export const getSchemaMap = optional('getSchemaMap', {})
-export const getDiagram = optional('getDiagram', { tables: [], foreignKeys: [] })
+export const ping = gatedOptional('ping', { ok: true })
+
+// Reject with `code: 'ETIMEDOUT'` when `promise` outlives `ms`, so a handshake
+// against a black-holed host answers in seconds instead of riding the driver's
+// own (much longer) TCP timeout.
+function withTimeout(promise, ms) {
+  let timer
+  const expiry = new Promise((_, reject) => {
+    timer = setTimeout(
+      () => reject(Object.assign(new Error(`Timed out after ${ms}ms.`), { code: 'ETIMEDOUT' })),
+      ms
+    )
+    timer.unref?.()
+  })
+  return Promise.race([promise, expiry]).finally(() => clearTimeout(timer))
+}
+
+/**
+ * Pre-flight connectivity check with a *reason* when it fails.
+ *
+ * `ping` answers yes/no; this answers "why not" — the console runs it before
+ * opening a connection so a user lands on a root cause instead of a workspace
+ * that fails one panel at a time. It never throws: a failure is a normal
+ * `{ ok: false, reason, cause, hint }` payload (see ./diagnose.js).
+ */
+export async function handshake(conn, ctx) {
+  const started = Date.now()
+  const base = { type: conn?.type, target: targetOf(conn) }
+  try {
+    driverFor(conn) // unknown engine → UnsupportedError, handled below
+    await withTimeout(Promise.resolve(ping(conn, ctx)), HANDSHAKE_TIMEOUT_MS)
+    return { ok: true, latencyMs: Date.now() - started, ...base }
+  } catch (error) {
+    let failure
+    if (error instanceof UnsupportedError) {
+      failure = { reason: 'unsupported', cause: error.message, hint: 'Update TabletsGo or pick a supported database type.', detail: error.message }
+    } else if (error instanceof SessionLimitError) {
+      // Reachable, just full — say so in the same shape as any other failure,
+      // and hand the UI the session list so it can show who's holding them.
+      failure = {
+        reason: 'at_capacity',
+        cause: error.message,
+        hint:
+          error.info?.source === 'connection'
+            ? 'Wait for a session to end, or raise "Max concurrent sessions" in the connection settings.'
+            : 'Wait for a session to end, or raise the workspace default for max sessions per connection.',
+        detail: error.message,
+        sessions: error.info?.sessions || [],
+        limit: { max: error.info?.max, source: error.info?.source, active: error.info?.active },
+      }
+    } else {
+      failure = diagnose(drivers[conn?.type], conn, error)
+    }
+    return { ok: false, latencyMs: Date.now() - started, ...base, ...failure }
+  }
+}
+export const namespaces = gatedRequired('namespaces')
+export const listTables = gatedOptional('listTables', [])
+export const listObjects = gatedOptional('listObjects', [])
+export const listFunctions = gatedOptional('listFunctions', [])
+export const getColumns = gatedOptional('getColumns', [])
+export const getIndexes = gatedOptional('getIndexes', [])
+export const getSchemaMap = gatedOptional('getSchemaMap', {})
+export const getDiagram = gatedOptional('getDiagram', { tables: [], foreignKeys: [] })
 // Tableless engines (Redis) browse through their own routes; the grid shows the
 // message rather than an empty table it can't explain.
-export const getTableData = optional('getTableData', (conn) => ({
+export const getTableData = gatedOptional('getTableData', (conn) => ({
   columns: [],
   rows: [],
   error: `Table browsing is not supported for ${conn.type} connections.`,
 }))
 
 // ---- Data ----
-export const insertRow = required('insertRow')
-export const analyze = required('analyze')
+export const insertRow = gatedRequired('insertRow')
+export const analyze = gatedRequired('analyze')
 
 // Execute one statement (or, on a command-driven engine, one command buffer)
 // against the connection's target database. A *statement-level* failure comes
 // back as `{ error }` rather than throwing — that's what lets the /query route
 // hand a syntax error to the console like any other result.
-export const runQuery = required('runQuery')
+export const runQuery = gatedRequired('runQuery')
 
 // The throwing variant, for callers running a sequence that must stop at the
 // first failure instead of carrying on as if it had succeeded: schema rollback

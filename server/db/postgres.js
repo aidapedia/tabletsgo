@@ -79,6 +79,64 @@ export const postgresDriver = {
     }
   },
 
+  // What the generic classifier can't read: SQLSTATEs and the handful of
+  // libpq messages that have a specific fix. Anything else falls through to
+  // the transport classification in ./diagnose.js.
+  explainError(error) {
+    const code = error?.code || ''
+    const message = error?.message || ''
+    if (code === '28P01' || code === '28000' || /password authentication failed/i.test(message)) {
+      return {
+        reason: 'auth',
+        cause: 'PostgreSQL rejected the username or password.',
+        hint: 'Re-enter the credentials in the connection settings; a rotated password is the usual cause.',
+      }
+    }
+    if (code === '3D000' || /database ".*" does not exist/i.test(message)) {
+      return {
+        reason: 'missing_database',
+        cause: 'That database does not exist on this server.',
+        hint: 'Check the "Database" field — the server is reachable, only the database name is wrong.',
+      }
+    }
+    if (code === '53300' || /too many clients/i.test(message)) {
+      return {
+        reason: 'busy',
+        cause: 'The server has reached its connection limit.',
+        hint: 'Free up connections (or raise max_connections) and try again.',
+      }
+    }
+    if (code === '57P03' || /the database system is (starting up|shutting down|in recovery)/i.test(message)) {
+      return {
+        reason: 'busy',
+        cause: 'The server is not accepting connections yet.',
+        hint: 'It is starting up or recovering — retry in a few seconds.',
+      }
+    }
+    if (/no pg_hba\.conf entry/i.test(message)) {
+      return {
+        reason: 'permission',
+        cause: "The server's pg_hba.conf does not allow this client, user or SSL mode.",
+        hint: 'Add a pg_hba.conf rule for this server\'s IP and user, and make sure the SSL mode matches what that rule requires.',
+      }
+    }
+    if (/does not support SSL/i.test(message)) {
+      return {
+        reason: 'tls',
+        cause: 'The server does not support SSL, but this connection requires it.',
+        hint: 'Set SSL mode to "disable" in the connection settings.',
+      }
+    }
+    if (/SSL (connection )?(is )?required|no encryption/i.test(message)) {
+      return {
+        reason: 'tls',
+        cause: 'The server only accepts SSL connections.',
+        hint: 'Set SSL mode to "require" (or "verify-full" if you have the CA) in the connection settings.',
+      }
+    }
+    return null
+  },
+
   release(conn) {
     for (const [key, pool] of pools) {
       if (key === conn.id || key.startsWith(`${conn.id}::`)) {

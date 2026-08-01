@@ -295,6 +295,9 @@ function ensureColumns(db) {
   addColumn(db, 'connections', 'updated_at INTEGER')
   // Owner = the user who created the connection (defaults on create).
   addColumn(db, 'connections', 'owner_id TEXT')
+  // max_sessions (concurrent session cap) is added by migration v7 via ALTER —
+  // like backup_schedules.include_config it is intentionally NOT added here, so
+  // v7's plain ALTER doesn't collide on a fresh install.
   // Schema migrations: status tracks whether a version is still applied
   // ('active') or has been undone via rollback ('rollbacked'). Old rows predate
   // this column — treat NULL as active.
@@ -489,9 +492,18 @@ export const MIGRATIONS = [
       db.exec(`ALTER TABLE backup_schedules ADD COLUMN include_config INTEGER DEFAULT 0`)
     },
   },
-  // v7+: append plain, run-exactly-once steps here, e.g.
+  {
+    version: 7,
+    name: 'connections.max_sessions (per-connection concurrent session cap)',
+    up(db) {
+      // 0/NULL = inherit: the workspace default, then MAX_SESSIONS_PER_CONNECTION,
+      // then unlimited. Existing connections keep today's behaviour (no cap).
+      db.exec(`ALTER TABLE connections ADD COLUMN max_sessions INTEGER DEFAULT 0`)
+    },
+  },
+  // v8+: append plain, run-exactly-once steps here, e.g.
   // {
-  //   version: 7,
+  //   version: 8,
   //   name: 'connections: last_used_at',
   //   up(db) {
   //     db.exec(`ALTER TABLE connections ADD COLUMN last_used_at INTEGER`)
@@ -505,6 +517,9 @@ export const MIGRATIONS = [
 // shopping list for an eventual cleanup step once the release floor has
 // moved past every image that still used the table.
 export const DEPRECATED_TABLES = [
+  // Login tokens moved to the session store (server/sessions) in step 7 — kept
+  // so an older image can still sign users in after a rollback.
+  { table: 'sessions', supersededBy: 'server/sessions store', sinceStep: 7 },
   { table: 'saved_folders', supersededBy: 'folders', sinceStep: 3 },
   { table: 'domains', supersededBy: 'folders', sinceStep: 5 },
   { table: 'table_domains', supersededBy: 'connection_tables', sinceStep: 5 },

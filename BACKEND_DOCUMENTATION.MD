@@ -69,6 +69,9 @@ reassembles this same shape on every read, so API consumers see no difference:
   "filepath": "./demo.db",
   "folder": "Demo",
   "schemaVersion": 1,          // bumped by POST .../schema/migrations
+  "maxSessions": 0,            // concurrent open connections to this database;
+                               //   0 = inherit the workspace default (see
+                               //   "Connection sessions")
   "ownerId": "user_1",         // creator by default; see POST /api/connections
   "ownerName": "Alice",        // resolved read-only (owner's display name)
   "ownerEmail": "alice@x.com"  // resolved read-only (owner's email)
@@ -436,11 +439,18 @@ Set password, activate, log in. **Body:** `{ "name", "password" }` → **200:** 
   so a settings panel that only calls `refresh()`/`listWorkspaces()` after saving
   sees the persisted value instead of it reverting to empty.
 - `POST /api/workspaces` `{ name }` → creates one; caller becomes `admin`.
-- `GET /api/workspaces/:id` → `{ id, name, role, createdAt, experiments, notifications }`;
-  admins also get `smtp` (password-masked) + `smtpEnvFallback` + `smtpEnvDefaults`
+- `GET /api/workspaces/:id` → `{ id, name, role, createdAt, experiments, notifications, sessions }`;
+  `sessions` is `{ maxPerConnection, instanceDefault }` — the workspace-wide cap on
+  concurrent sessions per connection (0 = unlimited) plus the read-only
+  `MAX_SESSIONS_PER_CONNECTION` env fallback that applies while it's 0, so the
+  settings form can show what's actually in effect. See "Connection sessions".
+  Admins also get `smtp` (password-masked) + `smtpEnvFallback` + `smtpEnvDefaults`
   (non-secret env values — `host`, `port`, `secure`, `user`, `from` — present
   only when `smtpEnvFallback` is true).
-- `PUT /api/workspaces/:id` (admin) `{ name?, smtp?, experiments?, notifications? }` → `{ ok: true }`.
+- `PUT /api/workspaces/:id` (admin) `{ name?, smtp?, experiments?, notifications?, sessions? }` → `{ ok: true }`.
+  `sessions` is `{ maxPerConnection }` (integer, 0 = unlimited; negatives and junk
+  clamp to 0) — the default every connection in the workspace inherits unless it
+  sets its own `maxSessions`.
   `smtp` is `{ host, port, secure, user, from, pass? }`; omit `pass` to keep the
   stored one. `experiments` is a partial `{ [key]: boolean }`, merged onto the
   existing flags (so toggling one doesn't clear the others). `notifications` is
@@ -1334,6 +1344,108 @@ engines; the client uses it to detect a dropped connection.
 - **Query:** optional `database`, `schema` (PG)
 - **Example:** `GET http://localhost:3000/api/connections/demo-pg/ping`
 
+### GET `/api/connections/:id/handshake`
+Pre-flight connectivity check the console runs **before** it opens a connection
+(the "Connect" button on the connections list). Same probe as `/ping`, but a
+failure explains itself with a likely root cause instead of a bare `ok: false`,
+so the user isn't dropped into a console where every panel fails on its own.
+Never returns a 5xx: a failed handshake is a normal 200 payload. Times out after
+`HANDSHAKE_TIMEOUT_MS` (default 8000) so a black-holed host answers in seconds.
+
+- **Query:** optional `database`, `schema` (PG) / `database` (Redis db index)
+- **200 (reachable):** `{ "ok": true, "latencyMs": 26, "type": "redis", "target": "127.0.0.1:6379" }`
+- **200 (failed):**
+  ```jsonc
+  {
+    "ok": false,
+    "latencyMs": 4,
+    "type": "postgresql",
+    "target": "db.internal:5432",       // host:port, file path, or a URI's host — never credentials
+    "reason": "auth",                   // stable code to branch on (see below)
+    "cause": "PostgreSQL rejected the username or password.",
+    "hint": "Re-enter the credentials in the connection settings; a rotated password is the usual cause.",
+    "code": "28P01",                    // driver/libuv error code, when there is one
+    "detail": "password authentication failed for user \"app\""   // raw driver error
+  }
+  ```
+  - `reason` is one of `dns` | `refused` | `timeout` | `network` | `tls` | `auth` |
+    `permission` | `missing_database` | `missing_file` | `busy` | `unsupported` |
+    `unknown`. `cause`/`hint` are prose meant to be rendered as-is, so a client
+    that doesn't know a newer `reason` still shows something useful.
+  - Transport failures (refused/DNS/timeout/TLS) are classified generically for
+    every engine; engine-specific replies (Postgres SQLSTATEs, Redis `NOAUTH`/
+    `WRONGPASS`, SQLite file errors) come from that driver's `explainError` —
+    see `server/db/diagnose.js`.
+  - `reason: "at_capacity"` means the connection is reachable but already at its
+    session limit. It carries two extra fields: `sessions` (the live sessions, same
+    shape as `GET /sessions`) and `limit` (`{ max, source, active }`) so the UI can
+    show who's holding them. See "Connection sessions" below.
+- **404:** `{ "error": "Connection not found" }`
+- **Example:** `GET http://localhost:3000/api/connections/demo-pg/handshake`
+
+### Connection sessions
+A **session is one open connection to the database** — the Postgres pool for a
+database, the ioredis client for a db index, the SQLite file handle — *not* a
+browser tab. Everyone browsing the same target shares one session and shows up as
+a participant on it, so five people on one database count as one session.
+
+Sessions are registered by the db layer itself: any call that touches a database
+opens or refreshes the session for the handle it's about to use, and the session
+disappears (releasing the handle) after `SESSION_IDLE_TTL_MS` with no activity.
+There is no "open session" endpoint — nothing to leak or get out of sync with the
+real sockets. They live in the session store (in-process, or Redis when
+`SESSION_REDIS_URL` is set), which is what makes the count correct across replicas.
+
+**The limit** resolves most-specific-first: the connection's `maxSessions` → the
+workspace's `settings.sessions.maxPerConnection` → `MAX_SESSIONS_PER_CONNECTION`
+→ unlimited. 0 at every level means unlimited (the shipped default). Opening a
+*new* session past the limit fails with `429` (`GET /handshake` reports it as
+`reason: "at_capacity"` instead — see above). Backup/restore are deliberately
+exempt: a scheduled dump must not fail because people are browsing.
+
+> Under a race two replicas can each open a handle at the same instant and exceed
+> the limit by one. The count is never *under*-reported, which is the side that
+> matters for protecting a database.
+
+#### GET `/api/connections/:id/sessions`
+Who's connected right now, and against what cap.
+
+- **200:**
+  ```jsonc
+  {
+    "active": 2,
+    "max": 5,                    // 0 = unlimited
+    "source": "connection",      // "connection" | "workspace" | "instance" | "unlimited"
+    "sessions": [
+      {
+        "id": "postgresql:appdb/public",  // engine + the target the handle is on
+        "connectionId": "…",
+        "connectionName": "Prod",
+        "type": "postgresql",
+        "target": "appdb/public",
+        "instanceId": "b0f864f2",         // which app replica holds the handle
+        "openedAt": 1785485843801,
+        "lastSeenAt": 1785485901120,
+        "participants": { "<userId>": { "name": "Ada", "lastSeenAt": 1785485901120 } }
+      }
+    ]
+  }
+  ```
+- **404:** `{ "error": "Connection not found" }`
+- **Example:** `GET http://localhost:3000/api/connections/demo-pg/sessions`
+
+#### DELETE `/api/connections/:id/sessions/:sessionId`
+Leave a session. The caller is only removed as a participant; the session ends
+(and its database handle is released) once the last participant is gone.
+`?force=1` closes it outright for everyone — **workspace admins only**.
+
+- **Path:** `sessionId` is the session's `id`, URL-encoded (it contains `:` and `/`)
+- **Query:** `force` (optional — `1`/`true`/`yes`, admin only)
+- **200:** `{ "ok": true, …the same shape as GET /sessions… }`
+- **403:** `{ "error": "Admin only" }` (force, non-admin)
+- **404:** `{ "error": "Connection not found" }`
+- **Example:** `DELETE http://localhost:3000/api/connections/demo-pg/sessions/redis%3A(default)`
+
 ### GET `/api/connections/:id/tables`
 List table names.
 
@@ -1786,6 +1898,9 @@ Liveness probe. Also reports boot readiness and the running identity.
 | GET    | `/api/connections/:id/schema/migrations`  | List schema migration history   |
 | POST   | `/api/connections/:id/schema/rollback`    | Roll schema back to a version   |
 | GET    | `/api/connections/:id/ping`               | Connectivity check `{ ok }`     |
+| GET    | `/api/connections/:id/handshake`          | Pre-flight check + root cause   |
+| GET    | `/api/connections/:id/sessions`           | Open sessions + the limit       |
+| DELETE | `/api/connections/:id/sessions/:sid`      | Leave (or admin-close) a session|
 | GET    | `/api/connections/:id/tables`             | List tables                     |
 | GET    | `/api/connections/:id/objects`            | List objects (tables/views/fns) |
 | GET    | `/api/connections/:id/function/:name`     | Function definition(s)          |
