@@ -151,7 +151,7 @@ export default function DataGrid({
   edits,
   onEdit,
   onCellContextMenu,
-  sort, // [{ col, dir }] — active sort rules (drives header carets)
+  sort, // [{ col, dir, enabled }] — sort rules (drives header carets; disabled ones are ignored)
   onSort, // (col, additive) => void — header click; additive (Shift) adds to multi-sort
   actionsLabel = 'Actions', // header text for the trailing per-row actions column
   renderRowActions, // (row, i) => ReactNode — adds a trailing actions column when set
@@ -324,10 +324,12 @@ export default function DataGrid({
       /* leave invalid JSON untouched */
     }
   }
-  // col -> { dir, index } so headers can render a caret and (when multi) a priority number.
+  // col -> { dir, index } so headers can render a caret and (when multi) a priority
+  // number. A rule the user disabled in the sort panel doesn't sort, so it gets no caret.
+  const activeSort = (sort || []).filter((s: any) => s?.col && s.enabled !== false)
   const sortByCol: Record<string, { dir: string; index: number }> = {}
-  ;(sort || []).forEach((s: any, i: number) => { if (s?.col) sortByCol[s.col] = { dir: s.dir, index: i } })
-  const multiSort = (sort?.length || 0) > 1
+  activeSort.forEach((s: any, i: number) => { sortByCol[s.col] = { dir: s.dir, index: i } })
+  const multiSort = activeSort.length > 1
 
   const allSelected = selectable && rows.length > 0 && rows.every((r, i) => selectedKeys?.has(keyOf(r, i)))
   const someSelected = selectable && !allSelected && rows.some((r, i) => selectedKeys?.has(keyOf(r, i)))
