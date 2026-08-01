@@ -1,9 +1,9 @@
 import { useNavigate, useParams } from 'react-router-dom'
-import { useWorkspaces, MembersPanel, WorkspaceGeneral, TeamsPanel } from '@/features/workspaces'
+import { useWorkspaces, MembersPanel, WorkspaceGeneral, WorkspaceConfig, TeamsPanel } from '@/features/workspaces'
 import { SubHead, TabbedSection } from './ui'
 import LoadingState from '@/shared/ui/feedback/LoadingState'
 
-// Workspace section — General / Member as tabs (a second path segment).
+// Workspace section — General / Config / Member / Teams as tabs (a second path segment).
 // Integration + Notification moved to their own /integrations sidebar section.
 export default function WorkspaceSettingsPage() {
   const navigate = useNavigate()
@@ -19,6 +19,16 @@ export default function WorkspaceSettingsPage() {
         <div>
           <SubHead title="General" desc="Manage the general settings of this workspace." />
           <WorkspaceGeneral />
+        </div>
+      ),
+    },
+    {
+      id: 'config',
+      label: 'Config',
+      body: (
+        <div>
+          <SubHead title="Config" desc="Defaults every connection in this workspace inherits." />
+          <WorkspaceConfig />
         </div>
       ),
     },

@@ -6,23 +6,11 @@ import {
   MAX_QUERY_TIMEOUT,
 } from '@/features/settings'
 import NumberStepper from '@/shared/ui/form/NumberStepper'
+import SettingRow from '@/shared/ui/form/SettingRow'
 import Toggle from '@/shared/ui/form/Toggle'
 
 // Step amount for the row-limit stepper buttons.
 const ROW_LIMIT_STEP = 1000
-
-// One labelled settings row (title + description on the left, control on the right).
-function SettingRow({ title, desc, children }) {
-  return (
-    <div className="flex items-center justify-between gap-4 rounded-card border border-edge bg-card p-4">
-      <div className="min-w-0">
-        <div className="text-[13px] font-semibold">{title}</div>
-        <div className="mt-0.5 text-[11px] leading-relaxed text-ink-dim">{desc}</div>
-      </div>
-      {children}
-    </div>
-  )
-}
 
 // Data / query-execution settings (no section chrome).
 export default function DataSetting() {
