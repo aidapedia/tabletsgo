@@ -27,14 +27,16 @@ import {
   EditIcon,
   ExternalLinkIcon,
   GridIcon,
+  InfoIcon,
   MoreVerticalIcon,
   PlusIcon,
   TrashIcon,
   UploadIcon,
 } from '@/shared/ui/icons'
 import SearchInput from '@/shared/ui/form/SearchInput'
-import EmptyState from '@/shared/ui/feedback/EmptyState'
-import LoadingState from '@/shared/ui/feedback/LoadingState'
+import DataTable from '@/shared/ui/table/DataTable'
+import type { Column } from '@/shared/ui/table/DataTable'
+import useDataTable from '@/shared/ui/table/useDataTable'
 import { PageHeader } from './ui'
 
 // One headline metric with a right-aligned icon medallion.
@@ -201,6 +203,143 @@ export default function ConnectionsPage() {
   const hasFilters =
     activeEnv !== 'all' || activeFolder !== 'all' || activeType !== 'all' || activeStatus !== 'all' || !!query.trim()
 
+  const clearFilters = () => {
+    setQuery('')
+    setActiveEnv('all')
+    setActiveFolder('all')
+    setActiveType('all')
+    setActiveStatus('all')
+  }
+
+  // Table columns. Everything the row shows is derived here so the table itself
+  // stays generic; sorting uses `sortValue` wherever the cell isn't plain text.
+  const columns = useMemo<Column<any>[]>(
+    () => [
+      {
+        key: 'name',
+        header: 'Connection',
+        sortable: true,
+        sortValue: (c) => c.name,
+        render: (c) => (
+          <div className="flex min-w-0 items-center gap-3">
+            <DbLogo type={c.type} className="h-9 w-9 shrink-0 rounded-[10px]" />
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="truncate font-semibold">{c.name}</span>
+                <EnvBadge environment={c.environment} />
+              </div>
+              <div className="mt-0.5 truncate font-mono text-[11px] text-ink-faint">{subtitle(c) || '—'}</div>
+            </div>
+          </div>
+        ),
+      },
+      {
+        key: 'type',
+        header: 'Type',
+        sortable: true,
+        sortValue: (c) => TYPE_LABEL[c.type] || c.type,
+        width: 130,
+        render: (c) => <span className="text-ink-dim">{TYPE_LABEL[c.type] || c.type}</span>,
+      },
+      {
+        key: 'database',
+        header: 'Database',
+        sortable: true,
+        sortValue: (c) => dbName(c) || '',
+        width: 170,
+        className: 'max-[1080px]:hidden',
+        render: (c) => <span className="block truncate font-mono text-[12px]">{dbName(c) || '—'}</span>,
+      },
+      {
+        key: 'status',
+        header: 'Status',
+        sortable: true,
+        sortValue: (c) => statuses[c.id] || 'zz', // unknown last
+        width: 120,
+        render: (c) => <StatusBadge status={statuses[c.id]} />,
+      },
+      {
+        key: 'backup',
+        header: 'Last backup',
+        sortable: true,
+        sortValue: (c) => backups[c.id]?.ts ?? 0,
+        width: 150,
+        className: 'max-[900px]:hidden',
+        render: (c) => {
+          const backup = backups[c.id]
+          if (!backup) return <span className="text-ink-faint">Never</span>
+          return (
+            <span className="flex items-center gap-1.5">
+              {relativeTime(backup.ts)}
+              <span className={backup.ok ? 'text-green' : 'text-red'}>
+                <CheckIcon width={13} height={13} />
+              </span>
+            </span>
+          )
+        },
+      },
+      {
+        key: 'actions',
+        header: '',
+        align: 'right',
+        width: 190,
+        render: (c) => (
+          // Actions never open the detail view the row click opens.
+          <div className="flex items-center justify-end gap-1.5" onClick={(e) => e.stopPropagation()}>
+            <Button
+              variant="primary"
+              size="sm"
+              icon={ExternalLinkIcon}
+              disabled={connectingId === c.id}
+              onClick={() => openConsole(c)}
+            >
+              {connectingId === c.id ? 'Connecting…' : 'Connect'}
+            </Button>
+            <Popover
+              align="right"
+              width={170}
+              portal // the table body scrolls horizontally — an in-flow panel would be clipped
+              trigger={({ open, toggle }) => (
+                <IconButton onClick={toggle} active={open} aria-label="Connection actions">
+                  <MoreVerticalIcon width={16} height={16} />
+                </IconButton>
+              )}
+            >
+              {({ close }) => (
+                <div className="p-1">
+                  <MenuItem onClick={() => { close(); setDetailConn(c) }}>
+                    <InfoIcon width={14} height={14} /> Details
+                  </MenuItem>
+                  <MenuItem onClick={() => { close(); setFormConn({ mode: 'edit', conn: c }) }}>
+                    <EditIcon width={14} height={14} /> Edit
+                  </MenuItem>
+                  <MenuItem onClick={() => { close(); copyUrl(c) }}>
+                    <CopyIcon width={14} height={14} /> Copy as URL
+                  </MenuItem>
+                  <MenuItem onClick={() => { close(); setExporting(c) }}>
+                    <DownloadIcon width={14} height={14} /> Export as JSON
+                  </MenuItem>
+                  <MenuItem danger onClick={() => { close(); setDeleting(c) }}>
+                    <TrashIcon width={14} height={14} /> Delete
+                  </MenuItem>
+                </div>
+              )}
+            </Popover>
+          </div>
+        ),
+      },
+    ],
+    [statuses, backups, connectingId],
+  )
+
+  // Client-side sort + paging; changing a filter sends the table back to page 1.
+  const table = useDataTable({
+    rows: filtered,
+    columns,
+    pageSize: 10,
+    resetKey: `${query}|${activeEnv}|${activeFolder}|${activeType}|${activeStatus}`,
+  })
+
   if (formConn) {
     return (
       <ConnectionForm
@@ -356,123 +495,34 @@ export default function ConnectionsPage() {
               { value: 'offline', label: 'Offline' },
             ]}
           />
+          {hasFilters && (
+            <Button variant="ghost" size="sm" onClick={clearFilters}>
+              Clear
+            </Button>
+          )}
         </div>
 
-        {/* Cards */}
-        {loading ? (
-          <LoadingState className="py-20 text-center" />
-        ) : (
-          <div className="mt-6 grid grid-cols-3 gap-4 max-[1080px]:grid-cols-2 max-[720px]:grid-cols-1">
-            {filtered.map((conn) => {
-              const backup = backups[conn.id]
-              return (
-                <div
-                  key={conn.id}
-                  className="group relative flex flex-col rounded-card border border-edge bg-card p-5 transition-colors hover:border-edge-strong"
-                >
-                  {/* Head: logo + live status */}
-                  <div className="flex items-start justify-between">
-                    <DbLogo type={conn.type} className="h-11 w-11 shrink-0 rounded-[12px]" />
-                    <StatusBadge status={statuses[conn.id]} />
-                  </div>
-
-                  {/* Name + environment */}
-                  <div className="mt-4 flex items-center gap-2">
-                    <div className="truncate text-[15px] font-bold">{conn.name}</div>
-                    <EnvBadge environment={conn.environment} />
-                  </div>
-                  <div className="mt-0.5 truncate font-mono text-[12px] text-ink-faint">
-                    {TYPE_LABEL[conn.type] || conn.type} · {subtitle(conn)}
-                  </div>
-
-                  {/* Database + last backup */}
-                  <div className="mt-4 grid grid-cols-2 gap-3 border-t border-edge pt-4">
-                    <div className="min-w-0">
-                      <div className="text-[11px] text-ink-dim">Database</div>
-                      <div className="mt-1 truncate text-[13px] font-medium">{dbName(conn) || '—'}</div>
-                    </div>
-                    <div className="min-w-0">
-                      <div className="text-[11px] text-ink-dim">Last backup</div>
-                      <div className="mt-1 flex items-center gap-1.5">
-                        <span className="truncate text-[13px] font-medium">
-                          {backup ? relativeTime(backup.ts) : 'Never'}
-                        </span>
-                        {backup && (
-                          <span className={backup.ok ? 'text-green' : 'text-red'}>
-                            <CheckIcon width={13} height={13} />
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Footer: actions + menu */}
-                  <div className="mt-4 flex items-center gap-2 border-t border-edge pt-4">
-                    <Button variant="ghost" size="sm" className="flex-1" onClick={() => setDetailConn(conn)}>
-                      Details
-                    </Button>
-                    <Button
-                      variant="primary"
-                      size="sm"
-                      className="flex-1"
-                      icon={ExternalLinkIcon}
-                      disabled={connectingId === conn.id}
-                      onClick={() => openConsole(conn)}
-                    >
-                      {connectingId === conn.id ? 'Connecting…' : 'Connect'}
-                    </Button>
-                    <Popover
-                      align="right"
-                      width={170}
-                      trigger={({ open, toggle }) => (
-                        <IconButton onClick={toggle} active={open} aria-label="Connection actions">
-                          <MoreVerticalIcon width={16} height={16} />
-                        </IconButton>
-                      )}
-                    >
-                      {({ close }) => (
-                        <div className="p-1">
-                          <MenuItem onClick={() => { setFormConn({ mode: 'edit', conn }); close() }}>
-                            <EditIcon width={14} height={14} /> Edit
-                          </MenuItem>
-                          <MenuItem onClick={() => { copyUrl(conn); close() }}>
-                            <CopyIcon width={14} height={14} /> Copy as URL
-                          </MenuItem>
-                          <MenuItem onClick={() => { close(); setExporting(conn) }}>
-                            <DownloadIcon width={14} height={14} /> Export as JSON
-                          </MenuItem>
-                          <MenuItem danger onClick={() => { close(); setDeleting(conn) }}>
-                            <TrashIcon width={14} height={14} /> Delete
-                          </MenuItem>
-                        </div>
-                      )}
-                    </Popover>
-                  </div>
-                </div>
-              )
-            })}
-
-            {/* Add-connection card */}
-            {!hasFilters && (
-              <button
-                onClick={() => setPicker(true)}
-                className="flex min-h-[132px] flex-col items-center justify-center gap-3 rounded-card border border-dashed border-edge-strong text-ink-dim transition-colors hover:border-green-dim hover:text-ink"
-              >
-                <span className="flex h-12 w-12 items-center justify-center rounded-full bg-elevated text-green">
-                  <PlusIcon width={22} height={22} />
-                </span>
-                <div className="text-center">
-                  <div className="text-[14px] font-semibold text-ink">Add new connection</div>
-                  <div className="mt-1 text-[12px] text-ink-dim">Connect a new database to get started</div>
-                </div>
-              </button>
-            )}
-          </div>
-        )}
-
-        {!loading && connections.length > 0 && filtered.length === 0 && (
-          <EmptyState className="py-16">No connections match your search.</EmptyState>
-        )}
+        {/* Table */}
+        <DataTable
+          className="mt-6"
+          columns={columns}
+          rowKey={(c) => c.id}
+          onRowClick={(c) => setDetailConn(c)}
+          loading={loading}
+          empty={
+            hasFilters ? (
+              'No connections match your search.'
+            ) : (
+              <div className="flex flex-col items-center gap-3">
+                <span>No connections yet.</span>
+                <Button variant="primary" size="sm" icon={PlusIcon} onClick={() => setPicker(true)}>
+                  Add new connection
+                </Button>
+              </div>
+            )
+          }
+          {...table}
+        />
       </div>
 
       {/* DB-type picker */}
