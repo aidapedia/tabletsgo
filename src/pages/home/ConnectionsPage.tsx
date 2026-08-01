@@ -11,9 +11,7 @@ import { pingConnection } from '@/shared/api/database'
 import { listBackupRuns } from '@/features/backup'
 import { relativeTime } from '@/shared/lib/recents'
 import Button from '@/shared/ui/buttons/Button'
-import IconButton from '@/shared/ui/buttons/IconButton'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
-import Popover from '@/shared/ui/overlay/Popover'
 import Select from '@/shared/ui/form/Select'
 import { controlClass } from '@/shared/ui/form/Input'
 import ConfirmDialog from '@/shared/ui/feedback/ConfirmDialog'
@@ -26,7 +24,6 @@ import {
   EditIcon,
   ExternalLinkIcon,
   InfoIcon,
-  MoreVerticalIcon,
   PlusIcon,
   TrashIcon,
   UploadIcon,
@@ -34,6 +31,7 @@ import {
 import SearchInput from '@/shared/ui/form/SearchInput'
 import DataTable from '@/shared/ui/table/DataTable'
 import type { Column } from '@/shared/ui/table/DataTable'
+import { RowActions, RowMenu } from '@/shared/ui/table/RowActions'
 import useDataTable from '@/shared/ui/table/useDataTable'
 import { PageHeader } from './ui'
 
@@ -247,8 +245,8 @@ export default function ConnectionsPage() {
         align: 'right',
         width: 190,
         render: (c) => (
-          // Actions never open the detail view the row click opens.
-          <div className="flex items-center justify-end gap-1.5" onClick={(e) => e.stopPropagation()}>
+          <RowActions>
+            {/* The one action worth a word — everything else lives in the menu. */}
             <Button
               variant="primary"
               size="sm"
@@ -258,16 +256,7 @@ export default function ConnectionsPage() {
             >
               {connectingId === c.id ? 'Connecting…' : 'Connect'}
             </Button>
-            <Popover
-              align="right"
-              width={170}
-              portal // the table body scrolls horizontally — an in-flow panel would be clipped
-              trigger={({ open, toggle }) => (
-                <IconButton onClick={toggle} active={open} aria-label="Connection actions">
-                  <MoreVerticalIcon width={16} height={16} />
-                </IconButton>
-              )}
-            >
+            <RowMenu label={`Actions for ${c.name}`}>
               {({ close }) => (
                 <div className="p-1">
                   <MenuItem onClick={() => { close(); setDetailConn(c) }}>
@@ -294,8 +283,8 @@ export default function ConnectionsPage() {
                   )}
                 </div>
               )}
-            </Popover>
-          </div>
+            </RowMenu>
+          </RowActions>
         ),
       },
     ],

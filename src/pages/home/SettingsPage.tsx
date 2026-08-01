@@ -10,10 +10,11 @@ import { SubHead, TabbedSection } from './ui'
  *
  * Both halves of the app share this page, but not every tab applies to both
  * audiences (see AUTH MODEL): an instance admin holds no workspace membership
- * and never opens a database console, so Data (row limits, query timeout) has
- * nothing to act on; conversely only an admin can apply an update, so a
- * workspace user gets no Updates tab. Account is the one tab that is identical
- * for everyone — it acts on the caller's own row in `users`, not on a role.
+ * and never opens a database console, so neither Data (row limits, query
+ * timeout) nor Keymap (console shortcuts) has anything to act on; conversely
+ * only an admin can apply an update, so a workspace user gets no Updates tab.
+ * Account is the one tab that is identical for everyone — it acts on the
+ * caller's own row in `users`, not on a role.
  */
 export default function SettingsPage() {
   const navigate = useNavigate()
@@ -62,17 +63,17 @@ export default function SettingsPage() {
               </div>
             ),
           },
+          {
+            id: 'keymap',
+            label: 'Keymap',
+            body: (
+              <div>
+                <SubHead title="Keymap" desc="Customize keyboard shortcuts for the workspace and its tools." />
+                <KeymapSetting />
+              </div>
+            ),
+          },
         ]),
-    {
-      id: 'keymap',
-      label: 'Keymap',
-      body: (
-        <div>
-          <SubHead title="Keymap" desc="Customize keyboard shortcuts for the workspace and its tools." />
-          <KeymapSetting />
-        </div>
-      ),
-    },
     ...(isSystemAdmin
       ? [
           {

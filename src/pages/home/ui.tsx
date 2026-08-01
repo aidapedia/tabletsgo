@@ -16,11 +16,13 @@ export function PageHeader({ title, desc, action }: { title: string; desc?: stri
 }
 
 // A titled content section with heading + description. Full width by default;
-// pass `max` to cap it.
-export function Section({ title, desc, children, max }: any) {
+// pass `max` to cap it. `action` is the section's primary button, rendered in
+// the header rather than inside the content — the same place ConnectionsPage
+// puts "New connection", so every list page reads the same way.
+export function Section({ title, desc, children, max, action }: any) {
   return (
     <div className="w-full" style={max ? { maxWidth: max } : undefined}>
-      <PageHeader title={title} desc={desc} />
+      <PageHeader title={title} desc={desc} action={action} />
       <div className="mt-7">{children}</div>
     </div>
   )

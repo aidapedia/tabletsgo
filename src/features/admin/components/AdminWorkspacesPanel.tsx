@@ -11,6 +11,7 @@ import EmptyState from '@/shared/ui/feedback/EmptyState'
 import TypeToConfirmDialog from '@/shared/ui/feedback/TypeToConfirmDialog'
 import { useToast } from '@/shared/ui/feedback/Toast'
 import DataTable, { type Column } from '@/shared/ui/table/DataTable'
+import { RowAction, RowActions } from '@/shared/ui/table/RowActions'
 import useDataTable from '@/shared/ui/table/useDataTable'
 import { CopyIcon, PlusIcon, TrashIcon } from '@/shared/ui/icons'
 import {
@@ -34,13 +35,22 @@ import {
  * workspace's *existence and ownership* — not its contents. There's no way in
  * from here to a connection or a database; handing someone ownership is how
  * work gets done inside one.
+ *
+ * The "new workspace" dialog is controlled (`creating` / `onCreatingChange`) so
+ * the page can put its button in the section header, next to the title — where
+ * ConnectionsPage puts "New connection".
  */
-export default function AdminWorkspacesPanel() {
+export default function AdminWorkspacesPanel({
+  creating,
+  onCreatingChange,
+}: {
+  creating: boolean
+  onCreatingChange: (next: boolean) => void
+}) {
   const toast = useToast()
   const [rows, setRows] = useState<AdminWorkspace[]>([])
   const [loading, setLoading] = useState(true)
   const [query, setQuery] = useState('')
-  const [creating, setCreating] = useState(false)
   const [selected, setSelected] = useState<AdminWorkspace | null>(null)
   const [deleting, setDeleting] = useState<AdminWorkspace | null>(null)
 
@@ -102,20 +112,18 @@ export default function AdminWorkspacesPanel() {
     {
       key: 'actions',
       header: '',
-      width: 40,
+      width: 60,
       align: 'right',
       render: (w) => (
-        <TextButton
-          tone="faint"
-          className="hover:!text-red"
-          aria-label={`Delete ${w.name}`}
-          onClick={(e) => {
-            e.stopPropagation()
-            setDeleting(w)
-          }}
-        >
-          <TrashIcon width={15} height={15} />
-        </TextButton>
+        <RowActions>
+          <RowAction
+            icon={TrashIcon}
+            label="Delete"
+            aria={`Delete ${w.name}`}
+            tone="danger"
+            onClick={() => setDeleting(w)}
+          />
+        </RowActions>
       ),
     },
   ]
@@ -124,11 +132,14 @@ export default function AdminWorkspacesPanel() {
 
   return (
     <div>
-      <div className="mb-4 flex items-center gap-2">
-        <SearchInput className="flex-1" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search workspaces…" />
-        <Button variant="primary" size="sm" className="shrink-0" onClick={() => setCreating(true)}>
-          <PlusIcon width={14} height={14} /> New workspace
-        </Button>
+      {/* Search — bare row, same shape as the connections list. */}
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <SearchInput
+          className="min-w-[220px] flex-1"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search workspaces…"
+        />
       </div>
 
       <DataTable
@@ -136,15 +147,26 @@ export default function AdminWorkspacesPanel() {
         rowKey={(w) => w.id}
         onRowClick={(w) => setSelected(w)}
         loading={loading}
-        empty={<EmptyState>No workspaces yet — create one and hand it to an owner.</EmptyState>}
+        empty={
+          query.trim() ? (
+            <EmptyState>No workspaces match that search.</EmptyState>
+          ) : (
+            <div className="flex flex-col items-center gap-3">
+              <span>No workspaces yet — create one and hand it to an owner.</span>
+              <Button variant="primary" size="sm" icon={PlusIcon} onClick={() => onCreatingChange(true)}>
+                Add new workspace
+              </Button>
+            </div>
+          )
+        }
         {...table}
       />
 
       {creating && (
         <CreateWorkspaceDialog
-          onClose={() => setCreating(false)}
+          onClose={() => onCreatingChange(false)}
           onCreated={() => {
-            setCreating(false)
+            onCreatingChange(false)
             load()
           }}
         />

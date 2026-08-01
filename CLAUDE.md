@@ -37,7 +37,9 @@ src/
 │   │   ├── table/                #   DataTable (the shared list-as-table: sortable columns, row click,
 │   │   │                         #     pagination footer), Pagination, useDataTable (client-side
 │   │   │                         #     sort/paging state — spread its result into DataTable; pass the
-│   │   │                         #     props yourself for server-side paging)
+│   │   │                         #     props yourself for server-side paging), RowActions/RowAction/RowMenu
+│   │   │                         #     (the action cell — every table's row buttons come from here so they
+│   │   │                         #     share one look; the strip stops the click reaching the row)
 │   │   └── (root)                #   Avatar, Badge, PersonRow, RowLabel, SaveQueryPanel, SqlEditor,
 │   │                             #     JsonEditor, icons — no group yet
 │   ├── hooks/                    # generic hooks (useSlideOver)

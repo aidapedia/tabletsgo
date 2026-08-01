@@ -1,16 +1,15 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useState } from 'react'
 import Button from '@/shared/ui/buttons/Button'
-import IconButton from '@/shared/ui/buttons/IconButton'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
-import Popover from '@/shared/ui/overlay/Popover'
 import ConfirmDialog from '@/shared/ui/feedback/ConfirmDialog'
 import { useToast } from '@/shared/ui/feedback/Toast'
 import SearchInput from '@/shared/ui/form/SearchInput'
 import Badge from '@/shared/ui/Badge'
 import DataTable from '@/shared/ui/table/DataTable'
 import type { Column } from '@/shared/ui/table/DataTable'
+import { RowActions, RowMenu } from '@/shared/ui/table/RowActions'
 import useDataTable from '@/shared/ui/table/useDataTable'
-import { CloudIcon, EditIcon, MoreVerticalIcon, PlusIcon, TrashIcon } from '@/shared/ui/icons'
+import { CloudIcon, EditIcon, PlusIcon, TrashIcon } from '@/shared/ui/icons'
 import { listStorages, deleteStorage } from '@/features/backup/lib/api'
 import type { StorageDestination } from '@/features/backup/lib/types'
 import StorageModal from './StorageModal'
@@ -134,17 +133,8 @@ const StorageList = forwardRef<StorageListHandle, { workspaceId: string; canMana
               align: 'right' as const,
               width: 60,
               render: (s: StorageDestination) => (
-                <div className="flex items-center justify-end">
-                  <Popover
-                    align="right"
-                    width={160}
-                    portal // the table body scrolls horizontally — an in-flow panel would be clipped
-                    trigger={({ open, toggle }) => (
-                      <IconButton onClick={toggle} active={open} aria-label="Storage actions">
-                        <MoreVerticalIcon width={16} height={16} />
-                      </IconButton>
-                    )}
-                  >
+                <RowActions>
+                  <RowMenu label={`Actions for ${s.name}`} width={160}>
                     {({ close }) => (
                       <div className="p-1">
                         <MenuItem onClick={() => { close(); setModal({ mode: 'edit', storage: s }) }}>
@@ -156,8 +146,8 @@ const StorageList = forwardRef<StorageListHandle, { workspaceId: string; canMana
                         </MenuItem>
                       </div>
                     )}
-                  </Popover>
-                </div>
+                  </RowMenu>
+                </RowActions>
               ),
             },
           ]
