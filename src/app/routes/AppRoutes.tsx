@@ -16,6 +16,7 @@ import SettingsPage from '@/pages/home/SettingsPage'
 import WorkspacePage from '@/pages/console/WorkspacePage'
 import AdminWorkspacesPage from '@/pages/admin/AdminWorkspacesPage'
 import AdminUsersPage from '@/pages/admin/AdminUsersPage'
+import AdminEmailPage from '@/pages/admin/AdminEmailPage'
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { user } = useAuth()
@@ -78,6 +79,7 @@ export function AppRoutes() {
       >
         <Route path="/admin" element={<AdminWorkspacesPage />} />
         <Route path="/admin/users" element={<AdminUsersPage />} />
+        <Route path="/admin/email" element={<AdminEmailPage />} />
       </Route>
       {/* Home shell — each sidebar section is its own page rendered into the layout's <Outlet/>. */}
       <Route
@@ -92,6 +94,9 @@ export function AppRoutes() {
         <Route path="/workspace" element={<WorkspaceSettingsPage />} />
         <Route path="/workspace/:sub" element={<WorkspaceSettingsPage />} />
         <Route path="/notifications" element={<NotificationsPage />} />
+        {/* The section lost its tabs when SMTP moved to the admin area; the
+            :sub route stays so old links (e.g. /notifications/smtp) still land
+            here instead of bouncing to the dashboard. */}
         <Route path="/notifications/:sub" element={<NotificationsPage />} />
         <Route path="/storage" element={<StoragePage />} />
       </Route>

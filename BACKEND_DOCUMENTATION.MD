@@ -401,6 +401,14 @@ CREATE TABLE connection_access (
   created_at INTEGER,
   UNIQUE(connection_id, principal_type, principal_id)
 );
+-- Instance-wide settings an admin edits (server/app-settings.js) — the
+-- instance-level counterpart of workspaces.settings. Key/value on purpose: a
+-- new instance-wide setting is a new key, not a new table.
+CREATE TABLE app_settings (
+  key TEXT PRIMARY KEY,           -- "smtp" (the global mail server) today
+  value TEXT,                     -- JSON; secrets inside it are AES-256-GCM sealed
+  updated_at INTEGER
+);
 ```
 
 **Seeds on first run:** user `admin` / `admin123` (system role `admin`), and a
@@ -446,8 +454,9 @@ Invalidate the current session token. **200:** `{ "ok": true }`
 
 ### POST `/api/auth/forgot`
 Request a password-reset link. **Always 200** `{ "ok": true }` — never reveals
-whether the email exists. When SMTP is available (env, else any of the user's
-workspaces' SMTP) the reset link is emailed; the link is **never** returned.
+whether the email exists. When SMTP is available (the global/env config, else
+any of the user's workspaces' SMTP) the reset link is emailed; the link is
+**never** returned.
 - **Body:** `{ "email" }`
 
 ### GET `/api/auth/reset/:token`
@@ -489,15 +498,20 @@ Set password, activate, log in. **Body:** `{ "name", "password" }` → **200:** 
   concurrent sessions per connection (0 = unlimited) plus the read-only
   `MAX_SESSIONS_PER_CONNECTION` env fallback that applies while it's 0, so the
   settings form can show what's actually in effect. See "Connection sessions".
-  Owners also get `smtp` (password-masked) + `smtpEnvFallback` + `smtpEnvDefaults`
-  (non-secret env values — `host`, `port`, `secure`, `user`, `from` — present
-  only when `smtpEnvFallback` is true).
-- `PUT /api/workspaces/:id` (owner) `{ name?, smtp?, experiments?, notifications?, sessions? }` → `{ ok: true }`.
+  Owners also get `smtp` — the instance's mail server, **read-only**:
+  `{ source: 'global' | 'env', host, port, secure, user, from }`, or `null` when
+  the instance has none. `source` is `global` for the config an instance admin
+  saved (`/api/admin/smtp`) and `env` for the `SMTP_*` vars under it. Non-secret
+  fields only — no password ever leaves the server. A workspace **cannot**
+  configure its own SMTP (removed in meta migration v10); this field exists so
+  the Notification tab can say what will send, or that nothing will.
+- `PUT /api/workspaces/:id` (owner) `{ name?, experiments?, notifications?, sessions? }` → `{ ok: true }`.
   `sessions` is `{ maxPerConnection }` (integer, 0 = unlimited; negatives and junk
   clamp to 0) — the default every connection in the workspace inherits unless it
   sets its own `maxSessions`.
-  `smtp` is `{ host, port, secure, user, from, pass? }`; omit `pass` to keep the
-  stored one. `experiments` is a partial `{ [key]: boolean }`, merged onto the
+  There is no `smtp` here — the mail server is instance-level, set at
+  `PUT /api/admin/smtp`; an older client still sending one is ignored, not
+  rejected. `experiments` is a partial `{ [key]: boolean }`, merged onto the
   existing flags (so toggling one doesn't clear the others). `notifications` is
   `{ backupFailure?: { enabled, memberIds } }` — `backupFailure`, if present, fully
   replaces the stored value (send the complete object, not a partial patch).
@@ -510,13 +524,8 @@ Set password, activate, log in. **Body:** `{ "name", "password" }` → **200:** 
   `{ enabled: boolean, memberIds: string[] }`, surfaced via the two routes above
   and edited from the frontend's Notification tab. When enabled, a scheduled backup
   that ends up failed (after any configured retries — see the Backup section) emails
-  every listed member via the workspace's SMTP config (see `smtpConfig`). Manual
+  every listed member via the instance's SMTP config (see `smtpConfig`). Manual
   "Run now" failures never trigger this.
-- `POST /api/workspaces/:id/smtp/test` (owner) `{ to?, smtp? }` → `{ ok: true }`
-  or `400 { error }`. Sends a one-off test email. `to` defaults to the caller's
-  own email. `smtp` (same shape as `PUT`, minus `pass` falling back to the
-  stored one) lets the UI test unsaved form values; omit it entirely to test
-  the saved/env config as-is.
 - `DELETE /api/workspaces/:id` (owner) → deletes it + its connections/queries.
   `400` if it's the caller's only workspace. Live driver handles for its
   connections are released and their sessions ended before the cascade runs.
@@ -607,6 +616,39 @@ here that reaches a connection or a database.
   last instance admin; `409` (same shape as above) when the account is the only
   owner of a workspace.
 - **Example:** `PUT http://localhost:3000/api/admin/users/u_123` body `{ "role": "admin" }`.
+
+### Email (SMTP)
+
+The instance's **one** mail server — every email the app sends (invites,
+password resets, backup-failure notifications) uses it, for every workspace.
+Workspaces cannot configure their own; these routes are the only place SMTP is
+set. **Resolution order:** this saved config → the `SMTP_*` env vars. The env
+vars still work untouched (an install configured through docker-compose keeps
+sending mail); saving here takes over from them, and can be changed without a
+redeploy. Stored in the meta DB's `app_settings` table under the key `smtp`,
+with the password AES-256-GCM encrypted at rest — it is never returned.
+
+- `GET /api/admin/smtp` → `{ smtp, env }`.
+  `smtp` is the saved config, password-masked:
+  `{ host, port, secure, user, from, hasPassword }` — `host: ""` means nothing
+  is saved. `env` is the non-secret env layer under it
+  (`{ host, port, secure, user, from }`) or `null` when `SMTP_HOST` is unset;
+  the admin form pre-fills from it.
+- `PUT /api/admin/smtp` `{ host?, port?, secure?, user?, from?, pass? }` →
+  `{ smtp }` (the saved, masked config). Fields left out keep their stored
+  value. Omit `pass` (or send `""`) to keep the stored password; send `null` to
+  clear it. Saving `host: ""` disables the saved config — the instance falls
+  back to `env`.
+- `DELETE /api/admin/smtp` → `{ ok: true, smtp }`. Drops the saved config
+  entirely; the instance falls back to the `SMTP_*` env vars, or to sending no
+  mail at all (invites still return a copyable link).
+- `POST /api/admin/smtp/test` `{ to?, smtp? }` → `{ ok: true }` or
+  `400 { error }`. `to` defaults to the caller's own email. `smtp` (same shape
+  as `PUT`; a blank `pass` reuses the stored one) tests unsaved form values;
+  omit it to test what is in effect instance-wide right now. TLS-mismatch errors
+  are translated into a readable hint instead of the raw OpenSSL text.
+- **Example:** `PUT http://localhost:3000/api/admin/smtp` body
+  `{ "host": "smtp.example.com", "port": 587, "secure": false, "user": "apikey", "pass": "s3cret", "from": "Tabletsgo <no-reply@example.com>" }`.
 
 ---
 
@@ -2002,6 +2044,10 @@ Liveness probe. Also reports boot readiness and the running identity.
 | POST   | `/api/admin/users`                        | Create an account               |
 | PUT    | `/api/admin/users/:id`                    | Rename / reset password / role  |
 | DELETE | `/api/admin/users/:id`                    | Delete an account               |
+| GET    | `/api/admin/smtp`                         | The mail server + the env layer |
+| PUT    | `/api/admin/smtp`                         | Save the mail server config     |
+| DELETE | `/api/admin/smtp`                         | Drop it (fall back to env)      |
+| POST   | `/api/admin/smtp/test`                    | Send a test email               |
 | GET    | `/api/connections/:id/saved`              | List saved queries              |
 | POST   | `/api/connections/:id/saved`              | Create saved query              |
 | PUT    | `/api/connections/:id/saved/:sid`         | Update saved query / move       |

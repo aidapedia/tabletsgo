@@ -9,7 +9,7 @@ import path from 'path'
 import { randomUUID } from 'crypto'
 import Database from 'better-sqlite3'
 import { BACKUPS_DIR, META_DB_PATH } from './config.js'
-import { encryptSecret, sha256 } from './crypto.js'
+import { APP_SETTINGS_KEY, encryptSecret, sha256 } from './crypto.js'
 import { migrate } from './migrations.js'
 
 export const meta = new Database(META_DB_PATH)
@@ -37,6 +37,9 @@ export function initMetaDb() {
   // restoring the file.
   migrate(meta, {
     encryptSecret,
+    // Secrets moving into app_settings are sealed under that namespace's key
+    // (v10 promotes a workspace's plaintext SMTP password to the global config).
+    encryptAppSetting: (plaintext) => encryptSecret(plaintext, APP_SETTINGS_KEY),
     snapshot(fromVersion) {
       try {
         const dest = path.join(BACKUPS_DIR, `pre-migrate-v${fromVersion}-${Date.now()}.db`)

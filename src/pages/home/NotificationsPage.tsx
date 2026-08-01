@@ -1,46 +1,40 @@
-import { useNavigate, useParams } from 'react-router-dom'
-import { useWorkspaces, IntegrationsSettings, NotificationSettings } from '@/features/workspaces'
-import { SubHead, TabbedSection } from './ui'
+import { useEffect, useState } from 'react'
+import { useWorkspaces, NotificationSettings, getWorkspace, type InstanceSmtp } from '@/features/workspaces'
+import { Section } from './ui'
 import LoadingState from '@/shared/ui/feedback/LoadingState'
 
-// Notification section — Integration / Notification as tabs (a second path
-// segment). Holds external-service settings and the notifications Tabletsgo
-// sends; lives as its own top-level home section.
+// Notification section — the emails Tabletsgo sends for this workspace. The
+// mail server itself is instance-level (an admin owns it under Administration →
+// Email), so this page only reports which one is in effect.
 export default function NotificationsPage() {
-  const navigate = useNavigate()
-  const { sub } = useParams()
   const { current } = useWorkspaces()
+  const [smtp, setSmtp] = useState<InstanceSmtp | null>(null)
+  const [checked, setChecked] = useState(false)
 
-  const tabs = [
-    {
-      id: 'smtp',
-      label: 'SMTP',
-      body: (
-        <div>
-          <SubHead title="SMTP" desc="Configure the mail server used to send notifications and member-invite emails." />
-          <IntegrationsSettings />
-        </div>
-      ),
-    },
-    {
-      id: 'notification',
-      label: 'Notification',
-      body: (
-        <div>
-          <SubHead title="Notification" desc="Manage the notifications Tabletsgo sends to your team." />
-          {current ? <NotificationSettings workspaceId={current.id} /> : <LoadingState className="" />}
-        </div>
-      ),
-    },
-  ]
+  useEffect(() => {
+    if (!current || current.role !== 'owner') return
+    getWorkspace(current.id).then((w) => {
+      setSmtp(w.smtp || null)
+      setChecked(true)
+    })
+  }, [current?.id, current?.role])
 
   return (
-    <TabbedSection
-      title="Notification"
-      desc="Connect external services and manage notifications for this workspace."
-      tabs={tabs}
-      active={sub || ''}
-      onTab={(id) => navigate(`/notifications/${id}`)}
-    />
+    <Section title="Notification" desc="Manage the notifications Tabletsgo sends to your team.">
+      {current ? (
+        <>
+          {checked && (
+            <p className="mb-5 text-[12px] text-ink-dim">
+              {smtp
+                ? `Email is sent through this instance’s mail server (${smtp.host}). Your administrator configures it.`
+                : 'This instance has no mail server configured, so nothing can be emailed — ask an administrator to set one up. Member invites still work as copyable links.'}
+            </p>
+          )}
+          <NotificationSettings workspaceId={current.id} />
+        </>
+      ) : (
+        <LoadingState className="" />
+      )}
+    </Section>
   )
 }

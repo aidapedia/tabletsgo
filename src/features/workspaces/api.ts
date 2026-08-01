@@ -27,6 +27,19 @@ export type Workspace = {
   sessions?: SessionSettings
 }
 
+// The instance's mail server, as reported to a workspace owner: read-only here
+// (an instance admin configures it), non-secret fields only, and null when the
+// instance has none. `source` says which layer answered — the admin's saved
+// config, or the SMTP_* env vars under it.
+export type InstanceSmtp = {
+  source: 'global' | 'env'
+  host: string
+  port?: string | number
+  secure?: boolean
+  user?: string
+  from?: string
+}
+
 export async function listWorkspaces() {
   return safeRequest<Workspace[]>('/workspaces', [])
 }
@@ -40,16 +53,12 @@ export async function updateWorkspace(
   id: string,
   patch: {
     name?: string
-    smtp?: any
     experiments?: Record<string, boolean>
     notifications?: NotificationSettings
     sessions?: { maxPerConnection: number }
   }
 ) {
   return request(`/workspaces/${id}`, { method: 'PUT', body: patch })
-}
-export async function testSmtp(id: string, body: { to?: string; smtp?: any }) {
-  return request<{ ok: true }>(`/workspaces/${id}/smtp/test`, { method: 'POST', body })
 }
 export async function deleteWorkspace(id: string) {
   return request(`/workspaces/${id}`, { method: 'DELETE' })

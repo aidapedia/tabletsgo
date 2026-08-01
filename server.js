@@ -102,7 +102,16 @@ import {
   closeSessionStore,
   cache as sessionCache,
 } from './server/sessions/index.js'
-import { sendInviteEmail, sendMail, sendResetEmail, smtpConfig, smtpForUser } from './server/mail.js'
+import {
+  describeSmtpError,
+  envSmtp,
+  publicSmtpConfig,
+  sendInviteEmail,
+  sendResetEmail,
+  sendTestEmail,
+  smtpConfig,
+} from './server/mail.js'
+import { clearGlobalSmtp, publicGlobalSmtp, saveGlobalSmtp } from './server/app-settings.js'
 import {
   bumpSchemaVersion,
   deleteConnectionRow,
@@ -231,7 +240,7 @@ app.post('/api/auth/forgot', async (req, res) => {
     const token = randomUUID()
     const expires = Date.now() + 60 * 60 * 1000 // 1 hour
     meta.prepare('UPDATE users SET reset_token = ?, reset_expires = ? WHERE id = ?').run(token, expires, user.id)
-    const cfg = smtpForUser(user.id)
+    const cfg = smtpConfig()
     if (cfg) {
       try {
         await sendResetEmail(cfg, { to: email, link: `${baseUrl(req)}/reset/${token}` })
@@ -372,7 +381,7 @@ app.post('/api/admin/workspaces', async (req, res) => {
 
   let emailed = false
   if (inviteLink) {
-    const cfg = smtpConfig(getWorkspaceRow(ws.id))
+    const cfg = smtpConfig()
     if (cfg) {
       try {
         await sendInviteEmail(cfg, { to: ownerEmail, workspaceName: ws.name, link: inviteLink })
@@ -503,6 +512,67 @@ app.delete('/api/admin/users/:id', async (req, res) => {
   res.json({ ok: true })
 })
 
+// ---- Email (SMTP) ----
+//
+// The instance's one mail server — every email the app sends uses it. This is
+// the admin-editable form of what used to be SMTP_* env only; the env vars
+// still apply underneath, so an install that configures SMTP through
+// docker-compose keeps working without an admin ever opening this page.
+// Deliberately admin-only: workspaces no longer configure their own.
+
+app.get('/api/admin/smtp', (_req, res) => {
+  // `env` is the layer under the saved config — shown so an admin can see what
+  // docker-compose already configured (and pre-fill the form from it). Password
+  // stripped, like every other config the API hands out.
+  const env = envSmtp()
+  res.json({
+    smtp: publicGlobalSmtp(),
+    env: env ? { host: env.host, port: env.port || '587', secure: env.secure, user: env.user, from: env.from || env.user || '' } : null,
+  })
+})
+
+app.put('/api/admin/smtp', (req, res) => {
+  const { host, port, secure, user, from, pass } = req.body || {}
+  const saved = saveGlobalSmtp({ host, port, secure, user, from, pass })
+  res.json({ smtp: saved })
+})
+
+// Drop the saved config — the instance falls back to the SMTP_* env vars, or
+// to no mail at all.
+app.delete('/api/admin/smtp', (_req, res) => {
+  clearGlobalSmtp()
+  res.json({ ok: true, smtp: publicGlobalSmtp() })
+})
+
+// Test the unsaved form values (body.smtp) or, with none, whatever is in
+// effect instance-wide right now.
+app.post('/api/admin/smtp/test', async (req, res) => {
+  const { to, smtp: overrides } = req.body || {}
+  const stored = smtpConfig()
+  let cfg
+  if (overrides?.host) {
+    const user = overrides.user || ''
+    cfg = {
+      host: overrides.host,
+      port: Number(overrides.port || 587),
+      secure: !!overrides.secure,
+      user,
+      // A blank password on the form means "keep using the saved one".
+      pass: overrides.pass || stored?.pass || '',
+      from: overrides.from || user || 'no-reply@tabletsgo.local',
+    }
+  } else {
+    cfg = stored
+  }
+  if (!cfg?.host) return res.status(400).json({ error: 'No SMTP host configured.' })
+  try {
+    await sendTestEmail(cfg, { to: to || authUser(req).username, scope: 'global SMTP settings' })
+    res.json({ ok: true })
+  } catch (err) {
+    res.status(400).json({ error: describeSmtpError(err) })
+  }
+})
+
 // ============================================================================
 // Workspaces
 // ============================================================================
@@ -563,48 +633,26 @@ app.get('/api/workspaces/:id', (req, res) => {
   // applies when the workspace leaves it at 0, so the form can show what's
   // actually in effect.
   ws.sessions = { maxPerConnection: settings.sessions?.maxPerConnection || 0, instanceDefault: MAX_SESSIONS_PER_CONNECTION }
-  // Owners also get the (password-masked) SMTP config for the settings form.
-  if (ws.role === 'owner') {
-    const smtp = settings.smtp || {}
-    ws.smtp = { host: smtp.host || '', port: smtp.port || '', secure: !!smtp.secure, user: smtp.user || '', from: smtp.from || '', hasPassword: !!smtp.pass }
-    ws.smtpEnvFallback = !!process.env.SMTP_HOST
-    // Non-secret env values, so the settings form can show what's actually in effect
-    // when the workspace hasn't overridden it (password never leaves the server).
-    if (ws.smtpEnvFallback) {
-      ws.smtpEnvDefaults = {
-        host: process.env.SMTP_HOST,
-        port: process.env.SMTP_PORT || '587',
-        secure: process.env.SMTP_SECURE === 'true',
-        user: process.env.SMTP_USER || '',
-        from: process.env.SMTP_FROM || process.env.SMTP_USER || '',
-      }
-    }
-  }
+  // Owners get the (non-secret) mail server the instance sends with — read-only
+  // here: SMTP is instance-level, configured by an admin at /api/admin/smtp.
+  // Null when the instance has none, which is what the Notification tab uses to
+  // warn that invites can only be shared as links.
+  if (ws.role === 'owner') ws.smtp = publicSmtpConfig()
   res.json(ws)
 })
 
-// Rename + SMTP settings + beta experiment flags (admin).
+// Rename + beta experiment flags + notification/session policy (owner).
 app.put('/api/workspaces/:id', (req, res) => {
   const user = requireOwner(req, res, req.params.id)
   if (!user) return
   const row = meta.prepare('SELECT settings FROM workspaces WHERE id = ?').get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Workspace not found' })
-  const { name, smtp, experiments, notifications, sessions } = req.body || {}
+  // No `smtp` here on purpose: the mail server is instance-level (admin-only).
+  // An older client still sending one is ignored rather than rejected.
+  const { name, experiments, notifications, sessions } = req.body || {}
   if (name?.trim()) meta.prepare('UPDATE workspaces SET name = ? WHERE id = ?').run(name.trim(), req.params.id)
-  if (smtp || experiments || notifications || sessions) {
+  if (experiments || notifications || sessions) {
     const settings = safeJson(row.settings)
-    if (smtp) {
-      const prev = settings.smtp || {}
-      settings.smtp = {
-        host: smtp.host ?? prev.host,
-        port: smtp.port ?? prev.port,
-        secure: smtp.secure ?? prev.secure,
-        user: smtp.user ?? prev.user,
-        from: smtp.from ?? prev.from,
-        // Keep the stored password unless a new one is supplied (never wiped by a save).
-        pass: smtp.pass ? smtp.pass : prev.pass,
-      }
-    }
     if (experiments) settings.experiments = { ...(settings.experiments || {}), ...experiments }
     if (sessions) {
       // 0 = unlimited; negatives and junk clamp to it.
@@ -622,53 +670,6 @@ app.put('/api/workspaces/:id', (req, res) => {
     meta.prepare('UPDATE workspaces SET settings = ? WHERE id = ?').run(JSON.stringify(settings), req.params.id)
   }
   res.json({ ok: true })
-})
-
-// Send a test email using either the unsaved form values (body.smtp) or, if
-// omitted, whatever is already saved/env-configured for this workspace.
-app.post('/api/workspaces/:id/smtp/test', async (req, res) => {
-  const user = requireOwner(req, res, req.params.id)
-  if (!user) return
-  const row = meta.prepare('SELECT settings FROM workspaces WHERE id = ?').get(req.params.id)
-  if (!row) return res.status(404).json({ error: 'Workspace not found' })
-  const { to, smtp: overrides } = req.body || {}
-  let cfg
-  if (overrides?.host) {
-    const prev = safeJson(row.settings).smtp || {}
-    cfg = smtpConfig({
-      settings: JSON.stringify({
-        smtp: {
-          host: overrides.host,
-          port: overrides.port,
-          secure: overrides.secure,
-          user: overrides.user,
-          from: overrides.from,
-          pass: overrides.pass || prev.pass,
-        },
-      }),
-    })
-  } else {
-    cfg = smtpConfig(row)
-  }
-  if (!cfg) return res.status(400).json({ error: 'No SMTP host configured.' })
-  try {
-    await sendMail(cfg, {
-      to: to || user.username,
-      subject: 'Tabletsgo test email',
-      text: 'This is a test email from your Tabletsgo SMTP settings. If you received it, the configuration works.',
-      html: '<p>This is a test email from your Tabletsgo SMTP settings.</p><p>If you received it, the configuration works.</p>',
-    })
-    res.json({ ok: true })
-  } catch (err) {
-    // "wrong version number" is OpenSSL-speak for "the TLS mode doesn't match
-    // what the server expects on that port" — translate it, since the raw
-    // error is meaningless to anyone who isn't reading OpenSSL source.
-    const raw = err.message || 'Failed to send test email.'
-    const message = /wrong version number/i.test(raw)
-      ? "SSL/TLS handshake failed — the encryption mode probably doesn't match the port. Try switching between STARTTLS (587) and Implicit TLS/SSL (465)."
-      : raw
-    res.status(400).json({ error: message })
-  }
 })
 
 // Delete a workspace and everything scoped to it (owner). Never the caller's last one.
@@ -757,8 +758,8 @@ app.post('/api/workspaces/:id/members', async (req, res) => {
   // Email the invite link when SMTP is configured — non-fatal, link is returned regardless.
   let emailed = false
   if (inviteLink) {
-    const ws = meta.prepare('SELECT name, settings FROM workspaces WHERE id = ?').get(req.params.id)
-    const cfg = smtpConfig(ws)
+    const ws = meta.prepare('SELECT name FROM workspaces WHERE id = ?').get(req.params.id)
+    const cfg = smtpConfig()
     if (cfg) {
       try {
         await sendInviteEmail(cfg, { to: email, workspaceName: ws.name, link: inviteLink })

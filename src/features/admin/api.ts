@@ -95,3 +95,51 @@ export async function updateUser(id: string, patch: { name?: string; password?: 
 export async function deleteUser(id: string) {
   return request(`/admin/users/${id}`, { method: 'DELETE' })
 }
+
+// ---- Global email (SMTP) ----
+
+/**
+ * The instance-wide mail server. It is the fallback every workspace inherits
+ * when it hasn't configured its own, and it sits above the SMTP_* env vars —
+ * so an env-configured instance keeps working, and saving here takes over.
+ * The password is write-only: reads report `hasPassword`, never the secret.
+ */
+export type GlobalSmtp = {
+  host: string
+  port: string | number
+  secure: boolean
+  user: string
+  from: string
+  hasPassword: boolean
+}
+
+// `env` is the layer underneath — non-secret, and null when SMTP_HOST is unset.
+export type GlobalSmtpInfo = {
+  smtp: GlobalSmtp
+  env: { host: string; port: string; secure: boolean; user: string; from: string } | null
+}
+
+export async function getGlobalSmtp() {
+  return request<GlobalSmtpInfo>('/admin/smtp')
+}
+
+// Omit `pass` to keep the stored password; `null` clears it.
+export async function updateGlobalSmtp(body: {
+  host?: string
+  port?: number
+  secure?: boolean
+  user?: string
+  from?: string
+  pass?: string | null
+}) {
+  return request<{ smtp: GlobalSmtp }>('/admin/smtp', { method: 'PUT', body })
+}
+
+// Drop the global config — the instance falls back to the env vars, if any.
+export async function clearGlobalSmtp() {
+  return request<{ ok: true; smtp: GlobalSmtp }>('/admin/smtp', { method: 'DELETE' })
+}
+
+export async function testGlobalSmtp(body: { to?: string; smtp?: any }) {
+  return request<{ ok: true }>('/admin/smtp/test', { method: 'POST', body })
+}

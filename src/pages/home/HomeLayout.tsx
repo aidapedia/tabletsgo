@@ -5,7 +5,7 @@ import { WorkspaceSwitcher } from '@/features/workspaces'
 import { UpdateBanner } from '@/features/system-update'
 import NavItem from '@/shared/ui/navigation/NavItem'
 import IconButton from '@/shared/ui/buttons/IconButton'
-import { BellIcon, BuildingIcon, CloudIcon, DatabaseIcon, GridIcon, Logo, LogoutIcon, MenuIcon, SettingsIcon, ShieldIcon, UsersIcon } from '@/shared/ui/icons'
+import { BellIcon, BuildingIcon, CloudIcon, DatabaseIcon, GridIcon, Logo, LogoutIcon, MailIcon, MenuIcon, SettingsIcon, ShieldIcon, UsersIcon } from '@/shared/ui/icons'
 
 // Sidebar navigation model — one clickable item per section. Each section is its
 // own route; the id doubles as the path segment (`dashboard` → `/`). Integration
@@ -20,10 +20,12 @@ const NAV = [
 ] as const
 
 // An instance admin belongs to no workspace, so none of the sections above have
-// anything to show them — they get their own two, plus personal settings.
+// anything to show them — they get their own three (workspaces, accounts and
+// the instance-wide mail server), plus personal settings.
 const ADMIN_NAV = [
   { id: 'admin', label: 'Workspaces', Icon: BuildingIcon, path: '/admin' },
   { id: 'users', label: 'Users', Icon: UsersIcon, path: '/admin/users' },
+  { id: 'email', label: 'Email', Icon: MailIcon, path: '/admin/email' },
   { id: 'settings', label: 'Setting', Icon: SettingsIcon, path: '/settings' },
 ] as const
 
