@@ -6,14 +6,27 @@ import Popover from '@/shared/ui/overlay/Popover'
 import ConfirmDialog from '@/shared/ui/feedback/ConfirmDialog'
 import { useToast } from '@/shared/ui/feedback/Toast'
 import SearchInput from '@/shared/ui/form/SearchInput'
-import EmptyState from '@/shared/ui/feedback/EmptyState'
+import Badge from '@/shared/ui/Badge'
+import DataTable from '@/shared/ui/table/DataTable'
+import type { Column } from '@/shared/ui/table/DataTable'
+import useDataTable from '@/shared/ui/table/useDataTable'
 import { CloudIcon, EditIcon, MoreVerticalIcon, PlusIcon, TrashIcon } from '@/shared/ui/icons'
 import { listStorages, deleteStorage } from '@/features/backup/lib/api'
 import type { StorageDestination } from '@/features/backup/lib/types'
 import StorageModal from './StorageModal'
-import LoadingState from '@/shared/ui/feedback/LoadingState'
 
 export type StorageListHandle = { openCreate: () => void }
+
+// A destination without an endpoint is plain AWS S3; otherwise the endpoint's
+// host is the closest thing to a provider name (minio, r2, b2, …).
+function providerOf(s: StorageDestination) {
+  if (!s.endpoint) return 'AWS S3'
+  try {
+    return new URL(s.endpoint.includes('://') ? s.endpoint : `https://${s.endpoint}`).host
+  } catch {
+    return s.endpoint
+  }
+}
 
 // List + create/edit/delete for a workspace's S3-compatible storage destinations.
 // Exposes `openCreate` via ref so a page header can drive the "new" action.
@@ -50,9 +63,111 @@ const StorageList = forwardRef<StorageListHandle, { workspaceId: string; canMana
       (s) =>
         s.name.toLowerCase().includes(q) ||
         s.bucket?.toLowerCase().includes(q) ||
-        s.endpoint?.toLowerCase().includes(q),
+        s.endpoint?.toLowerCase().includes(q) ||
+        s.region?.toLowerCase().includes(q),
     )
   }, [storages, query])
+
+  // Everything a row shows is derived here so the table stays generic; sorting
+  // uses `sortValue` wherever the cell isn't plain text.
+  const columns = useMemo<Column<StorageDestination>[]>(
+    () => [
+      {
+        key: 'name',
+        header: 'Destination',
+        sortable: true,
+        sortValue: (s) => s.name,
+        render: (s) => (
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] bg-elevated text-sky-400">
+              <CloudIcon width={18} height={18} />
+            </span>
+            <div className="min-w-0">
+              <div className="truncate font-semibold">{s.name}</div>
+              <div className="mt-0.5 truncate font-mono text-[11px] text-ink-faint">{providerOf(s)}</div>
+            </div>
+          </div>
+        ),
+      },
+      {
+        key: 'bucket',
+        header: 'Bucket',
+        sortable: true,
+        sortValue: (s) => s.bucket || '',
+        width: 200,
+        render: (s) => <span className="block truncate font-mono text-[12px]">{s.bucket || '—'}</span>,
+      },
+      {
+        key: 'pathPrefix',
+        header: 'Prefix',
+        sortable: true,
+        sortValue: (s) => s.pathPrefix || '',
+        width: 170,
+        className: 'max-[1080px]:hidden',
+        render: (s) => (
+          <span className="block truncate font-mono text-[12px] text-ink-dim">{s.pathPrefix || '—'}</span>
+        ),
+      },
+      {
+        key: 'region',
+        header: 'Region',
+        sortable: true,
+        sortValue: (s) => s.region || '',
+        width: 140,
+        className: 'max-[900px]:hidden',
+        render: (s) => <span className="text-ink-dim">{s.region || '—'}</span>,
+      },
+      {
+        key: 'forcePathStyle',
+        header: 'Addressing',
+        sortable: true,
+        sortValue: (s) => (s.forcePathStyle ? 'path' : 'virtual'),
+        width: 130,
+        className: 'max-[900px]:hidden',
+        render: (s) => <Badge>{s.forcePathStyle ? 'Path' : 'Virtual'}</Badge>,
+      },
+      ...(canManage
+        ? [
+            {
+              key: 'actions',
+              header: '',
+              align: 'right' as const,
+              width: 60,
+              render: (s: StorageDestination) => (
+                <div className="flex items-center justify-end">
+                  <Popover
+                    align="right"
+                    width={160}
+                    portal // the table body scrolls horizontally — an in-flow panel would be clipped
+                    trigger={({ open, toggle }) => (
+                      <IconButton onClick={toggle} active={open} aria-label="Storage actions">
+                        <MoreVerticalIcon width={16} height={16} />
+                      </IconButton>
+                    )}
+                  >
+                    {({ close }) => (
+                      <div className="p-1">
+                        <MenuItem onClick={() => { close(); setModal({ mode: 'edit', storage: s }) }}>
+                          <EditIcon width={14} height={14} /> Edit
+                        </MenuItem>
+                        <div className="my-1 h-px bg-edge" />
+                        <MenuItem danger onClick={() => { close(); setPendingDelete(s) }}>
+                          <TrashIcon width={14} height={14} /> Delete
+                        </MenuItem>
+                      </div>
+                    )}
+                  </Popover>
+                </div>
+              ),
+            },
+          ]
+        : []),
+    ],
+    [canManage],
+  )
+
+  // Client-side sort + paging; changing the search sends the table back to page 1.
+  const table = useDataTable({ rows: filtered, columns, pageSize: 10, resetKey: query })
 
   const handleSaved = (s: StorageDestination) => {
     setStorages((prev) => (prev.some((x) => x.id === s.id) ? prev.map((x) => (x.id === s.id ? s : x)) : [...prev, s]))
@@ -73,87 +188,36 @@ const StorageList = forwardRef<StorageListHandle, { workspaceId: string; canMana
 
   return (
     <>
-      {loading ? (
-        <LoadingState className="py-16 text-center" />
-      ) : storages.length === 0 ? (
-        <div className="flex flex-col items-center gap-3 rounded-card border border-dashed border-edge-strong py-16">
-          <CloudIcon width={28} height={28} className="text-ink-faint" />
-          <div className="text-[13px] text-ink-dim">No storage destinations yet.</div>
-          <Button variant="ghost" size="sm" icon={PlusIcon} onClick={() => setModal({ mode: 'new' })}>
-            Add your first destination
-          </Button>
-        </div>
-      ) : (
-        <>
-          <div className="mb-4">
-            <SearchInput
-              iconSize={16}
-              placeholder="Search storage destinations…"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              inputClassName="!py-2.5 !pl-10 !text-[13px]"
-            />
-          </div>
-          <div className="grid grid-cols-3 gap-4 max-[1080px]:grid-cols-2 max-[720px]:grid-cols-1">
-            {filtered.map((s) => (
-            <div key={s.id} className="group relative flex flex-col rounded-card border border-edge bg-card p-5">
-              <div className="flex items-start justify-between">
-                <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[12px] bg-elevated text-sky-400">
-                  <CloudIcon width={20} height={20} />
-                </span>
-                {canManage && (
-                <Popover
-                  align="right"
-                  width={160}
-                  trigger={({ open, toggle }) => (
-                    <IconButton onClick={toggle} active={open} aria-label="Storage actions" className={open ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}>
-                      <MoreVerticalIcon width={16} height={16} />
-                    </IconButton>
-                  )}
-                >
-                  {({ close }) => (
-                    <div className="p-1">
-                      <MenuItem onClick={() => { setModal({ mode: 'edit', storage: s }); close() }}>
-                        <EditIcon width={14} height={14} /> Edit
-                      </MenuItem>
-                      <div className="my-1 h-px bg-edge" />
-                      <MenuItem danger onClick={() => { setPendingDelete(s); close() }}>
-                        <TrashIcon width={14} height={14} /> Delete
-                      </MenuItem>
-                    </div>
-                  )}
-                </Popover>
-                )}
-              </div>
-              <div className="mt-4">
-                <div className="truncate text-[15px] font-bold">{s.name}</div>
-                <div className="mt-0.5 truncate font-mono text-[12px] text-ink-faint">
-                  {s.bucket}
-                  {s.endpoint ? ` · ${s.endpoint}` : ' · AWS S3'}
-                </div>
-              </div>
+      <div className="mb-4">
+        <SearchInput
+          placeholder="Search storage destinations…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+      </div>
+
+      <DataTable
+        columns={columns}
+        rowKey={(s) => s.id}
+        onRowClick={canManage ? (s) => setModal({ mode: 'edit', storage: s }) : undefined}
+        loading={loading}
+        empty={
+          query.trim() ? (
+            'No storage destinations match your search.'
+          ) : (
+            <div className="flex flex-col items-center gap-3">
+              <CloudIcon width={28} height={28} className="text-ink-faint" />
+              <span>No storage destinations yet.</span>
+              {canManage && (
+                <Button variant="primary" size="sm" icon={PlusIcon} onClick={() => setModal({ mode: 'new' })}>
+                  Add your first destination
+                </Button>
+              )}
             </div>
-            ))}
-
-            {/* Add-destination card */}
-            {!query.trim() && (
-              <button
-                onClick={() => setModal({ mode: 'new' })}
-                className="flex min-h-[132px] flex-col items-center justify-center gap-3 rounded-card border border-dashed border-edge-strong text-ink-dim transition-colors hover:border-green-dim hover:text-ink"
-              >
-                <span className="flex h-11 w-11 items-center justify-center rounded-[12px] bg-elevated text-green">
-                  <PlusIcon width={20} height={20} />
-                </span>
-                <span className="text-[13px] font-medium">New destination</span>
-              </button>
-            )}
-          </div>
-
-          {filtered.length === 0 && (
-            <EmptyState className="py-16">No storage destinations match your search.</EmptyState>
-          )}
-        </>
-      )}
+          )
+        }
+        {...table}
+      />
 
       {modal && (
         <StorageModal
