@@ -83,7 +83,7 @@ export function matchFilter(row, f) {
 // when both values parse as numbers, else locale string compare. Returns the
 // input untouched when there are no active rules.
 export function sortRows(rows, sort) {
-  const rules = (sort || []).filter((s) => s.col)
+  const rules = (sort || []).filter((s) => s.col && s.enabled !== false)
   if (!rules.length) return rows
   return [...rows].sort((a, b) => {
     for (const { col, dir } of rules) {
@@ -104,14 +104,21 @@ export function sortRows(rows, sort) {
 // Reducer for a header click on `col`. Plain click = single-column sort cycling
 // asc → desc → off. Shift (additive) = add/toggle this column within the
 // multi-sort (asc → desc → removed), preserving the other rules and their order.
+// A rule the user disabled in the panel is re-enabled by the click that would
+// otherwise start its cycle — a header click always means "sort by this now".
 export function cycleSortRules(prev, col, additive) {
   const existing = prev.find((s) => s.col === col)
+  const disabled = existing && existing.enabled === false
   if (additive) {
     if (!existing) return [...prev, makeSort(col, 'asc')]
+    if (disabled) return prev.map((s) => (s.col === col ? { ...s, enabled: true } : s))
     if (existing.dir === 'asc') return prev.map((s) => (s.col === col ? { ...s, dir: 'desc' } : s))
     return prev.filter((s) => s.col !== col)
   }
-  if (existing && prev.length === 1) return existing.dir === 'asc' ? [makeSort(col, 'desc')] : []
+  if (existing && prev.length === 1) {
+    if (disabled) return [{ ...existing, enabled: true }]
+    return existing.dir === 'asc' ? [makeSort(col, 'desc')] : []
+  }
   return [makeSort(col, 'asc')]
 }
 
@@ -139,7 +146,7 @@ export default function TableView({ conn, table, onChange, onOpenReference, filt
   const [cellMenu, setCellMenu] = useState(null) // right-click cell menu: { x, y, row, col, value }
   const [inspecting, setInspecting] = useState(null) // row object shown in the Inspector slide-over
 
-  const [sort, setSort] = useState([]) // [{ col, dir }] — ordered list of sort rules (first = primary)
+  const [sort, setSort] = useState([]) // [{ col, dir, enabled }] — ordered sort rules (first = primary)
   const [hidden, setHidden] = useState([])
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(50)
@@ -207,7 +214,7 @@ export default function TableView({ conn, table, onChange, onOpenReference, filt
   const pageRows = useMemo(() => sorted.slice((page - 1) * pageSize, page * pageSize), [sorted, page, pageSize])
 
   const activeFilterCount = filters.filter((f) => f.enabled && f.col && f.value !== '').length
-  const activeSortCount = sort.filter((s) => s.col).length
+  const activeSortCount = sort.filter((s) => s.col && s.enabled !== false).length
 
   // Exports what the grid currently shows: visible columns, filtered + sorted rows.
   const exportAs = (format) => downloadRows(format, { columns: visibleColumns, rows: sorted, table })
@@ -421,7 +428,7 @@ export default function TableView({ conn, table, onChange, onOpenReference, filt
             <div className="mx-0.5 h-5 w-px bg-edge" />
 
         <Popover
-          width={380}
+          width={412}
           trigger={({ open, toggle }) => (
             <Button variant="subtle" size="sm" icon={FilterIcon} active={open || activeFilterCount > 0} onClick={toggle}>
               {activeFilterCount > 0 ? `Filtered by ${activeFilterCount} rule${activeFilterCount > 1 ? 's' : ''}` : 'Filter'}
@@ -439,7 +446,7 @@ export default function TableView({ conn, table, onChange, onOpenReference, filt
         </Popover>
 
         <Popover
-          width={360}
+          width={400}
           trigger={({ open, toggle }) => (
             <Button variant="subtle" size="sm" icon={SortIcon} active={open || activeSortCount > 0} onClick={toggle}>
               {activeSortCount > 0 ? `Sorted by ${activeSortCount} rule${activeSortCount > 1 ? 's' : ''}` : 'Sort'}
@@ -708,8 +715,52 @@ export default function TableView({ conn, table, onChange, onOpenReference, filt
   )
 }
 
+const GripIcon = (props) => (
+  <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden {...props}>
+    <circle cx="4" cy="3" r="1" /><circle cx="8" cy="3" r="1" />
+    <circle cx="4" cy="6" r="1" /><circle cx="8" cy="6" r="1" />
+    <circle cx="4" cy="9" r="1" /><circle cx="8" cy="9" r="1" />
+  </svg>
+)
+
+// Drag-to-reorder shared by the filter + sort rule lists: a dragged rule takes
+// the slot of whichever rule it's hovering. Spread `rowProps(id)` on the rule
+// row and `handleProps(id)` on its grip; `dragId` fades the row being moved.
+function useRuleReorder(setDraft) {
+  const [dragId, setDragId] = useState(null)
+  const moveOnto = (targetId) => {
+    if (!dragId || dragId === targetId) return
+    setDraft((d) => {
+      const from = d.findIndex((x) => x.id === dragId)
+      const to = d.findIndex((x) => x.id === targetId)
+      if (from < 0 || to < 0) return d
+      const next = [...d]
+      const [moved] = next.splice(from, 1)
+      next.splice(to, 0, moved)
+      return next
+    })
+  }
+  return {
+    dragId,
+    rowProps: (id) => ({ onDragOver: (e) => { e.preventDefault(); moveOnto(id) } }),
+    handleProps: (id) => ({ draggable: true, onDragStart: () => setDragId(id), onDragEnd: () => setDragId(null) }),
+  }
+}
+
+const DragHandle = (props) => (
+  <span
+    className="flex shrink-0 cursor-grab items-center text-ink-faint hover:text-ink active:cursor-grabbing"
+    aria-label="Drag to reorder"
+    title="Drag to reorder"
+    {...props}
+  >
+    <GripIcon />
+  </span>
+)
+
 export function FilterPanel({ columns, initial, onApply, onClose }) {
   const [draft, setDraft] = useState(() => (initial.length ? initial.map((f) => ({ ...f })) : [blankFilter()]))
+  const { dragId, rowProps, handleProps } = useRuleReorder(setDraft)
   const update = (id, patch) => setDraft((d) => d.map((f) => (f.id === id ? { ...f, ...patch } : f)))
 
   return (
@@ -720,7 +771,12 @@ export function FilterPanel({ columns, initial, onApply, onClose }) {
 
       <div className="flex flex-col gap-2">
         {draft.map((f) => (
-          <div key={f.id} className="flex items-center gap-1.5">
+          <div
+            key={f.id}
+            {...rowProps(f.id)}
+            className={`flex items-center gap-1.5 ${dragId === f.id ? 'opacity-40' : ''}`}
+          >
+            <DragHandle {...handleProps(f.id)} />
             <Checkbox
               checked={f.enabled}
               onChange={(v) => update(f.id, { enabled: v })}
@@ -782,36 +838,13 @@ export function FilterPanel({ columns, initial, onApply, onClose }) {
 }
 
 let sortId = 0
-export const makeSort = (col = '', dir = 'asc') => ({ id: `s${++sortId}`, col, dir })
+export const makeSort = (col = '', dir = 'asc') => ({ id: `s${++sortId}`, col, dir, enabled: true })
 const blankSort = () => makeSort()
-
-const GripIcon = (props) => (
-  <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden {...props}>
-    <circle cx="4" cy="3" r="1" /><circle cx="8" cy="3" r="1" />
-    <circle cx="4" cy="6" r="1" /><circle cx="8" cy="6" r="1" />
-    <circle cx="4" cy="9" r="1" /><circle cx="8" cy="9" r="1" />
-  </svg>
-)
 
 export function SortPanel({ columns, initial, onApply, onClose }) {
   const [draft, setDraft] = useState(() => (initial.length ? initial.map((s) => ({ ...s })) : [blankSort()]))
-  const [dragId, setDragId] = useState(null)
+  const { dragId, rowProps, handleProps } = useRuleReorder(setDraft)
   const update = (id, patch) => setDraft((d) => d.map((s) => (s.id === id ? { ...s, ...patch } : s)))
-
-  // Reorder the dragged rule to sit where the hovered rule currently is; the
-  // list order *is* the sort priority (first rule = primary).
-  const moveOnto = (targetId) => {
-    if (!dragId || dragId === targetId) return
-    setDraft((d) => {
-      const from = d.findIndex((s) => s.id === dragId)
-      const to = d.findIndex((s) => s.id === targetId)
-      if (from < 0 || to < 0) return d
-      const next = [...d]
-      const [moved] = next.splice(from, 1)
-      next.splice(to, 0, moved)
-      return next
-    })
-  }
 
   return (
     <div className="p-3">
@@ -823,19 +856,15 @@ export function SortPanel({ columns, initial, onApply, onClose }) {
         {draft.map((s, i) => (
           <div
             key={s.id}
-            onDragOver={(e) => { e.preventDefault(); moveOnto(s.id) }}
+            {...rowProps(s.id)}
             className={`flex items-center gap-1.5 ${dragId === s.id ? 'opacity-40' : ''}`}
           >
-            <span
-              draggable
-              onDragStart={() => setDragId(s.id)}
-              onDragEnd={() => setDragId(null)}
-              className="flex shrink-0 cursor-grab items-center text-ink-faint hover:text-ink active:cursor-grabbing"
-              aria-label="Drag to reorder"
-              title="Drag to reorder"
-            >
-              <GripIcon />
-            </span>
+            <DragHandle {...handleProps(s.id)} />
+            <Checkbox
+              checked={s.enabled !== false}
+              onChange={(v) => update(s.id, { enabled: v })}
+              ariaLabel="Enable sort"
+            />
             <Select
               className={`${ctl} min-w-0 flex-1`}
               value={s.col}

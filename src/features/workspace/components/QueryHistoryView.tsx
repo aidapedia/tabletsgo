@@ -78,7 +78,7 @@ export default function QueryHistoryView({ history = [], loading = false, onRefr
   const filtered = useMemo(() => allRows.filter((r) => filters.every((f) => matchFilter(r, f))), [allRows, filters])
 
   const sorted = useMemo(() => sortRows(filtered, sort), [filtered, sort])
-  const activeSortCount = sort.filter((s) => s.col).length
+  const activeSortCount = sort.filter((s) => s.col && s.enabled !== false).length
 
   const visibleColumns = useMemo(() => COLUMNS.filter((c) => !hidden.includes(c)), [hidden])
 
@@ -167,7 +167,7 @@ export default function QueryHistoryView({ history = [], loading = false, onRefr
             <div className="mx-0.5 h-5 w-px bg-edge" />
 
             <Popover
-              width={380}
+              width={412}
               trigger={({ open, toggle }) => (
                 <Button variant="subtle" size="sm" icon={FilterIcon} active={open || activeFilterCount > 0} onClick={toggle}>
                   {activeFilterCount > 0 ? `Filtered by ${activeFilterCount} rule${activeFilterCount > 1 ? 's' : ''}` : 'Filter'}
@@ -188,7 +188,7 @@ export default function QueryHistoryView({ history = [], loading = false, onRefr
             </Popover>
 
             <Popover
-              width={360}
+              width={400}
               trigger={({ open, toggle }) => (
                 <Button variant="subtle" size="sm" icon={SortIcon} active={open || activeSortCount > 0} onClick={toggle}>
                   {activeSortCount > 0 ? `Sorted by ${activeSortCount} rule${activeSortCount > 1 ? 's' : ''}` : 'Sort'}

@@ -1,13 +1,24 @@
 import { useNavigate, useParams } from 'react-router-dom'
 import { AppearanceSetting, DensitySetting, DataSetting } from '@/features/settings'
+import { useAuth } from '@/features/auth'
 import { KeymapSetting } from '@/features/keymap'
 import { UpdatePanel } from '@/features/system-update'
 import { SubHead, TabbedSection } from './ui'
 
-// Personal settings — Theme / Data as tabs (a second path segment).
+/**
+ * Personal settings — tabs are a second path segment.
+ *
+ * Both halves of the app share this page, but not every tab applies to both
+ * audiences (see AUTH MODEL): an instance admin holds no workspace membership
+ * and never opens a database console, so Data (row limits, query timeout) has
+ * nothing to act on; conversely only an admin can apply an update, so a
+ * workspace user gets no Updates tab.
+ */
 export default function SettingsPage() {
   const navigate = useNavigate()
   const { sub } = useParams()
+  const { user } = useAuth()
+  const isSystemAdmin = user?.role === 'admin'
 
   const tabs = [
     {
@@ -23,16 +34,20 @@ export default function SettingsPage() {
         </div>
       ),
     },
-    {
-      id: 'data',
-      label: 'Data',
-      body: (
-        <div>
-          <SubHead title="Data" desc="Control how Tabletsgo loads data and runs your changes." />
-          <DataSetting />
-        </div>
-      ),
-    },
+    ...(isSystemAdmin
+      ? []
+      : [
+          {
+            id: 'data',
+            label: 'Data',
+            body: (
+              <div>
+                <SubHead title="Data" desc="Control how Tabletsgo loads data and runs your changes." />
+                <DataSetting />
+              </div>
+            ),
+          },
+        ]),
     {
       id: 'keymap',
       label: 'Keymap',
@@ -43,16 +58,20 @@ export default function SettingsPage() {
         </div>
       ),
     },
-    {
-      id: 'updates',
-      label: 'Updates',
-      body: (
-        <div>
-          <SubHead title="Updates" desc="Check for new Tabletsgo releases and update safely." />
-          <UpdatePanel />
-        </div>
-      ),
-    },
+    ...(isSystemAdmin
+      ? [
+          {
+            id: 'updates',
+            label: 'Updates',
+            body: (
+              <div>
+                <SubHead title="Updates" desc="Check for new Tabletsgo releases and update safely." />
+                <UpdatePanel />
+              </div>
+            ),
+          },
+        ]
+      : []),
   ]
 
   return (

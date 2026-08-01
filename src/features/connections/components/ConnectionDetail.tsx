@@ -214,28 +214,6 @@ export default function ConnectionDetail({ conn, onBack, onOpen, onEdit, onDelet
             {/* Context sidebar */}
             <aside className="flex flex-col gap-5">
               <div className="rounded-card border border-edge bg-card p-5">
-                <div className="text-[13px] font-bold">Quick actions</div>
-                <div className="mt-3 flex flex-col gap-2">
-                  <Button
-                    variant="primary"
-                    size="md"
-                    className="w-full"
-                    icon={ExternalLinkIcon}
-                    disabled={connecting}
-                    onClick={() => onOpen(conn)}
-                  >
-                    {connecting ? 'Connecting…' : 'Open console'}
-                  </Button>
-                  <Button variant="ghost" size="md" className="w-full" icon={EditIcon} onClick={() => onEdit(conn)}>
-                    Edit connection
-                  </Button>
-                  <Button variant="ghost" size="md" className="w-full" icon={CopyIcon} onClick={copyUrl}>
-                    Copy connection URL
-                  </Button>
-                </div>
-              </div>
-
-              <div className="rounded-card border border-edge bg-card p-5">
                 <div className="text-[13px] font-bold">Overview</div>
                 <div className="mt-2 divide-y divide-edge">
                   <OverviewRow label="Type" value={TYPE_LABEL[conn.type] || conn.type} />

@@ -1681,31 +1681,46 @@ export default function Workspace() {
               <MenuIcon />
             </IconButton>
           </div>
-          {/* "New …" creators — folded into the ⋮ menu on mobile (see below). */}
-          <div className="flex items-center gap-3 max-[720px]:hidden">
-            <Tooltip label={isRedis ? 'New console' : 'New SQL query'} placement="bottom">
-              <IconButton size="toolbar" onClick={() => openQuery()} aria-label={isRedis ? 'New console' : 'New SQL query'}>
-                {isRedis ? <TerminalIcon width={16} height={16} /> : <CodeIcon width={16} height={16} />}
-              </IconButton>
-            </Tooltip>
-            {!isRedis && (
-              <Tooltip label="New Schema diagram" placement="bottom">
-                <IconButton size="toolbar" onClick={openSchemaEditor} aria-label="New Schema diagram">
-                  <DiagramIcon width={16} height={16} />
+          {/* One "New" menu for every creator — the same entries the command
+              palette's Create group runs. */}
+          <Popover
+            width={230}
+            trigger={({ open, toggle }) => (
+              <Tooltip label="New…" placement="bottom">
+                <IconButton size="toolbar" active={open} onClick={toggle} aria-label="Create new">
+                  {isRedis ? <TerminalIcon width={16} height={16} /> : <CodeIcon width={16} height={16} />}
                 </IconButton>
               </Tooltip>
             )}
-            <Tooltip label="New workflow" placement="bottom">
-              <IconButton size="toolbar" onClick={() => newWorkflow()} aria-label="New workflow">
-                <WorkflowIcon width={16} height={16} />
-              </IconButton>
-            </Tooltip>
-            <Tooltip label="New dashboard" placement="bottom">
-              <IconButton size="toolbar" onClick={() => newDashboard()} aria-label="New dashboard">
-                <GridIcon width={16} height={16} />
-              </IconButton>
-            </Tooltip>
-          </div>
+          >
+            {({ close }) => (
+              <div className="p-1">
+                {!isRedis && (
+                  <MenuItem onClick={() => { setCreatingTable(true); close() }}>
+                    <TableIcon width={14} height={14} /> New table
+                  </MenuItem>
+                )}
+                <MenuItem onClick={() => { openQuery(); close() }}>
+                  {isRedis ? <TerminalIcon width={14} height={14} /> : <CodeIcon width={14} height={14} />}
+                  {isRedis ? 'New console' : 'New SQL query'}
+                  <kbd className="ml-auto rounded-[5px] border border-edge bg-elevated px-1.5 py-px text-[11px] text-ink-faint">
+                    {formatCombo(bindings['general.newTab'])}
+                  </kbd>
+                </MenuItem>
+                <MenuItem onClick={() => { newWorkflow(); close() }}>
+                  <WorkflowIcon width={14} height={14} /> New workflow
+                </MenuItem>
+                <MenuItem onClick={() => { newDashboard(); close() }}>
+                  <GridIcon width={14} height={14} /> New dashboard
+                </MenuItem>
+                {!isRedis && (
+                  <MenuItem onClick={() => { openSchemaEditor(); close() }}>
+                    <DiagramIcon width={14} height={14} /> New schema diagram
+                  </MenuItem>
+                )}
+              </div>
+            )}
+          </Popover>
           <input
             ref={dashboardFileRef}
             type="file"
@@ -1748,7 +1763,7 @@ export default function Workspace() {
                 </IconButton>
               </Tooltip>
             </div>
-            {/* Mobile overflow: the creators + history/version that are hidden above. */}
+            {/* Mobile overflow: the history/version entries hidden above. */}
             <div className="hidden max-[720px]:block">
               <Popover
                 align="right"
@@ -1761,22 +1776,6 @@ export default function Workspace() {
               >
                 {({ close }) => (
                   <div className="p-1">
-                    <MenuItem onClick={() => { openQuery(); close() }}>
-                      {isRedis ? <TerminalIcon width={14} height={14} /> : <CodeIcon width={14} height={14} />}
-                      {isRedis ? 'New console' : 'New SQL query'}
-                    </MenuItem>
-                    {!isRedis && (
-                      <MenuItem onClick={() => { openSchemaEditor(); close() }}>
-                        <DiagramIcon width={14} height={14} /> New schema diagram
-                      </MenuItem>
-                    )}
-                    <MenuItem onClick={() => { newWorkflow(); close() }}>
-                      <WorkflowIcon width={14} height={14} /> New workflow
-                    </MenuItem>
-                    <MenuItem onClick={() => { newDashboard(); close() }}>
-                      <GridIcon width={14} height={14} /> New dashboard
-                    </MenuItem>
-                    <div className="my-1 h-px bg-edge" />
                     <MenuItem onClick={() => { openHistory(); close() }}>
                       <HistoryIcon width={14} height={14} /> Query history
                     </MenuItem>

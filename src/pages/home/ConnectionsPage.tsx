@@ -19,15 +19,12 @@ import { controlClass } from '@/shared/ui/form/Input'
 import ConfirmDialog from '@/shared/ui/feedback/ConfirmDialog'
 import { useToast } from '@/shared/ui/feedback/Toast'
 import {
-  ActivityIcon,
   CheckIcon,
   CopyIcon,
-  DatabaseIcon,
   DbLogo,
   DownloadIcon,
   EditIcon,
   ExternalLinkIcon,
-  GridIcon,
   InfoIcon,
   MoreVerticalIcon,
   PlusIcon,
@@ -39,30 +36,6 @@ import DataTable from '@/shared/ui/table/DataTable'
 import type { Column } from '@/shared/ui/table/DataTable'
 import useDataTable from '@/shared/ui/table/useDataTable'
 import { PageHeader } from './ui'
-
-// One headline metric with a right-aligned icon medallion.
-function StatCard({ icon: Icon, label, value, sub, tone = 'default' }: any) {
-  return (
-    <div className="flex items-start justify-between gap-3 rounded-card border border-edge bg-card p-5">
-      <div className="min-w-0">
-        <div className="text-[12px] text-ink-dim">{label}</div>
-        <div className="mt-2 text-[26px] font-bold leading-none tracking-[-0.5px]">{value}</div>
-        {sub && (
-          <div className={`mt-2 truncate text-[12px] ${tone === 'green' ? 'font-semibold text-green' : 'text-ink-faint'}`}>
-            {sub}
-          </div>
-        )}
-      </div>
-      <span
-        className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-full ${
-          tone === 'green' ? 'bg-green/15 text-green' : 'bg-elevated text-ink-dim'
-        }`}
-      >
-        <Icon width={20} height={20} />
-      </span>
-    </div>
-  )
-}
 
 // ---- Connections section: list + detail + create/edit forms (thin composition;
 // the detail view and db-type picker live in features/connections) ----
@@ -113,7 +86,7 @@ export default function ConnectionsPage() {
     }
   }, [connections])
 
-  // Latest backup per card (for "Last backup" + the "Last activity" headline).
+  // Latest backup per connection, for the table's "Last backup" column.
   useEffect(() => {
     let alive = true
     connections.forEach((c) => {
@@ -144,20 +117,6 @@ export default function ConnectionsPage() {
     connections.forEach((c) => c.type && set.add(c.type))
     return [...set]
   }, [connections])
-
-  // Headline metrics.
-  const stats = useMemo(() => {
-    const total = connections.length
-    const connected = connections.filter((c) => statuses[c.id] === 'connected').length
-    const pct = total ? Math.round((connected / total) * 100) : 0
-    const typeLabels = types.map((t) => TYPE_LABEL[t] || t)
-    let last: { ts: number; name: string } | null = null
-    connections.forEach((c) => {
-      const b = backups[c.id]
-      if (b && (!last || b.ts > last.ts)) last = { ts: b.ts, name: c.name }
-    })
-    return { total, connected, pct, typeLabels, last }
-  }, [connections, statuses, backups, types])
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -443,63 +402,36 @@ export default function ConnectionsPage() {
           }
         />
 
-        {/* Headline metrics */}
-        <div className="mt-6 grid grid-cols-4 gap-4 max-[1080px]:grid-cols-2 max-[560px]:grid-cols-1">
-          <StatCard icon={DatabaseIcon} label="Total connections" value={stats.total} sub="All databases" />
-          <StatCard
-            icon={CheckIcon}
-            label="Connected"
-            value={stats.connected}
-            sub={`${stats.pct}%`}
-            tone="green"
+        {/* Search + filters — bare row (same shape as the admin user/workspace lists) */}
+        <div className="mb-4 mt-6 flex flex-wrap items-center gap-2">
+          <SearchInput
+            className="min-w-[220px] flex-1"
+            placeholder="Search connections…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
           />
-          <StatCard
-            icon={GridIcon}
-            label="Database types"
-            value={stats.typeLabels.length}
-            sub={stats.typeLabels.join(', ') || '—'}
-          />
-          <StatCard
-            icon={ActivityIcon}
-            label="Last activity"
-            value={stats.last ? relativeTime(stats.last.ts) : '—'}
-            sub={stats.last?.name || 'No backups yet'}
-          />
-        </div>
-
-        {/* Search + filters */}
-        <div className="mt-6 flex flex-wrap items-center gap-3 rounded-card border border-edge bg-card p-3">
-          <div className="min-w-[220px] flex-1">
-            <SearchInput
-              iconSize={16}
-              placeholder="Search connections…"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              inputClassName="!py-2.5 !pl-10 !text-[13px]"
-            />
-          </div>
           <Select
-            className={`${controlClass} !w-auto min-w-[150px] !py-2.5`}
+            className={`${controlClass} !w-auto min-w-[150px] shrink-0`}
             value={activeEnv}
             onChange={setActiveEnv}
             options={[{ value: 'all', label: 'All environments' }, ...envs.map((e) => ({ value: e, label: e[0].toUpperCase() + e.slice(1) }))]}
           />
           {folders.length > 0 && (
             <Select
-              className={`${controlClass} !w-auto min-w-[140px] !py-2.5`}
+              className={`${controlClass} !w-auto min-w-[140px] shrink-0`}
               value={activeFolder}
               onChange={setActiveFolder}
               options={[{ value: 'all', label: 'All folders' }, ...folders.map((f) => ({ value: f, label: f }))]}
             />
           )}
           <Select
-            className={`${controlClass} !w-auto min-w-[130px] !py-2.5`}
+            className={`${controlClass} !w-auto min-w-[130px] shrink-0`}
             value={activeType}
             onChange={setActiveType}
             options={[{ value: 'all', label: 'All types' }, ...types.map((t) => ({ value: t, label: TYPE_LABEL[t] || t }))]}
           />
           <Select
-            className={`${controlClass} !w-auto min-w-[130px] !py-2.5`}
+            className={`${controlClass} !w-auto min-w-[130px] shrink-0`}
             value={activeStatus}
             onChange={setActiveStatus}
             options={[
@@ -509,7 +441,7 @@ export default function ConnectionsPage() {
             ]}
           />
           {hasFilters && (
-            <Button variant="ghost" size="sm" onClick={clearFilters}>
+            <Button variant="ghost" size="sm" className="shrink-0" onClick={clearFilters}>
               Clear
             </Button>
           )}
@@ -517,7 +449,6 @@ export default function ConnectionsPage() {
 
         {/* Table */}
         <DataTable
-          className="mt-6"
           columns={columns}
           rowKey={(c) => c.id}
           onRowClick={(c) => setDetailConn(c)}

@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import Button from '@/shared/ui/buttons/Button'
+import { useAuth } from '@/features/auth'
 import { CloseIcon, CloudIcon } from '@/shared/ui/icons'
 import { useUpdate } from '../stores/UpdateContext'
 import UpdateWizard from './UpdateWizard'
@@ -7,10 +8,15 @@ import UpdateWizard from './UpdateWizard'
 // Non-blocking, dismissible banner shown atop the home shell when a newer
 // release exists. "Update" opens the guided wizard; "Dismiss" hides it until a
 // newer version ships (remembered per-version).
+//
+// Instance admins only — updating is an instance-wide call they alone can make,
+// which is also why Settings has no Updates tab for a workspace user.
 export default function UpdateBanner() {
+  const { user } = useAuth()
   const { info, dismissed, dismiss } = useUpdate()
   const [wizardOpen, setWizardOpen] = useState(false)
 
+  if (user?.role !== 'admin') return null
   if (!info?.updateAvailable || dismissed) return null
 
   return (
