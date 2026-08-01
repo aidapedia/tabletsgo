@@ -83,6 +83,18 @@ export const createUser = ({ email, name, password, role = 'user', inviteWorkspa
   return { user: getUser(id), inviteToken: token }
 }
 
+/**
+ * Does this password match the account's current one? Used by the self-service
+ * password change, which must prove the caller owns the session *and* knows the
+ * old password — a stolen token alone must not be enough to lock its owner out.
+ * A 'pending' account has no password yet, so it can never match.
+ */
+export const verifyPassword = (id, password) => {
+  const row = meta.prepare('SELECT password_hash, status FROM users WHERE id = ?').get(id)
+  if (!row || row.status === 'pending' || !row.password_hash) return false
+  return row.password_hash === sha256(password)
+}
+
 export const updateUser = (id, { name, password }) => {
   if (name !== undefined) meta.prepare('UPDATE users SET name = ? WHERE id = ?').run(name, id)
   if (password) {

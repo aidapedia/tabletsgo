@@ -97,6 +97,7 @@ import {
   listUsers,
   setSystemRole,
   updateUser,
+  verifyPassword,
 } from './server/users.js'
 import {
   connectionSessionStats,
@@ -256,6 +257,53 @@ app.post('/api/auth/logout', async (req, res) => {
   const token = bearerToken(req)
   if (token) await deleteSession(token)
   res.json({ ok: true })
+})
+
+// ---- The signed-in user's own account -------------------------------------
+// These three are the self-service counterpart of /api/admin/users/*: they act
+// on the caller and only on the caller, so they need no role beyond being
+// authenticated. The email is the login identity and is deliberately not
+// editable here — changing it is an admin action.
+
+// The caller's own profile, re-read from the DB (the client caches it).
+app.get('/api/auth/me', (req, res) => {
+  const user = requireAuth(req, res)
+  if (!user) return
+  res.json({ user: publicUser(user) })
+})
+
+// Rename yourself. Name is the only self-editable profile field.
+app.patch('/api/auth/profile', (req, res) => {
+  const user = requireAuth(req, res)
+  if (!user) return
+  const name = (req.body?.name ?? '').trim()
+  if (!name) return res.status(400).json({ error: 'A name is required.' })
+  updateUser(user.id, { name })
+  res.json({ user: publicUser(userRow(user.id)) })
+})
+
+// Change your own password. The current password is required — a session token
+// alone must not let someone lock its owner out of their account.
+//
+// A successful change signs out every session (this one included, since we
+// can't tell the other devices apart from a stolen copy of this token) and
+// hands back a fresh one, so the caller stays logged in where they are.
+app.post('/api/auth/password', async (req, res) => {
+  const user = requireAuth(req, res)
+  if (!user) return
+  const { currentPassword, newPassword } = req.body || {}
+  if (!currentPassword || !newPassword) {
+    return res.status(400).json({ error: 'Both your current and new password are required.' })
+  }
+  if (!verifyPassword(user.id, currentPassword)) {
+    return res.status(400).json({ error: 'Your current password is incorrect.' })
+  }
+  if (currentPassword === newPassword) {
+    return res.status(400).json({ error: 'The new password must be different from the current one.' })
+  }
+  updateUser(user.id, { password: newPassword })
+  await destroyAuthSessionsForUser(user.id)
+  res.json({ user: publicUser(userRow(user.id)), token: await createSession(user.id, sessionContext(req)) })
 })
 
 // Request a password reset. Always 200 — never reveal whether the email exists.

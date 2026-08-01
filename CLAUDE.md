@@ -48,7 +48,10 @@ src/
 │
 ├── features/                     # self-contained business features (each has index.ts barrel)
 │   ├── auth/                     # stores/AuthContext + api (login/setup/invite); session token.
-│   │                             #   `user.role` is the SYSTEM role ('admin' | 'user') — see AUTH MODEL
+│   │                             #   `user.role` is the SYSTEM role ('admin' | 'user') — see AUTH MODEL.
+│   │                             #   components/ProfileSetting + PasswordSetting: the caller's own
+│   │                             #     account (rename / change password), rendered by Setting > Account.
+│   │                             #     Email and system role stay read-only — an admin changes those
 │   ├── admin/                    # the instance-admin area (system role 'admin' only): AdminWorkspacesPanel
 │   │                             #   (every workspace + who owns it; create/rename/delete, grant ownership)
 │   │                             #   AdminUsersPanel (accounts, system role, invites, password reset)
@@ -215,7 +218,9 @@ src/
         │                         #   come from features/connections
         ├── StoragePage           # /storage → S3 storage destinations (StorageList), top-level sidebar item
         ├── WorkspaceSettingsPage # /workspace → General / Member / Integrations / Notification tabs
-        └── SettingsPage          # /settings → Theme / Data / Updates tabs (Updates renders UpdatePanel)
+        └── SettingsPage          # /settings → Account / Theme / Data / Keymap / Updates tabs (Account
+                                  #   renders features/auth's ProfileSetting + PasswordSetting; Updates
+                                  #   renders UpdatePanel)
 ```
 
 Note: `features/workspaces` (plural) is the org/tenant layer (workspaces, members, invites); `features/workspace` (singular) is the per-connection DB console. Don't conflate them.

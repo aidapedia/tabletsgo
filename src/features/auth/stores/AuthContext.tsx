@@ -54,6 +54,16 @@ export function AuthProvider({ children }) {
     return u
   }
 
+  // Refresh the cached account after the user edits it themselves (rename,
+  // password change). A password change rotates the token, so pass the new one;
+  // without it the existing session token is kept.
+  const updateAccount = (u, token) => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(u))
+    if (token) localStorage.setItem(TOKEN_KEY, token)
+    setUser(u)
+    return u
+  }
+
   const logout = async () => {
     try {
       await request('/auth/logout', { method: 'POST' })
@@ -64,7 +74,9 @@ export function AuthProvider({ children }) {
     setUser(null)
   }
 
-  return <AuthContext.Provider value={{ user, login, authenticate, logout }}>{children}</AuthContext.Provider>
+  return (
+    <AuthContext.Provider value={{ user, login, authenticate, updateAccount, logout }}>{children}</AuthContext.Provider>
+  )
 }
 
 export const useAuth = () => useContext(AuthContext)

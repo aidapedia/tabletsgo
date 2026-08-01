@@ -488,6 +488,39 @@ survives a restart and is visible in `GET /api/admin/users`.
 ### POST `/api/auth/logout`
 Invalidate the current session token. **200:** `{ "ok": true }`
 
+### Your own account (auth required)
+
+The self-service counterpart of `/api/admin/users/*`: these act on the caller and
+only on the caller, so they need no role beyond a valid token. **Email is not
+editable here** — it's the sign-in identity, and changing it (like the system
+role) is an instance-admin action via `PUT /api/admin/users/:id`.
+
+#### GET `/api/auth/me`
+The caller's own profile, re-read from the DB (clients cache it in localStorage).
+- **200:** `{ "user": { "id", "email", "name", "role" } }` · **401:** unauthenticated
+- **Example:** `GET http://localhost:3000/api/auth/me`
+
+#### PATCH `/api/auth/profile`
+Rename yourself. `name` is the only self-editable profile field.
+- **Body:** `{ "name": "Ada Lovelace" }`
+- **200:** `{ "user": { … } }` · **400:** `{ "error": "A name is required." }` (empty/blank)
+- **Example:** `PATCH http://localhost:3000/api/auth/profile`
+
+#### POST `/api/auth/password`
+Change your own password. The current password is **required and re-checked
+server-side** — a session token alone must not let someone lock its owner out.
+A success invalidates *every* session for the user (this browser's included,
+since a stolen copy of the token is indistinguishable from it) and returns a
+fresh one, so the caller stays signed in where they are and is signed out
+everywhere else. It also clears any brute-force block, like every other password
+change.
+- **Body:** `{ "currentPassword": "…", "newPassword": "…" }`
+- **200:** `{ "user", "token" }` — **persist the new token**, the old one is dead
+- **400:** `{ "error": "Both your current and new password are required." }` ·
+  `{ "error": "Your current password is incorrect." }` ·
+  `{ "error": "The new password must be different from the current one." }`
+- **Example:** `POST http://localhost:3000/api/auth/password`
+
 ### POST `/api/auth/forgot`
 Request a password-reset link. **Always 200** `{ "ok": true }` — never reveals
 whether the email exists. When SMTP is available (the global/env config, else

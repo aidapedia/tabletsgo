@@ -18,6 +18,21 @@ export async function acceptInvite(token: string, payload: { name: string; passw
   return request(`/invite/${encodeURIComponent(token)}/accept`, { method: 'POST', body: payload })
 }
 
+// ---- The signed-in user's own account ----
+// Self-service counterparts of the admin user routes: they always act on the
+// caller. Email isn't editable here — it's the sign-in identity.
+export async function getMe() {
+  return request<{ user: any }>('/auth/me')
+}
+export async function updateProfile(payload: { name: string }) {
+  return request<{ user: any }>('/auth/profile', { method: 'PATCH', body: payload })
+}
+// Resolves to a fresh { user, token }: changing the password invalidates every
+// session, so the caller must re-persist the new token to stay signed in.
+export async function changePassword(payload: { currentPassword: string; newPassword: string }) {
+  return request<{ user: any; token: string }>('/auth/password', { method: 'POST', body: payload })
+}
+
 // Password reset. `forgotPassword` always resolves (never reveals if the email
 // exists); the link is emailed. Reset validates the token then sets a password.
 export async function forgotPassword(email: string) {
