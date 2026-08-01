@@ -7,7 +7,7 @@
 **A self‑hosted, team‑friendly database console.**
 Browse data, write queries, design schemas visually, automate workflows, and back up to S3 — all from one clean, keyboard‑friendly web app you run yourself.
 
-[![Version](https://img.shields.io/badge/version-0.21.0-6FCF6A)](package.json)
+[![Version](https://img.shields.io/badge/version-0.21.1-6FCF6A)](package.json)
 [![Docker](https://img.shields.io/badge/deploy-Docker-2496ED?logo=docker&logoColor=white)](#-installation)
 [![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=white)](https://react.dev)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org)
