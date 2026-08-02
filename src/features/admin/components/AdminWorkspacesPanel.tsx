@@ -14,6 +14,7 @@ import DataTable, { type Column } from '@/shared/ui/table/DataTable'
 import { RowAction, RowActions } from '@/shared/ui/table/RowActions'
 import useDataTable from '@/shared/ui/table/useDataTable'
 import { CopyIcon, PlusIcon, TrashIcon } from '@/shared/ui/icons'
+import { listRoles, type Role } from '@/features/workspaces'
 import {
   createWorkspaceAs,
   deleteWorkspaceAs,
@@ -287,22 +288,29 @@ function OwnershipDialog({
   // can be pulled into it — without this the dialog is a dead end for a
   // workspace with no members (nothing to promote).
   const [users, setUsers] = useState<AdminUser[]>([])
+  // The instance's role catalog — an admin may have defined more than the two
+  // builtins, and this dialog assigns any of them.
+  const [roles, setRoles] = useState<Role[]>([])
   const [adding, setAdding] = useState('')
-  const [addRole, setAddRole] = useState<AdminWorkspaceMember['role']>('member')
+  const [addRole, setAddRole] = useState('member')
   const [name, setName] = useState(workspace.name)
   const [loading, setLoading] = useState(true)
 
   const load = () => {
     setLoading(true)
-    Promise.all([listWorkspaceMembersAs(workspace.id), listUsers()]).then(([m, u]) => {
+    Promise.all([listWorkspaceMembersAs(workspace.id), listUsers(), listRoles()]).then(([m, u, r]) => {
       setMembers(m)
       setUsers(u)
+      setRoles(r)
       setLoading(false)
     })
   }
   useEffect(load, [workspace.id])
 
-  const ownerCount = members.filter((m) => m.role === 'owner').length
+  // "Owner" is whoever holds workspace.manage, which the server resolves — a
+  // custom role can carry it too, so this never compares a role name.
+  const ownerCount = members.filter((m) => m.isOwner).length
+  const roleOptions = roles.map((r) => ({ value: r.slug, label: r.name }))
 
   // Instance admins can't join a workspace, and existing members are already
   // listed below with their own role control.
@@ -318,7 +326,7 @@ function OwnershipDialog({
       setAddRole('member')
       load()
       onChanged()
-      toast.success(`${who?.name || who?.email || 'They'} joined as ${addRole}.`)
+      toast.success(`${who?.name || who?.email || 'They'} joined as ${roles.find((r) => r.slug === addRole)?.name || addRole}.`)
     } catch (err) {
       toast.error(err.message)
     }
@@ -336,11 +344,12 @@ function OwnershipDialog({
     }
   }
 
-  const changeRole = async (m: AdminWorkspaceMember, role: AdminWorkspaceMember['role']) => {
+  const changeRole = async (m: AdminWorkspaceMember, role: string) => {
     const prev = members
     setMembers((list) => list.map((x) => (x.userId === m.userId ? { ...x, role } : x)))
     try {
       await setWorkspaceRoleAs(workspace.id, m.userId, role)
+      load() // isOwner/permissions for the new role come from the server
       onChanged()
     } catch (err) {
       setMembers(prev)
@@ -388,15 +397,12 @@ function OwnershipDialog({
               {m.status === 'pending' && <Badge tone="amber" className="shrink-0">pending</Badge>}
               <Select
                 portal // the member list scrolls (max-h + overflow-y-auto), which would clip the menu
-                className={`${controlClass} !w-[104px] shrink-0 !py-1`}
+                className={`${controlClass} !w-[132px] shrink-0 !py-1`}
                 value={m.role}
                 // The workspace must keep at least one owner.
-                disabled={m.role === 'owner' && ownerCount <= 1}
-                options={[
-                  { value: 'owner', label: 'Owner' },
-                  { value: 'member', label: 'Member' },
-                ]}
-                onChange={(role) => changeRole(m, role as AdminWorkspaceMember['role'])}
+                disabled={!!m.isOwner && ownerCount <= 1}
+                options={roleOptions}
+                onChange={(role) => changeRole(m, role)}
               />
               <TextButton
                 tone="faint"
@@ -436,13 +442,10 @@ function OwnershipDialog({
                 onChange={setAdding}
               />
               <Select
-                className={`${controlClass} !w-[104px] shrink-0`}
+                className={`${controlClass} !w-[132px] shrink-0`}
                 value={addRole}
-                options={[
-                  { value: 'member', label: 'Member' },
-                  { value: 'owner', label: 'Owner' },
-                ]}
-                onChange={(r) => setAddRole(r as AdminWorkspaceMember['role'])}
+                options={roleOptions}
+                onChange={setAddRole}
               />
               <Button variant="primary" size="sm" className="shrink-0" disabled={!adding} onClick={add}>
                 Add

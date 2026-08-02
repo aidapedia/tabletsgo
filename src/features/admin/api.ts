@@ -1,5 +1,5 @@
 import { request, safeRequest } from '@/shared/api/request'
-import type { WorkspaceRole } from '@/features/workspaces'
+import type { Permission, PermissionGroup, Role, WorkspaceRole } from '@/features/workspaces'
 
 /**
  * Instance administration — the `/api/admin/*` surface, open only to accounts
@@ -17,6 +17,11 @@ export type AdminWorkspaceMember = {
   email: string
   name: string
   role: WorkspaceRole
+  // What this person's role grants, and whether it carries `workspace.manage`
+  // (which is what "owner" means now that roles are configurable). Resolved
+  // server-side so nothing here has to interpret a role slug.
+  permissions?: Permission[]
+  isOwner?: boolean
   status: 'active' | 'pending'
   systemRole?: SystemRole
   createdAt?: number
@@ -49,7 +54,39 @@ export type AdminUser = {
   blockedAt: number | null
   blockedUntil: number | null
   failedAttempts: number
-  workspaces: { id: string; name: string; role: WorkspaceRole }[]
+  // `roleName` is the role's display name and `isOwner` whether it carries
+  // workspace.manage — both resolved server-side, since a role slug means
+  // whatever an admin has defined it to mean.
+  workspaces: { id: string; name: string; role: WorkspaceRole; roleName?: string; isOwner?: boolean }[]
+}
+
+// ---- Roles ----
+//
+// Workspace roles are instance-wide and only an admin defines them: the access
+// model is set once here, and each workspace owner assigns their people to it.
+// Reading the catalog is open to any signed-in user (`listRoles` in
+// `features/workspaces`) — these are the write endpoints.
+
+// Everything a role can be granted, grouped for the editor. Comes from the
+// server's code, not its database, so the UI can only offer what a route
+// actually enforces.
+export async function listPermissionCatalog() {
+  return safeRequest<PermissionGroup[]>('/admin/permissions', [])
+}
+
+export async function createRole(body: { name: string; description?: string; permissions: Permission[] }) {
+  return request<Role>('/admin/roles', { method: 'POST', body })
+}
+
+// The slug is fixed at creation (memberships store it), so renaming is safe.
+export async function updateRole(slug: string, body: { name?: string; description?: string; permissions?: Permission[] }) {
+  return request<Role>(`/admin/roles/${slug}`, { method: 'PUT', body })
+}
+
+// Refused (409) while anyone still holds the role, and builtins are never
+// deletable — those memberships would otherwise fail closed to no access.
+export async function deleteRole(slug: string) {
+  return request(`/admin/roles/${slug}`, { method: 'DELETE' })
 }
 
 // ---- Workspaces ----

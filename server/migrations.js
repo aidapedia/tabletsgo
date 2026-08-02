@@ -21,6 +21,7 @@
  */
 
 import { randomUUID } from 'crypto'
+import { BUILTIN_ROLES } from './permissions-catalog.js'
 
 // ---- Shared helpers (used by the v1/v2 catch-up steps only) ----
 
@@ -272,7 +273,48 @@ function ensureBaseSchema(db) {
       value TEXT,                  -- JSON; secrets inside it are AES-256-GCM sealed
       updated_at INTEGER
     );
+    -- Workspace roles an instance admin defines (server/permissions.js). The
+    -- slug is what workspace_members.role stores, so it is fixed at creation;
+    -- 'owner' and 'member' are seeded builtins whose slugs match the literals
+    -- that column held before roles became configurable.
+    -- CREATE ... IF NOT EXISTS is idempotent with v12, so fresh + existing
+    -- installs agree (same arrangement as app_settings/v9 above).
+    CREATE TABLE IF NOT EXISTS roles (
+      id TEXT PRIMARY KEY,
+      slug TEXT NOT NULL UNIQUE,   -- stored in workspace_members.role
+      name TEXT NOT NULL,
+      description TEXT,
+      builtin INTEGER DEFAULT 0,   -- 1 = seeded, can be edited but never deleted
+      created_at INTEGER,
+      updated_at INTEGER
+    );
+    -- What a role grants. Rows are permission KEYS from the catalog in
+    -- server/permissions-catalog.js; a key this image doesn't know is ignored
+    -- on read, which is what lets an older image open a newer DB.
+    CREATE TABLE IF NOT EXISTS role_permissions (
+      role_id TEXT NOT NULL,
+      permission TEXT NOT NULL,
+      UNIQUE(role_id, permission)
+    );
+    CREATE INDEX IF NOT EXISTS idx_role_permissions_role ON role_permissions(role_id);
   `)
+}
+
+/**
+ * Insert the built-in roles if they're missing. Shared by the baseline and step
+ * v12 so fresh and existing installs land in the same place, and idempotent: a
+ * builtin an admin has since edited is left exactly as they left it.
+ */
+function seedBuiltinRoles(db) {
+  const now = Date.now()
+  const insRole = db.prepare('INSERT INTO roles (id, slug, name, description, builtin, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)')
+  const insGrant = db.prepare('INSERT OR IGNORE INTO role_permissions (role_id, permission) VALUES (?, ?)')
+  for (const role of BUILTIN_ROLES) {
+    if (db.prepare('SELECT 1 FROM roles WHERE slug = ?').get(role.slug)) continue
+    const id = randomUUID()
+    insRole.run(id, role.slug, role.name, role.description, now, now)
+    for (const permission of role.permissions) insGrant.run(id, permission)
+  }
 }
 
 // Probe-then-ALTER for columns added after a table first shipped. Idempotent —
@@ -671,9 +713,46 @@ export const MIGRATIONS = [
       db.exec(`ALTER TABLE users ADD COLUMN locked_until INTEGER`)
     },
   },
-  // v12+: append plain, run-exactly-once steps here, e.g.
+  {
+    version: 12,
+    name: 'configurable workspace roles (roles + role_permissions), seeded with owner/member',
+    up(db) {
+      // Workspace roles stop being two hardcoded literals and become rows an
+      // instance admin edits (server/permissions.js). Nothing is rewritten:
+      // `workspace_members.role` already held 'owner'/'member' and those are
+      // exactly the slugs seeded here, so every existing membership keeps the
+      // access it had — the built-in 'owner' is seeded holding every permission
+      // in the catalog, which is precisely what the old requireOwner guard
+      // allowed.
+      //
+      // IF NOT EXISTS because fresh installs run the baseline AND this step.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS roles (
+          id TEXT PRIMARY KEY,
+          slug TEXT NOT NULL UNIQUE,
+          name TEXT NOT NULL,
+          description TEXT,
+          builtin INTEGER DEFAULT 0,
+          created_at INTEGER,
+          updated_at INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS role_permissions (
+          role_id TEXT NOT NULL,
+          permission TEXT NOT NULL,
+          UNIQUE(role_id, permission)
+        );
+        CREATE INDEX IF NOT EXISTS idx_role_permissions_role ON role_permissions(role_id);
+      `)
+      seedBuiltinRoles(db)
+
+      // Pre-v8 memberships spell 'owner' as 'admin'. They are left alone —
+      // server/permissions.js normalizes the spelling on read, the same way
+      // memberRole always has, and rewriting them would make a downgrade lossy.
+    },
+  },
+  // v13+: append plain, run-exactly-once steps here, e.g.
   // {
-  //   version: 12,
+  //   version: 13,
   //   name: 'connections: last_used_at',
   //   up(db) {
   //     db.exec(`ALTER TABLE connections ADD COLUMN last_used_at INTEGER`)

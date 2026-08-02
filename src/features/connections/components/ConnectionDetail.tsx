@@ -77,7 +77,7 @@ function DetailRow({ label, value }: { label: string; value?: string }) {
 // Full-page connection detail: Data Connection / Access / Backup tabs, each laid
 // out as a main column + a context sidebar. The tab is controlled by the page
 // (it lives in the URL as `/connections/:id/:tab`), so a tab is linkable.
-export default function ConnectionDetail({ conn, onBack, onOpen, onEdit, onDelete, onExport, connecting, tab = 'data', onTab }: any) {
+export default function ConnectionDetail({ conn, onBack, onOpen, onEdit, onDelete, onExport, onRefresh, connecting, tab = 'data', onTab }: any) {
   const toast = useToast()
   const [status, setStatus] = useState<'checking' | 'connected' | 'offline'>('checking')
   const [tableCount, setTableCount] = useState<number | null>(null)
@@ -229,7 +229,7 @@ export default function ConnectionDetail({ conn, onBack, onOpen, onEdit, onDelet
             </aside>
           </div>
         ) : tab === 'access' ? (
-          <ConnectionAccessPanel conn={conn} />
+          <ConnectionAccessPanel conn={conn} onChange={onRefresh} />
         ) : (
           <BackupPanel
             connectionId={conn.id}

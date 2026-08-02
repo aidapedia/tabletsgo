@@ -9,9 +9,15 @@
  *            workspace membership, so `memberRole` returns null for them and
  *            every workspace-scoped guard below denies them. Instance
  *            administration carries no data access, by design.
- *   workspace `workspace_members.role` — 'owner' | 'member'. Owners manage
- *            their own workspace (members, teams, settings, connections);
- *            members only use the connections they've been granted.
+ *   workspace `workspace_members.role` — a role *slug* from the `roles` table
+ *            (server/permissions.js). What it grants is data an instance admin
+ *            edits, so this tier is asked about by permission
+ *            (`requirePermission(req, res, wsId, 'members.manage')`) rather than
+ *            by name. 'owner' and 'member' are seeded builtins.
+ *
+ * The system tier is deliberately NOT part of that model: making it configurable
+ * would only be a way to grant an instance admin the workspace data they are
+ * meant not to have.
  *
  * A login is a bearer token in the session store (server/sessions): a row in
  * the meta DB's `sessions` table, read through an in-process cache, so it
@@ -25,6 +31,7 @@
 import { randomUUID } from 'crypto'
 import { createAuthSession, destroyAuthSession, readAuthSession } from './sessions/index.js'
 import { meta } from './meta.js'
+import { OWNER_PERMISSION, permissionsForRole, roleHasPermission } from './permissions.js'
 
 // ---- Sessions ----
 export const createSession = (userId, context) => createAuthSession(userId, context)
@@ -105,20 +112,38 @@ export const memberRole = (workspaceId, userId) => {
   return m.role === 'admin' ? 'owner' : m.role
 }
 
-export const isWorkspaceOwner = (workspaceId, userId) => memberRole(workspaceId, userId) === 'owner'
+// Everything the caller may do in this workspace — an empty set for a non-member
+// (which is always the case for an instance admin).
+export const permissionsIn = (workspaceId, userId) => permissionsForRole(memberRole(workspaceId, userId))
+
+// The permission check. `workspaceId` null/undefined ⇒ false, so a resource with
+// no workspace never accidentally authorizes anyone.
+export const can = (workspaceId, userId, permission) => (workspaceId ? roleHasPermission(memberRole(workspaceId, userId), permission) : false)
 
 /**
- * Guard for anything that changes a workspace or what's in it — members, teams,
- * settings, connections, storage destinations. Sends the response and returns
- * null when the caller isn't an owner, so routes read
- * `if (!requireOwner(req, res, id)) return`.
+ * "Owner" is no longer a role name, it's a capability: whoever holds
+ * `workspace.manage`. Keeping the concept behind this helper is what lets a
+ * renamed or custom role satisfy the last-owner invariant just like the built-in
+ * `owner` does.
  */
-export const requireOwner = (req, res, workspaceId) => {
+export const isWorkspaceOwner = (workspaceId, userId) => can(workspaceId, userId, OWNER_PERMISSION)
+
+/**
+ * The workspace-tier guard. Routes read
+ * `if (!requirePermission(req, res, id, 'teams.manage')) return` — a route asks
+ * for the capability it needs and never compares a role name, so redefining what
+ * a role grants changes who may call it without touching the route.
+ *
+ * The 403 distinguishes "you're in this workspace but may not do this" from
+ * "you're not in this workspace at all", which is what the UI needs to tell a
+ * member to ask an owner versus telling them the workspace doesn't exist.
+ */
+export const requirePermission = (req, res, workspaceId, permission) => {
   const user = requireAuth(req, res)
   if (!user) return null
   const role = memberRole(workspaceId, user.id)
-  if (role !== 'owner') {
-    res.status(403).json({ error: role ? 'Only a workspace owner can do that.' : 'Forbidden' })
+  if (!roleHasPermission(role, permission)) {
+    res.status(403).json({ error: role ? 'You do not have permission to do that.' : 'Forbidden', permission })
     return null
   }
   return user
@@ -135,11 +160,16 @@ export const requireMember = (req, res, workspaceId) => {
   return user
 }
 
+/**
+ * The workspace as this user sees it. `permissions` ships with it so the client
+ * can hide what the caller can't do from one payload instead of re-deriving the
+ * rules — the server still enforces every one of them.
+ */
 export const workspaceForUser = (id, userId) => {
   const role = memberRole(id, userId)
   if (!role) return null
   const w = meta.prepare('SELECT id, name, created_at FROM workspaces WHERE id = ?').get(id)
-  return w ? { id: w.id, name: w.name, role, createdAt: w.created_at } : null
+  return w ? { id: w.id, name: w.name, role, permissions: [...permissionsForRole(role)], createdAt: w.created_at } : null
 }
 
 export const getUserByEmail = (email) =>
@@ -177,7 +207,8 @@ export const setConnectionAccess = (connectionId, { teams = [], users = [] }) =>
   tx()
 }
 
-// Can this user see/open the connection? Owners always can; an unassigned
+// Can this user see/open the connection? Whoever manages every connection in the
+// workspace always can, and so does the connection's own owner; an unassigned
 // connection is open to every workspace member; otherwise the user must be a
 // listed individual or belong to a listed team.
 export const userCanAccessConnection = (conn, userId) => {
@@ -185,7 +216,8 @@ export const userCanAccessConnection = (conn, userId) => {
   if (!conn.workspaceId) return true
   const role = memberRole(conn.workspaceId, userId)
   if (!role) return false
-  if (role === 'owner') return true
+  if (roleHasPermission(role, 'connections.manage')) return true
+  if (conn.ownerId && conn.ownerId === userId) return true
   const { teams, users } = connectionAccess(conn.id)
   if (teams.length === 0 && users.length === 0) return true
   if (users.includes(userId)) return true

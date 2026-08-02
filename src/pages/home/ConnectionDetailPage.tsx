@@ -26,7 +26,7 @@ import useTabRoute from './useTabRoute'
 export default function ConnectionDetailPage() {
   const { id, tab } = useParams()
   const navigate = useNavigate()
-  const { connections, loading, removeConnection } = useConnections()
+  const { connections, loading, reload, removeConnection } = useConnections()
   // On a cold load of this URL the workspace resolves first and the connection
   // list only after it — count both, or the page flashes "doesn't exist".
   const { loading: workspaceLoading } = useWorkspaces()
@@ -68,6 +68,7 @@ export default function ConnectionDetailPage() {
         onEdit={(c, formTab) => navigate(`/connections/${c.id}/edit${formTab ? `/${formTab}` : ''}`)}
         onDelete={setDeleting}
         onExport={setExporting}
+        onRefresh={reload}
       />
 
       {exporting && <ConnectionExportModal conn={exporting} onClose={() => setExporting(null)} />}

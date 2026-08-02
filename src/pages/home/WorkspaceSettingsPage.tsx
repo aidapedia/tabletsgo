@@ -1,5 +1,5 @@
 import { useParams } from 'react-router-dom'
-import { useWorkspaces, MembersPanel, WorkspaceGeneral, WorkspaceConfig, TeamsPanel } from '@/features/workspaces'
+import { useWorkspaces, can, MembersPanel, WorkspaceGeneral, WorkspaceConfig, TeamsPanel } from '@/features/workspaces'
 import { Narrow, SubHead, TabbedSection } from './ui'
 import useTabRoute from './useTabRoute'
 import LoadingState from '@/shared/ui/feedback/LoadingState'
@@ -9,7 +9,10 @@ import LoadingState from '@/shared/ui/feedback/LoadingState'
 export default function WorkspaceSettingsPage() {
   const { sub } = useParams()
   const { current } = useWorkspaces()
-  const isOwner = current?.role === 'owner'
+  // Members and teams are separate capabilities: a role can be given one and not
+  // the other, so each tab asks for its own rather than sharing one "is owner".
+  const canManageMembers = can(current, 'members.manage')
+  const canManageTeams = can(current, 'teams.manage')
 
   const tabs = [
     {
@@ -39,7 +42,7 @@ export default function WorkspaceSettingsPage() {
         <div>
           <SubHead title="Members" desc="Invite teammates and manage who can access this workspace." />
           {current ? (
-            <MembersPanel workspaceId={current.id} canManage={isOwner} />
+            <MembersPanel workspaceId={current.id} canManage={canManageMembers} />
           ) : (
             <LoadingState className="" />
           )}
@@ -53,7 +56,7 @@ export default function WorkspaceSettingsPage() {
         <div>
           <SubHead title="Teams" desc="Group members into teams to assign connection access and notifications together." />
           {current ? (
-            <TeamsPanel workspaceId={current.id} canManage={isOwner} />
+            <TeamsPanel workspaceId={current.id} canManage={canManageTeams} />
           ) : (
             <LoadingState className="" />
           )}

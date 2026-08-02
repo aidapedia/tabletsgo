@@ -6,18 +6,26 @@ import { EditIcon } from '@/shared/ui/icons'
 import Avatar from '@/shared/ui/Avatar'
 import Badge from '@/shared/ui/Badge'
 import PersonRow from '@/shared/ui/PersonRow'
-import { useWorkspaces, listTeams, listMembers, type Team, type Member } from '@/features/workspaces'
-import { getConnectionAccess, setConnectionAccess } from '../api'
+import { useWorkspaces, can, listTeams, listMembers, type Team, type Member } from '@/features/workspaces'
+import { useAuth } from '@/features/auth'
+import Select from '@/shared/ui/form/Select'
+import { controlClass } from '@/shared/ui/form/Input'
+import { getConnectionAccess, setConnectionAccess, transferConnection } from '../api'
 import LoadingState from '@/shared/ui/feedback/LoadingState'
 import { toggleId } from '@/shared/lib/toggleId'
 
-// Access management for a single connection, shown as the detail's "Access" tab.
-// Read-only overview (owner + who can access) with an admin-only inline editor.
-export default function ConnectionAccessPanel({ conn }: { conn: any }) {
+// Access management for a single connection, shown as the detail's "Access" tab:
+// who owns it, who can open it, and an inline editor for both.
+export default function ConnectionAccessPanel({ conn, onChange }: { conn: any; onChange?: () => void }) {
   const toast = useToast()
   const { current } = useWorkspaces()
+  const { user } = useAuth()
   const workspaceId = current?.id
-  const isOwner = current?.role === 'owner'
+  // Editing the access list follows the same rule the server applies: manage
+  // every connection here, or own this one. Handing it to someone else is a
+  // separate permission — it can take the connection away from you.
+  const canEditAccess = can(current, 'connections.manage') || (!!user && conn.ownerId === user.id)
+  const canTransfer = can(current, 'connections.transfer')
 
   const [teams, setTeams] = useState<Team[]>([])
   const [members, setMembers] = useState<Member[]>([])
@@ -29,6 +37,7 @@ export default function ConnectionAccessPanel({ conn }: { conn: any }) {
   // Draft copy used while editing so Cancel can revert.
   const [draftTeams, setDraftTeams] = useState<string[]>([])
   const [draftUsers, setDraftUsers] = useState<string[]>([])
+  const [transferring, setTransferring] = useState(false)
 
   const load = () => {
     if (!workspaceId) return
@@ -66,14 +75,26 @@ export default function ConnectionAccessPanel({ conn }: { conn: any }) {
     }
   }
 
+  const transfer = async (ownerId: string) => {
+    setTransferring(true)
+    try {
+      await transferConnection(conn.id, ownerId)
+      toast.success(`${members.find((m) => m.userId === ownerId)?.name || 'They'} now own this connection.`)
+      onChange?.()
+    } catch (err: any) {
+      toast.error(err.message)
+    } finally {
+      setTransferring(false)
+    }
+  }
+
   if (loading) return <LoadingState className="py-10 text-center" />
 
   const open = teamIds.length === 0 && userIds.length === 0
   const assignedTeams = teams.filter((t) => teamIds.includes(t.id))
-  // Admins already have access to every connection, so there's no point listing
-  // them as grantable individuals.
-  // Owners already see every connection, so they're never in the grant list.
-  const selectableMembers = members.filter((m) => m.role !== 'owner')
+  // Whoever manages every connection already sees this one, so listing them as
+  // grantable individuals would be noise.
+  const selectableMembers = members.filter((m) => !m.permissions?.includes('connections.manage'))
   const assignedMembers = selectableMembers.filter((m) => userIds.includes(m.userId))
   const ownerName = conn.ownerName || conn.ownerEmail
   const ownerId = conn.ownerId
@@ -95,13 +116,31 @@ export default function ConnectionAccessPanel({ conn }: { conn: any }) {
         ) : (
           <p className="text-[12px] text-ink-faint">No owner recorded.</p>
         )}
+        {canTransfer && (
+          <div className="mt-4 border-t border-edge pt-4">
+            <div className="mb-2 text-[11px] font-medium text-ink-dim">Transfer ownership</div>
+            <Select
+              className={`${controlClass} !w-[240px]`}
+              value={ownerId || ''}
+              disabled={transferring}
+              options={[
+                { value: '', label: 'Choose a member…' },
+                ...members.map((m) => ({ value: m.userId, label: m.name || m.email })),
+              ]}
+              onChange={(id) => id && id !== ownerId && transfer(id)}
+            />
+            <p className="mt-1.5 text-[10px] text-ink-faint">
+              The new owner can edit, back up and delete this connection. You keep that only if your role does.
+            </p>
+          </div>
+        )}
       </div>
 
       {/* Who can access */}
       <div className="rounded-card border border-edge bg-card p-5">
         <div className="mb-1 flex items-center justify-between gap-3">
           <div className="text-[13px] font-bold">Who can access</div>
-          {isOwner && !editing && (
+          {canEditAccess && !editing && (
             <Button variant="subtle" size="sm" icon={EditIcon} onClick={startEdit}>
               Edit access
             </Button>
@@ -140,7 +179,7 @@ export default function ConnectionAccessPanel({ conn }: { conn: any }) {
                     </div>
                   </div>
                 )}
-                <p className="text-[10px] text-ink-faint">Workspace admins always have access.</p>
+                <p className="text-[10px] text-ink-faint">Whoever manages every connection always has access.</p>
               </div>
             )}
           </div>
@@ -162,7 +201,7 @@ export default function ConnectionAccessPanel({ conn }: { conn: any }) {
             <div>
               <div className="mb-2 text-[11px] font-medium text-ink-dim">Individual members</div>
               {selectableMembers.length === 0 ? (
-                <p className="text-[12px] text-ink-faint">No non-admin members yet.</p>
+                <p className="text-[12px] text-ink-faint">No other members yet.</p>
               ) : (
                 <div className="flex flex-col gap-2">
                   {selectableMembers.map((m) => (
@@ -179,7 +218,7 @@ export default function ConnectionAccessPanel({ conn }: { conn: any }) {
               )}
             </div>
             <p className="text-[10px] text-ink-faint">
-              Leave everything unchecked to keep this connection open to all workspace members. Workspace admins always have access.
+              Leave everything unchecked to keep this connection open to all workspace members. Whoever manages every connection always has access.
             </p>
             <div className="flex gap-2">
               <Button variant="primary" size="sm" onClick={save} disabled={saving}>

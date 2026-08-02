@@ -11,10 +11,15 @@
 import { randomUUID } from 'crypto'
 import { meta } from './meta.js'
 import { deleteConnectionRow } from './connections.js'
+import { OWNER_PERMISSION, ownerRoleSlugs, permissionsForRole, roleHasPermission } from './permissions.js'
 
-// Roles a workspace membership can carry. 'admin' is the pre-v8 spelling of
-// 'owner' and is normalized on read (server/auth.js memberRole).
-export const WORKSPACE_ROLES = ['owner', 'member']
+/**
+ * A membership's role is a slug from the `roles` table, so "is this an owner?"
+ * is a question about permissions, not about a name: anyone holding
+ * `workspace.manage` counts. That is what makes the last-owner invariant hold no
+ * matter how an instance admin has redefined the roles.
+ */
+export const isOwnerRole = (role) => roleHasPermission(role, OWNER_PERMISSION)
 
 export const getWorkspaceRow = (id) => meta.prepare('SELECT id, name, settings, created_at FROM workspaces WHERE id = ?').get(id) || null
 
@@ -35,9 +40,14 @@ export const listAllWorkspaces = () =>
       memberCount: w.memberCount,
       teamCount: w.teamCount,
       connectionCount: meta.prepare('SELECT COUNT(*) c FROM connections WHERE workspace_id = ?').get(w.id).c,
-      owners: listWorkspaceMembers(w.id).filter((m) => m.role === 'owner'),
+      owners: listWorkspaceMembers(w.id).filter((m) => m.isOwner),
     }))
 
+/**
+ * A workspace's members. Each carries the permissions their role grants, so the
+ * client renders "what can this person do" without a second request and without
+ * knowing what any given role means.
+ */
 export const listWorkspaceMembers = (workspaceId) =>
   meta
     .prepare(
@@ -46,10 +56,22 @@ export const listWorkspaceMembers = (workspaceId) =>
         WHERE m.workspace_id = ? ORDER BY m.created_at`
     )
     .all(workspaceId)
-    .map((m) => ({ ...m, role: m.role === 'admin' ? 'owner' : m.role }))
+    .map((m) => {
+      const role = m.role === 'admin' ? 'owner' : m.role
+      return { ...m, role, permissions: [...permissionsForRole(role)], isOwner: isOwnerRole(role) }
+    })
 
-export const countOwners = (workspaceId) =>
-  meta.prepare("SELECT COUNT(*) c FROM workspace_members WHERE workspace_id = ? AND role IN ('owner', 'admin')").get(workspaceId).c
+/**
+ * Members who can manage this workspace. Built from the role slugs that actually
+ * carry `workspace.manage` rather than a hardcoded list, so demoting the last one
+ * is still refused after an admin invents a role that grants it.
+ */
+export const countOwners = (workspaceId) => {
+  const slugs = ownerRoleSlugs()
+  if (!slugs.length) return 0
+  const placeholders = slugs.map(() => '?').join(', ')
+  return meta.prepare(`SELECT COUNT(*) c FROM workspace_members WHERE workspace_id = ? AND role IN (${placeholders})`).get(workspaceId, ...slugs).c
+}
 
 export const createWorkspace = (name, { ownerId } = {}) => {
   const id = randomUUID()
@@ -96,12 +118,10 @@ export const removeMember = (workspaceId, userId) => {
 // leave them unmanageable, so the admin route refuses until someone else owns them.
 export const listUserSoleOwnerships = (userId) =>
   meta
-    .prepare(
-      `SELECT w.id, w.name FROM workspace_members m JOIN workspaces w ON w.id = m.workspace_id
-        WHERE m.user_id = ? AND m.role IN ('owner', 'admin')`
-    )
+    .prepare('SELECT w.id, w.name, m.role FROM workspace_members m JOIN workspaces w ON w.id = m.workspace_id WHERE m.user_id = ?')
     .all(userId)
-    .filter((w) => countOwners(w.id) <= 1)
+    .filter((w) => isOwnerRole(w.role) && countOwners(w.id) <= 1)
+    .map(({ id, name }) => ({ id, name }))
 
 // Every workspace membership a user holds — used when promoting them to
 // instance admin, which must leave them with none.

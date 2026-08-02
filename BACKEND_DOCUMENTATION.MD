@@ -20,9 +20,12 @@ endpoint with its request, response, and an example URL.
   | Tier | Stored in | Values | Can do |
   | --- | --- | --- | --- |
   | System | `users.role` (on `user.role` in every auth response) | `admin` \| `user` | `admin` manages workspaces and accounts via `/api/admin/*` — and *nothing else*. An instance admin holds **no** workspace membership, so every workspace-scoped route `403`s for them by design. |
-  | Workspace | `workspace_members.role` | `owner` \| `member` | `owner` manages the workspace: members, teams, settings, connections and storage destinations. A workspace may have **any number of owners but never zero**. `member` uses the connections they've been granted — full database access (query, edit rows, workflows, dashboards, schema changes) but no create/edit/delete of the connection record itself. |
+  | Workspace | `workspace_members.role` | any **role slug** from the instance catalog | Configurable: an instance admin defines what each role grants (see **Roles & permissions**), and routes authorize by *permission*, never by role name. `owner` and `member` are seeded builtins. "Owner" means *holds `workspace.manage`* — a workspace may have **any number of owners but never zero**. Neither tier grants database access on its own: *using* a connection comes from its own access list. |
 
-  Owner-only refusals return `403 { "error": "Only a workspace owner can …" }`;
+  Workspace-tier refusals return
+  `403 { "error": "You do not have permission to do that.", "permission": "<key>" }`
+  when the caller is a member of the workspace and
+  `403 { "error": "Forbidden" }` when they aren't;
   admin-only routes return `403 { "error": "Admin access required" }`.
   The workspace role used to be spelled `admin`; meta migration v8 rewrites it
   to `owner` in place, and the server also normalizes it on read so a
@@ -245,6 +248,29 @@ CREATE TABLE sessions (
   ns TEXT,                      -- "auth" (the store's namespace)
   context TEXT,                 -- JSON: the session value (userId, ip, userAgent, …)
   expires_at INTEGER            -- SQLite has no TTL, so reads filter on this
+);
+-- Workspace roles an instance admin defines (server/permissions.js). The slug is
+-- what workspace_members.role stores, so it is fixed at creation; renaming a role
+-- therefore never touches a membership row. 'owner' and 'member' are seeded
+-- builtins whose slugs match the literals that column held before roles became
+-- configurable, which is why migration v12 rewrote nothing.
+CREATE TABLE roles (
+  id TEXT PRIMARY KEY,
+  slug TEXT NOT NULL UNIQUE,    -- stored in workspace_members.role
+  name TEXT NOT NULL,
+  description TEXT,
+  builtin INTEGER DEFAULT 0,    -- 1 = seeded; editable, never deletable
+  created_at INTEGER,
+  updated_at INTEGER
+);
+-- What a role grants. Rows are permission KEYS from the catalog in
+-- server/permissions-catalog.js — the catalog is code, the grants are data. A key
+-- this image doesn't recognise is ignored on read, which is what lets an older
+-- image open a newer DB.
+CREATE TABLE role_permissions (
+  role_id TEXT NOT NULL,
+  permission TEXT NOT NULL,
+  UNIQUE(role_id, permission)
 );
 CREATE TABLE connections (
   id TEXT PRIMARY KEY,
@@ -548,10 +574,85 @@ Set password, activate, log in. **Body:** `{ "name", "password" }` → **200:** 
 
 ---
 
+## Roles & permissions (auth required)
+
+Workspace access is an **instance-wide role catalog**: an instance admin defines
+what each role may do, and a workspace owner assigns their people to it. A
+membership (`workspace_members.role`) stores a role **slug**, and every
+workspace-scoped route authorizes by *permission*, never by role name — so
+redefining a role changes who may call a route without touching the route.
+
+The account's *system* role (`admin` | `user`) is **not** part of this model and
+is not configurable. Instance administration deliberately carries no workspace
+data access; making the system tier editable would only be a way around that.
+
+**Permission keys** (the closed set, from `server/permissions-catalog.js`):
+
+| Key | Allows |
+| --- | --- |
+| `workspace.manage` | Rename the workspace; change general settings, experiments and the session policy. Also the anchor of the last-owner rule — "owner" means *holds this*. |
+| `workspace.delete` | `DELETE /api/workspaces/:id`. |
+| `members.manage` | Invite, remove, and change a member's role. |
+| `teams.manage` | Create/rename/delete teams and change their membership. |
+| `notifications.manage` | The `notifications` block on `PUT /api/workspaces/:id`. |
+| `storage.manage` | Create/edit/delete storage destinations. |
+| `connections.create` | `POST /api/connections` and `POST /api/connections/import`. |
+| `connections.manage` | Edit/delete/export/set access on **every** connection in the workspace. |
+| `connections.transfer` | `PUT /api/connections/:id/owner`. |
+
+Deliberately absent: *using* a database (queries, row edits, workflows,
+dashboards, schema changes) is not a permission. That is a per-resource grant on
+the connection itself (`connection_access` — see Connection access), because it
+answers a per-connection question, not a workspace-wide one.
+
+Two seeded built-in roles, `owner` (every permission) and `member` (none). Their
+slugs match the literals `workspace_members.role` held before roles became
+configurable, so meta migration v12 rewrote nothing. A built-in can be renamed and
+re-permissioned but never deleted, and `owner` always keeps `workspace.manage`.
+
+A failed workspace-tier check returns
+`403 { "error": "You do not have permission to do that.", "permission": "<key>" }`
+when the caller is in the workspace, and `403 { "error": "Forbidden" }` when they
+aren't — so a client can tell "ask an owner" from "wrong workspace".
+
+- `GET /api/roles` → `[{ id, slug, name, description, builtin, permissions, createdAt, updatedAt }]`.
+  Readable by **any signed-in user**: assigning a member a role needs the names,
+  and the UI explains what each grants. Built-ins first, then alphabetical.
+- **Example:** `GET http://localhost:3000/api/roles`
+
+### Managing roles (`/api/admin/*`, system admin only)
+
+- `GET /api/admin/permissions` → the catalog grouped for the editor:
+  `[{ group, items: [{ key, label, description }] }]`. It comes from the server's
+  **code**, not its database, so a UI can only ever offer a permission some route
+  actually enforces.
+- `POST /api/admin/roles` `{ name, description?, permissions? }` → the created role.
+  The slug is derived from the name (`"Data Analyst"` → `data-analyst`, suffixed
+  `-2`, `-3` … if taken) and is **fixed for the life of the role**, because
+  memberships store it. Unknown permission keys in the body are dropped silently.
+  `400` when `name` is empty.
+- `PUT /api/admin/roles/:slug` `{ name?, description?, permissions? }` → the updated
+  role. Omitting `permissions` leaves the grants alone; sending it **replaces**
+  them wholesale (not a partial patch). Renaming never touches a membership row.
+  Editing `owner` always keeps `workspace.manage`, whatever the body says.
+  `404` for an unknown slug.
+- `DELETE /api/admin/roles/:slug` → `{ ok: true }`.
+  `400` for a built-in; `409 { error, inUse }` while any membership still holds
+  the role — those people would otherwise fail closed to no access, so move them
+  first.
+- **Example:** `POST http://localhost:3000/api/admin/roles` body
+  `{ "name": "Data Analyst", "description": "Builds connections, runs queries", "permissions": ["connections.create"] }`
+
+---
+
 ## Workspaces (auth required)
 
-- `GET /api/workspaces` → `[{ id, name, role, createdAt, experiments, notifications }]`
-  the caller belongs to. `experiments` is `{ [key]: boolean }` (see Beta experiments
+- `GET /api/workspaces` → `[{ id, name, role, permissions, createdAt, experiments, notifications }]`
+  the caller belongs to. `role` is a **role slug** from the instance's catalog and
+  `permissions` is what that role grants here (see Roles & permissions below) —
+  ships on the list route, not just the detail one, so permission-gated nav
+  doesn't flicker while the detail request is in flight. **Don't branch on the
+  slug**: ask `permissions`. `experiments` is `{ [key]: boolean }` (see Beta experiments
   below) — included for every member, not just admins, since it gates what the
   whole workspace sees. `notifications` ships here too (not just the detail route)
   so a settings panel that only calls `refresh()`/`listWorkspaces()` after saving
@@ -559,7 +660,7 @@ Set password, activate, log in. **Body:** `{ "name", "password" }` → **200:** 
 - `POST /api/workspaces` `{ name }` → creates one; caller becomes `owner`.
   An instance admin gets `403` here (they cannot own a workspace) — they use
   `POST /api/admin/workspaces`, which names someone else as the owner.
-- `GET /api/workspaces/:id` → `{ id, name, role, createdAt, experiments, notifications, sessions }`;
+- `GET /api/workspaces/:id` → `{ id, name, role, permissions, createdAt, experiments, notifications, sessions }`;
   `sessions` is `{ maxPerConnection, instanceDefault }` — the workspace-wide cap on
   concurrent sessions per connection (0 = unlimited) plus the read-only
   `MAX_SESSIONS_PER_CONNECTION` env fallback that applies while it's 0, so the
@@ -571,7 +672,10 @@ Set password, activate, log in. **Body:** `{ "name", "password" }` → **200:** 
   fields only — no password ever leaves the server. A workspace **cannot**
   configure its own SMTP (removed in meta migration v10); this field exists so
   the Notification tab can say what will send, or that nothing will.
-- `PUT /api/workspaces/:id` (owner) `{ name?, experiments?, notifications?, sessions? }` → `{ ok: true }`.
+- `PUT /api/workspaces/:id` `{ name?, experiments?, notifications?, sessions? }` → `{ ok: true }`.
+  Checked **field by field**, not once for the whole route: `name`/`experiments`/
+  `sessions` need `workspace.manage`, `notifications` needs
+  `notifications.manage`, so a role can be trusted with one and not the other.
   `sessions` is `{ maxPerConnection }` (integer, 0 = unlimited; negatives and junk
   clamp to 0) — the cap every connection in the workspace is held to. It is the
   only place this is configurable: there is no per-connection override.
@@ -592,24 +696,30 @@ Set password, activate, log in. **Body:** `{ "name", "password" }` → **200:** 
   that ends up failed (after any configured retries — see the Backup section) emails
   every listed member via the instance's SMTP config (see `smtpConfig`). Manual
   "Run now" failures never trigger this.
-- `DELETE /api/workspaces/:id` (owner) → deletes it + its connections/queries.
+- `DELETE /api/workspaces/:id` (`workspace.delete`) → deletes it + its connections/queries.
   `400` if it's the caller's only workspace. Live driver handles for its
   connections are released and their sessions ended before the cascade runs.
 
 ### Members
-- `GET /api/workspaces/:id/members` → `[{ userId, email, name, role, status, systemRole, createdAt }]`.
-  `role` is the workspace role (`owner` | `member`); `systemRole` is the account's
-  system role, so the UI can tell an instance admin apart.
-- `POST /api/workspaces/:id/members` (owner) `{ email }` → `{ member, inviteLink, emailed }`.
-  Existing accounts are added directly as `member`; otherwise a pending user +
-  invite link is created (and emailed when SMTP is configured; `inviteLink`
-  returned regardless). `400` if the email belongs to an instance admin — such an
-  account cannot join a workspace.
-- `PUT /api/workspaces/:id/members/:userId` (owner) `{ role }` → `{ ok: true, role }`.
-  Promotes a member to `owner` or demotes an owner back to `member`. `400` when
-  demoting the **last** owner ("The workspace needs at least one owner.") or when
-  the target is an instance admin.
-- `DELETE /api/workspaces/:id/members/:userId` (owner) → `{ ok: true }`. Can't
+All three mutations need `members.manage`.
+- `GET /api/workspaces/:id/members` → `[{ userId, email, name, role, permissions, isOwner, status, systemRole, createdAt }]`.
+  `role` is the role slug; `permissions` is what it grants and `isOwner` whether
+  that includes `workspace.manage` — both resolved server-side so a client never
+  has to interpret a slug. `systemRole` is the account's system role, so the UI
+  can tell an instance admin apart.
+- `POST /api/workspaces/:id/members` `{ email, role? }` → `{ member, inviteLink, emailed }`.
+  `role` defaults to `member` and must be a slug in the catalog (`400` otherwise) —
+  invite straight into a role instead of adding then promoting. Existing accounts
+  are added directly; otherwise a pending user + invite link is created (and
+  emailed when SMTP is configured; `inviteLink` returned regardless). `400` if the
+  email belongs to an instance admin — such an account cannot join a workspace.
+- `PUT /api/workspaces/:id/members/:userId` `{ role }` → `{ ok: true, role }`.
+  Moves the member to any role in the catalog. `400` for an unknown slug, when the
+  target is an instance admin, or when this would move the **last** member holding
+  `workspace.manage` to a role that doesn't ("The workspace needs at least one
+  owner.") — the check is on the permission, so a custom role granting
+  `workspace.manage` satisfies it too.
+- `DELETE /api/workspaces/:id/members/:userId` → `{ ok: true }`. Can't
   remove yourself or the last owner. Also drops the removed user from every team
   in this workspace and from any individual connection grants.
 - **Example:** `PUT http://localhost:3000/api/workspaces/ws_123/members/u_456` body `{ "role": "owner" }`.
@@ -617,16 +727,17 @@ Set password, activate, log in. **Body:** `{ "name", "password" }` → **200:** 
 ### Teams
 Workspace-scoped groups of members. A team can be assigned as an access principal
 to a connection (see Connection access) and as a notification recipient. Managed
-from the frontend's Workspace → Teams tab. Any member can read; only owners mutate.
+from the frontend's Workspace → Teams tab. Any member can read; mutating needs
+`teams.manage`.
 - `GET /api/workspaces/:id/teams` → `[{ id, name, memberCount, createdAt }]`.
-- `POST /api/workspaces/:id/teams` (owner) `{ name }` → `{ id, name, memberCount: 0, createdAt }`.
-- `PUT /api/workspaces/:id/teams/:teamId` (owner) `{ name }` → `{ ok: true }`.
-- `DELETE /api/workspaces/:id/teams/:teamId` (owner) → `{ ok: true }`. Cascades:
+- `POST /api/workspaces/:id/teams` `{ name }` → `{ id, name, memberCount: 0, createdAt }`.
+- `PUT /api/workspaces/:id/teams/:teamId` `{ name }` → `{ ok: true }`.
+- `DELETE /api/workspaces/:id/teams/:teamId` → `{ ok: true }`. Cascades:
   removes the team's members and any `connection_access` rows assigning it.
 - `GET /api/workspaces/:id/teams/:teamId/members` → `[{ userId, email, name }]`.
-- `POST /api/workspaces/:id/teams/:teamId/members` (owner) `{ userId }` → `{ ok: true }`.
+- `POST /api/workspaces/:id/teams/:teamId/members` `{ userId }` → `{ ok: true }`.
   `400` if the user isn't a member of the workspace.
-- `DELETE /api/workspaces/:id/teams/:teamId/members/:userId` (owner) → `{ ok: true }`.
+- `DELETE /api/workspaces/:id/teams/:teamId/members/:userId` → `{ ok: true }`.
 - **Example:** `POST http://localhost:3000/api/workspaces/ws_123/teams` body `{ "name": "Backend" }`.
 
 ---
@@ -643,7 +754,8 @@ here that reaches a connection or a database.
 
 - `GET /api/admin/workspaces` → `[{ id, name, createdAt, memberCount, teamCount, connectionCount, owners }]`
   for **every** workspace on the instance. `owners` is the member objects whose
-  role is `owner` — an empty array means the workspace is currently ownerless
+  role carries `workspace.manage` — an empty array means the workspace is
+  currently ownerless
   (its owners left, or it was just created), which is the state an admin acts on.
 - `POST /api/admin/workspaces` `{ name, ownerEmail }` → `{ workspace, inviteLink, emailed }`.
   Creates the workspace and hands it to `ownerEmail`. An unknown address gets a
@@ -654,10 +766,11 @@ here that reaches a connection or a database.
   the live driver handles and ends the sessions first, then cascades the metadata
   (connections, queries, folders, workflows, dashboards, history, teams, storage
   destinations).
-- `GET /api/admin/workspaces/:id/members` → `[{ userId, email, name, role, status, systemRole, createdAt }]`.
+- `GET /api/admin/workspaces/:id/members` → `[{ userId, email, name, role, permissions, isOwner, status, systemRole, createdAt }]`.
 - `PUT /api/admin/workspaces/:id/members/:userId` `{ role }` → `{ ok: true, role }`.
-  `role` is `owner` | `member`. Adds the user to the workspace if they aren't in
-  it yet — this is how an admin rescues a workspace whose owners have all left.
+  `role` is any slug from the catalog (`400` otherwise). Adds the user to the
+  workspace if they aren't in it yet — this is how an admin rescues a workspace
+  whose owners have all left.
   `400` when demoting the last owner, or when the target is an instance admin.
 - `DELETE /api/admin/workspaces/:id/members/:userId` → `{ ok: true }`. `400` when
   it would remove the last owner.
@@ -749,23 +862,51 @@ Test connectivity without saving. Body is a connection-shaped object.
 - **400:** `{ "ok": false, "message": "Unsupported connection type: mysql" }`
 - **Example:** `POST http://localhost:3000/api/test-connection`
 
+> **Who may change a connection record.** `PUT`, `DELETE`, `/export` and
+> `/access` all use one rule: hold **`connections.manage`** (any connection in the
+> workspace) *or* be the connection's own **`ownerId`** (that one connection,
+> whatever your role). That is what lets a plain member run the connections they
+> own — edit them, back them up, set their access list — without being given the
+> whole workspace. Failing it returns
+> `403 { "error": "You need to own this connection to <action>." }`.
+> Using the *database* behind a connection is a different question entirely — see
+> Connection access.
+
 ### POST `/api/connections`
-Create a connection. Server assigns the `id` (UUID). The `ownerId` defaults to the
-authenticated caller unless one is supplied in the body. The response includes the
-resolved `ownerName` / `ownerEmail`.
+Create a connection (**`connections.create`**). Server assigns the `id` (UUID). The
+`ownerId` defaults to the authenticated caller unless one is supplied in the body.
+The response includes the resolved `ownerName` / `ownerEmail`.
 
 - **Body:** connection object **without** `id` (see Data models); `ownerId` optional
 - **200:** the created connection (with `id`, `ownerId`, `ownerName`, `ownerEmail`)
+- **403:** `{ "error": "You do not have permission to do that.", "permission": "connections.create" }`
 - **Example:** `POST http://localhost:3000/api/connections`
 
 ### PUT `/api/connections/:id`
-Update a connection. Merges body into the existing record; drops cached
-pools/handles so the next query reconnects with new settings.
+Update a connection (manage-or-own, see above). Merges body into the existing
+record; drops cached pools/handles so the next query reconnects with new settings.
 
 - **Body:** partial or full connection fields to change
 - **200:** the updated connection
 - **404:** `{ "error": "Connection not found" }`
 - **Example:** `PUT http://localhost:3000/api/connections/demo-sqlite`
+
+### PUT `/api/connections/:id/owner`
+Hand the connection to another member of the workspace (**`connections.transfer`**).
+
+Its own permission rather than part of `connections.manage`, because it is the one
+change that can take a connection *away* from the caller: the new owner may edit,
+back up and delete it, and the previous owner keeps that only if their role does.
+
+- **Body:** `{ "ownerId": "user_456" }`
+- **200:** the updated connection (with the new `ownerId` / `ownerName` / `ownerEmail`)
+- **400:** `{ "error": "That person is not a member of this workspace." }` —
+  ownership is not a way to grant workspace access. Also `400` if the target is an
+  instance admin (they hold no membership at all), or if the connection has no
+  `workspaceId`.
+- **403:** `{ "error": "You do not have permission to do that.", "permission": "connections.transfer" }`
+- **404:** `{ "error": "Connection not found" }`
+- **Example:** `PUT http://localhost:3000/api/connections/demo-sqlite/owner` body `{ "ownerId": "user_456" }`
 
 ### DELETE `/api/connections/:id`
 Delete a connection and cascade-delete its saved queries, folders (including
@@ -859,11 +1000,16 @@ schedules (workflow + backup) arrive **paused**.
 - **Example:** `POST http://localhost:3000/api/connections/import`
 
 ### Connection access
-Controls which teams / individual members may see and open a connection. An empty
-set means the connection is open to every workspace member (backward compatible).
-Any set restricts visibility to workspace admins + the listed users + members of the
-listed teams. Enforced by the `GET /api/connections` list filter and the
-`/api/connections/:id/*` access guard.
+Controls which teams / individual members may see and **open** a connection. This
+is the per-resource grant that workspace permissions deliberately don't cover: it
+answers "may this person use this database", which is a question about one
+connection, not about the workspace.
+
+An empty set means the connection is open to every workspace member (backward
+compatible). Any set restricts visibility to the listed users + members of the
+listed teams — plus, always, whoever holds `connections.manage` and the
+connection's own `ownerId`. Enforced by the `GET /api/connections` list filter and
+the `/api/connections/:id/*` access guard.
 
 #### GET `/api/connections/:id/access`
 Read the current assignment (any caller who already has access).
@@ -871,10 +1017,11 @@ Read the current assignment (any caller who already has access).
 - **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/access`
 
 #### PUT `/api/connections/:id/access`
-Replace the assignment (workspace **admin** only). Send the full desired set.
+Replace the assignment (manage-or-own, see the note above the connection routes).
+Send the full desired set.
 - **Body:** `{ "teams": ["team_1"], "users": ["user_1"] }` (either may be omitted → treated as `[]`)
 - **200:** the stored `{ teams, users }`
-- **403:** `{ "error": "Admin only" }`
+- **403:** `{ "error": "You need to own this connection to change a connection's access list." }`
 - **Example:** `PUT http://localhost:3000/api/connections/demo-sqlite/access`
 
 ---
@@ -2100,6 +2247,7 @@ Liveness probe. Also reports boot readiness and the running identity.
 | PUT    | `/api/connections/:id`                    | Update connection               |
 | DELETE | `/api/connections/:id`                    | Delete connection (+ cascade)   |
 | GET    | `/api/connections/:id/access`             | Read connection access (teams/users) |
+| PUT    | `/api/connections/:id/owner`              | Transfer connection ownership   |
 | PUT    | `/api/connections/:id/access`             | Set connection access (admin)   |
 | GET    | `/api/workspaces/:id/teams`               | List teams (+ member counts)    |
 | POST   | `/api/workspaces/:id/teams`               | Create team (admin)             |
@@ -2108,12 +2256,17 @@ Liveness probe. Also reports boot readiness and the running identity.
 | GET    | `/api/workspaces/:id/teams/:teamId/members` | List team members             |
 | POST   | `/api/workspaces/:id/teams/:teamId/members` | Add team member (admin)       |
 | DELETE | `/api/workspaces/:id/teams/:teamId/members/:userId` | Remove team member (admin) |
+| GET    | `/api/roles`                              | The instance's role catalog     |
+| GET    | `/api/admin/permissions`                  | The permission catalog (grouped)|
+| POST   | `/api/admin/roles`                        | Create a role                   |
+| PUT    | `/api/admin/roles/:slug`                  | Rename / re-permission a role   |
+| DELETE | `/api/admin/roles/:slug`                  | Delete a custom, unused role    |
 | GET    | `/api/admin/workspaces`                   | Every workspace + its owners    |
 | POST   | `/api/admin/workspaces`                   | Create one, assign an owner     |
 | PUT    | `/api/admin/workspaces/:id`               | Rename a workspace              |
 | DELETE | `/api/admin/workspaces/:id`               | Delete a workspace + contents   |
 | GET    | `/api/admin/workspaces/:id/members`       | Its membership list             |
-| PUT    | `/api/admin/workspaces/:id/members/:uid`  | Grant / revoke ownership        |
+| PUT    | `/api/admin/workspaces/:id/members/:uid`  | Set a member's role             |
 | DELETE | `/api/admin/workspaces/:id/members/:uid`  | Remove a member                 |
 | GET    | `/api/admin/users`                        | Every account on the instance   |
 | POST   | `/api/admin/users`                        | Create an account               |

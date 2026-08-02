@@ -5,7 +5,7 @@ import CheckboxRow from '@/shared/ui/form/CheckboxRow'
 import SettingRow from '@/shared/ui/form/SettingRow'
 import PersonRow from '@/shared/ui/PersonRow'
 import { toggleId } from '@/shared/lib/toggleId'
-import { useWorkspaces, updateWorkspace, listMembers, type Member } from '@/features/workspaces'
+import { useWorkspaces, can, updateWorkspace, listMembers, type Member } from '@/features/workspaces'
 import LoadingState from '@/shared/ui/feedback/LoadingState'
 
 // How long to wait after the last edit before persisting — ticking through a
@@ -46,7 +46,7 @@ export default function NotificationSettings({ workspaceId }: { workspaceId: str
   useEffect(() => () => timerRef.current && clearTimeout(timerRef.current), [])
 
   if (!current) return <LoadingState className="" />
-  const isOwner = current.role === 'owner'
+  const canManage = can(current, 'notifications.manage')
 
   const queueSave = (next: BackupFailureConfig) => {
     setEnabled(next.enabled)
@@ -77,11 +77,11 @@ export default function NotificationSettings({ workspaceId }: { workspaceId: str
         desc={
           <>
             Email the selected members whenever a scheduled backup ends up failed (after any configured retries).
-            {!isOwner && ' Only workspace admins can change this.'}
+            {!canManage && ' Your role can’t change this.'}
           </>
         }
       >
-        <Toggle checked={enabled} onChange={toggleEnabled} disabled={!isOwner} ariaLabel="Notify on backup failure" />
+        <Toggle checked={enabled} onChange={toggleEnabled} disabled={!canManage} ariaLabel="Notify on backup failure" />
       </SettingRow>
 
       {enabled && (
@@ -96,7 +96,7 @@ export default function NotificationSettings({ workspaceId }: { workspaceId: str
                   key={m.userId}
                   checked={memberIds.includes(m.userId)}
                   onChange={() => toggleMember(m.userId)}
-                  disabled={!isOwner}
+                  disabled={!canManage}
                   ariaLabel={m.email}
                 >
                   <PersonRow name={m.name} email={m.email} />

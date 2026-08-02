@@ -12,6 +12,13 @@ export async function setConnectionAccess(connectionId: string, access: Connecti
   return request<ConnectionAccess>(`/connections/${connectionId}/access`, { method: 'PUT', body: access })
 }
 
+// Hand the connection to another member of the workspace. Its own permission
+// (`connections.transfer`) because it can take the connection away from the
+// caller; the new owner may edit, back up and delete it whatever their role.
+export async function transferConnection(connectionId: string, ownerId: string) {
+  return request(`/connections/${connectionId}/owner`, { method: 'PUT', body: { ownerId } })
+}
+
 // ---- Connection export / import ----
 // One JSON document per connection: its settings plus every artifact hanging
 // off it (folders, table grouping, saved queries, workflows, dashboards, backup

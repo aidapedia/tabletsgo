@@ -56,6 +56,7 @@ src/
 │   ├── admin/                    # the instance-admin area (system role 'admin' only): AdminWorkspacesPanel
 │   │                             #   (every workspace + who owns it; create/rename/delete, grant ownership)
 │   │                             #   AdminUsersPanel (accounts, system role, invites, password reset)
+│   │                             #   AdminRolesPanel (the workspace role catalog + its permission matrix)
 │   │                             #   and AdminSmtpPanel + SmtpForm (the instance's one mail server —
 │   │                             #     the only place SMTP is configurable; see `auth-sessions` skill).
 │   │                             #   Reaches nothing inside a workspace — an admin has no membership
@@ -204,8 +205,9 @@ src/
     │                             #   ForgotPasswordPage, ResetPasswordPage
     ├── admin/                    # the instance-admin area, one file per sidebar section (same rule
     │                             #   as home/): AdminWorkspacesPage (/admin), AdminUsersPage
-    │                             #   (/admin/users) + AdminEmailPage (/admin/email — the instance-wide
-    │                             #   SMTP config) — no tabs, the sidebar switches. Only reachable
+    │                             #   (/admin/users), AdminRolesPage (/admin/roles — the workspace
+    │                             #   permission model) + AdminEmailPage (/admin/email — the
+    │                             #   instance-wide SMTP config) — no tabs, the sidebar switches. Only reachable
     │                             #   with the system role 'admin'; AppRoutes' RequireSystemAdmin /
     │                             #   RequireWorkspaceUser send each audience to the other's home
     ├── console/                  # WorkspacePage — the per-connection DB console (route /connection/:id)
@@ -257,11 +259,17 @@ server/
 ├── meta.js               # the app's own SQLite handle, initMetaDb(), snapshotMetaSync()
 ├── migrations.js         # versioned, append-only meta-schema steps (see the `meta-schema` skill)
 ├── auth.js               # the guards — requireAuth, requireSystemAdmin (system role),
-│                         #   requireOwner/requireMember (workspace role) — plus the team /
+│                         #   requirePermission/requireMember (workspace role) — plus the team /
 │                         #   connection-access rules. `sessionMiddleware` resolves the bearer
 │                         #   token once per request so the ~100 sync guards stay sync
+├── permissions-catalog.js # leaf: the closed set of permission keys + the seeded builtin roles.
+│                         #   Imports nothing, so permissions.js and migrations.js can both use it
+├── permissions.js        # ★ workspace RBAC: `roles` + `role_permissions`, an in-memory policy
+│                         #   cache (the guards are sync), and the one answer to "may this user
+│                         #   do X here". Roles are instance-wide and admin-defined
 ├── workspaces.js         # workspaces + workspace_members + teams: the admin listing, ownership
-│                         #   changes, and the one delete cascade both delete routes share
+│                         #   changes, and the one delete cascade both delete routes share.
+│                         #   "Owner" = holds `workspace.manage`, never a role-name comparison
 ├── users.js              # the instance user directory (`users`): system roles, invites,
 │                         #   promote/demote (promoting to admin strips every membership)
 ├── login-guard.js        # sign-in brute-force protection: counts consecutive failures on

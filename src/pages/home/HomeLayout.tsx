@@ -46,6 +46,7 @@ const ADMIN_NAV = [
     items: [
       { label: 'Workspaces', Icon: BuildingIcon, path: '/admin', exact: true },
       { label: 'Users', Icon: UsersIcon, path: '/admin/users' },
+      { label: 'Roles', Icon: ShieldIcon, path: '/admin/roles' },
       { label: 'Email', Icon: MailIcon, path: '/admin/email' },
     ],
   },

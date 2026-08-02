@@ -49,16 +49,18 @@ import {
   authUser,
   baseUrl,
   bearerToken,
+  can,
   connectionAccess,
   createSession,
   deleteSession,
   getUserByEmail,
   isSystemAdmin,
   memberRole,
+  permissionsIn,
   publicUser,
   requireAuth,
   requireMember,
-  requireOwner,
+  requirePermission,
   requireSystemAdmin,
   sessionMiddleware,
   setConnectionAccess,
@@ -67,9 +69,9 @@ import {
   workspaceForUser,
 } from './server/auth.js'
 import {
-  WORKSPACE_ROLES,
   addMember as addWorkspaceMember,
   countOwners,
+  isOwnerRole,
   createWorkspace as createWorkspaceRow,
   deleteWorkspaceCascade,
   getWorkspaceRow,
@@ -80,6 +82,16 @@ import {
   renameWorkspace,
   setMemberRole as setWorkspaceMemberRole,
 } from './server/workspaces.js'
+import {
+  PERMISSIONS,
+  countRoleUsage,
+  createRole,
+  deleteRole,
+  getRole,
+  listRoles,
+  roleExists,
+  updateRole,
+} from './server/permissions.js'
 import {
   LOCK_COLUMNS,
   clearFailures,
@@ -499,7 +511,7 @@ app.get('/api/admin/workspaces/:id/members', (req, res) => {
 app.put('/api/admin/workspaces/:id/members/:userId', (req, res) => {
   if (!getWorkspaceRow(req.params.id)) return res.status(404).json({ error: 'Workspace not found' })
   const role = req.body?.role
-  if (!WORKSPACE_ROLES.includes(role)) return res.status(400).json({ error: "Role must be 'owner' or 'member'." })
+  if (!roleExists(role)) return res.status(400).json({ error: 'Unknown role.' })
   const target = userRow(req.params.userId)
   if (!target) return res.status(404).json({ error: 'User not found' })
   if (isSystemAdmin(target)) return res.status(400).json({ error: 'An instance admin cannot belong to a workspace.' })
@@ -507,7 +519,7 @@ app.put('/api/admin/workspaces/:id/members/:userId', (req, res) => {
   const current = memberRole(req.params.id, req.params.userId)
   if (!current) addWorkspaceMember(req.params.id, req.params.userId, role)
   else {
-    if (current === 'owner' && role === 'member' && countOwners(req.params.id) <= 1) {
+    if (isOwnerRole(current) && !isOwnerRole(role) && countOwners(req.params.id) <= 1) {
       return res.status(400).json({ error: 'The workspace needs at least one owner.' })
     }
     setWorkspaceMemberRole(req.params.id, req.params.userId, role)
@@ -518,10 +530,47 @@ app.put('/api/admin/workspaces/:id/members/:userId', (req, res) => {
 app.delete('/api/admin/workspaces/:id/members/:userId', (req, res) => {
   const current = memberRole(req.params.id, req.params.userId)
   if (!current) return res.status(404).json({ error: 'Member not found' })
-  if (current === 'owner' && countOwners(req.params.id) <= 1) {
+  if (isOwnerRole(current) && countOwners(req.params.id) <= 1) {
     return res.status(400).json({ error: 'The workspace needs at least one owner.' })
   }
   removeWorkspaceMember(req.params.id, req.params.userId)
+  res.json({ ok: true })
+})
+
+// ---- Roles ----
+//
+// Workspace roles are instance-wide and defined here: an admin sets the access
+// model once, and a workspace owner assigns people to it. The system tier
+// (users.role) is deliberately not part of this — see server/permissions.js.
+
+// The permission catalog: everything a role can be given, grouped for the editor.
+// It comes from code, not the DB, so the UI can only offer what a route enforces.
+app.get('/api/admin/permissions', (_req, res) => res.json(PERMISSIONS))
+
+app.post('/api/admin/roles', (req, res) => {
+  const name = (req.body?.name || '').trim()
+  if (!name) return res.status(400).json({ error: 'A role name is required.' })
+  res.json(createRole({ name, description: req.body?.description || '', permissions: req.body?.permissions || [] }))
+})
+
+// Rename a role or change what it grants. The slug is fixed at creation because
+// memberships store it, so a rename never touches a single membership row.
+app.put('/api/admin/roles/:slug', (req, res) => {
+  if (!roleExists(req.params.slug)) return res.status(404).json({ error: 'Role not found' })
+  const { name, description, permissions } = req.body || {}
+  if (name !== undefined && !String(name).trim()) return res.status(400).json({ error: 'A role name is required.' })
+  res.json(updateRole(req.params.slug, { name, description, permissions }))
+})
+
+// Delete a custom role. Refused while anyone holds it — those memberships would
+// silently fail closed to no access — and builtins are never deletable.
+app.delete('/api/admin/roles/:slug', (req, res) => {
+  const role = getRole(req.params.slug)
+  if (!role) return res.status(404).json({ error: 'Role not found' })
+  if (role.builtin) return res.status(400).json({ error: 'A built-in role cannot be deleted.' })
+  const inUse = countRoleUsage(req.params.slug)
+  if (inUse) return res.status(409).json({ error: `${inUse} member${inUse === 1 ? '' : 's'} still hold this role.`, inUse })
+  deleteRole(req.params.slug)
   res.json({ ok: true })
 })
 
@@ -667,6 +716,14 @@ app.post('/api/admin/smtp/test', async (req, res) => {
 // Workspaces
 // ============================================================================
 
+// The instance's role catalog, readable by any signed-in user: a workspace owner
+// needs the names to assign one, and the client needs the permission lists to
+// explain what each grants. Editing them is admin-only (/api/admin/roles).
+app.get('/api/roles', (req, res) => {
+  if (!requireAuth(req, res)) return
+  res.json(listRoles())
+})
+
 // Workspaces the caller belongs to.
 app.get('/api/workspaces', (req, res) => {
   const user = requireAuth(req, res)
@@ -681,10 +738,20 @@ app.get('/api/workspaces', (req, res) => {
   // Beta experiment flags + notification prefs ship in the list response (not
   // just the detail route) so nav-level gating and this settings panel don't
   // go stale after a save that only refreshes via listWorkspaces().
+  // `permissions` rides along for the same reason: every nav item and button
+  // gated on a capability would otherwise flicker until the detail route lands.
   res.json(
     rows.map((r) => {
       const settings = safeJson(r.settings)
-      return { id: r.id, name: r.name, role: r.role, createdAt: r.created_at, experiments: settings.experiments || {}, notifications: settings.notifications || {} }
+      return {
+        id: r.id,
+        name: r.name,
+        role: r.role,
+        permissions: [...permissionsIn(r.id, user.id)],
+        createdAt: r.created_at,
+        experiments: settings.experiments || {},
+        notifications: settings.notifications || {},
+      }
     })
   )
 })
@@ -731,15 +798,27 @@ app.get('/api/workspaces/:id', (req, res) => {
   res.json(ws)
 })
 
-// Rename + beta experiment flags + notification/session policy (owner).
+/**
+ * Rename + beta experiment flags + notification/session policy.
+ *
+ * One route, two permissions: notification preferences are a separate capability
+ * from the workspace's own settings (a role can be given `notifications.manage`
+ * and nothing else), so the body is checked field by field rather than the whole
+ * route being gated on `workspace.manage`.
+ */
 app.put('/api/workspaces/:id', (req, res) => {
-  const user = requireOwner(req, res, req.params.id)
+  const user = requireAuth(req, res)
   if (!user) return
-  const row = meta.prepare('SELECT settings FROM workspaces WHERE id = ?').get(req.params.id)
-  if (!row) return res.status(404).json({ error: 'Workspace not found' })
   // No `smtp` here on purpose: the mail server is instance-level (admin-only).
   // An older client still sending one is ignored rather than rejected.
   const { name, experiments, notifications, sessions } = req.body || {}
+  const needsManage = name?.trim() || experiments || sessions
+  if (needsManage && !requirePermission(req, res, req.params.id, 'workspace.manage')) return
+  if (notifications && !requirePermission(req, res, req.params.id, 'notifications.manage')) return
+  if (!needsManage && !notifications && !memberRole(req.params.id, user.id)) return res.status(403).json({ error: 'Forbidden' })
+
+  const row = meta.prepare('SELECT settings FROM workspaces WHERE id = ?').get(req.params.id)
+  if (!row) return res.status(404).json({ error: 'Workspace not found' })
   if (name?.trim()) meta.prepare('UPDATE workspaces SET name = ? WHERE id = ?').run(name.trim(), req.params.id)
   if (experiments || notifications || sessions) {
     const settings = safeJson(row.settings)
@@ -762,9 +841,9 @@ app.put('/api/workspaces/:id', (req, res) => {
   res.json({ ok: true })
 })
 
-// Delete a workspace and everything scoped to it (owner). Never the caller's last one.
+// Delete a workspace and everything scoped to it. Never the caller's last one.
 app.delete('/api/workspaces/:id', async (req, res) => {
-  const user = requireOwner(req, res, req.params.id)
+  const user = requirePermission(req, res, req.params.id, 'workspace.delete')
   if (!user) return
   const mine = meta.prepare('SELECT COUNT(*) c FROM workspace_members WHERE user_id = ?').get(user.id).c
   if (mine <= 1) return res.status(400).json({ error: 'You must belong to at least one workspace.' })
@@ -794,21 +873,23 @@ app.get('/api/workspaces/:id/members', (req, res) => {
   res.json(listWorkspaceMembers(req.params.id))
 })
 
-// Promote a member to owner, or demote an owner back to member (owner). A
-// workspace can have any number of owners but never zero, and an instance admin
-// can't be given one of the seats.
+// Move a member to a different role. Any role in the instance catalog is valid;
+// a workspace can have any number of owners but never zero, and an instance
+// admin can't be given a seat at all.
 app.put('/api/workspaces/:id/members/:userId', (req, res) => {
-  const user = requireOwner(req, res, req.params.id)
+  const user = requirePermission(req, res, req.params.id, 'members.manage')
   if (!user) return
   const role = req.body?.role
-  if (!WORKSPACE_ROLES.includes(role)) return res.status(400).json({ error: "Role must be 'owner' or 'member'." })
+  if (!roleExists(role)) return res.status(400).json({ error: 'Unknown role.' })
   const current = memberRole(req.params.id, req.params.userId)
   if (!current) return res.status(404).json({ error: 'Member not found' })
   const target = userRow(req.params.userId)
-  if (role === 'owner' && isSystemAdmin(target)) {
-    return res.status(400).json({ error: 'An instance admin cannot own a workspace.' })
+  if (isSystemAdmin(target)) {
+    return res.status(400).json({ error: 'An instance admin cannot belong to a workspace.' })
   }
-  if (current === 'owner' && role === 'member' && countOwners(req.params.id) <= 1) {
+  // "Owner" is whoever holds workspace.manage — so this catches moving the last
+  // one to any role that doesn't, not just to the built-in 'member'.
+  if (isOwnerRole(current) && !isOwnerRole(role) && countOwners(req.params.id) <= 1) {
     return res.status(400).json({ error: 'The workspace needs at least one owner.' })
   }
   setWorkspaceMemberRole(req.params.id, req.params.userId, role)
@@ -819,10 +900,14 @@ app.put('/api/workspaces/:id/members/:userId', (req, res) => {
 // unknown/pending emails get a pending account + an invite link. The link is
 // always returned so it works without SMTP.
 app.post('/api/workspaces/:id/members', async (req, res) => {
-  const user = requireOwner(req, res, req.params.id)
+  const user = requirePermission(req, res, req.params.id, 'members.manage')
   if (!user) return
   const email = (req.body?.email || '').trim().toLowerCase()
   if (!email) return res.status(400).json({ error: 'Email is required.' })
+  // Invite straight into a role rather than always landing on 'member' and
+  // needing a second call to move them.
+  const role = req.body?.role || 'member'
+  if (!roleExists(role)) return res.status(400).json({ error: 'Unknown role.' })
 
   let target = getUserByEmail(email)
   if (target && memberRole(req.params.id, target.id)) {
@@ -843,7 +928,7 @@ app.post('/api/workspaces/:id/members', async (req, res) => {
     inviteLink = `${baseUrl(req)}/invite/${issueInviteToken(target.id, req.params.id)}`
   }
 
-  addWorkspaceMember(req.params.id, target.id, 'member')
+  addWorkspaceMember(req.params.id, target.id, role)
 
   // Email the invite link when SMTP is configured — non-fatal, link is returned regardless.
   let emailed = false
@@ -861,20 +946,20 @@ app.post('/api/workspaces/:id/members', async (req, res) => {
   }
 
   res.json({
-    member: { userId: target.id, email, name: target.name || email, role: 'member', status: target.status },
+    member: { userId: target.id, email, name: target.name || email, role, status: target.status },
     inviteLink,
     emailed,
   })
 })
 
-// Remove a member (owner). Can't remove yourself or the last owner.
+// Remove a member. Can't remove yourself or the last owner.
 app.delete('/api/workspaces/:id/members/:userId', (req, res) => {
-  const user = requireOwner(req, res, req.params.id)
+  const user = requirePermission(req, res, req.params.id, 'members.manage')
   if (!user) return
   if (req.params.userId === user.id) return res.status(400).json({ error: "You can't remove yourself." })
   const role = memberRole(req.params.id, req.params.userId)
   if (!role) return res.status(404).json({ error: 'Member not found' })
-  if (role === 'owner' && countOwners(req.params.id) <= 1) {
+  if (isOwnerRole(role) && countOwners(req.params.id) <= 1) {
     return res.status(400).json({ error: 'The workspace needs at least one owner.' })
   }
   // Drops the membership plus everything it granted (team seats, individual
@@ -906,9 +991,9 @@ app.get('/api/workspaces/:id/teams', (req, res) => {
   res.json(rows.map((r) => ({ id: r.id, name: r.name, memberCount: r.memberCount, createdAt: r.created_at })))
 })
 
-// Create a team (admin).
+// Create a team.
 app.post('/api/workspaces/:id/teams', (req, res) => {
-  const user = requireOwner(req, res, req.params.id)
+  const user = requirePermission(req, res, req.params.id, 'teams.manage')
   if (!user) return
   const name = (req.body?.name || '').trim()
   if (!name) return res.status(400).json({ error: 'Team name is required.' })
@@ -918,9 +1003,9 @@ app.post('/api/workspaces/:id/teams', (req, res) => {
   res.json({ id, name, memberCount: 0, createdAt: now })
 })
 
-// Rename a team (admin).
+// Rename a team.
 app.put('/api/workspaces/:id/teams/:teamId', (req, res) => {
-  const user = requireOwner(req, res, req.params.id)
+  const user = requirePermission(req, res, req.params.id, 'teams.manage')
   if (!user) return
   const team = meta.prepare('SELECT id FROM teams WHERE id = ? AND workspace_id = ?').get(req.params.teamId, req.params.id)
   if (!team) return res.status(404).json({ error: 'Team not found' })
@@ -930,9 +1015,9 @@ app.put('/api/workspaces/:id/teams/:teamId', (req, res) => {
   res.json({ ok: true })
 })
 
-// Delete a team (admin) — cascades its members and any connection assignments.
+// Delete a team — cascades its members and any connection assignments.
 app.delete('/api/workspaces/:id/teams/:teamId', (req, res) => {
-  const user = requireOwner(req, res, req.params.id)
+  const user = requirePermission(req, res, req.params.id, 'teams.manage')
   if (!user) return
   const team = meta.prepare('SELECT id FROM teams WHERE id = ? AND workspace_id = ?').get(req.params.teamId, req.params.id)
   if (!team) return res.status(404).json({ error: 'Team not found' })
@@ -959,9 +1044,9 @@ app.get('/api/workspaces/:id/teams/:teamId/members', (req, res) => {
   res.json(rows)
 })
 
-// Add a member to a team (admin). The user must belong to the workspace.
+// Add a member to a team. The user must belong to the workspace.
 app.post('/api/workspaces/:id/teams/:teamId/members', (req, res) => {
-  const user = requireOwner(req, res, req.params.id)
+  const user = requirePermission(req, res, req.params.id, 'teams.manage')
   if (!user) return
   const team = meta.prepare('SELECT id FROM teams WHERE id = ? AND workspace_id = ?').get(req.params.teamId, req.params.id)
   if (!team) return res.status(404).json({ error: 'Team not found' })
@@ -974,9 +1059,9 @@ app.post('/api/workspaces/:id/teams/:teamId/members', (req, res) => {
   res.json({ ok: true })
 })
 
-// Remove a member from a team (admin).
+// Remove a member from a team.
 app.delete('/api/workspaces/:id/teams/:teamId/members/:userId', (req, res) => {
-  const user = requireOwner(req, res, req.params.id)
+  const user = requirePermission(req, res, req.params.id, 'teams.manage')
   if (!user) return
   const team = meta.prepare('SELECT id FROM teams WHERE id = ? AND workspace_id = ?').get(req.params.teamId, req.params.id)
   if (!team) return res.status(404).json({ error: 'Team not found' })
@@ -1007,13 +1092,13 @@ app.post('/api/test-connection', async (req, res) => {
   }
 })
 
-// Add connection to a workspace (owner). Members use connections; they don't
-// define them — the credentials a connection carries are the workspace's, not
-// something an individual member gets to point somewhere else.
+// Add a connection to a workspace. Defining one is `connections.create`: the
+// credentials it carries are the workspace's, not something anyone who can use a
+// database gets to point somewhere else.
 app.post('/api/connections', (req, res) => {
   const workspaceId = req.body.workspaceId
   if (!workspaceId) return res.status(403).json({ error: 'Forbidden' })
-  const user = requireOwner(req, res, workspaceId)
+  const user = requirePermission(req, res, workspaceId, 'connections.create')
   if (!user) return
   // Default the owner to the creating user (unless one was explicitly provided).
   const conn = { ...req.body, id: randomUUID(), workspaceId, ownerId: req.body.ownerId || user.id }
@@ -1021,12 +1106,12 @@ app.post('/api/connections', (req, res) => {
   res.json(getConnection(conn.id))
 })
 
-// Import an export document as a brand-new connection in `workspaceId` (owner).
+// Import an export document as a brand-new connection in `workspaceId`.
 // Mounted above the `/api/connections/:id` guard so "import" isn't read as an id.
 app.post('/api/connections/import', (req, res) => {
   const { workspaceId, document, name, settings } = req.body || {}
   if (!workspaceId) return res.status(403).json({ error: 'Forbidden' })
-  const user = requireOwner(req, res, workspaceId)
+  const user = requirePermission(req, res, workspaceId, 'connections.create')
   if (!user) return
   try {
     res.json(importConnectionDoc(document, { workspaceId, ownerId: user.id, name, settings }))
@@ -1045,27 +1130,26 @@ app.get('/api/storages', (req, res) => {
   res.json(listStorageRows(workspaceId))
 })
 
-// Create a storage destination (owner) — it holds credentials for somewhere the
-// workspace's data gets written, so it's owner-level like a connection.
+// Create a storage destination — it holds credentials for somewhere the
+// workspace's data gets written, so it carries its own permission.
 app.post('/api/storages', (req, res) => {
   const body = req.body || {}
   if (!body.workspaceId) return res.status(403).json({ error: 'Forbidden' })
-  const user = requireOwner(req, res, body.workspaceId)
+  const user = requirePermission(req, res, body.workspaceId, 'storage.manage')
   if (!user) return
   if (!body.name?.trim() || !body.bucket?.trim()) return res.status(400).json({ error: 'A name and bucket are required' })
   res.json(createStorage(body.workspaceId, body))
 })
 
 // Guard every per-storage route: reading needs membership, changing needs
-// ownership.
+// `storage.manage`.
 app.use('/api/storages/:sid', (req, res, next) => {
   const user = requireAuth(req, res)
   if (!user) return
   const dest = getStorage(req.params.sid)
   if (!dest) return res.status(404).json({ error: 'Storage destination not found' })
-  const role = memberRole(dest.workspaceId, user.id)
-  if (!role) return res.status(403).json({ error: 'Forbidden' })
-  if (req.method !== 'GET' && role !== 'owner') return res.status(403).json({ error: 'Only a workspace owner can do that.' })
+  if (!memberRole(dest.workspaceId, user.id)) return res.status(403).json({ error: 'Forbidden' })
+  if (req.method !== 'GET' && !requirePermission(req, res, dest.workspaceId, 'storage.manage')) return
   next()
 })
 
@@ -1100,9 +1184,15 @@ app.use('/api/connections/:id', (req, res, next) => {
 
 /**
  * Editing the *connection record* — its credentials, target host, access list —
- * is an owner's job; using the database behind it is a member's. So this guard
- * sits on the handful of routes that change the record, while every /:id/* data
- * route stays open to members (CLAUDE.md "AUTH MODEL").
+ * versus using the database behind it. This guard sits on the handful of routes
+ * that change the record; every /:id/* data route stays open to whoever the
+ * access list grants (CLAUDE.md "AUTH MODEL").
+ *
+ * Two ways to pass, which is the point of `connections.owner_id`: hold
+ * `connections.manage` and you may change any connection in the workspace; own
+ * this one and you may change it whatever your role. That is what lets a plain
+ * member run their own connection — its backups, its access list — without being
+ * given the whole workspace.
  */
 const requireConnectionOwner = (req, res, what = 'change a connection') => {
   const conn = getConnection(req.params.id)
@@ -1110,8 +1200,9 @@ const requireConnectionOwner = (req, res, what = 'change a connection') => {
     res.status(404).json({ error: 'Connection not found' })
     return null
   }
-  if (conn.workspaceId && memberRole(conn.workspaceId, authUser(req).id) !== 'owner') {
-    res.status(403).json({ error: `Only a workspace owner can ${what}.` })
+  const userId = authUser(req).id
+  if (conn.workspaceId && conn.ownerId !== userId && !can(conn.workspaceId, userId, 'connections.manage')) {
+    res.status(403).json({ error: `You need to own this connection to ${what}.` })
     return null
   }
   return conn
@@ -1166,6 +1257,33 @@ app.get('/api/connections/:id/export', (req, res) => {
   const doc = buildConnectionExport(req.params.id, { includeSecrets })
   if (!doc) return res.status(404).json({ error: 'Connection not found' })
   res.json(doc)
+})
+
+/**
+ * Hand a connection to someone else in the workspace.
+ *
+ * Its own permission rather than part of `connections.manage`, because it is the
+ * one change that can take a connection *away* from the caller: an owner moving
+ * a connection to a member gives that member full control of the record and
+ * keeps none for themselves unless their role says otherwise.
+ *
+ * The new owner must already be a member — ownership is not a way to grant
+ * workspace access — and an instance admin can never hold it, for the same
+ * reason they hold no membership.
+ */
+app.put('/api/connections/:id/owner', (req, res) => {
+  const conn = getConnection(req.params.id)
+  if (!conn) return res.status(404).json({ error: 'Connection not found' })
+  if (!conn.workspaceId) return res.status(400).json({ error: 'This connection does not belong to a workspace.' })
+  if (!requirePermission(req, res, conn.workspaceId, 'connections.transfer')) return
+
+  const ownerId = req.body?.ownerId
+  if (!ownerId) return res.status(400).json({ error: 'ownerId is required.' })
+  if (!memberRole(conn.workspaceId, ownerId)) return res.status(400).json({ error: 'That person is not a member of this workspace.' })
+  if (isSystemAdmin(userRow(ownerId))) return res.status(400).json({ error: 'An instance admin cannot own a connection.' })
+
+  saveConnection({ ...conn, ownerId })
+  res.json(getConnection(req.params.id))
 })
 
 // ---- Connection access (which teams/members may see this connection) ----

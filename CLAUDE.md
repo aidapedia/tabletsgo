@@ -19,8 +19,9 @@ working in that area — it has the reasoning and the full rules.
 
 - **No route branches on `conn.type`** — the db layer answers for every engine. → skill `db-engine`
 - **`requireAuth` is sync**, and stays sync — resolve tokens in `sessionMiddleware`. → skill `auth-sessions`
-- **A route uses a guard, never a role-string comparison.** System role and workspace role are two independent tiers. → skill `auth-sessions`
-- **A workspace never loses its last owner**; an instance admin never joins a workspace. → skill `auth-sessions`
+- **A route asks for a permission, never a role name** — `requirePermission(req, res, wsId, 'teams.manage')`. Workspace roles are admin-defined data; only the system tier (`users.role`) is hardcoded. → skill `auth-sessions`
+- **A workspace never loses its last owner** — "owner" means *holds `workspace.manage`*; an instance admin never joins a workspace. → skill `auth-sessions`
+- **A permission exists because a route enforces it** — add the key to `server/permissions-catalog.js` and use it, or don't add it. → skill `auth-sessions`
 - **There is no external session store**, and adding one is not the answer to a new requirement. → skill `auth-sessions`
 - **Meta migrations are append-only and additive-only** — never edit a shipped step, never `DROP`/rename, never add `NOT NULL` without a default. → skill `meta-schema`
 - **`workspaces.settings.smtp` is dead data** — never read it. SMTP is instance-level. → skill `auth-sessions`
@@ -50,7 +51,7 @@ src/
 | Feature | What it owns |
 | --- | --- |
 | `auth` | AuthContext, login/setup/invite, the caller's own account settings |
-| `admin` | instance-admin area (system role `admin`): workspaces, users, the one SMTP config |
+| `admin` | instance-admin area (system role `admin`): workspaces, users, the role catalog, the one SMTP config |
 | `workspaces` | org/tenant layer: current workspace, members, teams, notifications, general settings |
 | `workspace` | **the per-connection DB console** — DataGrid, TableView, QueryEditor, tabs, status bar |
 | `connections` | connection CRUD, access, type picker, switcher modal, export/import, connect handshake |
@@ -80,6 +81,8 @@ server/
 ├── meta.js              # the app's own SQLite handle
 ├── migrations.js        # versioned, append-only meta-schema steps            → skill meta-schema
 ├── auth.js              # the guards + sessionMiddleware                      → skill auth-sessions
+├── permissions-catalog.js  # leaf: the permission keys + seeded builtin roles → skill auth-sessions
+├── permissions.js       # ★ workspace RBAC: roles, grants, the sync policy cache → skill auth-sessions
 ├── sessions/            # ★ logins (durable) + connection sessions (cache)    → skill auth-sessions
 ├── login-guard.js       # sign-in brute-force blocking                        → skill auth-sessions
 ├── users.js  workspaces.js  app-settings.js  mail.js                          → skill auth-sessions

@@ -386,8 +386,8 @@ function UserDetailDialog({ user, onClose }: { user: AdminUser; onClose: () => v
               <div key={w.id} className="flex items-center gap-2.5 bg-elevated/30 px-3 py-2.5">
                 <Avatar label={w.name} />
                 <span className="min-w-0 flex-1 truncate text-[12px] text-ink">{w.name}</span>
-                <Badge tone={w.role === 'owner' ? 'green' : 'neutral'} className="shrink-0">
-                  {w.role}
+                <Badge tone={w.isOwner ? 'green' : 'neutral'} className="shrink-0">
+                  {w.roleName || w.role}
                 </Badge>
               </div>
             ))}

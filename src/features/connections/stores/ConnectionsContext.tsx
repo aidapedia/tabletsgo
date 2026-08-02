@@ -11,7 +11,7 @@ export function ConnectionsProvider({ children }) {
   const [loading, setLoading] = useState(true)
 
   // Connections are scoped to the current workspace; reload when it changes.
-  useEffect(() => {
+  const reload = () => {
     if (!currentId) {
       setConnections([])
       setLoading(false)
@@ -21,7 +21,8 @@ export function ConnectionsProvider({ children }) {
     safeRequest(`/connections?workspace=${currentId}`, [])
       .then(setConnections)
       .finally(() => setLoading(false))
-  }, [currentId])
+  }
+  useEffect(reload, [currentId])
 
   const addConnection = async (conn) => {
     try {
@@ -78,7 +79,7 @@ export function ConnectionsProvider({ children }) {
 
   return (
     <ConnectionsContext.Provider
-      value={{ connections, loading, addConnection, updateConnection, importConnection, removeConnection, testConnection, patchLocalConnection }}
+      value={{ connections, loading, reload, addConnection, updateConnection, importConnection, removeConnection, testConnection, patchLocalConnection }}
     >
       {children}
     </ConnectionsContext.Provider>

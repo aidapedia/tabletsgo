@@ -20,21 +20,59 @@ localStorage (`dbm.token`) and attached as `Authorization: Bearer` by
 
 | Tier | Column | Values | Scope |
 | --- | --- | --- | --- |
-| System | `users.role` (surfaced as `user.role`) | `admin` \| `user` | The instance. An `admin` manages workspaces and accounts through `/api/admin/*` and **holds no workspace membership at all** — `memberRole()` returns null for them, so every workspace-scoped guard denies them. Instance administration deliberately carries no data access. |
-| Workspace | `workspace_members.role` | `owner` \| `member` | One workspace. `owner` manages it (members, teams, settings, connections, storage destinations); a workspace may have **any number of owners but never zero**. `member` uses the connections they've been granted: full database access (query, row edits, workflows, dashboards, schema changes) but no create/edit/delete of the connection *record*. |
+| System | `users.role` (surfaced as `user.role`) | `admin` \| `user` | The instance. **Hardcoded, and stays that way.** An `admin` manages workspaces and accounts through `/api/admin/*` and **holds no workspace membership at all** — `memberRole()` returns null for them, so every workspace-scoped guard denies them. Instance administration deliberately carries no data access, so a configurable system tier would only be a way around that. |
+| Workspace | `workspace_members.role` | any **role slug** from `roles` | One workspace. **Configurable data**: an instance admin defines what each role grants (`server/permissions.js`), a workspace owner assigns people to it. `owner` and `member` are seeded builtins. |
 
 The guards live in `server/auth.js`: `requireSystemAdmin` (system),
-`requireOwner`/`requireMember` (workspace), plus `requireConnectionOwner` in
-`server.js` for the routes that change a connection record. **A route should use a
-guard, not compare role strings** — the one place a literal is still read is
-`memberRole`, which normalizes the pre-v8 spelling `admin` → `owner`.
+`requirePermission`/`requireMember` (workspace), plus `requireConnectionOwner` in
+`server.js` for the routes that change a connection record.
 
-Two invariants the routes enforce, both easy to break from a new code path:
+> **A route asks for the capability it needs, never for a role name:**
+> `requirePermission(req, res, wsId, 'teams.manage')`. Redefining a role then
+> changes who may call it without touching the route. The one place a role literal
+> is still read is the pre-v8 `admin` → `owner` normalization (in `memberRole` and
+> `permissionsForRole`).
+
+### The permission catalog
+
+`server/permissions-catalog.js` is a **leaf module** (imports nothing) holding the
+closed set of permission keys plus the seeded builtins — leaf so that both
+`permissions.js` and `migrations.js` can use it without a dependency cycle.
+`server/permissions.js` owns `roles` + `role_permissions` and caches the whole
+policy in memory, because the guards are sync and must stay sync.
+
+Nine keys today: `workspace.manage`, `workspace.delete`, `members.manage`,
+`teams.manage`, `notifications.manage`, `storage.manage`, `connections.create`,
+`connections.manage`, `connections.transfer`.
+
+Rules that keep the model honest:
+
+- **The catalog is code, the grants are data.** A key exists because a route
+  enforces it; a role row holding an unknown key is *ignored*, not honoured —
+  which is what lets an older image open a newer DB.
+- **A slug is fixed at creation.** Memberships store it, so renaming a role never
+  touches a membership row. Deleting one is refused while anyone holds it (409),
+  and builtins are never deletable.
+- **`owner` always keeps `workspace.manage`** — `updateRole` puts it back whatever
+  the request says. A workspace whose owners can't manage it is unfixable.
+- **Opening a database is not a permission.** That's the per-connection access
+  list (`connection_access`), because it answers a per-resource question. Don't
+  add a `connections.query`-shaped key.
+
+Three invariants the routes enforce, all easy to break from a new code path:
 
 1. **An instance admin can never be added to a workspace** — invite, role change,
    and workspace creation all refuse.
-2. **A workspace can never lose its last owner** — demote, remove, delete-user and
-   promote-to-admin all refuse, the last two with `409` + the affected workspaces.
+2. **A workspace can never lose its last owner** — where "owner" means *holds
+   `workspace.manage`* (`isOwnerRole`/`countOwners`/`ownerRoleSlugs` in
+   `server/workspaces.js`, never a name comparison), so a custom role granting it
+   satisfies the rule too. Demote, remove, delete-user and promote-to-admin all
+   refuse, the last two with `409` + the affected workspaces.
+3. **A connection has an owner, and that owner can manage it.**
+   `requireConnectionOwner` passes on `connections.manage` **or**
+   `conn.ownerId === caller`. That is what lets a plain member run their own
+   connection; `PUT /api/connections/:id/owner` (`connections.transfer`) hands it
+   over, and the new owner must already be a member.
 
 Connections carry a `workspace_id` column and are filtered by the caller's current
 workspace.

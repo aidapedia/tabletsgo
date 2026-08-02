@@ -7,7 +7,8 @@ import {
   StatusBadge, connectionUrl, TYPE_LABEL, EnvBadge,
 } from '@/features/connections'
 import type { ConnectionExport } from '@/features/connections'
-import { useWorkspaces } from '@/features/workspaces'
+import { useWorkspaces, can } from '@/features/workspaces'
+import { useAuth } from '@/features/auth'
 import { pingConnection } from '@/shared/api/database'
 import { listBackupRuns } from '@/features/backup'
 import { relativeTime } from '@/shared/lib/recents'
@@ -44,9 +45,14 @@ export default function ConnectionsPage() {
   // database answered; a failure opens ConnectHandshakeDialog with the cause.
   const { connect, connectingId, failure, dismiss, openAnyway } = useConnectHandshake()
   const { connections, loading, removeConnection } = useConnections()
-  // Owners define connections; members open the ones they've been granted.
   const { current } = useWorkspaces()
-  const isOwner = current?.role === 'owner'
+  const { user } = useAuth()
+  // Two different questions. Creating a connection is a workspace-wide
+  // capability; editing or deleting an existing one also passes for whoever owns
+  // that particular connection, which is what lets a member run their own.
+  const canCreate = can(current, 'connections.create')
+  const canManageAll = can(current, 'connections.manage')
+  const canManageConn = (c: any) => canManageAll || (!!user && c.ownerId === user.id)
 
   const [query, setQuery] = useState('')
   const [activeEnv, setActiveEnv] = useState('all')
@@ -245,8 +251,9 @@ export default function ConnectionsPage() {
                   <MenuItem onClick={() => { close(); openDetail(c) }}>
                     <InfoIcon width={14} height={14} /> Details
                   </MenuItem>
-                  {/* Defining a connection is the owner's job; a member uses it. */}
-                  {isOwner && (
+                  {/* Changing the connection *record* — whoever manages every
+                      connection here, or whoever owns this one. */}
+                  {canManageConn(c) && (
                     <MenuItem onClick={() => { close(); openEdit(c) }}>
                       <EditIcon width={14} height={14} /> Edit
                     </MenuItem>
@@ -254,12 +261,12 @@ export default function ConnectionsPage() {
                   <MenuItem onClick={() => { close(); copyUrl(c) }}>
                     <CopyIcon width={14} height={14} /> Copy as URL
                   </MenuItem>
-                  {isOwner && (
+                  {canManageConn(c) && (
                     <MenuItem onClick={() => { close(); setExporting(c) }}>
                       <DownloadIcon width={14} height={14} /> Export as JSON
                     </MenuItem>
                   )}
-                  {isOwner && (
+                  {canManageConn(c) && (
                     <MenuItem danger onClick={() => { close(); setDeleting(c) }}>
                       <TrashIcon width={14} height={14} /> Delete
                     </MenuItem>
@@ -271,7 +278,7 @@ export default function ConnectionsPage() {
         ),
       },
     ],
-    [statuses, backups, connectingId, isOwner],
+    [statuses, backups, connectingId, canManageAll, user?.id],
   )
 
   // Client-side sort + paging; changing a filter sends the table back to page 1.
@@ -287,9 +294,9 @@ export default function ConnectionsPage() {
       <div className="w-full">
         <PageHeader
           title="Connections"
-          desc={isOwner ? 'Manage the databases connected to this workspace.' : 'The databases you can open in this workspace.'}
+          desc={canCreate ? 'Manage the databases connected to this workspace.' : 'The databases you can open in this workspace.'}
           action={
-            isOwner && (
+            canCreate && (
               <>
                 <input
                   ref={importFileRef}

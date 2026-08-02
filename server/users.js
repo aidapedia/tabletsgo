@@ -15,7 +15,8 @@ import { randomUUID } from 'crypto'
 import { meta } from './meta.js'
 import { sha256 } from './crypto.js'
 import { LOCK_COLUMNS, clearFailures, lockStatus } from './login-guard.js'
-import { removeAllMemberships } from './workspaces.js'
+import { isOwnerRole, removeAllMemberships } from './workspaces.js'
+import { getRole } from './permissions.js'
 
 export const SYSTEM_ROLES = ['admin', 'user']
 
@@ -44,7 +45,12 @@ const workspacesOf = (userId) =>
         WHERE m.user_id = ? ORDER BY w.created_at`
     )
     .all(userId)
-    .map((r) => ({ id: r.id, name: r.name, role: r.role === 'admin' ? 'owner' : r.role }))
+    .map((r) => {
+      const role = r.role === 'admin' ? 'owner' : r.role
+      // `roleName` and `isOwner` so the admin list can render a configurable
+      // role without knowing what any slug means.
+      return { id: r.id, name: r.name, role, roleName: getRole(role)?.name || role, isOwner: isOwnerRole(role) }
+    })
 
 export const listUsers = () =>
   meta.prepare(`SELECT id, username, name, role, status, ${LOCK_COLUMNS} FROM users ORDER BY role DESC, username`).all().map(toPublic)
