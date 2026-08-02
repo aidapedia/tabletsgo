@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
-  useConnections, ConnectionForm, ConnectionDetail, DbTypePickerModal,
+  useConnections, DbTypePickerModal,
   ConnectionExportModal, ConnectionImportModal, readConnectionExportFile,
   ConnectHandshakeDialog, useConnectHandshake,
   StatusBadge, connectionUrl, TYPE_LABEL, EnvBadge,
@@ -22,7 +23,6 @@ import {
   DbLogo,
   DownloadIcon,
   EditIcon,
-  ExternalLinkIcon,
   InfoIcon,
   PlusIcon,
   TrashIcon,
@@ -35,25 +35,24 @@ import { RowActions, RowMenu } from '@/shared/ui/table/RowActions'
 import useDataTable from '@/shared/ui/table/useDataTable'
 import { PageHeader } from './ui'
 
-// ---- Connections section: list + detail + create/edit forms (thin composition;
-// the detail view and db-type picker live in features/connections) ----
+// ---- `/connections`: the list. Detail and the create/edit form are their own
+// routes (ConnectionDetailPage / ConnectionFormPage) so both are linkable. ----
 export default function ConnectionsPage() {
   const toast = useToast()
+  const navigate = useNavigate()
   // "Connect" handshakes first and only routes into the console once the
   // database answered; a failure opens ConnectHandshakeDialog with the cause.
   const { connect, connectingId, failure, dismiss, openAnyway } = useConnectHandshake()
-  const { connections, loading, addConnection, updateConnection, removeConnection } = useConnections()
+  const { connections, loading, removeConnection } = useConnections()
   // Owners define connections; members open the ones they've been granted.
   const { current } = useWorkspaces()
   const isOwner = current?.role === 'owner'
 
-  const [detailConn, setDetailConn] = useState<any>(null) // open connection detail view
   const [query, setQuery] = useState('')
   const [activeEnv, setActiveEnv] = useState('all')
   const [activeFolder, setActiveFolder] = useState('all')
   const [activeType, setActiveType] = useState('all')
   const [activeStatus, setActiveStatus] = useState('all')
-  const [formConn, setFormConn] = useState<any>(null) // { mode, conn?, type? } — full-page create/edit form
   const [picker, setPicker] = useState(false) // db-type picker open
   const [deleting, setDeleting] = useState<any>(null) // connection pending delete confirmation
   const [exporting, setExporting] = useState<any>(null) // connection whose JSON bundle is being downloaded
@@ -62,15 +61,7 @@ export default function ConnectionsPage() {
   const [statuses, setStatuses] = useState<Record<string, string>>({})
   const [backups, setBackups] = useState<Record<string, { ts: number; ok: boolean }>>({})
 
-  // Keep the open detail view in sync with the latest connection data (e.g. after an edit).
-  useEffect(() => {
-    if (!detailConn) return
-    const latest = connections.find((c) => c.id === detailConn.id)
-    if (!latest) setDetailConn(null)
-    else if (latest !== detailConn) setDetailConn(latest)
-  }, [connections])
-
-  // Live connectivity per card.
+  // Live connectivity per row.
   useEffect(() => {
     let alive = true
     connections.forEach((c) => {
@@ -129,18 +120,10 @@ export default function ConnectionsPage() {
     })
   }, [connections, activeEnv, activeFolder, activeType, activeStatus, statuses, query])
 
-  const handleSave = (data) => {
-    if (formConn?.mode === 'edit') updateConnection(formConn.conn.id, data)
-    else addConnection(data)
-    setFormConn(null)
-  }
-
   const confirmDelete = () => {
     const conn = deleting
     setDeleting(null)
-    if (!conn) return
-    removeConnection(conn.id)
-    if (detailConn?.id === conn.id) setDetailConn(null)
+    if (conn) removeConnection(conn.id)
   }
 
   const copyUrl = (conn) => {
@@ -158,7 +141,8 @@ export default function ConnectionsPage() {
     }
   }
 
-  const openConsole = (conn) => connect(conn)
+  const openDetail = (conn) => navigate(`/connections/${conn.id}`)
+  const openEdit = (conn) => navigate(`/connections/${conn.id}/edit`)
   const subtitle = (c) => (c.type === 'sqlite' ? c.filepath : c.host)
   const dbName = (c) => (c.type === 'sqlite' ? (c.filepath || '').split('/').pop() : c.database)
   const hasFilters =
@@ -251,19 +235,19 @@ export default function ConnectionsPage() {
               variant="primary"
               size="sm"
               disabled={connectingId === c.id}
-              onClick={() => openConsole(c)}
+              onClick={() => connect(c)}
             >
               {connectingId === c.id ? 'Connecting…' : 'Connect'}
             </Button>
             <RowMenu label={`Actions for ${c.name}`}>
               {({ close }) => (
                 <div className="p-1">
-                  <MenuItem onClick={() => { close(); setDetailConn(c) }}>
+                  <MenuItem onClick={() => { close(); openDetail(c) }}>
                     <InfoIcon width={14} height={14} /> Details
                   </MenuItem>
                   {/* Defining a connection is the owner's job; a member uses it. */}
                   {isOwner && (
-                    <MenuItem onClick={() => { close(); setFormConn({ mode: 'edit', conn: c }) }}>
+                    <MenuItem onClick={() => { close(); openEdit(c) }}>
                       <EditIcon width={14} height={14} /> Edit
                     </MenuItem>
                   )}
@@ -298,67 +282,6 @@ export default function ConnectionsPage() {
     resetKey: `${query}|${activeEnv}|${activeFolder}|${activeType}|${activeStatus}`,
   })
 
-  if (formConn) {
-    return (
-      <ConnectionForm
-        initial={formConn.mode === 'edit' ? formConn.conn : null}
-        initialType={formConn.type}
-        initialTab={formConn.tab}
-        onClose={() => setFormConn(null)}
-        onSave={handleSave}
-      />
-    )
-  }
-
-  // Export/import + handshake dialogs live outside the list ↔ detail switch
-  // below, so both views can open them.
-  const modals = (
-    <>
-      {failure && (
-        <ConnectHandshakeDialog
-          conn={failure.conn}
-          result={failure.result}
-          busy={connectingId === failure.conn.id}
-          onRetry={() => connect(failure.conn)}
-          onEdit={() => {
-            dismiss()
-            setFormConn({ mode: 'edit', conn: failure.conn })
-          }}
-          onOpenAnyway={() => openAnyway(failure.conn)}
-          onClose={dismiss}
-        />
-      )}
-      {exporting && <ConnectionExportModal conn={exporting} onClose={() => setExporting(null)} />}
-      {importDoc && (
-        <ConnectionImportModal
-          doc={importDoc}
-          onClose={() => setImportDoc(null)}
-          onImported={(conn) => {
-            setImportDoc(null)
-            setDetailConn(conn)
-          }}
-        />
-      )}
-    </>
-  )
-
-  if (detailConn) {
-    return (
-      <>
-        <ConnectionDetail
-          conn={detailConn}
-          onBack={() => setDetailConn(null)}
-          onOpen={openConsole}
-          connecting={connectingId === detailConn.id}
-          onEdit={(c, tab) => setFormConn({ mode: 'edit', conn: c, tab })}
-          onDelete={(c) => setDeleting(c)}
-          onExport={(c) => setExporting(c)}
-        />
-        {modals}
-      </>
-    )
-  }
-
   return (
     <>
       <div className="w-full">
@@ -367,7 +290,7 @@ export default function ConnectionsPage() {
           desc={isOwner ? 'Manage the databases connected to this workspace.' : 'The databases you can open in this workspace.'}
           action={
             isOwner && (
-              <div className="flex items-center gap-2">
+              <>
                 <input
                   ref={importFileRef}
                   type="file"
@@ -385,7 +308,7 @@ export default function ConnectionsPage() {
                 <Button variant="primary" size="lg" icon={PlusIcon} onClick={() => setPicker(true)}>
                   New connection
                 </Button>
-              </div>
+              </>
             )
           }
         />
@@ -439,7 +362,7 @@ export default function ConnectionsPage() {
         <DataTable
           columns={columns}
           rowKey={(c) => c.id}
-          onRowClick={(c) => setDetailConn(c)}
+          onRowClick={openDetail}
           loading={loading}
           empty={
             hasFilters ? (
@@ -457,13 +380,13 @@ export default function ConnectionsPage() {
         />
       </div>
 
-      {/* DB-type picker */}
+      {/* DB-type picker — a shortcut into the form route with the engine chosen. */}
       {picker && (
         <DbTypePickerModal
           onClose={() => setPicker(false)}
           onPick={(typeId) => {
-            setFormConn({ mode: 'new', type: typeId })
             setPicker(false)
+            navigate(`/connections/new?type=${typeId}`)
           }}
         />
       )}
@@ -480,7 +403,33 @@ export default function ConnectionsPage() {
         />
       )}
 
-      {modals}
+      {exporting && <ConnectionExportModal conn={exporting} onClose={() => setExporting(null)} />}
+
+      {importDoc && (
+        <ConnectionImportModal
+          doc={importDoc}
+          onClose={() => setImportDoc(null)}
+          onImported={(conn) => {
+            setImportDoc(null)
+            navigate(`/connections/${conn.id}`)
+          }}
+        />
+      )}
+
+      {failure && (
+        <ConnectHandshakeDialog
+          conn={failure.conn}
+          result={failure.result}
+          busy={connectingId === failure.conn.id}
+          onRetry={() => connect(failure.conn)}
+          onEdit={() => {
+            dismiss()
+            openEdit(failure.conn)
+          }}
+          onOpenAnyway={() => openAnyway(failure.conn)}
+          onClose={dismiss}
+        />
+      )}
     </>
   )
 }

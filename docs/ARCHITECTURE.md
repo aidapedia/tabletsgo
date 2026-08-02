@@ -26,6 +26,10 @@ src/
 │   │   ├── form/                 #   Form/FormField/Label, Input/Textarea, PasswordInput, Select, Checkbox,
 │   │   │                         #     CheckboxRow, SearchInput, Toggle, NumberStepper, Segmented
 │   │   ├── navigation/           #   NavItem, Tab, MenuItem
+│   │   ├── page/                 #   the page shell every full-page view shares: PageHeader (back link +
+│   │   │                         #     media/title/meta + actions), PageTabs (the tab bar AND the active
+│   │   │                         #     tab's body, so spacing can't drift), Narrow (a capped content
+│   │   │                         #     column — pages never cap themselves, HomeLayout owns the width)
 │   │   ├── overlay/              #   Popover, Tooltip, ContextMenu
 │   │   ├── feedback/             #   Toast, ConfirmDialog, TypeToConfirmDialog, LoadingState, EmptyState, Wizard
 │   │   ├── table/                #   DataTable (the shared list-as-table: sortable columns, row click,
@@ -206,15 +210,23 @@ src/
     │                             #   RequireWorkspaceUser send each audience to the other's home
     ├── console/                  # WorkspacePage — the per-connection DB console (route /connection/:id)
     └── home/                     # the authenticated home shell — one file per sidebar section
-        ├── HomeLayout            #   sidebar + <Outlet/>; every section route renders inside it
-        ├── ui                    #   shared page primitives: PageHeader, Section, TabbedSection, SubHead, ComingSoon
+        ├── HomeLayout            #   sidebar (grouped nav, rows are real <a> so they can be opened in a
+        │                         #   new tab) + <Outlet/> inside THE content container: one max-width,
+        │                         #   centered, shared by every page — a page never sets its own width
+        ├── ui                    #   page composition: Section, TabbedSection, SubHead, ComingSoon, plus
+        │                         #   re-exports of shared/ui/page's PageHeader / PageTabs / Narrow
+        ├── useTabRoute           #   binds a tab bar to a path segment; the bare section path redirects
+        │                         #   to the first tab so every tab has a pasteable address
         ├── DashboardPage (/)     #   connection + member counts
-        ├── ConnectionsPage       #   stat cards + filter bar (search / env / folder / type / status)
+        ├── ConnectionsPage       #   /connections — filter bar (search / env / folder / type / status)
         │                         #   over the connection list, rendered with shared/ui/table's DataTable
-        │                         #   (sortable columns, 10/page, row click → detail); detail/picker/form
-        │                         #   come from features/connections
+        │                         #   (sortable columns, 10/page, row click → detail)
+        ├── ConnectionDetailPage  #   /connections/:id/:tab — one connection (features/connections'
+        │                         #   ConnectionDetail); the tab lives in the URL
+        ├── ConnectionFormPage    #   /connections/new (engine in ?type=) and /connections/:id/edit/:tab —
+        │                         #   both modes of features/connections' ConnectionForm
         ├── StoragePage           # /storage → S3 storage destinations (StorageList), top-level sidebar item
-        ├── WorkspaceSettingsPage # /workspace → General / Member / Integrations / Notification tabs
+        ├── WorkspaceSettingsPage # /workspace → General / Config / Member / Teams tabs
         └── SettingsPage          # /settings → Account / Theme / Data / Keymap / Updates tabs (Account
                                   #   renders features/auth's ProfileSetting + PasswordSetting; Updates
                                   #   renders UpdatePanel)

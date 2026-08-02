@@ -1,9 +1,10 @@
-import { useNavigate, useParams } from 'react-router-dom'
+import { useParams } from 'react-router-dom'
 import { AppearanceSetting, DensitySetting, DataSetting } from '@/features/settings'
 import { useAuth, ProfileSetting, PasswordSetting } from '@/features/auth'
 import { KeymapSetting } from '@/features/keymap'
 import { UpdatePanel } from '@/features/system-update'
-import { SubHead, TabbedSection } from './ui'
+import { Narrow, SubHead, TabbedSection } from './ui'
+import useTabRoute from './useTabRoute'
 
 /**
  * Personal settings — tabs are a second path segment.
@@ -17,7 +18,6 @@ import { SubHead, TabbedSection } from './ui'
  * caller's own row in `users`, not on a role.
  */
 export default function SettingsPage() {
-  const navigate = useNavigate()
   const { sub } = useParams()
   const { user } = useAuth()
   const isSystemAdmin = user?.role === 'admin'
@@ -27,27 +27,27 @@ export default function SettingsPage() {
       id: 'account',
       label: 'Account',
       body: (
-        <div>
+        <Narrow>
           <SubHead title="Profile" desc="Your name and sign-in email." />
           <ProfileSetting />
           <div className="mt-10 border-t border-edge pt-8">
             <SubHead title="Password" desc="Change the password you sign in with." />
             <PasswordSetting />
           </div>
-        </div>
+        </Narrow>
       ),
     },
     {
       id: 'theme',
       label: 'Theme',
       body: (
-        <div>
+        <Narrow>
           <AppearanceSetting />
           <div className="mt-8">
             <SubHead title="Density" desc="Adjust spacing and text size across the app." />
             <DensitySetting />
           </div>
-        </div>
+        </Narrow>
       ),
     },
     ...(isSystemAdmin
@@ -57,10 +57,10 @@ export default function SettingsPage() {
             id: 'data',
             label: 'Data',
             body: (
-              <div>
+              <Narrow>
                 <SubHead title="Data" desc="Control how Tabletsgo loads data and runs your changes." />
                 <DataSetting />
-              </div>
+              </Narrow>
             ),
           },
           {
@@ -80,23 +80,25 @@ export default function SettingsPage() {
             id: 'updates',
             label: 'Updates',
             body: (
-              <div>
+              <Narrow>
                 <SubHead title="Updates" desc="Check for new Tabletsgo releases and update safely." />
                 <UpdatePanel />
-              </div>
+              </Narrow>
             ),
           },
         ]
       : []),
   ]
 
+  const { active, onTab } = useTabRoute('/settings', tabs, sub)
+
   return (
     <TabbedSection
       title="Setting"
       desc="Personalize how Tabletsgo works for you."
       tabs={tabs}
-      active={sub || ''}
-      onTab={(id) => navigate(`/settings/${id}`)}
+      active={active}
+      onTab={onTab}
     />
   )
 }

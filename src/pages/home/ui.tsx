@@ -1,27 +1,34 @@
-// Shared, left-aligned page primitives used by every home section page.
+// Composition helpers shared by every section page. The header/tab/column
+// primitives themselves live in `shared/ui/page` so the feature components
+// rendered inside a page (connection detail, connection form) can use the exact
+// same ones without importing back out of `pages/`.
 import type { ReactNode } from 'react'
-import Tab from '@/shared/ui/navigation/Tab'
+import PageHeader from '@/shared/ui/page/PageHeader'
+import PageTabs from '@/shared/ui/page/PageTabs'
+import Narrow from '@/shared/ui/page/Narrow'
 
-// Page header (title + subtitle + optional right-aligned action).
-export function PageHeader({ title, desc, action }: { title: string; desc?: string; action?: ReactNode }) {
-  return (
-    <div className="flex items-start justify-between gap-4">
-      <div className="min-w-0">
-        <h1 className="text-[22px] font-bold tracking-[-0.4px] max-[600px]:text-[19px]">{title}</h1>
-        {desc && <p className="mt-1.5 text-[13px] text-ink-dim">{desc}</p>}
-      </div>
-      {action && <div className="shrink-0">{action}</div>}
-    </div>
-  )
-}
+export { PageHeader, PageTabs, Narrow }
 
-// A titled content section with heading + description. Full width by default;
-// pass `max` to cap it. `action` is the section's primary button, rendered in
-// the header rather than inside the content — the same place ConnectionsPage
-// puts "New connection", so every list page reads the same way.
-export function Section({ title, desc, children, max, action }: any) {
+/**
+ * A plain section page: header + content.
+ *
+ * No width prop — every page fills HomeLayout's container so headers, tables
+ * and tab bars line up across sections. Content that needs to be narrower says
+ * so itself with `<Narrow>`.
+ */
+export function Section({
+  title,
+  desc,
+  children,
+  action,
+}: {
+  title: string
+  desc?: string
+  children: ReactNode
+  action?: ReactNode
+}) {
   return (
-    <div className="w-full" style={max ? { maxWidth: max } : undefined}>
+    <div className="w-full">
       <PageHeader title={title} desc={desc} action={action} />
       <div className="mt-7">{children}</div>
     </div>
@@ -40,36 +47,35 @@ export function SubHead({ title, desc }: { title: string; desc?: string }) {
 
 type TabItem = { id: string; label: string; body: ReactNode }
 
-// A section page whose child sections render as tabs (e.g. Workspace → General / Member / SMTP).
+/**
+ * A section page whose children are tabs (Workspace → General / Member / …).
+ *
+ * `active` is whatever the URL says; an unknown or empty value falls back to
+ * the first tab, and the page is expected to rewrite the URL to match (see
+ * `useTabRoute`) so every tab has an address you can paste.
+ */
 export function TabbedSection({
   title,
   desc,
   tabs,
   active,
   onTab,
-  max,
+  action,
 }: {
   title: string
   desc?: string
   tabs: TabItem[]
   active: string
   onTab: (id: string) => void
-  max?: number
+  action?: ReactNode
 }) {
   const current = tabs.find((t) => t.id === active) || tabs[0]
   return (
-    <div className="w-full" style={max ? { maxWidth: max } : undefined}>
-      <PageHeader title={title} desc={desc} />
-
-      <div className="mt-6 flex items-center gap-5 border-b border-edge">
-        {tabs.map((t) => (
-          <Tab key={t.id} active={current.id === t.id} onClick={() => onTab(t.id)}>
-            {t.label}
-          </Tab>
-        ))}
-      </div>
-
-      <div className="mt-7">{current.body}</div>
+    <div className="w-full">
+      <PageHeader title={title} desc={desc} action={action} />
+      <PageTabs tabs={tabs.map(({ id, label }) => ({ id, label }))} active={current.id} onTab={onTab}>
+        {current.body}
+      </PageTabs>
     </div>
   )
 }

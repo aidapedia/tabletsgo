@@ -9,6 +9,8 @@ import ResetPasswordPage from '@/pages/auth/ResetPasswordPage'
 import HomeLayout from '@/pages/home/HomeLayout'
 import DashboardPage from '@/pages/home/DashboardPage'
 import ConnectionsPage from '@/pages/home/ConnectionsPage'
+import ConnectionDetailPage from '@/pages/home/ConnectionDetailPage'
+import ConnectionFormPage from '@/pages/home/ConnectionFormPage'
 import WorkspaceSettingsPage from '@/pages/home/WorkspaceSettingsPage'
 import NotificationsPage from '@/pages/home/NotificationsPage'
 import StoragePage from '@/pages/home/StoragePage'
@@ -90,7 +92,16 @@ export function AppRoutes() {
         }
       >
         <Route path="/" element={<DashboardPage />} />
+        {/* Connections: list, create, detail (tab in the path) and edit are four
+            addresses, not four states of one page — each survives a refresh and
+            can be pasted to a teammate. `new` and `edit` are static segments, so
+            react-router ranks them above `/connections/:id/:tab`. */}
         <Route path="/connections" element={<ConnectionsPage />} />
+        <Route path="/connections/new" element={<ConnectionFormPage />} />
+        <Route path="/connections/:id" element={<ConnectionDetailPage />} />
+        <Route path="/connections/:id/edit" element={<ConnectionFormPage />} />
+        <Route path="/connections/:id/edit/:tab" element={<ConnectionFormPage />} />
+        <Route path="/connections/:id/:tab" element={<ConnectionDetailPage />} />
         <Route path="/workspace" element={<WorkspaceSettingsPage />} />
         <Route path="/workspace/:sub" element={<WorkspaceSettingsPage />} />
         <Route path="/notifications" element={<NotificationsPage />} />

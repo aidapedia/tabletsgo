@@ -1,12 +1,12 @@
-import { useNavigate, useParams } from 'react-router-dom'
+import { useParams } from 'react-router-dom'
 import { useWorkspaces, MembersPanel, WorkspaceGeneral, WorkspaceConfig, TeamsPanel } from '@/features/workspaces'
-import { SubHead, TabbedSection } from './ui'
+import { Narrow, SubHead, TabbedSection } from './ui'
+import useTabRoute from './useTabRoute'
 import LoadingState from '@/shared/ui/feedback/LoadingState'
 
 // Workspace section — General / Config / Member / Teams as tabs (a second path segment).
 // Integration + Notification moved to their own /integrations sidebar section.
 export default function WorkspaceSettingsPage() {
-  const navigate = useNavigate()
   const { sub } = useParams()
   const { current } = useWorkspaces()
   const isOwner = current?.role === 'owner'
@@ -16,20 +16,20 @@ export default function WorkspaceSettingsPage() {
       id: 'general',
       label: 'General',
       body: (
-        <div>
+        <Narrow>
           <SubHead title="General" desc="Manage the general settings of this workspace." />
           <WorkspaceGeneral />
-        </div>
+        </Narrow>
       ),
     },
     {
       id: 'config',
       label: 'Config',
       body: (
-        <div>
+        <Narrow>
           <SubHead title="Config" desc="Defaults every connection in this workspace inherits." />
           <WorkspaceConfig />
-        </div>
+        </Narrow>
       ),
     },
     {
@@ -62,13 +62,15 @@ export default function WorkspaceSettingsPage() {
     },
   ]
 
+  const { active, onTab } = useTabRoute('/workspace', tabs, sub)
+
   return (
     <TabbedSection
       title="Workspace"
       desc={`Manage ${current?.name || 'your workspace'} and its members.`}
       tabs={tabs}
-      active={sub || ''}
-      onTab={(id) => navigate(`/workspace/${id}`)}
+      active={active}
+      onTab={onTab}
     />
   )
 }

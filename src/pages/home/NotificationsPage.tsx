@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useWorkspaces, NotificationSettings, getWorkspace, type InstanceSmtp } from '@/features/workspaces'
-import { Section } from './ui'
+import { Narrow, Section } from './ui'
 import LoadingState from '@/shared/ui/feedback/LoadingState'
 
 // Notification section — the emails Tabletsgo sends for this workspace. The
@@ -22,7 +22,7 @@ export default function NotificationsPage() {
   return (
     <Section title="Notification" desc="Manage the notifications Tabletsgo sends to your team.">
       {current ? (
-        <>
+        <Narrow>
           {checked && (
             <p className="mb-5 text-[12px] text-ink-dim">
               {smtp
@@ -31,7 +31,7 @@ export default function NotificationsPage() {
             </p>
           )}
           <NotificationSettings workspaceId={current.id} />
-        </>
+        </Narrow>
       ) : (
         <LoadingState className="" />
       )}

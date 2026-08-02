@@ -6,14 +6,13 @@ import { listConnectionSessions, listTables, pingConnection } from '@/shared/api
 import type { SessionStats } from '@/shared/api/database'
 import Button from '@/shared/ui/buttons/Button'
 import IconButton from '@/shared/ui/buttons/IconButton'
-import TextButton from '@/shared/ui/buttons/TextButton'
-import Tab from '@/shared/ui/navigation/Tab'
+import PageHeader from '@/shared/ui/page/PageHeader'
+import PageTabs from '@/shared/ui/page/PageTabs'
 import Badge from '@/shared/ui/Badge'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
 import Popover from '@/shared/ui/overlay/Popover'
 import { useToast } from '@/shared/ui/feedback/Toast'
 import {
-  ChevronLeft,
   CopyIcon,
   DatabaseIcon,
   DbLogo,
@@ -25,6 +24,12 @@ import {
   TableIcon,
   TrashIcon,
 } from '@/shared/ui/icons'
+
+export const DETAIL_TABS = [
+  { id: 'data', label: 'Data Connection' },
+  { id: 'access', label: 'Access' },
+  { id: 'backup', label: 'Backup' },
+]
 
 // `bg-status-ok` (a fixed green), not `bg-green` — the latter follows the
 // workspace accent, and "Connected" has to read as green whatever that is.
@@ -70,10 +75,10 @@ function DetailRow({ label, value }: { label: string; value?: string }) {
 }
 
 // Full-page connection detail: Data Connection / Access / Backup tabs, each laid
-// out as a main column + a context sidebar.
-export default function ConnectionDetail({ conn, onBack, onOpen, onEdit, onDelete, onExport, connecting }: any) {
+// out as a main column + a context sidebar. The tab is controlled by the page
+// (it lives in the URL as `/connections/:id/:tab`), so a tab is linkable.
+export default function ConnectionDetail({ conn, onBack, onOpen, onEdit, onDelete, onExport, connecting, tab = 'data', onTab }: any) {
   const toast = useToast()
-  const [tab, setTab] = useState<'data' | 'access' | 'backup'>('data')
   const [status, setStatus] = useState<'checking' | 'connected' | 'offline'>('checking')
   const [tableCount, setTableCount] = useState<number | null>(null)
   const [sessions, setSessions] = useState<SessionStats | null>(null)
@@ -113,70 +118,55 @@ export default function ConnectionDetail({ conn, onBack, onOpen, onEdit, onDelet
 
   return (
     <div className="w-full">
-      <TextButton onClick={onBack} className="mb-4">
-        <ChevronLeft width={16} height={16} /> All connections
-      </TextButton>
-
-      {/* Header */}
-      <div className="flex items-center justify-between gap-4 rounded-card border border-edge bg-card p-5">
-        <div className="flex min-w-0 items-center gap-4">
-          <DbLogo type={conn.type} className="h-12 w-12 shrink-0 rounded-[12px]" />
-          <div className="min-w-0">
-            <div className="flex items-center gap-2.5">
-              <h1 className="truncate text-[20px] font-bold tracking-[-0.3px]">{conn.name}</h1>
-              <StatusBadge status={status} />
-            </div>
-            <div className="mt-0.5 truncate text-[12px] text-ink-dim">{subtitleParts.join(' · ')}</div>
-          </div>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <Button variant="subtle" size="sm" icon={EditIcon} onClick={() => onEdit(conn)}>
-            Edit
-          </Button>
-          <Popover
-            align="right"
-            width={180}
-            trigger={({ open, toggle }) => (
-              <IconButton onClick={toggle} active={open} aria-label="Connection actions">
-                <MoreVerticalIcon width={16} height={16} />
-              </IconButton>
-            )}
-          >
-            {({ close }) => (
-              <div className="p-1">
-                <MenuItem onClick={() => { copyUrl(); close() }}>
-                  <CopyIcon width={14} height={14} /> Copy as URL
-                </MenuItem>
-                {onExport && (
-                  <MenuItem onClick={() => { close(); onExport(conn) }}>
-                    <DownloadIcon width={14} height={14} /> Export as JSON
+      <PageHeader
+        back={{ label: 'All connections', onClick: onBack }}
+        media={<DbLogo type={conn.type} className="h-12 w-12 rounded-[12px]" />}
+        title={conn.name}
+        meta={<StatusBadge status={status} />}
+        desc={subtitleParts.join(' · ')}
+        action={
+          <>
+            <Button variant="subtle" size="lg" icon={EditIcon} onClick={() => onEdit(conn)}>
+              Edit
+            </Button>
+            <Popover
+              align="right"
+              width={180}
+              trigger={({ open, toggle }) => (
+                <IconButton size="lg" onClick={toggle} active={open} aria-label="Connection actions">
+                  <MoreVerticalIcon width={16} height={16} />
+                </IconButton>
+              )}
+            >
+              {({ close }) => (
+                <div className="p-1">
+                  <MenuItem onClick={() => { copyUrl(); close() }}>
+                    <CopyIcon width={14} height={14} /> Copy as URL
                   </MenuItem>
-                )}
-                {onDelete && (
-                  <>
-                    <div className="my-1 h-px bg-edge" />
-                    <MenuItem danger onClick={() => { close(); onDelete(conn) }}>
-                      <TrashIcon width={14} height={14} /> Delete
+                  {onExport && (
+                    <MenuItem onClick={() => { close(); onExport(conn) }}>
+                      <DownloadIcon width={14} height={14} /> Export as JSON
                     </MenuItem>
-                  </>
-                )}
-              </div>
-            )}
-          </Popover>
-          <Button variant="primary" size="sm" icon={ExternalLinkIcon} disabled={connecting} onClick={() => onOpen(conn)}>
-            {connecting ? 'Connecting…' : 'Connect'}
-          </Button>
-        </div>
-      </div>
+                  )}
+                  {onDelete && (
+                    <>
+                      <div className="my-1 h-px bg-edge" />
+                      <MenuItem danger onClick={() => { close(); onDelete(conn) }}>
+                        <TrashIcon width={14} height={14} /> Delete
+                      </MenuItem>
+                    </>
+                  )}
+                </div>
+              )}
+            </Popover>
+            <Button variant="primary" size="lg" icon={ExternalLinkIcon} disabled={connecting} onClick={() => onOpen(conn)}>
+              {connecting ? 'Connecting…' : 'Connect'}
+            </Button>
+          </>
+        }
+      />
 
-      {/* Tabs */}
-      <div className="mt-5 flex items-center gap-5 border-b border-edge">
-        <Tab active={tab === 'data'} onClick={() => setTab('data')}>Data Connection</Tab>
-        <Tab active={tab === 'access'} onClick={() => setTab('access')}>Access</Tab>
-        <Tab active={tab === 'backup'} onClick={() => setTab('backup')}>Backup</Tab>
-      </div>
-
-      <div className="mt-6">
+      <PageTabs tabs={DETAIL_TABS} active={tab} onTab={onTab}>
         {tab === 'data' ? (
           <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
             {/* Main */}
@@ -248,7 +238,7 @@ export default function ConnectionDetail({ conn, onBack, onOpen, onEdit, onDelet
             onConfigure={() => onEdit(conn, 'backup')}
           />
         )}
-      </div>
+      </PageTabs>
     </div>
   )
 }

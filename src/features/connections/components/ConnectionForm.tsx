@@ -2,11 +2,13 @@ import { useState } from 'react'
 import { useConnections } from '../stores/ConnectionsContext'
 import { BackupConfigForm } from '@/features/backup'
 import { useToast } from '@/shared/ui/feedback/Toast'
-import { ChevronLeft, CloseIcon, DbLogo, PlusSmall, ShieldIcon } from '@/shared/ui/icons'
+import { CloseIcon, DbLogo, PlusSmall, ShieldIcon } from '@/shared/ui/icons'
 import Select from '@/shared/ui/form/Select'
 import Button from '@/shared/ui/buttons/Button'
 import TextButton from '@/shared/ui/buttons/TextButton'
-import Tab from '@/shared/ui/navigation/Tab'
+import PageHeader from '@/shared/ui/page/PageHeader'
+import PageTabs from '@/shared/ui/page/PageTabs'
+import Narrow from '@/shared/ui/page/Narrow'
 import { controlClass, Input } from '@/shared/ui/form/Input'
 import PasswordInput from '@/shared/ui/form/PasswordInput'
 import { Label } from '@/shared/ui/form/Form'
@@ -115,9 +117,9 @@ function parseUri(uri, type) {
 
 // Full-page create/edit connection form (General / Backup tabs — Backup only
 // once the connection exists). General holds everything that identifies and
-// reaches the database, SSL/TLS included. Replaces the old slide-over modal;
-// rendered inline by ConnectionsPage the same way ConnectionDetail is.
-export default function ConnectionForm({ initial, initialType, initialTab, onClose, onSave }) {
+// reaches the database, SSL/TLS included. Its own route, like the detail view:
+// the page owns the tab so `/connections/:id/edit/backup` is a real address.
+export default function ConnectionForm({ initial, initialType, tab = 'general', onTab, onClose, onSave }) {
   const { testConnection } = useConnections()
   const toast = useToast()
   const isEdit = !!initial
@@ -126,7 +128,6 @@ export default function ConnectionForm({ initial, initialType, initialTab, onClo
     if (initial) return { ...blankFor(initial.type), ...initial }
     return blankFor(initialType)
   })
-  const [tab, setTab] = useState(initialTab || 'general') // general | backup
   const [tagDraft, setTagDraft] = useState('')
   const [addingTag, setAddingTag] = useState(false)
   const [test, setTest] = useState(null) // { ok, message } | 'loading'
@@ -162,7 +163,7 @@ export default function ConnectionForm({ initial, initialType, initialTab, onClo
 
   const pickType = (t) => {
     setForm((f) => ({ ...blankFor(t.id), name: f.name, folder: f.folder, tags: f.tags }))
-    setTab('general')
+    if (tab !== 'general') onTab?.('general')
     setTest(null)
   }
 
@@ -211,26 +212,9 @@ export default function ConnectionForm({ initial, initialType, initialTab, onClo
 
   const tags = form.tags || []
 
-  return (
-    <div className="w-full">
-      <TextButton onClick={onClose} className="mb-5">
-        <ChevronLeft width={16} height={16} /> All connections
-      </TextButton>
-
-      <h1 className="text-[22px] font-bold tracking-[-0.4px]">{isEdit ? 'Edit Connection' : 'New Connection'}</h1>
-
-      {tabs.length > 1 && (
-        <div className="mt-6 flex items-center gap-5 border-b border-edge">
-          {tabs.map((t) => (
-            <Tab key={t.id} active={activeTab === t.id} onClick={() => setTab(t.id)}>
-              {t.label}
-            </Tab>
-          ))}
-        </div>
-      )}
-
-      <div className="mt-6 max-w-[640px]">
-        {activeTab === 'backup' ? (
+  const body = (
+    <Narrow width={640}>
+      {activeTab === 'backup' ? (
           <BackupConfigForm connectionId={initial.id} connectionType={form.type} workspaceId={initial.workspaceId} />
         ) : (
           <>
@@ -466,7 +450,29 @@ export default function ConnectionForm({ initial, initialType, initialTab, onClo
             </div>
           </>
         )}
-      </div>
+    </Narrow>
+  )
+
+  return (
+    <div className="w-full">
+      <PageHeader
+        back={{ label: 'All connections', onClick: onClose }}
+        title={isEdit ? 'Edit connection' : 'New connection'}
+        desc={
+          isEdit
+            ? 'Update how Tabletsgo reaches this database.'
+            : 'Point Tabletsgo at a database — it is tested before it is saved.'
+        }
+      />
+
+      {/* One tab means no tab bar: a new connection has nothing to back up yet. */}
+      {tabs.length > 1 ? (
+        <PageTabs tabs={tabs} active={activeTab} onTab={(id) => onTab?.(id)}>
+          {body}
+        </PageTabs>
+      ) : (
+        <div className="mt-7">{body}</div>
+      )}
     </div>
   )
 }
