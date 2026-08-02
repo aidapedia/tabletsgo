@@ -90,6 +90,7 @@ import {
   getRole,
   listRoles,
   roleExists,
+  roleUsageCounts,
   updateRole,
 } from './server/permissions.js'
 import {
@@ -719,9 +720,13 @@ app.post('/api/admin/smtp/test', async (req, res) => {
 // The instance's role catalog, readable by any signed-in user: a workspace owner
 // needs the names to assign one, and the client needs the permission lists to
 // explain what each grants. Editing them is admin-only (/api/admin/roles).
+//
+// `memberCount` rides along (one grouped query, not one per role) so the admin
+// list can show who is affected by an edit — and why a delete would be refused.
 app.get('/api/roles', (req, res) => {
   if (!requireAuth(req, res)) return
-  res.json(listRoles())
+  const usage = roleUsageCounts()
+  res.json(listRoles().map((r) => ({ ...r, memberCount: usage[r.slug] || 0 })))
 })
 
 // Workspaces the caller belongs to.

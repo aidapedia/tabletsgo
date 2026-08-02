@@ -51,7 +51,7 @@ src/
 | Feature | What it owns |
 | --- | --- |
 | `auth` | AuthContext, login/setup/invite, the caller's own account settings |
-| `admin` | instance-admin area (system role `admin`): workspaces, users, the role catalog, the one SMTP config |
+| `admin` | instance-admin area (system role `admin`): workspaces, users, the one SMTP config |
 | `workspaces` | org/tenant layer: current workspace, members, teams, notifications, general settings |
 | `workspace` | **the per-connection DB console** — DataGrid, TableView, QueryEditor, tabs, status bar |
 | `connections` | connection CRUD, access, type picker, switcher modal, export/import, connect handshake |

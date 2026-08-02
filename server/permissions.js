@@ -171,6 +171,25 @@ export const deleteRole = (slug) => {
 export const countRoleUsage = (slug) => meta.prepare('SELECT COUNT(*) c FROM workspace_members WHERE role = ?').get(slug).c
 
 /**
+ * How many memberships hold each role, as `{ [slug]: count }`.
+ *
+ * One grouped query rather than `countRoleUsage` per role — and deliberately not
+ * folded into the cached policy: usage changes on every invite and role move,
+ * while the policy only changes when an admin edits it, so caching the two
+ * together would mean invalidating the policy far more often than it changes.
+ * Pre-v8 rows spelled `owner` as `admin`; fold them in so the count matches what
+ * the delete guard will actually find.
+ */
+export const roleUsageCounts = () => {
+  const counts = {}
+  for (const { role, c } of meta.prepare('SELECT role, COUNT(*) c FROM workspace_members GROUP BY role').all()) {
+    const slug = role === 'admin' ? 'owner' : role
+    counts[slug] = (counts[slug] || 0) + c
+  }
+  return counts
+}
+
+/**
  * A URL-safe slug derived from the name, suffixed if taken. This is what
  * `workspace_members.role` stores, so it is fixed at creation — renaming a role
  * later leaves every membership untouched.

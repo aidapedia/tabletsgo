@@ -615,14 +615,22 @@ A failed workspace-tier check returns
 when the caller is in the workspace, and `403 { "error": "Forbidden" }` when they
 aren't — so a client can tell "ask an owner" from "wrong workspace".
 
-- `GET /api/roles` → `[{ id, slug, name, description, builtin, permissions, createdAt, updatedAt }]`.
+- `GET /api/roles` → `[{ id, slug, name, description, builtin, permissions, memberCount, createdAt, updatedAt }]`.
   Readable by **any signed-in user**: assigning a member a role needs the names,
   and the UI explains what each grants. Built-ins first, then alphabetical.
+  `memberCount` is how many memberships across the instance hold the role (one
+  grouped query, not one per role) — who an edit affects, and whether a delete
+  will be refused. The write endpoints below return the role **without** it.
 - **Example:** `GET http://localhost:3000/api/roles`
 
 ### Managing roles (`/api/admin/*`, system admin only)
 
-- `GET /api/admin/permissions` → the catalog grouped for the editor:
+> **API-only today — there is no Roles screen.** The app assigns roles (the
+> member dropdowns read `GET /api/roles`) but does not create them, so an
+> instance ships with the two seeded builtins unless an admin adds more through
+> these endpoints. They are fully enforced either way; the UI is what's missing.
+
+- `GET /api/admin/permissions` → the catalog grouped for a role editor:
   `[{ group, items: [{ key, label, description }] }]`. It comes from the server's
   **code**, not its database, so a UI can only ever offer a permission some route
   actually enforces.

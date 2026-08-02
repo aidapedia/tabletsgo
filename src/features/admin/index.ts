@@ -5,9 +5,7 @@
 export { default as AdminWorkspacesPanel } from './components/AdminWorkspacesPanel'
 export { default as AdminUsersPanel } from './components/AdminUsersPanel'
 export { default as AdminSmtpPanel } from './components/AdminSmtpPanel'
-export { default as AdminRolesPanel } from './components/AdminRolesPanel'
 export type { AdminUser, AdminWorkspace, AdminWorkspaceMember, GlobalSmtp, GlobalSmtpInfo, SystemRole } from './api'
-export { listPermissionCatalog, createRole, updateRole, deleteRole } from './api'
 export {
   listAllWorkspaces,
   createWorkspaceAs,

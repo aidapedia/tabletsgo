@@ -56,7 +56,6 @@ src/
 │   ├── admin/                    # the instance-admin area (system role 'admin' only): AdminWorkspacesPanel
 │   │                             #   (every workspace + who owns it; create/rename/delete, grant ownership)
 │   │                             #   AdminUsersPanel (accounts, system role, invites, password reset)
-│   │                             #   AdminRolesPanel (the workspace role catalog + its permission matrix)
 │   │                             #   and AdminSmtpPanel + SmtpForm (the instance's one mail server —
 │   │                             #     the only place SMTP is configurable; see `auth-sessions` skill).
 │   │                             #   Reaches nothing inside a workspace — an admin has no membership
@@ -205,9 +204,8 @@ src/
     │                             #   ForgotPasswordPage, ResetPasswordPage
     ├── admin/                    # the instance-admin area, one file per sidebar section (same rule
     │                             #   as home/): AdminWorkspacesPage (/admin), AdminUsersPage
-    │                             #   (/admin/users), AdminRolesPage (/admin/roles — the workspace
-    │                             #   permission model) + AdminEmailPage (/admin/email — the
-    │                             #   instance-wide SMTP config) — no tabs, the sidebar switches. Only reachable
+    │                             #   (/admin/users) + AdminEmailPage (/admin/email — the instance-wide
+    │                             #   SMTP config) — no tabs, the sidebar switches. Only reachable
     │                             #   with the system role 'admin'; AppRoutes' RequireSystemAdmin /
     │                             #   RequireWorkspaceUser send each audience to the other's home
     ├── console/                  # WorkspacePage — the per-connection DB console (route /connection/:id)

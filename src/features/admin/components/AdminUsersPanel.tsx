@@ -13,6 +13,7 @@ import Tooltip from '@/shared/ui/overlay/Tooltip'
 import EmptyState from '@/shared/ui/feedback/EmptyState'
 import ConfirmDialog from '@/shared/ui/feedback/ConfirmDialog'
 import { useToast } from '@/shared/ui/feedback/Toast'
+import Modal from '@/shared/ui/overlay/Modal'
 import DataTable, { type Column } from '@/shared/ui/table/DataTable'
 import { RowAction, RowActions } from '@/shared/ui/table/RowActions'
 import useDataTable from '@/shared/ui/table/useDataTable'
@@ -565,19 +566,3 @@ function SetPasswordDialog({ user, onClose, onSaved }: { user: AdminUser; onClos
   )
 }
 
-function Modal({ title, children, onClose }: { title: string; children: React.ReactNode; onClose: () => void }) {
-  return (
-    <div
-      className="fixed inset-0 z-[60] flex animate-fade items-center justify-center bg-black/60 p-6 backdrop-blur-[3px]"
-      onMouseDown={onClose}
-    >
-      <div
-        className="w-full max-w-[440px] animate-pop rounded-[16px] border border-edge-strong bg-panel p-5"
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        <h3 className="mb-4 text-sm font-bold text-ink">{title}</h3>
-        {children}
-      </div>
-    </div>
-  )
-}

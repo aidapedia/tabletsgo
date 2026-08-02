@@ -19,7 +19,6 @@ import WorkspacePage from '@/pages/console/WorkspacePage'
 import AdminWorkspacesPage from '@/pages/admin/AdminWorkspacesPage'
 import AdminUsersPage from '@/pages/admin/AdminUsersPage'
 import AdminEmailPage from '@/pages/admin/AdminEmailPage'
-import AdminRolesPage from '@/pages/admin/AdminRolesPage'
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { user } = useAuth()
@@ -82,7 +81,6 @@ export function AppRoutes() {
       >
         <Route path="/admin" element={<AdminWorkspacesPage />} />
         <Route path="/admin/users" element={<AdminUsersPage />} />
-        <Route path="/admin/roles" element={<AdminRolesPage />} />
         <Route path="/admin/email" element={<AdminEmailPage />} />
       </Route>
       {/* Home shell — each sidebar section is its own page rendered into the layout's <Outlet/>. */}

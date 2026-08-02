@@ -65,6 +65,9 @@ export type Role = {
   description: string
   builtin: boolean
   permissions: Permission[]
+  // Memberships across the instance holding this role — who an edit affects, and
+  // why a delete would be refused.
+  memberCount?: number
   createdAt?: number
   updatedAt?: number
 }
