@@ -7,3 +7,5 @@ dist-ssr
 .vite
 demo.db
 data/*
+graphify-out
+.github/copilot-instructions.md
