@@ -17,6 +17,7 @@ import NotificationsPage from '@/pages/home/NotificationsPage'
 import StoragePage from '@/pages/home/StoragePage'
 import SettingsPage from '@/pages/home/SettingsPage'
 import ResourceTreePage from '@/pages/home/ResourceTreePage'
+import WorkflowsPage from '@/pages/home/WorkflowsPage'
 import WorkspacePage from '@/pages/console/WorkspacePage'
 import AdminWorkspacesPage from '@/pages/admin/AdminWorkspacesPage'
 import AdminUsersPage from '@/pages/admin/AdminUsersPage'
@@ -127,6 +128,9 @@ export function AppRoutes() {
             here instead of bouncing to the dashboard. */}
         <Route path="/notifications/:sub" element={<NotificationsPage />} />
         <Route path="/storage" element={<StoragePage />} />
+        {/* Workflows live on connections; this is the workspace-wide list of
+            them. A row opens the workflow in its connection's console. */}
+        <Route path="/workflows" element={<WorkflowsPage />} />
       </Route>
       {/* Personal settings (theme, local data, updates) belong to the account,
           not to a workspace — so both halves of the app get them. */}

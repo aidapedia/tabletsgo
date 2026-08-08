@@ -7,8 +7,10 @@
 // (e.g. WorkspacePage, which also needs WorkflowsPanel + the API), collapsing it
 // back into the main bundle and defeating the code-split.
 export { default as WorkflowsPanel } from '@/features/workflow/components/WorkflowsPanel'
+export { default as WorkspaceWorkflowList } from '@/features/workflow/components/WorkspaceWorkflowList'
 export {
   listWorkflows,
+  listWorkspaceWorkflows,
   getWorkflow,
   createWorkflow,
   updateWorkflow,
@@ -21,6 +23,6 @@ export {
   deleteWorkflowFolder,
   MAX_WORKFLOW_FOLDER_DEPTH,
 } from '@/features/workflow/lib/api'
-export type { Workflow, WorkflowSummary, WorkflowFolder, WorkflowGraph, RunResult, RunLogEntry } from '@/features/workflow/lib/api'
+export type { Workflow, WorkflowSummary, WorkspaceWorkflow, WorkflowFolder, WorkflowGraph, RunResult, RunLogEntry } from '@/features/workflow/lib/api'
 export { sanitizeGraph, stripSecrets } from '@/features/workflow/lib/exportImport'
 export type { WorkflowExport } from '@/features/workflow/lib/exportImport'

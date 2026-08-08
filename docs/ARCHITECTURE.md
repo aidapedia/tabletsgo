@@ -179,8 +179,11 @@ src/
 │   │   │                         #   folders tree (type='workflow'), 3-level cap — mirroring the dashboard feature)
 │   │   ├── components/           #   WorkflowEditor (export/import toolbar buttons), WorkflowsPanel (folder
 │   │   │                         #     tree: create/rename/delete/drag into folders + "Import from JSON…"),
-│   │   │                         #     NodePalette, NodeConfigPanel, RunLogPanel, nodes/WorkflowNode (spec card)
-│   │   └── lib/                  #   api (per-connection CRUD + run + folder CRUD via shared/api/folders),
+│   │   │                         #     NodePalette, NodeConfigPanel, RunLogPanel, nodes/WorkflowNode (spec card),
+│   │   │                         #     WorkspaceWorkflowList (the workspace-wide table behind /workflows —
+│   │   │                         #     read-only: schedule + last run per workflow, row opens it in its console)
+│   │   └── lib/                  #   api (per-connection CRUD + run + folder CRUD via shared/api/folders,
+│   │                             #     plus listWorkspaceWorkflows for the workspace-wide list),
 │   │                             #     nodeSpec (node catalog: manual, schedule, query, http, js, switch, loop,
 │   │                             #     export "Export SQL", storage "Store to Storage"), exportImport
 │   │                             #     (WorkflowExport type + sanitizeGraph/stripSecrets — webhook tokens
@@ -263,6 +266,9 @@ src/
         ├── ConnectionFormPage    #   /connections/new (engine in ?type=) and /connections/:id/edit/:tab —
         │                         #   both modes of features/connections' ConnectionForm
         ├── StoragePage           # /storage → S3 storage destinations (StorageList), top-level sidebar item
+        ├── WorkflowsPage         # /workflows → every workflow in the workspace, across its connections
+        │                         #   (features/workflow's WorkspaceWorkflowList); a row navigates to
+        │                         #   /connection/:id?workflow=<id>, which the console opens as a tab
         ├── ResourceTreePage      # /resource-tree/:nodeId? → the hierarchy on the left, the selected
         │                         #   node's owner / grants / your-access on the right. The selection is
         │                         #   in the URL, so a refresh keeps it and a link lands on it

@@ -1827,6 +1827,20 @@ not a workflow.
 > ordinary graphs — graphs containing `export`/`storage` get a 30-minute cap instead,
 > since a full database dump + upload can legitimately take longer.
 
+### GET `/api/workspaces/:id/workflows`
+Every workflow in a workspace, across the connections the caller can open —
+what the home area's **Workflow** section lists (one request instead of one per
+connection). Newest first, no graph body. `lastRun` is the most recent recorded
+run (`null` if it has never run), `nextRunAt` the scheduled next fire.
+
+Membership gates the workspace; each connection is then filtered by connection
+access, so this never shows a workflow the per-connection route below would
+refuse.
+
+- **200:** `[{ "id", "connectionId", "connectionName", "connectionType", "name", "ts", "protected", "scheduleEnabled", "nextRunAt", "folderId", "lastRun": { "status": "success" | "failed", "at" } | null }]`
+- **403:** `{ "error": "Forbidden" }` — not a member of the workspace.
+- **Example:** `GET http://localhost:3000/api/workspaces/ws-1/workflows`
+
 ### GET `/api/connections/:id/workflows`
 List workflows for a connection (newest first; no graph body). `folderId` is the
 containing folder (null = root; see the polymorphic Folders API with `type=workflow`).

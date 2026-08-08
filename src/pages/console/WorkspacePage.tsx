@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useAuth } from '@/features/auth'
 import { useConnections, ConnectionSwitcherModal } from '@/features/connections'
 import { useSettings } from '@/features/settings'
@@ -151,6 +151,11 @@ const centerState =
 export default function Workspace() {
   const { id } = useParams()
   const navigate = useNavigate()
+  // `?workflow=<id>` — a row of the workspace-wide Workflow section landing
+  // here. The console keeps its tabs in state, so this is the one tab a URL can
+  // ask for; it stays in the address so a refresh reopens the same workflow.
+  const [searchParams] = useSearchParams()
+  const deepLink = searchParams.get('workflow')
   const { user, logout } = useAuth()
   const toast = useToast()
   const { connections, patchLocalConnection } = useConnections()
@@ -357,7 +362,19 @@ export default function Workspace() {
     let alive = true
     fetchSaved(id).then((list) => alive && setSaved(list))
     fetchFolders(id).then((list) => alive && setFolders(list))
-    listWorkflows(id).then((list) => alive && setWorkflows(list))
+    listWorkflows(id).then((list) => {
+      if (!alive) return
+      setWorkflows(list)
+      // Deep link from the workspace-wide Workflow section: open that workflow
+      // rather than the default query tab. Claiming the auto-open here is what
+      // stops loadTables() from adding an empty query tab on top of it.
+      const w = deepLink && list.find((x) => x.id === deepLink)
+      if (w) {
+        autoOpenedFor.current = id
+        setPanel('workflows')
+        openWorkflow(w)
+      }
+    })
     fetchWorkflowFolders(id).then((list) => alive && setWorkflowFolders(list))
     listDashboards(id).then((list) => alive && setDashboards(list))
     fetchDashboardFolders(id).then((list) => alive && setDashboardFolders(list))
@@ -365,7 +382,7 @@ export default function Workspace() {
     return () => {
       alive = false
     }
-  }, [id])
+  }, [id, deepLink])
 
   // Esc closes the mobile slide-over sidebar drawer while it's open.
   useEffect(() => {

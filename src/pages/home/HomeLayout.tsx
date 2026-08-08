@@ -5,7 +5,7 @@ import { WorkspaceSwitcher } from '@/features/workspaces'
 import { UpdateBanner } from '@/features/system-update'
 import NavItem from '@/shared/ui/navigation/NavItem'
 import IconButton from '@/shared/ui/buttons/IconButton'
-import { BellIcon, BuildingIcon, CloudIcon, DatabaseIcon, GridIcon, Logo, LogoutIcon, MailIcon, MenuIcon, SettingsIcon, ShieldIcon, TreeIcon, UsersIcon } from '@/shared/ui/icons'
+import { BellIcon, BuildingIcon, CloudIcon, DatabaseIcon, GridIcon, Logo, LogoutIcon, MailIcon, MenuIcon, SettingsIcon, ShieldIcon, TreeIcon, UsersIcon, WorkflowIcon } from '@/shared/ui/icons'
 
 /**
  * Sidebar navigation model — groups of routes.
@@ -21,6 +21,7 @@ const NAV = [
     items: [
       { label: 'Dashboard', Icon: GridIcon, path: '/', exact: true },
       { label: 'Connection', Icon: DatabaseIcon, path: '/connections' },
+      { label: 'Workflow', Icon: WorkflowIcon, path: '/workflows' },
       { label: 'S3 Storage', Icon: CloudIcon, path: '/storage' },
     ],
   },

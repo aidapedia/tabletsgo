@@ -168,7 +168,7 @@ import {
   testStorage,
   updateStorage,
 } from './server/storage.js'
-import { executeAndRecord, nextRunForGraph, runDueWorkflows } from './server/workflow.js'
+import { executeAndRecord, listWorkflowsForConnections, nextRunForGraph, runDueWorkflows } from './server/workflow.js'
 import {
   canRestore,
   createSchedule,
@@ -1841,6 +1841,23 @@ app.delete('/api/connections/:id/saved/:sid', (req, res) => {
 // A workflow can be marked `protected` (undeletable) — `DELETE` 409s on it,
 // everything else behaves like a normal workflow. Nothing currently sets this
 // automatically (backups are a separate system — see the Backup section below).
+
+// Every workflow in a workspace, in one list — what the home area's Workflow
+// section shows. Membership gates seeing the workspace at all; each connection
+// is then filtered by whether the caller may open it, so this can never show
+// more than the per-connection routes below would.
+app.get('/api/workspaces/:id/workflows', (req, res) => {
+  const user = requireMember(req, res, req.params.id)
+  if (!user) return
+  const conns = listConnections().filter((c) => c.workspaceId === req.params.id && userCanAccessConnection(c, user.id))
+  const byId = new Map(conns.map((c) => [c.id, c]))
+  res.json(
+    listWorkflowsForConnections([...byId.keys()]).map((w) => {
+      const conn = byId.get(w.connectionId)
+      return { ...w, connectionName: conn.name, connectionType: conn.type }
+    })
+  )
+})
 
 app.get('/api/connections/:id/workflows', (req, res) => {
   const rows = meta
