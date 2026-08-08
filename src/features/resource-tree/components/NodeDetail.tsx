@@ -160,6 +160,13 @@ export default function NodeDetail({
           )}
           <div className="mt-0.5 flex items-center gap-1.5">
             <p className="text-[11px] text-ink-faint">{TYPE_LABEL[node.type]}</p>
+            {/* Ownership is a property of the node, not a row in the access list:
+                it is no role, there is nothing to revoke, and it short-circuits to
+                every permission. Stated once, here. "Yours" already says it when
+                the owner is the caller. */}
+            {owner && !node.owned && (
+              <p className="min-w-0 truncate text-[11px] text-ink-faint">· Owned by {owner.name || owner.email}</p>
+            )}
             {node.owned && <Badge tone="green">Yours</Badge>}
             {node.kind === 'group' && <Badge tone="faint">Group</Badge>}
           </div>

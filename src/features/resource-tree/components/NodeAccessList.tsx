@@ -12,18 +12,18 @@ import type { GrantableRole, NodeAccess, ResourceGrant, ResourceNode } from '../
 import GrantForm from './GrantForm'
 
 /**
- * Who may do what here — the whole answer, in one list, grouped by role.
+ * Who was granted what here — in one list, grouped by role.
  *
- * It merges what used to be three panels (the node's owner, the grants made
- * here, and the resolved list of everyone who can reach it) because they were
- * three views of one question that had to be read together to be understood:
- * the grant list alone can't tell you who gets in — access also arrives from an
- * inherited grant above, a group's roster, or ownership of an ancestor — and the
- * resolved list alone can't be edited.
+ * It merges what used to be two panels (the grants made here and the resolved
+ * list of everyone who can reach it) because they were two views of one question
+ * that had to be read together to be understood: the grant list alone can't tell
+ * you who gets in — access also arrives from an inherited grant above or a
+ * group's roster — and the resolved list alone can't be edited.
  *
  * Grouping by role is what makes the merge legible: a role is the unit people
- * actually reason about ("who are the admins here?"), and ownership is simply
- * the strongest one, so it sorts to the top.
+ * actually reason about ("who are the admins here?"). Ownership is not among
+ * them — it carries no role and nothing to revoke, so it belongs to the node,
+ * and the header states it.
  *
  * Each row still names its origin, and only a row granted *on this node* offers
  * a revoke — everything else links to the node where it lives. That is the line
@@ -89,7 +89,7 @@ export default function NodeAccessList({
         <EmptyState className="py-4">
           {node.type === 'application'
             ? 'The root is held by ownership, not by grants.'
-            : 'Nobody can reach this yet.'}
+            : 'Nothing is granted here yet.'}
         </EmptyState>
       ) : (
         <div className="flex flex-col gap-3">
@@ -120,8 +120,8 @@ export default function NodeAccessList({
 
       {total > 0 && (
         <p className="mt-1.5 text-[10px] leading-relaxed text-ink-faint">
-          Resolved from this node and everything above it. Instance admins administer every node and are not listed — they
-          hold no data access of their own.
+          Resolved from this node and everything above it. Owners hold everything here without a grant, and instance admins
+          administer every node — neither is listed.
         </p>
       )}
 

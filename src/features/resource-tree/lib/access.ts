@@ -9,8 +9,8 @@ import type { AccessSource, GrantableRole, NodeAccess, ResourceGrant, ResourceNo
  */
 export type AccessRow = {
   key: string
-  /** A person, a group standing for its roster, or an owner (who holds no grant). */
-  kind: 'owner' | 'user' | 'group'
+  /** A person, or a group standing for its roster. */
+  kind: 'user' | 'group'
   name: string
   email?: string
   /** Where this row's access comes from — what the row's second line says. */
@@ -32,18 +32,20 @@ export type AccessGroup = {
   rows: AccessRow[]
 }
 
-const OWNER = '__owner__'
-
 /**
- * Fold the resolved people, the node's own grants and its owner into one list
- * grouped by role.
+ * Fold the resolved people and the node's own grants into one list grouped by
+ * role.
  *
- * Three payload fields answer one question at different resolutions: `owner` is
- * the strongest access there is, `grants` is what was granted *here*, and
- * `people` is everyone who gets in once ancestors, inheritance and group rosters
- * are resolved. Shown as three lists they have to be cross-referenced by hand;
- * shown as one they read as what they are — the same access, arriving by
- * different routes.
+ * Two payload fields answer one question at different resolutions: `grants` is
+ * what was granted *here*, and `people` is everyone who gets in once ancestors,
+ * inheritance and group rosters are resolved. Shown as two lists they have to be
+ * cross-referenced by hand; shown as one they read as what they are — the same
+ * access, arriving by different routes.
+ *
+ * Ownership is deliberately *not* a row. It is not a grant: it has nothing to
+ * revoke, nothing to edit and no role to sit under, so listing it only repeated
+ * the owner under a heading that looked like the "Owner" role next to it. Who
+ * owns the node is a property of the node, stated in the header.
  *
  * What must not blur in the merge is *where each row is edited*. Only a row whose
  * grant sits on this node can be revoked here (`here`); everything else names the
@@ -73,23 +75,9 @@ export function buildAccessRows(
 
   for (const person of people) {
     for (const source of person.sources) {
-      // Owning an ancestor isn't a grant, so it has no id to key on — the node
-      // owned is what makes it unique.
-      if (source.type === 'owner') {
-        const key = `owner:${person.userId}:${source.nodeId}`
-        if (index.has(key)) continue
-        push(OWNER, {
-          key,
-          kind: 'owner',
-          name: person.name || person.email,
-          email: person.email,
-          source,
-          reached: [],
-          here: source.nodeId === node.id,
-          noData: !person.member,
-        })
-        continue
-      }
+      // Ownership reaches this node without a grant behind it, so it has no row
+      // here — see the note above.
+      if (source.type === 'owner') continue
 
       // A grant's id identifies the row: a grant to a user reaches exactly that
       // user, and a grant to a group is one row however many people it reaches.
@@ -149,9 +137,9 @@ export function buildAccessRows(
     })
   }
 
-  // Owner first — it outranks every role — then the catalog's own order, so the
-  // list reads strongest-first the way the role editor is arranged.
-  const order = [OWNER, ...roles.map((r) => r.slug)]
+  // The catalog's own order, so the list reads strongest-first the way the role
+  // editor is arranged.
+  const order = roles.map((r) => r.slug)
   const slugs = [...buckets.keys()].sort((a, b) => {
     const ai = order.indexOf(a)
     const bi = order.indexOf(b)
@@ -161,11 +149,7 @@ export function buildAccessRows(
 
   return slugs.map((slug) => ({
     slug,
-    // "Ownership", not "Owner" — there is a built-in role by that name, and two
-    // headings reading the same would suggest they are the same thing. They
-    // aren't: ownership is a column on the node that short-circuits to every
-    // permission, the role is a grant like any other.
-    label: slug === OWNER ? 'Ownership' : roleLabel(slug, roles, buckets.get(slug)!),
+    label: roleLabel(slug, roles, buckets.get(slug)!),
     // Access granted here first: it's the part of the list that is actionable.
     rows: buckets.get(slug)!.sort((a, b) => Number(b.here) - Number(a.here) || a.name.localeCompare(b.name)),
   }))
@@ -176,7 +160,13 @@ function roleLabel(slug: string, roles: GrantableRole[], rows: AccessRow[] = [])
   return roles.find((r) => r.slug === slug)?.name || rows[0]?.source.roleName || slug
 }
 
-/** The sentence under a row: where this access comes from. */
+/**
+ * The sentence under a row: where this access comes from.
+ *
+ * The `owner` case can't reach a row today — `buildAccessRows` drops those
+ * sources — but the payload type still carries it, and defaulting it to
+ * "granted on" would state something untrue, so it keeps its own sentence.
+ */
 export function describeSource(source: AccessSource, nodeId: string) {
   if (source.type === 'owner') return source.nodeId === nodeId ? 'Owns this' : `Owns "${source.nodeName}"`
   if (source.here) return 'Granted here'
