@@ -172,21 +172,28 @@ export default function ResourceTree({
           title={node.context ? `${node.name} — you hold nothing here; it's shown so what's inside has a path` : node.name}
           className={`${rowBase} ${tone}`}
         >
-          {hasChildren ? (
-            <ChevronRight
-              width={12}
-              height={12}
-              className={`shrink-0 text-ink-faint transition-transform ${expanded ? 'rotate-90' : ''}`}
-              onClick={(e: React.MouseEvent) => {
-                // Expanding shouldn't also select — they're different intentions
-                // and a resource row would navigate away.
-                e.stopPropagation()
-                toggle(node.id)
-              }}
-            />
-          ) : (
-            <span className="w-3 shrink-0" />
-          )}
+          {/* The twisty always occupies the same slot, whether or not there is
+              one to draw — a leaf and its expandable sibling must line their
+              icons up, and letting the svg size the gap itself doesn't
+              guarantee that. */}
+          <span
+            className="flex h-3 w-3 shrink-0 items-center justify-center"
+            onClick={(e) => {
+              if (!hasChildren) return
+              // Expanding shouldn't also select — they're different intentions
+              // and a resource row would navigate away.
+              e.stopPropagation()
+              toggle(node.id)
+            }}
+          >
+            {hasChildren && (
+              <ChevronRight
+                width={12}
+                height={12}
+                className={`text-ink-faint transition-transform ${expanded ? 'rotate-90' : ''}`}
+              />
+            )}
+          </span>
           <NodeIcon type={node.type} />
           <span className="min-w-0 flex-1 truncate">{node.name}</span>
           {hasChildren && <span className="shrink-0 text-[10px] text-ink-faint">{kids.length}</span>}
