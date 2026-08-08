@@ -1,13 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import { ChevronRight, MoveIcon, PlusIcon } from '@/shared/ui/icons'
 import EmptyState from '@/shared/ui/feedback/EmptyState'
-import { useToast } from '@/shared/ui/feedback/Toast'
-import { Input } from '@/shared/ui/form/Input'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
 import ContextMenu from '@/shared/ui/overlay/ContextMenu'
-import { createGroup } from '../api'
 import { ancestorIds, nestNodes } from '../lib/tree'
 import type { NodeTypeMeta, ResourceNode } from '../types'
+import CreateGroupDialog from './CreateGroupDialog'
 import MoveNodeDialog from './MoveNodeDialog'
 import NodeIcon from './NodeIcon'
 
@@ -57,19 +55,17 @@ export default function ResourceTree({
   onChanged?: () => void
   emptyLabel?: string
 }) {
-  const toast = useToast()
   const { roots, childrenOf } = useMemo(() => nestNodes(nodes), [nodes])
 
   // Collapsed rather than expanded ids: a tree that grows while you're looking at
   // it should reveal the new node, not hide it.
   const [collapsed, setCollapsed] = useState(() => new Set<string>())
   const [menu, setMenu] = useState<{ x: number; y: number; node: ResourceNode } | null>(null)
-  // Which group is being filled in, and with what. The row renders in place
-  // among that group's children, so you name it where it will live.
-  const [creatingIn, setCreatingIn] = useState<string | null>(null)
+  // The group a new one is being created inside. Naming it happens in a dialog
+  // rather than in the row, because where it lands and what it will inherit are
+  // the parts worth seeing, and neither fits on a tree row.
+  const [creatingIn, setCreatingIn] = useState<ResourceNode | null>(null)
   const [moving, setMoving] = useState<ResourceNode | null>(null)
-  const [draftName, setDraftName] = useState('')
-  const [busy, setBusy] = useState(false)
 
   // Reveal the selection when it changes from outside (a deep link, a search
   // result) — collapsing an ancestor is otherwise the one way to lose it.
@@ -118,40 +114,16 @@ export default function ResourceTree({
 
   const startCreate = (node: ResourceNode) => {
     setMenu(null)
-    setDraftName('')
+    // Expand before the dialog opens, so the new child is already in view behind
+    // it and the tree doesn't jump when it arrives.
     expand(node.id)
-    setCreatingIn(node.id)
-  }
-
-  const cancelCreate = () => {
-    setCreatingIn(null)
-    setDraftName('')
-  }
-
-  const submitCreate = async (parentId: string) => {
-    const name = draftName.trim()
-    if (!name || busy) return
-    setBusy(true)
-    try {
-      const created = await createGroup(parentId, name)
-      toast.success('Group created.')
-      cancelCreate()
-      onChanged?.()
-      // Land on what you just made — its roster and grants are the reason it
-      // exists, and both live in the detail panel.
-      onSelect?.(created)
-    } catch (error: any) {
-      toast.error(error?.message || 'Could not create the group.')
-    } finally {
-      setBusy(false)
-    }
+    setCreatingIn(node)
   }
 
   const renderNode = (node: ResourceNode) => {
     const kids = childrenOf(node.id)
     const hasChildren = kids.length > 0
     const expanded = !collapsed.has(node.id)
-    const creatingHere = creatingIn === node.id
     const active = !!activeResourceId && node.resourceId === activeResourceId
     const selected = node.id === selectedId
 
@@ -199,27 +171,8 @@ export default function ResourceTree({
           {hasChildren && <span className="shrink-0 text-[10px] text-ink-faint">{kids.length}</span>}
         </button>
 
-        {(hasChildren || creatingHere) && expanded && (
-          <div className="ml-3 flex flex-col gap-0.5 border-l border-edge pl-1.5">
-            {kids.map(renderNode)}
-            {creatingHere && (
-              <div className="flex items-center gap-1.5 py-0.5 pl-2.5">
-                <Input
-                  autoFocus
-                  value={draftName}
-                  placeholder="Group name"
-                  disabled={busy}
-                  onChange={(e: any) => setDraftName(e.target.value)}
-                  onBlur={() => !draftName.trim() && cancelCreate()}
-                  onKeyDown={(e: any) => {
-                    if (e.key === 'Enter') submitCreate(node.id)
-                    if (e.key === 'Escape') cancelCreate()
-                  }}
-                  className="h-7 text-[12px]"
-                />
-              </div>
-            )}
-          </div>
+        {hasChildren && expanded && (
+          <div className="ml-3 flex flex-col gap-0.5 border-l border-edge pl-1.5">{kids.map(renderNode)}</div>
         )}
       </div>
     )
@@ -260,6 +213,21 @@ export default function ResourceTree({
             </p>
           )}
         </ContextMenu>
+      )}
+
+      {creatingIn && (
+        <CreateGroupDialog
+          parent={creatingIn}
+          nodes={nodes}
+          onClose={() => setCreatingIn(null)}
+          onCreated={(created) => {
+            setCreatingIn(null)
+            onChanged?.()
+            // Land on what you just made — its roster and grants are the reason
+            // it exists, and both live in the detail panel.
+            onSelect?.(created)
+          }}
+        />
       )}
 
       {moving && (

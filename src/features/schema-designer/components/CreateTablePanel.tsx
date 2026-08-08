@@ -107,7 +107,7 @@ export default function CreateTablePanel({ conn, initialTable, draftColumns, onC
         </>
       }
     >
-      <FormField label="Table Name" className="mb-[18px]">
+      <FormField label="Table Name">
               <Input
                 type="text"
                 placeholder="e.g. users"

@@ -14,7 +14,11 @@ const HIGHLIGHTS = [
   { icon: ShieldIcon, title: 'Encrypted at rest', desc: 'Credentials sealed with AES-256-GCM' },
 ]
 
-export default function Login() {
+// `adminless` = the instance has no administrator yet (an install migrated from
+// before the system role existed). Nobody can reach the admin area until an
+// account claims it, and the only door to that is /setup — so say so here,
+// otherwise the wizard is a page nobody knows to visit.
+export default function Login({ adminless = false }: { adminless?: boolean }) {
   const { login } = useAuth()
   const navigate = useNavigate()
   const [username, setUsername] = useState('')
@@ -95,7 +99,16 @@ export default function Login() {
             </div>
           )}
 
-          <FormField label="Email" htmlFor="username" className="mb-[18px]">
+          {adminless && (
+            <div className="mb-[18px] rounded-soft border border-edge bg-bg px-3.5 py-2.5 text-[11px] leading-snug text-ink-dim">
+              This instance has no administrator yet.{' '}
+              <TextButton className="!text-[11px]" onClick={() => navigate('/setup')}>
+                Set one up
+              </TextButton>
+            </div>
+          )}
+
+          <FormField label="Email" htmlFor="username">
             <Input
               id="username"
               type="email"
@@ -107,7 +120,7 @@ export default function Login() {
             />
           </FormField>
 
-          <FormField label="Password" htmlFor="password" className="mb-[18px]">
+          <FormField label="Password" htmlFor="password">
             <PasswordInput
               id="password"
               autoComplete="current-password"

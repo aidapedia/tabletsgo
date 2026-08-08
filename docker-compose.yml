@@ -20,10 +20,10 @@ services:
       # to start without it. Generate one with:
       #   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
       - ENCRYPTION_KEY=${ENCRYPTION_KEY:-}
-      # Optional admin pre-seed — leave unset to use the in-browser setup wizard.
+      # Optional admin pre-seed (the admin account only, no workspace) — leave
+      # unset to use the in-browser setup wizard.
       - ADMIN_USERNAME=${ADMIN_USERNAME:-}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
-      - WORKSPACE_NAME=${WORKSPACE_NAME:-}
       # Optional SMTP for member-invite emails — the fallback under the mail
       # server an admin configures in Administration > Email (that one wins).
       - SMTP_HOST=${SMTP_HOST:-}

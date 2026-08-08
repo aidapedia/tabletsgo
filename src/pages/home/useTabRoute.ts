@@ -2,7 +2,7 @@ import { useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 /**
- * Binds a page's tab bar to a path segment (`/workspace/member`).
+ * Binds a page's tab bar to a path segment (`/workspace/config`).
  *
  * Whatever is on screen must have an address that reproduces it, so landing on
  * the bare section path rewrites the URL to the first tab instead of showing an

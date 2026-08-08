@@ -611,12 +611,33 @@ Set a new password, invalidate the user's other sessions, and log in.
 - **Body:** `{ "password" }` → **200:** `{ "user", "token" }` · **404:** invalid/expired · **400:** missing password
 
 ### GET `/api/setup`
-First-run status. **200:** `{ "needsSetup": true }` (true when no users exist).
+First-run status. **200:** `{ "needsSetup": true, "hasUsers": false }`.
+`needsSetup` is **"the instance has no administrator"**, not "it has no users" —
+an install migrated from before the system role existed has accounts but nobody
+who can reach the admin area. `hasUsers` separates the two cases for the wizard.
+- **Example:** `GET http://localhost:3000/api/setup`
 
 ### POST `/api/setup`
-Create the admin + first workspace (only while `needsSetup`).
-- **Body:** `{ "email", "password", "name", "workspace" }`
-- **200:** `{ "user", "token" }` · **403:** already completed · **400:** missing fields
+Create the **instance administrator — and nothing else**. No workspace is made
+here: an admin holds no workspace access, so the first workspace is theirs to
+create (with an owner) via `POST /api/admin/workspaces` once signed in.
+
+Allowed only while the instance has no admin. The two cases:
+- **`hasUsers: false`** (empty install) — the account is created from the body.
+- **`hasUsers: true`** (adminless install with accounts) — the credentials must
+  match an existing **active** account, which is then promoted. Creating an admin
+  out of nothing is reserved for an empty instance so an adminless install can't
+  be claimed by a stranger. Promotion drops every workspace membership the
+  account had and signs out its other sessions.
+- **Body:** `{ "email", "password", "name" }` (`name` optional; ignored on
+  promotion unless given)
+- **200:** `{ "user", "token" }` · **403:** an admin already exists ·
+  **401:** `{ "error": "Invalid email or password" }` (promotion path) ·
+  **400:** missing email/password, or the email already has an account
+- **Example:** `POST http://localhost:3000/api/setup`
+  ```json
+  { "email": "admin@acme.com", "password": "s3cret", "name": "Jane" }
+  ```
 
 ### GET `/api/invite/:token`
 Validate an invite. **200:** `{ "email", "workspaceName" }` · **404:** invalid/expired.
@@ -1244,9 +1265,22 @@ here that reaches a connection or a database.
   currently ownerless
   (its owners left, or it was just created), which is the state an admin acts on.
 - `POST /api/admin/workspaces` `{ name, ownerEmail }` → `{ workspace, inviteLink, emailed }`.
-  Creates the workspace and hands it to `ownerEmail`. An unknown address gets a
-  pending account plus an `inviteLink` (emailed when SMTP is configured; returned
-  either way). `400` if `ownerEmail` belongs to an instance admin.
+  Creates the workspace and hands it to `ownerEmail`, which **must be an account
+  that already exists** — create the user with `POST /api/admin/users` first
+  (`400 No account with that email` otherwise; nothing is created). An owner
+  whose account is still `pending` gets an `inviteLink` scoped to the new
+  workspace (emailed when SMTP is configured; returned either way); for an
+  active owner `inviteLink` is `null`. `400` if `ownerEmail` belongs to an
+  instance admin.
+
+  ```
+  POST /api/admin/workspaces
+  { "name": "Acme Production", "ownerEmail": "owner@example.com" }
+
+  → { "workspace": { "id": "ws_9f3", "name": "Acme Production", "createdAt": 1754630400000,
+                     "memberCount": 1, "groupCount": 0, "connectionCount": 0 },
+      "inviteLink": "https://tabletsgo.example.com/invite/8c1d…", "emailed": true }
+  ```
 - `PUT /api/admin/workspaces/:id` `{ name }` → `{ ok: true, name }`.
 - `DELETE /api/admin/workspaces/:id` → `{ ok: true, connectionsDeleted }`. Releases
   the live driver handles and ends the sessions first, then cascades the metadata

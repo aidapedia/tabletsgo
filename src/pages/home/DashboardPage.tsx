@@ -63,7 +63,7 @@ export default function DashboardPage() {
           label="Members"
           value={memberCount ?? '—'}
           hint="People with access"
-          onClick={() => navigate('/workspace/member')}
+          onClick={() => navigate('/members')}
         />
       </div>
     </div>

@@ -91,7 +91,7 @@ export default function NodeConfigPanel({ node, onChange, onChangeType, allowTyp
       <p className="mb-4 text-[11px] leading-relaxed text-ink-faint">{spec.description}</p>
 
           {onChangeType && (
-            <FormField label="Node type" className="mb-4" hint="Switching type resets this node's configuration.">
+            <FormField label="Node type" hint="Switching type resets this node's configuration.">
               <Select
                 className={controlClass}
                 value={node.type}
@@ -101,13 +101,13 @@ export default function NodeConfigPanel({ node, onChange, onChangeType, allowTyp
             </FormField>
           )}
 
-          <FormField label="Node label" className="mb-4">
+          <FormField label="Node label">
             <Input value={d.title || ''} placeholder={spec.label} onChange={(e) => set({ title: e.target.value })} />
           </FormField>
 
           {node.type === 'schedule' && (
             <>
-              <FormField label="Frequency" className="mb-4" hint="Manual only means it runs solely when you click Run.">
+              <FormField label="Frequency" hint="Manual only means it runs solely when you click Run.">
                 <Select
                   className={controlClass}
                   value={d.frequency || 'manual'}
@@ -138,7 +138,6 @@ export default function NodeConfigPanel({ node, onChange, onChangeType, allowTyp
             <>
               <FormField
                 label="Hook URL"
-                className="mb-4"
                 hint="Send a GET or POST request here to fire this workflow. The request { body, query, headers, method } is passed as the trigger input."
               >
                 <div className="flex items-center gap-2">
@@ -190,7 +189,7 @@ export default function NodeConfigPanel({ node, onChange, onChangeType, allowTyp
 
           {node.type === 'http' && (
             <>
-              <FormField label="Method" className="mb-4">
+              <FormField label="Method">
                 <Select
                   className={controlClass}
                   value={d.method || 'GET'}
@@ -198,10 +197,10 @@ export default function NodeConfigPanel({ node, onChange, onChangeType, allowTyp
                   onChange={(v) => set({ method: v })}
                 />
               </FormField>
-              <FormField label="URL" className="mb-4">
+              <FormField label="URL">
                 <Input value={d.url || ''} placeholder="https://api.example.com/data" onChange={(e) => set({ url: e.target.value })} />
               </FormField>
-              <FormField label="Headers (JSON)" className="mb-4" hint='e.g. {"Authorization": "Bearer …"}'>
+              <FormField label="Headers (JSON)" hint='e.g. {"Authorization": "Bearer …"}'>
                 <Textarea
                   className="min-h-[70px] font-mono"
                   value={d.headers || ''}

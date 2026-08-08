@@ -401,32 +401,52 @@ app.post('/api/auth/reset/:token', async (req, res) => {
   res.json({ user: publicUser(user), token: await createSession(u.id, sessionContext(req)) })
 })
 
-// First-run status — true when no users exist yet (setup wizard needed).
+// First-run status — the wizard runs until the instance has an *administrator*,
+// not until it has users. An install migrated from a version that predated the
+// system role (migrateToWorkspaces) has accounts but no admin, and the admin
+// area would otherwise be unreachable by everyone. `hasUsers` tells the wizard
+// which of its two shapes to render.
 app.get('/api/setup', (req, res) => {
-  res.json({ needsSetup: !meta.prepare('SELECT 1 FROM users LIMIT 1').get() })
+  res.json({
+    needsSetup: countAdmins() === 0,
+    hasUsers: !!meta.prepare('SELECT 1 FROM users LIMIT 1').get(),
+  })
 })
 
-// First-run setup — creates the admin account + first workspace. Only allowed
-// while no users exist, so it can't be used to hijack an initialized instance.
+// First-run setup — creates the instance administrator, and nothing else. No
+// workspace is made here: an admin holds no workspace access (CLAUDE.md "AUTH
+// MODEL"), so an ownerless workspace created alongside them is just debt. The
+// admin signs in and creates the first workspace with a real owner.
+//
+// Allowed only while the instance has no admin. On an instance that already has
+// accounts the credentials must match one of them and that account is promoted
+// — creating an admin out of nothing is reserved for a genuinely empty install,
+// so an adminless legacy instance can't be claimed by a passing stranger.
 app.post('/api/setup', async (req, res) => {
+  if (countAdmins() > 0) return res.status(403).json({ error: 'Setup has already been completed.' })
+  const email = (req.body?.email || '').trim()
+  const { password, name } = req.body || {}
+  if (!email || !password) return res.status(400).json({ error: 'Email and password are required.' })
+
   if (meta.prepare('SELECT 1 FROM users LIMIT 1').get()) {
-    return res.status(403).json({ error: 'Setup has already been completed.' })
+    const existing = getUserByEmail(email)
+    if (!existing || existing.status === 'pending' || !verifyPassword(existing.id, password)) {
+      return res.status(401).json({ error: 'Invalid email or password' })
+    }
+    // Promotion drops every workspace membership, which can leave a legacy
+    // workspace ownerless — recoverable, and only from here: the new admin
+    // assigns an owner from the admin area (PUT /api/admin/workspaces/:id/members).
+    setSystemRole(existing.id, 'admin')
+    if (name?.trim()) updateUser(existing.id, { name: name.trim() })
+    // The sessions this account already holds were authorized for access it no
+    // longer has — same reason the admin role-change route signs them out.
+    await destroyAuthSessionsForUser(existing.id)
+    return res.json({ user: publicUser(userRow(existing.id)), token: await createSession(existing.id, sessionContext(req)) })
   }
-  const { email, password, name, workspace } = req.body || {}
-  if (!email || !password || !workspace?.trim()) {
-    return res.status(400).json({ error: 'Email, password and workspace name are required.' })
-  }
-  const uid = randomUUID()
-  meta
-    .prepare('INSERT INTO users (id, username, password_hash, name, role, status) VALUES (?, ?, ?, ?, ?, ?)')
-    .run(uid, email.trim(), sha256(password), name?.trim() || 'Admin', 'admin', 'active')
-  // The first account is the instance admin, so it is deliberately *not* made a
-  // member of the workspace it names — an admin never holds workspace access
-  // (CLAUDE.md "AUTH MODEL"). The workspace is created ownerless; the admin's
-  // first job is to invite someone and make them its owner.
-  createWorkspaceRow(workspace.trim())
-  const user = meta.prepare('SELECT id, username, name, role FROM users WHERE id = ?').get(uid)
-  res.json({ user: publicUser(user), token: await createSession(uid, sessionContext(req)) })
+
+  if (getUserByEmail(email)) return res.status(400).json({ error: 'That email already has an account.' })
+  const { user: created } = createUser({ email, name: name?.trim() || 'Admin', password, role: 'admin' })
+  res.json({ user: publicUser(userRow(created.id)), token: await createSession(created.id, sessionContext(req)) })
 })
 
 // Validate an invite token → who it's for and which workspace.
@@ -476,27 +496,28 @@ app.use('/api/admin', (req, res, next) => {
 
 app.get('/api/admin/workspaces', (_req, res) => res.json(listAllWorkspaces()))
 
-// Create a workspace and hand it to someone. `ownerEmail` may name an existing
-// account or a new one — an unknown address gets a pending account plus an
-// invite link, so an admin can stand up a workspace for a person who has never
-// signed in.
+// Create a workspace and hand it to someone. `ownerEmail` must name an account
+// that already exists — creating a person as a side effect of creating a
+// workspace produced accounts nobody had reviewed, so the admin creates the
+// user first (POST /api/admin/users) and assigns them here. An account that is
+// still `pending` is fine: it gets a fresh invite link scoped to the new
+// workspace.
 app.post('/api/admin/workspaces', async (req, res) => {
   const name = (req.body?.name || '').trim()
   const ownerEmail = (req.body?.ownerEmail || '').trim().toLowerCase()
   if (!name) return res.status(400).json({ error: 'Workspace name is required.' })
   if (!ownerEmail) return res.status(400).json({ error: 'An owner email is required — a workspace needs someone to run it.' })
 
-  let owner = getUserByEmail(ownerEmail)
+  const owner = getUserByEmail(ownerEmail)
+  if (!owner) {
+    return res.status(400).json({ error: 'No account with that email — create the user first, then assign them.' })
+  }
   if (isSystemAdmin(owner)) {
     return res.status(400).json({ error: 'That account administers the instance and cannot own a workspace.' })
   }
   const ws = createWorkspaceRow(name)
   let inviteLink = null
-  if (!owner) {
-    const { user: created, inviteToken } = createUser({ email: ownerEmail, name: ownerEmail, inviteWorkspaceId: ws.id })
-    owner = { id: created.id, username: ownerEmail, status: 'pending' }
-    inviteLink = `${baseUrl(req)}/invite/${inviteToken}`
-  } else if (owner.status === 'pending') {
+  if (owner.status === 'pending') {
     inviteLink = `${baseUrl(req)}/invite/${issueInviteToken(owner.id, ws.id)}`
   }
   addWorkspaceMember(ws.id, owner.id, 'owner')

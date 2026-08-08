@@ -56,7 +56,7 @@ export default function ProfileSetting() {
         </div>
       </div>
 
-      <FormField label="Name" htmlFor="profile-name" className="mb-4">
+      <FormField label="Name" htmlFor="profile-name">
         <Input
           id="profile-name"
           value={name}
@@ -69,7 +69,7 @@ export default function ProfileSetting() {
       <FormField
         label="Email"
         htmlFor="profile-email"
-        className="mb-5"
+        className="!mb-5"
         hint="Your email is how you sign in and can't be changed here — ask an instance admin."
       >
         <Input id="profile-email" value={user.email} readOnly disabled className="cursor-not-allowed opacity-60" />

@@ -479,10 +479,10 @@ function CreateUserDialog({ onClose, onCreated }: { onClose: () => void; onCreat
               placeholder="person@example.com"
             />
           </FormField>
-          <FormField label="Name" className="mt-3">
+          <FormField label="Name">
             <Input value={form.name} onChange={(e) => set('name', e.target.value)} placeholder="Optional" />
           </FormField>
-          <FormField label="Password" hint="Leave blank to send an invite link instead." className="mt-3">
+          <FormField label="Password" hint="Leave blank to send an invite link instead.">
             <PasswordInput
               value={form.password}
               onChange={(e) => set('password', e.target.value)}
@@ -496,7 +496,6 @@ function CreateUserDialog({ onClose, onCreated }: { onClose: () => void; onCreat
                 ? 'Manages workspaces and accounts. Holds no workspace access, so they cannot open a database.'
                 : 'A regular account. What they can do is set per workspace by its owner.'
             }
-            className="mt-3"
           >
             <Select
               className={controlClass}

@@ -32,6 +32,7 @@ const NAV = [
     group: 'Manage',
     items: [
       { label: 'Workspace', Icon: BuildingIcon, path: '/workspace' },
+      { label: 'Member', Icon: UsersIcon, path: '/members' },
       { label: 'Notification', Icon: BellIcon, path: '/notifications' },
     ],
   },

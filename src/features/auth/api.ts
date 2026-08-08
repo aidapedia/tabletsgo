@@ -1,12 +1,18 @@
 import { request, safeRequest } from '@/shared/api/request'
 
-// First-run status — whether the setup wizard should be shown.
+// First-run status. `needsSetup` is "this instance has no administrator" — not
+// "it has no users": an install migrated from before the system role existed has
+// accounts but nobody who can reach the admin area. `hasUsers` separates the two,
+// because the wizard asks for different things in each case.
 export async function getSetupStatus() {
-  return safeRequest<{ needsSetup: boolean }>('/setup', { needsSetup: false })
+  return safeRequest<{ needsSetup: boolean; hasUsers: boolean }>('/setup', { needsSetup: false, hasUsers: true })
 }
 
-// Create the admin account + first workspace. Returns { user, token }.
-export async function submitSetup(payload: { email: string; password: string; name?: string; workspace: string }) {
+// Create the instance administrator — no workspace: an admin holds no workspace
+// access, so the first workspace is theirs to create once signed in. On an
+// instance that already has accounts the credentials must match one of them and
+// that account is promoted instead. Returns { user, token }.
+export async function submitSetup(payload: { email: string; password: string; name?: string }) {
   return request('/setup', { method: 'POST', body: payload })
 }
 

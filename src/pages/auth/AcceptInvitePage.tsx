@@ -77,10 +77,10 @@ export default function AcceptInvitePage() {
         <div className="mb-[18px] rounded-soft border border-red/25 bg-red/10 px-3.5 py-2.5 text-[11px] text-[#ff9b9b]">{error}</div>
       )}
 
-      <FormField label="Your name" className="mb-[18px]">
+      <FormField label="Your name">
         <Input type="text" placeholder="Jane Doe" value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} autoFocus />
       </FormField>
-      <FormField label="Password" className="mb-6">
+      <FormField label="Password" className="!mb-6">
         <PasswordInput autoComplete="new-password" placeholder="••••••••" value={form.password} onChange={(e) => setForm((f) => ({ ...f, password: e.target.value }))} required />
       </FormField>
 

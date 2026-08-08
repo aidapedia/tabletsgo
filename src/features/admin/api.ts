@@ -66,8 +66,8 @@ export async function listAllWorkspaces() {
   return safeRequest<AdminWorkspace[]>('/admin/workspaces', [])
 }
 
-// `ownerEmail` may be an unknown address — the server then creates a pending
-// account and returns an invite link.
+// `ownerEmail` must belong to an account that already exists — the server
+// refuses an unknown address. A `pending` owner gets an invite link back.
 export async function createWorkspaceAs(name: string, ownerEmail: string) {
   return request<{ workspace: AdminWorkspace; inviteLink: string | null; emailed: boolean }>('/admin/workspaces', {
     method: 'POST',

@@ -49,9 +49,10 @@ ENV PORT=3000
 # Persist app metadata (users, workspaces, connections, saved queries) outside the image.
 ENV META_DB=/app/data/app.db
 # NOTE: no default admin is baked in — a fresh instance shows the first-run
-# setup wizard. Set ADMIN_USERNAME + ADMIN_PASSWORD (+ optional WORKSPACE_NAME)
-# to pre-seed and skip the wizard. SMTP_* enable invite emails. UPDATE_* wire the
-# in-app update checker (Docker-socket self-update). See .env.example.
+# setup wizard. Set ADMIN_USERNAME + ADMIN_PASSWORD to pre-seed the instance
+# admin and skip the wizard (no workspace is created either way — the admin
+# makes the first one). SMTP_* enable invite emails. UPDATE_* wire the in-app
+# update checker (Docker-socket self-update). See .env.example.
 
 EXPOSE 3000
 CMD ["node", "server.js"]

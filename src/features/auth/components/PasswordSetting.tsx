@@ -47,7 +47,7 @@ export default function PasswordSetting() {
 
   return (
     <form onSubmit={submit} className="max-w-[420px]">
-      <FormField label="Current password" htmlFor="pw-current" className="mb-4">
+      <FormField label="Current password" htmlFor="pw-current">
         <PasswordInput
           id="pw-current"
           value={current}
@@ -56,14 +56,14 @@ export default function PasswordSetting() {
         />
       </FormField>
 
-      <FormField label="New password" htmlFor="pw-new" className="mb-4">
+      <FormField label="New password" htmlFor="pw-new">
         <PasswordInput id="pw-new" value={next} onChange={(e) => setNext(e.target.value)} autoComplete="new-password" />
       </FormField>
 
       <FormField
         label="Confirm new password"
         htmlFor="pw-confirm"
-        className="mb-5"
+        className="!mb-5"
         error={mismatch ? "These passwords don't match." : undefined}
       >
         <PasswordInput

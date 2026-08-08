@@ -36,9 +36,12 @@ SMTP/admin-seed fallbacks are the exception, read where they're used).
   without it.
 
 ### First-run seeding
-- `ADMIN_USERNAME` (email) / `ADMIN_PASSWORD` / `WORKSPACE_NAME` — **optional**
-  pre-seed of the admin + first workspace. Unset ⇒ the in-browser first-run setup
-  wizard runs (default). **Don't bake defaults into the Dockerfile.**
+- `ADMIN_USERNAME` (email) / `ADMIN_PASSWORD` — **optional** pre-seed of the
+  instance admin, and **only** that: neither this nor the wizard creates a
+  workspace, because an admin can't belong to one. Unset ⇒ the in-browser
+  first-run setup wizard runs (default). **Don't bake defaults into the
+  Dockerfile.** (`WORKSPACE_NAME` was removed in 0.21.3 along with the ownerless
+  seeded workspace.)
 
 ### Mail
 - `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` /

@@ -1,18 +1,19 @@
 import { useParams } from 'react-router-dom'
-import { useWorkspaces, can, MembersPanel, WorkspaceGeneral, WorkspaceConfig } from '@/features/workspaces'
+import { useWorkspaces, WorkspaceGeneral, WorkspaceConfig } from '@/features/workspaces'
 import { Narrow, SubHead, TabbedSection } from './ui'
 import useTabRoute from './useTabRoute'
-import LoadingState from '@/shared/ui/feedback/LoadingState'
 
-// Workspace section — General / Config / Member as tabs (a second path segment).
+// Workspace section — General / Config as tabs (a second path segment).
 // Integration + Notification moved to their own /integrations sidebar section.
 //
-// There is no Teams tab: a group of people *is* a node in the resource tree, so
-// its roster is edited where its grants are, on the group itself.
+// Member is not a tab here: it is its own sidebar row (/members), because the
+// roster is consulted far more often than the workspace's own settings.
+//
+// There is no Teams tab either: a group of people *is* a node in the resource
+// tree, so its roster is edited where its grants are, on the group itself.
 export default function WorkspaceSettingsPage() {
   const { sub } = useParams()
   const { current } = useWorkspaces()
-  const canManageMembers = can(current, 'members.manage')
 
   const tabs = [
     {
@@ -35,20 +36,6 @@ export default function WorkspaceSettingsPage() {
         </Narrow>
       ),
     },
-    {
-      id: 'member',
-      label: 'Member',
-      body: (
-        <div>
-          <SubHead title="Members" desc="Invite teammates and manage who can access this workspace." />
-          {current ? (
-            <MembersPanel workspaceId={current.id} canManage={canManageMembers} />
-          ) : (
-            <LoadingState className="" />
-          )}
-        </div>
-      ),
-    },
   ]
 
   const { active, onTab } = useTabRoute('/workspace', tabs, sub)
@@ -56,7 +43,7 @@ export default function WorkspaceSettingsPage() {
   return (
     <TabbedSection
       title="Workspace"
-      desc={`Manage ${current?.name || 'your workspace'} and its members.`}
+      desc={`Manage ${current?.name || 'your workspace'} and its settings.`}
       tabs={tabs}
       active={active}
       onTab={onTab}
