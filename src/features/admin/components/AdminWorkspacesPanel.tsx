@@ -279,6 +279,7 @@ function CreateWorkspaceDialog({ onClose, onCreated }: { onClose: () => void; on
               </p>
             ) : (
               <Select
+                portal // the modal body scrolls, which would clip the menu
                 className={controlClass}
                 value={ownerId}
                 placeholder="Search people…"
@@ -472,6 +473,7 @@ function OwnershipDialog({
                   width by stylesheet order, not class order — same reason the schema
                   designer's selects use `!w-auto`. */}
               <Select
+                portal // the modal body scrolls, which would clip the menu
                 className={`${controlClass} !w-auto min-w-0 flex-1`}
                 value={adding}
                 placeholder="Add someone…"
@@ -486,6 +488,7 @@ function OwnershipDialog({
                 onChange={setAdding}
               />
               <Select
+                portal
                 className={`${controlClass} !w-[132px] shrink-0`}
                 value={addRole}
                 options={roleOptions}
