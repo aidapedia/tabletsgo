@@ -751,13 +751,358 @@ export const MIGRATIONS = [
     },
   },
   // v13+: append plain, run-exactly-once steps here, e.g.
-  // {
-  //   version: 13,
-  //   name: 'connections: last_used_at',
-  //   up(db) {
-  //     db.exec(`ALTER TABLE connections ADD COLUMN last_used_at INTEGER`)
-  //   },
-  // },
+  {
+    version: 13,
+    name: 'spacetree_nodes: resource hierarchy for tree-based navigation and ownership',
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS spacetree_nodes (
+          id TEXT PRIMARY KEY,
+          parent_id TEXT,
+          type TEXT NOT NULL,          -- 'application' | 'workspace' | 'connection'
+          resource_id TEXT,            -- FK to the actual resource (workspaces.id, connections.id); NULL for the application root
+          name TEXT NOT NULL,
+          owner_id TEXT,               -- the user who owns this node (ownership cascades to descendants)
+          ts INTEGER NOT NULL,
+          FOREIGN KEY(parent_id) REFERENCES spacetree_nodes(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_spacetree_parent ON spacetree_nodes(parent_id);
+        CREATE INDEX IF NOT EXISTS idx_spacetree_owner ON spacetree_nodes(owner_id);
+        CREATE INDEX IF NOT EXISTS idx_spacetree_type_resource ON spacetree_nodes(type, resource_id);
+      `)
+
+      // Seed the application root node. On a fresh install there are no admin
+      // users yet (the first setup wizard creates one), so owner_id is left
+      // NULL — it gets set when the first admin is created or claims it.
+      const now = Date.now()
+      const existing = db.prepare('SELECT 1 FROM spacetree_nodes WHERE type = ?').get('application')
+      if (!existing) {
+        db.prepare('INSERT INTO spacetree_nodes (id, parent_id, type, resource_id, name, owner_id, ts) VALUES (?, NULL, ?, NULL, ?, NULL, ?)').run(
+          'root', 'application', 'Application', now
+        )
+      }
+
+      // Backfill: every existing workspace gets a node under the application root.
+      const workspaces = db.prepare('SELECT id, name, created_at FROM workspaces').all()
+      for (const ws of workspaces) {
+        const existingNode = db.prepare('SELECT 1 FROM spacetree_nodes WHERE type = ? AND resource_id = ?').get('workspace', ws.id)
+        if (!existingNode) {
+          db.prepare('INSERT INTO spacetree_nodes (id, parent_id, type, resource_id, name, owner_id, ts) VALUES (?, ?, ?, ?, ?, NULL, ?)').run(
+            crypto.randomUUID(), 'root', 'workspace', ws.id, ws.name, ws.created_at || now
+          )
+        }
+      }
+
+      // Backfill: every existing connection gets a node under its workspace node.
+      const connections = db.prepare('SELECT id, name, workspace_id, owner_id, updated_at FROM connections WHERE workspace_id IS NOT NULL').all()
+      for (const conn of connections) {
+        const parentNode = db.prepare('SELECT id FROM spacetree_nodes WHERE type = ? AND resource_id = ?').get('workspace', conn.workspace_id)
+        if (!parentNode) continue
+        const existingNode = db.prepare('SELECT 1 FROM spacetree_nodes WHERE type = ? AND resource_id = ?').get('connection', conn.id)
+        if (!existingNode) {
+          db.prepare('INSERT INTO spacetree_nodes (id, parent_id, type, resource_id, name, owner_id, ts) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
+            crypto.randomUUID(), parentNode.id, 'connection', conn.id, conn.name,
+            conn.owner_id || null, conn.updated_at || now
+          )
+        }
+      }
+    },
+  },
+  {
+    version: 14,
+    name: 'resource tree: resource_nodes + resource_grants, roles.applies_to; grants backfilled from memberships',
+    up(db) {
+      // The resource tree supersedes `spacetree_nodes` (v13), which only ever
+      // held application/workspace/connection for navigation. Two things change:
+      // nodes gain a group/resource split plus a materialized path (so "everything
+      // under here" is one indexed LIKE instead of a recursive walk), and a grant
+      // becomes a row on a *node* rather than a role column on a membership.
+      //
+      // v13's table is superseded, not dropped (additive-only) — see
+      // DEPRECATED_TABLES. It is read once, below, so an install that already ran
+      // v13 keeps whatever owners it recorded.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS resource_nodes (
+          id TEXT PRIMARY KEY,
+          parent_id TEXT,              -- NULL only for the application root
+          kind TEXT NOT NULL,          -- 'group' (holds nodes) | 'resource' (a thing you use)
+          type TEXT NOT NULL,          -- see NODE_TYPES in server/permissions-catalog.js
+          resource_id TEXT,            -- id in the mirrored table; NULL for the root and custom groups
+          name TEXT NOT NULL,
+          owner_id TEXT,               -- owns this node and, by cascade, everything under it
+          workspace_id TEXT,           -- the workspace this node lives in (NULL for the root)
+          path TEXT NOT NULL,          -- materialized: '/root/<id>/<id>', ancestors in order
+          depth INTEGER NOT NULL DEFAULT 0,
+          sort INTEGER DEFAULT 0,
+          created_at INTEGER,
+          updated_at INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_resource_nodes_parent ON resource_nodes(parent_id);
+        CREATE INDEX IF NOT EXISTS idx_resource_nodes_owner ON resource_nodes(owner_id);
+        CREATE INDEX IF NOT EXISTS idx_resource_nodes_path ON resource_nodes(path);
+        CREATE INDEX IF NOT EXISTS idx_resource_nodes_workspace ON resource_nodes(workspace_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_resource_nodes_resource ON resource_nodes(type, resource_id);
+
+        CREATE TABLE IF NOT EXISTS resource_grants (
+          id TEXT PRIMARY KEY,
+          node_id TEXT NOT NULL,
+          principal_type TEXT NOT NULL,  -- 'user' | 'team'
+          principal_id TEXT NOT NULL,
+          role_slug TEXT NOT NULL,       -- roles.slug
+          inherit INTEGER NOT NULL DEFAULT 1,  -- 0 = this node only, 1 = the whole subtree
+          created_at INTEGER,
+          created_by TEXT,
+          UNIQUE(node_id, principal_type, principal_id, role_slug)
+        );
+        CREATE INDEX IF NOT EXISTS idx_resource_grants_node ON resource_grants(node_id);
+        CREATE INDEX IF NOT EXISTS idx_resource_grants_principal ON resource_grants(principal_type, principal_id);
+      `)
+
+      // A role's requirement criteria: the node types it may be granted on.
+      // JSON array, or NULL for "any type" — which is what every existing role
+      // gets, so nothing an admin already defined narrows underneath them.
+      db.exec(`ALTER TABLE roles ADD COLUMN applies_to TEXT`)
+      for (const role of BUILTIN_ROLES) {
+        if (!role.appliesTo) continue
+        db.prepare('UPDATE roles SET applies_to = ? WHERE slug = ?').run(JSON.stringify(role.appliesTo), role.slug)
+      }
+
+      const now = Date.now()
+      const insNode = db.prepare(
+        `INSERT INTO resource_nodes (id, parent_id, kind, type, resource_id, name, owner_id, workspace_id, path, depth, sort, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`
+      )
+
+      // v13 recorded an owner per node; carry it across where it exists so an
+      // install that already ran v13 doesn't lose it. `legacy` is keyed by
+      // "<type>:<resource_id>" and is empty on installs that skipped v13.
+      const legacy = new Map()
+      const hasLegacy = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'spacetree_nodes'").get()
+      if (hasLegacy) {
+        for (const r of db.prepare('SELECT type, resource_id, owner_id FROM spacetree_nodes').all()) {
+          if (r.owner_id) legacy.set(`${r.type}:${r.resource_id || ''}`, r.owner_id)
+        }
+      }
+      const legacyOwner = (type, resourceId) => legacy.get(`${type}:${resourceId || ''}`) || null
+
+      // 1. The application root. Its id is the literal 'root' so the path of
+      //    every node reads '/root/…' and the root is addressable without a lookup.
+      const rootPath = '/root'
+      insNode.run('root', null, 'group', 'application', null, 'Application', legacyOwner('application', null), null, rootPath, 0, now, now)
+
+      // 2. Workspaces — group nodes under the root. The owner is the member
+      //    holding the built-in `owner` role, so the tree agrees with the
+      //    membership table from the first boot.
+      const wsNode = new Map()
+      for (const ws of db.prepare('SELECT id, name, created_at FROM workspaces ORDER BY created_at').all()) {
+        const id = randomUUID()
+        const owner =
+          legacyOwner('workspace', ws.id) ||
+          db.prepare("SELECT user_id FROM workspace_members WHERE workspace_id = ? AND role IN ('owner', 'admin') ORDER BY created_at LIMIT 1").get(ws.id)
+            ?.user_id ||
+          null
+        insNode.run(id, 'root', 'group', 'workspace', ws.id, ws.name, owner, ws.id, `${rootPath}/${id}`, 1, ws.created_at || now, now)
+        wsNode.set(ws.id, { id, path: `${rootPath}/${id}` })
+      }
+
+      // 3. Teams — group nodes under their workspace.
+      for (const t of db.prepare('SELECT id, workspace_id, name, created_at FROM teams').all()) {
+        const parent = wsNode.get(t.workspace_id)
+        if (!parent) continue
+        const id = randomUUID()
+        insNode.run(id, parent.id, 'group', 'team', t.id, t.name, null, t.workspace_id, `${parent.path}/${id}`, 2, t.created_at || now, now)
+      }
+
+      // 4. Connections — resource nodes under their workspace.
+      const connNode = new Map()
+      for (const c of db.prepare('SELECT id, name, workspace_id, owner_id, updated_at FROM connections WHERE workspace_id IS NOT NULL').all()) {
+        const parent = wsNode.get(c.workspace_id)
+        if (!parent) continue
+        const id = randomUUID()
+        const owner = c.owner_id || legacyOwner('connection', c.id) || null
+        insNode.run(id, parent.id, 'resource', 'connection', c.id, c.name, owner, c.workspace_id, `${parent.path}/${id}`, 2, c.updated_at || now, now)
+        connNode.set(c.id, { id, path: `${parent.path}/${id}`, workspaceId: c.workspace_id })
+      }
+
+      // 5. Storage destinations — resource nodes under their workspace.
+      for (const s of db.prepare('SELECT id, workspace_id, name, created_at FROM storage_destinations').all()) {
+        const parent = wsNode.get(s.workspace_id)
+        if (!parent) continue
+        const id = randomUUID()
+        insNode.run(id, parent.id, 'resource', 'storage', s.id, s.name, null, s.workspace_id, `${parent.path}/${id}`, 2, s.created_at || now, now)
+      }
+
+      // 6. Dashboards and workflows — resource nodes under their connection,
+      //    which is where they actually live.
+      for (const [table, type] of [
+        ['dashboards', 'dashboard'],
+        ['workflows', 'workflow'],
+      ]) {
+        for (const r of db.prepare(`SELECT id, connection_id, name, ts FROM ${table}`).all()) {
+          const parent = connNode.get(r.connection_id)
+          if (!parent) continue
+          const id = randomUUID()
+          insNode.run(id, parent.id, 'resource', type, r.id, r.name, null, parent.workspaceId, `${parent.path}/${id}`, 3, r.ts || now, now)
+        }
+      }
+
+      // 7. Every membership becomes an inherited grant on its workspace node.
+      //    This is the migration that makes the tree authoritative: after it,
+      //    `permissionsIn(workspaceId, userId)` resolved through the tree returns
+      //    exactly what `workspace_members.role` returned before. Pre-v8 rows
+      //    spell 'owner' as 'admin' — normalized here, the same way memberRole
+      //    has always normalized it on read.
+      const insGrant = db.prepare(
+        `INSERT OR IGNORE INTO resource_grants (id, node_id, principal_type, principal_id, role_slug, inherit, created_at, created_by)
+         VALUES (?, ?, 'user', ?, ?, 1, ?, NULL)`
+      )
+      for (const m of db.prepare('SELECT workspace_id, user_id, role, created_at FROM workspace_members').all()) {
+        const node = wsNode.get(m.workspace_id)
+        if (!node) continue
+        insGrant.run(randomUUID(), node.id, m.user_id, m.role === 'admin' ? 'owner' : m.role, m.created_at || now)
+      }
+    },
+  },
+  {
+    version: 15,
+    name: 'teams become group nodes: node_members, and grants name a node instead of a team',
+    up(db) {
+      // A team was two things wearing one id: a set of people (the grant
+      // principal) and, since v14, a group node resources could be filed under.
+      // The tree already models the second, so the first moves onto the node too
+      // and `teams` stops being a concept. A grant principal is now 'user' or
+      // 'node'.
+      //
+      // Membership gets its own table rather than a flag on `resource_grants`.
+      // That is the whole safety property: a plain user grant on a group node
+      // says "you may do X here" and must never be mistakable for "you are one of
+      // these people" — because a grant elsewhere naming that group hands its
+      // permissions to everyone inside it. A separate table makes the confusion
+      // structurally impossible instead of one WHERE clause away.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS node_members (
+          id TEXT PRIMARY KEY,
+          node_id TEXT NOT NULL,       -- a resource_nodes row with kind = 'group'
+          user_id TEXT NOT NULL,
+          created_at INTEGER,
+          UNIQUE(node_id, user_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_node_members_user ON node_members(user_id);
+        CREATE INDEX IF NOT EXISTS idx_node_members_node ON node_members(node_id);
+      `)
+
+      // team id -> the node v14 created for it. Everything below is keyed on this,
+      // so it must run before the nodes stop being findable by resource_id.
+      const nodeForTeam = new Map()
+      for (const n of db.prepare("SELECT id, resource_id FROM resource_nodes WHERE type = 'team'").all()) {
+        if (n.resource_id) nodeForTeam.set(n.resource_id, n.id)
+      }
+
+      const now = Date.now()
+      const insMember = db.prepare(
+        'INSERT OR IGNORE INTO node_members (id, node_id, user_id, created_at) VALUES (?, ?, ?, ?)'
+      )
+      for (const m of db.prepare('SELECT team_id, user_id, created_at FROM team_members').all()) {
+        const nodeId = nodeForTeam.get(m.team_id)
+        if (!nodeId) continue
+        insMember.run(randomUUID(), nodeId, m.user_id, m.created_at || now)
+      }
+
+      // Repoint both principal lists at the node. A team with no node (data from
+      // before v14 that the backfill skipped) leaves its rows spelling 'team',
+      // which the new resolver does not recognise — access is lost rather than
+      // silently kept, which is the right way for this to fail.
+      const setGrant = db.prepare('UPDATE resource_grants SET principal_type = ?, principal_id = ? WHERE principal_type = ? AND principal_id = ?')
+      const setAccess = db.prepare('UPDATE connection_access SET principal_type = ?, principal_id = ? WHERE principal_type = ? AND principal_id = ?')
+      for (const [teamId, nodeId] of nodeForTeam) {
+        setGrant.run('node', nodeId, 'team', teamId)
+        setAccess.run('node', nodeId, 'team', teamId)
+      }
+
+      // The nodes themselves become ordinary groups. They mirror nothing now, so
+      // `resource_id` goes NULL — the unique index on (type, resource_id) counts
+      // NULLs as distinct, so every converted team can hold one.
+      db.prepare("UPDATE resource_nodes SET type = 'group', resource_id = NULL, updated_at = ? WHERE type = 'team'").run(now)
+    },
+  },
+  {
+    version: 16,
+    name: 'one roster: workspace membership becomes node_members, and connection access stops defaulting open',
+    up(db) {
+      // A workspace node is a group like any other, so its roster belongs in the
+      // same table every other group uses. `workspace_members` was the second
+      // roster — and the one place two tables had to be kept saying the same
+      // thing. Membership now says *who belongs* (and therefore who can see the
+      // workspace's resources); the grant on the workspace node says *what they
+      // may do*. A member with no grant is a real, useful state: they see
+      // everything and can act on nothing.
+      const now = Date.now()
+      const wsNode = new Map()
+      for (const n of db.prepare("SELECT id, resource_id FROM resource_nodes WHERE type = 'workspace'").all()) {
+        if (n.resource_id) wsNode.set(n.resource_id, n.id)
+      }
+
+      const insMember = db.prepare('INSERT OR IGNORE INTO node_members (id, node_id, user_id, created_at) VALUES (?, ?, ?, ?)')
+      for (const m of db.prepare('SELECT workspace_id, user_id, created_at FROM workspace_members').all()) {
+        const nodeId = wsNode.get(m.workspace_id)
+        if (!nodeId) continue
+        insMember.run(randomUUID(), nodeId, m.user_id, m.created_at || now)
+      }
+      // The role itself needs no backfill: v14 already mirrored every membership
+      // into a grant on its workspace node, and `syncMemberGrant` has kept them
+      // in step since.
+
+      // An empty `connection_access` list used to mean "open to every member".
+      // It now means the opposite — nobody but the owner and whoever manages
+      // connections — because a member seeing a connection and a member being
+      // able to open it are different questions. Flipping the default silently
+      // would revoke access on upgrade, so today's implicit answer is written
+      // down first: the workspace node names exactly "everyone in this
+      // workspace", which is what the empty list meant. One row per connection,
+      // not one per member per connection.
+      const insAccess = db.prepare(
+        `INSERT OR IGNORE INTO connection_access (id, connection_id, principal_type, principal_id, created_at)
+         VALUES (?, ?, 'node', ?, ?)`
+      )
+      const open = db.prepare(
+        `SELECT c.id, c.workspace_id FROM connections c
+          WHERE c.workspace_id IS NOT NULL
+            AND NOT EXISTS (SELECT 1 FROM connection_access a WHERE a.connection_id = c.id)`
+      ).all()
+      for (const c of open) {
+        const nodeId = wsNode.get(c.workspace_id)
+        if (!nodeId) continue
+        insAccess.run(randomUUID(), c.id, nodeId, now)
+      }
+    },
+  },
+  {
+    version: 17,
+    name: 'built-in roles regain the permissions the catalog says they hold',
+    up(db) {
+      // `seedBuiltinRoles` only ever *inserts* a role that is missing, so a
+      // builtin seeded before a permission key existed never picked that key up.
+      // The resource-tree keys arrived with v14, which is why an instance older
+      // than that has an `owner` holding no `resources.organise` and no
+      // `resources.grant`: a workspace owner who cannot file a connection into a
+      // group or grant a role on one, while permissions-catalog.js defines that
+      // role as literally every key there is. The UI was right to grey the
+      // actions out — the row simply disagreed with the catalog.
+      //
+      // Built-in rows only, and purely additive: a custom role an admin wrote is
+      // theirs, and nothing is ever removed here. The cost is that a permission
+      // an admin deliberately took *off* a builtin comes back — the right trade
+      // for `owner`, which is defined as the whole catalog, and moot for
+      // `member`, which ships with none.
+      const ins = db.prepare('INSERT OR IGNORE INTO role_permissions (role_id, permission) VALUES (?, ?)')
+      const find = db.prepare('SELECT id FROM roles WHERE slug = ? AND builtin = 1')
+      for (const role of BUILTIN_ROLES) {
+        const row = find.get(role.slug)
+        if (!row) continue
+        for (const permission of role.permissions) ins.run(row.id, permission)
+      }
+    },
+  },
 ]
 
 // Tables kept only so an older image can still open a newer DB (rollback
@@ -771,6 +1116,10 @@ export const DEPRECATED_TABLES = [
   { table: 'saved_folders', supersededBy: 'folders', sinceStep: 3 },
   { table: 'domains', supersededBy: 'folders', sinceStep: 5 },
   { table: 'table_domains', supersededBy: 'connection_tables', sinceStep: 5 },
+  { table: 'spacetree_nodes', supersededBy: 'resource_nodes', sinceStep: 14 },
+  { table: 'teams', supersededBy: 'resource_nodes', sinceStep: 15 },
+  { table: 'team_members', supersededBy: 'node_members', sinceStep: 15 },
+  { table: 'workspace_members', supersededBy: 'node_members', sinceStep: 16 },
 ]
 
 export const LATEST_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version

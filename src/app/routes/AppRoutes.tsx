@@ -15,6 +15,7 @@ import WorkspaceSettingsPage from '@/pages/home/WorkspaceSettingsPage'
 import NotificationsPage from '@/pages/home/NotificationsPage'
 import StoragePage from '@/pages/home/StoragePage'
 import SettingsPage from '@/pages/home/SettingsPage'
+import ResourceTreePage from '@/pages/home/ResourceTreePage'
 import WorkspacePage from '@/pages/console/WorkspacePage'
 import AdminWorkspacesPage from '@/pages/admin/AdminWorkspacesPage'
 import AdminUsersPage from '@/pages/admin/AdminUsersPage'
@@ -122,6 +123,10 @@ export function AppRoutes() {
       >
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/settings/:sub" element={<SettingsPage />} />
+        {/* The selected node is in the URL, so a refresh keeps it and a link
+            lands on it. */}
+        <Route path="/resource-tree" element={<ResourceTreePage />} />
+        <Route path="/resource-tree/:nodeId" element={<ResourceTreePage />} />
       </Route>
       <Route
         path="/connection/:id"

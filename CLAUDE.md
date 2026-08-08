@@ -20,6 +20,15 @@ working in that area — it has the reasoning and the full rules.
 - **No route branches on `conn.type`** — the db layer answers for every engine. → skill `db-engine`
 - **`requireAuth` is sync**, and stays sync — resolve tokens in `sessionMiddleware`. → skill `auth-sessions`
 - **A route asks for a permission, never a role name** — `requirePermission(req, res, wsId, 'teams.manage')`. Workspace roles are admin-defined data; only the system tier (`users.role`) is hardcoded. → skill `auth-sessions`
+- **Permissions resolve through the resource tree, not a role column** — `server/resource-tree.js` walks a node's ancestors; ownership short-circuits to everything, `inherit` decides a grant's reach. Membership still gates *opening* a database. → skill `auth-sessions`
+- **A grant principal is a user or a group node** — there are no teams; a group is both a folder and a roster (`node_members`). Membership is flat, so **nesting a group never merges rosters**: re-filing a folder must not hand anyone access. → skill `auth-sessions`
+- **There is one roster table** — `node_members`. A workspace is a group, so its membership lives there too; `workspace_members` is deprecated. Belonging (roster) says who *sees* the workspace's resources, the grant on that node says what they may *do*. Use `isMember()` for "do they belong", never `memberRole()` truthiness — a member with no grant is a real state. → skill `auth-sessions`
+- **An empty `connection_access` list means nobody** — every member already *sees* every connection in their workspace; opening one is granted per connection. The workspace node is a valid principal meaning "everyone in this workspace". → skill `auth-sessions`
+- **A grant to a user requires them to already be a member of that workspace** — membership gates *data* access, so a non-member grant leaves them half in: permissions through the tree, refused by `requireMember`. Root grants are exempt and flagged `instanceWide`. → skill `auth-sessions`
+- **A node's grant list is not who can reach it** — `listGrants` is what was granted *here*; `peopleAtNode` resolves ancestors, inheritance and group rosters. Never present the first as the second. → skill `auth-sessions`
+- **A group's roster is governed by `teams.manage`, never `resources.organise`** — adding someone to a group grants them access, and it shows on no grant list of the node they thereby reach. → skill `auth-sessions`
+- **A node is deletable only when it is empty** — no silent reparenting; the user moves or deletes what is inside first. → skill `auth-sessions`
+- **A node mirroring a resource is created, renamed and deleted with that resource** — never on its own, and always from the module that owns the row. → skill `auth-sessions`
 - **A workspace never loses its last owner** — "owner" means *holds `workspace.manage`*; an instance admin never joins a workspace. → skill `auth-sessions`
 - **A permission exists because a route enforces it** — add the key to `server/permissions-catalog.js` and use it, or don't add it. → skill `auth-sessions`
 - **There is no external session store**, and adding one is not the answer to a new requirement. → skill `auth-sessions`
@@ -52,7 +61,7 @@ src/
 | --- | --- |
 | `auth` | AuthContext, login/setup/invite, the caller's own account settings |
 | `admin` | instance-admin area (system role `admin`): workspaces, users, the one SMTP config |
-| `workspaces` | org/tenant layer: current workspace, members, teams, notifications, general settings |
+| `workspaces` | org/tenant layer: current workspace, members (roster on the workspace node), notifications, general settings |
 | `workspace` | **the per-connection DB console** — DataGrid, TableView, QueryEditor, tabs, status bar |
 | `connections` | connection CRUD, access, type picker, switcher modal, export/import, connect handshake |
 | `redis` | the Redis-shaped console pieces: key tree sidebar + command console (swaps in on `type === 'redis'`) |
@@ -63,6 +72,7 @@ src/
 | `backup` | S3-compatible storage destinations + per-connection backup schedule and restore |
 | `templates` | built-in read-only catalog bundling workflows + dashboards (browse + apply) |
 | `system-update` | version check against GitHub Releases + guided update wizard |
+| `resource-tree` | the instance-wide node hierarchy + the roles granted on it (tree view, node detail, grant editor, group rosters) |
 | `settings`, `keymap` | SettingsContext; KeymapContext (`useKeymap`/`useShortcut`) + its setting UI |
 
 > `features/workspaces` (plural) is the org/tenant layer; `features/workspace`
@@ -81,8 +91,9 @@ server/
 ├── meta.js              # the app's own SQLite handle
 ├── migrations.js        # versioned, append-only meta-schema steps            → skill meta-schema
 ├── auth.js              # the guards + sessionMiddleware                      → skill auth-sessions
-├── permissions-catalog.js  # leaf: the permission keys + seeded builtin roles → skill auth-sessions
-├── permissions.js       # ★ workspace RBAC: roles, grants, the sync policy cache → skill auth-sessions
+├── permissions-catalog.js  # leaf: permission keys + node types + builtin roles → skill auth-sessions
+├── permissions.js       # ★ the role catalog + requirement criteria, sync cache → skill auth-sessions
+├── resource-tree.js     # ★ the node hierarchy + grants; resolves every permission → skill auth-sessions
 ├── sessions/            # ★ logins (durable) + connection sessions (cache)    → skill auth-sessions
 ├── login-guard.js       # sign-in brute-force blocking                        → skill auth-sessions
 ├── users.js  workspaces.js  app-settings.js  mail.js                          → skill auth-sessions
@@ -110,7 +121,7 @@ server/
 
 ### Backend
 - A module owns its table(s): if a route is writing raw SQL against `backup_schedules` or `storage_destinations`, that belongs in the module.
-- Dependencies point one way: `config → crypto → meta → sessions → {auth, app-settings, connections, folders, storage} → mail → db → workflow/backup/transfer → server.js`. No cycles — `sessions` never imports `db`; the db layer hands it a release callback instead (`setReleaseHandler`), which is what lets the sweeper close idle handles. Also `backup/schedule.js` is split out from the runner precisely so `connection-transfer.js` can read a schedule without importing the pipeline.
+- Dependencies point one way: `config → crypto → meta → sessions → permissions-catalog → permissions → resource-tree → {auth, workspaces, app-settings, connections, folders, storage} → mail → db → workflow/backup/transfer → server.js`. `resource-tree` owns `node_members` and exports `groupIdsFor`, which `auth.js` imports — never the other way round, because `auth.js` depends on it. No cycles — `sessions` never imports `db`; the db layer hands it a release callback instead (`setReleaseHandler`), which is what lets the sweeper close idle handles. Also `backup/schedule.js` is split out from the runner precisely so `connection-transfer.js` can read a schedule without importing the pipeline.
 
 ## EXTRA ACTION
 - Every time you add endpoint on server, create a structure of request response and sample url on BACKEND_DOCUMENTATION.MD

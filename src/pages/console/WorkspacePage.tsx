@@ -102,6 +102,7 @@ import ListRow from '@/shared/ui/ListRow'
 import TextButton from '@/shared/ui/buttons/TextButton'
 import {
   ChevronRight,
+  CloseIcon,
   CodeIcon,
   ColumnsIcon,
   DatabaseIcon,
@@ -117,6 +118,8 @@ import {
   PlusIcon,
   RefreshIcon,
   SearchIcon,
+  SplitHorizontalIcon,
+  SplitVerticalIcon,
   TableIcon,
   TagIcon,
   TerminalIcon,
@@ -169,8 +172,15 @@ export default function Workspace() {
   const [connError, setConnError] = useState(null) // set when the DB is unreachable
   const [reconnecting, setReconnecting] = useState(false) // retry in progress
   const [filter, setFilter] = useState('')
+  // Tabs live in one flat list; each carries the editor pane (0 = first,
+  // 1 = the split one) it is shown in. `activeByPane` is the focused tab of
+  // each pane, `focusedPane` the one new tabs open in and shortcuts act on.
   const [tabs, setTabs] = useState([])
-  const [activeTab, setActiveTab] = useState(null)
+  const [activeByPane, setActiveByPane] = useState([null, null])
+  const [focusedPane, setFocusedPane] = useState(0)
+  const [splitDir, setSplitDir] = useState(null) // null (no split) | 'vertical' | 'horizontal'
+  const [splitRatio, setSplitRatio] = useState(0.5) // pane 0's share of the editor area
+  const activeTab = activeByPane[focusedPane]
   const [creatingTable, setCreatingTable] = useState<any>(false)
   const [history, setHistory] = useState([])
   const [historyLoading, setHistoryLoading] = useState(false)
@@ -211,6 +221,7 @@ export default function Workspace() {
   const [keyspaceVersion, setKeyspaceVersion] = useState(0) // bump to re-scan the Redis key tree
   const searchRef = useRef(null)
   const autoOpenedFor = useRef(null) // connection id we've already auto-opened a tab for
+  const paneWrapRef = useRef(null) // the editor area, measured while dragging the split divider
 
   // Redis is schemaless and tableless: no tables/views/functions browser, no
   // schema designer, no table folders — the sidebar shows its keyspace instead,
@@ -235,7 +246,9 @@ export default function Workspace() {
 
   const switchConnection = (cid) => {
     setTabs([])
-    setActiveTab(null)
+    setActiveByPane([null, null])
+    setFocusedPane(0)
+    setSplitDir(null)
     setChanges([])
     setQueryState({})
     setSchemaPending({})
@@ -373,26 +386,35 @@ export default function Workspace() {
     )
   }
 
-  const openTable = (table) => {
-    const key = `table:${table}`
-    setTabs((prev) => (prev.some((t) => t.key === key) ? prev : [...prev, { key, kind: 'table', table, title: table }]))
-    setActiveTab(key)
+  // Set one pane's focused tab, leaving the other pane's alone.
+  const setPaneActive = (pane, key) =>
+    setActiveByPane((prev) => (prev[pane] === key ? prev : prev.map((k, i) => (i === pane ? key : k))))
+
+  // Every "open X" funnels through here. A tab that's already open is focused
+  // where it lives — in either pane — and optionally patched (`patch`); a new
+  // one opens in the focused pane.
+  const openTab = (tab, patch?) => {
+    const pane = tabs.find((t) => t.key === tab.key)?.pane ?? focusedPane
+    setTabs((prev) =>
+      prev.some((t) => t.key === tab.key)
+        ? patch
+          ? prev.map((t) => (t.key === tab.key ? { ...t, ...patch } : t))
+          : prev
+        : [...prev, { ...tab, pane }]
+    )
+    setFocusedPane(pane)
+    setPaneActive(pane, tab.key)
     setSidebarOpen(false)
   }
+
+  const openTable = (table) => openTab({ key: `table:${table}`, kind: 'table', table, title: table })
 
   // FK drill-down: show the referenced table filtered by column = value. Reuses
   // the table's existing tab if one is open (re-filtering it) — including when a
   // different FK points at the same table — otherwise opens a new table tab.
   const openTableFiltered = (table, column, value) => {
-    const key = `table:${table}`
     const filters = [makeFilter(column, '=', String(value ?? ''))]
-    setTabs((prev) =>
-      prev.some((t) => t.key === key)
-        ? prev.map((t) => (t.key === key ? { ...t, title: table, filters } : t))
-        : [...prev, { key, kind: 'table', table, title: table, filters }]
-    )
-    setActiveTab(key)
-    setSidebarOpen(false)
+    openTab({ key: `table:${table}`, kind: 'table', table, title: table, filters }, { title: table, filters })
   }
 
   // Table filters live on the tab, not inside TableView — only the active tab is
@@ -402,61 +424,30 @@ export default function Workspace() {
 
   const openQuery = (sql?) => {
     queryCounter += 1
-    const key = `query:${queryCounter}`
     const initialSql = typeof sql === 'string' ? sql : undefined
     const title = `${isRedis ? 'Console' : 'Query'} ${queryCounter}`
-    setTabs((prev) => [...prev, { key, kind: 'query', title, sql: initialSql }])
-    setActiveTab(key)
-    setSidebarOpen(false)
+    openTab({ key: `query:${queryCounter}`, kind: 'query', title, sql: initialSql })
   }
 
   // Open one Redis key in its own tab (focus it if already open).
-  const openRedisKey = (redisKey) => {
-    const key = `rediskey:${redisKey}`
-    setTabs((prev) =>
-      prev.some((t) => t.key === key) ? prev : [...prev, { key, kind: 'redisKey', redisKey, title: redisKey }]
-    )
-    setActiveTab(key)
-    setSidebarOpen(false)
-  }
+  const openRedisKey = (redisKey) =>
+    openTab({ key: `rediskey:${redisKey}`, kind: 'redisKey', redisKey, title: redisKey })
 
   // Open a saved query in its own identity-bearing tab: title tracks the saved
   // query's name (and stays in sync on rename), focus if already open.
-  const openSavedQuery = (q) => {
-    const key = `query:saved:${q.id}`
-    setTabs((prev) =>
-      prev.some((t) => t.key === key) ? prev : [...prev, { key, kind: 'query', title: q.name, sql: q.sql, savedId: q.id }]
-    )
-    setActiveTab(key)
-    setSidebarOpen(false)
-  }
+  const openSavedQuery = (q) =>
+    openTab({ key: `query:saved:${q.id}`, kind: 'query', title: q.name, sql: q.sql, savedId: q.id })
 
-  const openSchema = (table) => {
-    const key = `schema:${table}`
-    setTabs((prev) =>
-      prev.some((t) => t.key === key) ? prev : [...prev, { key, kind: 'schema', table, title: `${table} · schema` }]
-    )
-    setActiveTab(key)
-    setSidebarOpen(false)
-  }
+  const openSchema = (table) =>
+    openTab({ key: `schema:${table}`, kind: 'schema', table, title: `${table} · schema` })
 
-  const openFunction = (name) => {
-    const key = `function:${name}`
-    setTabs((prev) => (prev.some((t) => t.key === key) ? prev : [...prev, { key, kind: 'function', name, title: name }]))
-    setActiveTab(key)
-    setSidebarOpen(false)
-  }
+  const openFunction = (name) => openTab({ key: `function:${name}`, kind: 'function', name, title: name })
 
   // Accordion: opening a section collapses the others; clicking the open one closes it.
   const toggleGroup = (type) => setOpenGroup((prev) => (prev === type ? null : type))
 
   // Generic "Schema editor" scratch tab — focus it if already open.
-  const openSchemaEditor = () => {
-    const key = 'schema-editor'
-    setTabs((prev) => (prev.some((t) => t.key === key) ? prev : [...prev, { key, kind: 'schemaEditor', title: 'Schema Editor' }]))
-    setActiveTab(key)
-    setSidebarOpen(false)
-  }
+  const openSchemaEditor = () => openTab({ key: 'schema-editor', kind: 'schemaEditor', title: 'Schema Editor' })
 
   // Data deleted by DELETE FROM can't be reconstructed — not reversible.
   const emptyTable = (table) => {
@@ -609,12 +600,7 @@ export default function Workspace() {
     await deleteHistory(id, ids)
   }
   // Open the query-history tab (focus if already open).
-  const openHistory = () => {
-    const key = 'history'
-    setTabs((prev) => (prev.some((t) => t.key === key) ? prev : [...prev, { key, kind: 'history', title: 'Query history' }]))
-    setActiveTab(key)
-    setSidebarOpen(false)
-  }
+  const openHistory = () => openTab({ key: 'history', kind: 'history', title: 'Query history' })
 
   // ---- Schema history (migration audit trail; opened from the version badge) ----
   const loadSchemaHistory = async () => {
@@ -625,14 +611,7 @@ export default function Workspace() {
       setSchemaHistoryLoading(false)
     }
   }
-  const openSchemaHistory = () => {
-    const key = 'schema-history'
-    setTabs((prev) =>
-      prev.some((t) => t.key === key) ? prev : [...prev, { key, kind: 'schemaHistory', title: 'Schema history' }]
-    )
-    setActiveTab(key)
-    setSidebarOpen(false)
-  }
+  const openSchemaHistory = () => openTab({ key: 'schema-history', kind: 'schemaHistory', title: 'Schema history' })
   // Restore the schema to migration `m`'s version: the server runs the down SQL
   // for every active version newer than it, marks them rolled back, and resets
   // the connection's schema version to m.version (rather than bumping it).
@@ -655,14 +634,7 @@ export default function Workspace() {
   // ---- Workflows (per connection) ----
   // Open a workflow in its own tab; title tracks the workflow name (kept in sync
   // on rename). Focus it if already open.
-  const openWorkflow = (w) => {
-    const key = `workflow:${w.id}`
-    setTabs((prev) =>
-      prev.some((t) => t.key === key) ? prev : [...prev, { key, kind: 'workflow', workflowId: w.id, title: w.name }]
-    )
-    setActiveTab(key)
-    setSidebarOpen(false)
-  }
+  const openWorkflow = (w) => openTab({ key: `workflow:${w.id}`, kind: 'workflow', workflowId: w.id, title: w.name })
   const newWorkflow = async (folderId = null) => {
     try {
       const wf = await createWorkflow(id, `Workflow ${workflows.length + 1}`, undefined, folderId)
@@ -770,25 +742,12 @@ export default function Workspace() {
   // Mirrors the workflow handlers: open in a tab, create, rename, delete,
   // plus import (create a new dashboard from an exported JSON structure).
   const dashboardFileRef = useRef(null)
-  const openDashboard = (d) => {
-    const key = `dashboard:${d.id}`
-    setTabs((prev) =>
-      prev.some((t) => t.key === key) ? prev : [...prev, { key, kind: 'dashboard', dashboardId: d.id, title: d.name }]
-    )
-    setActiveTab(key)
-    setSidebarOpen(false)
-  }
+  const openDashboard = (d) =>
+    openTab({ key: `dashboard:${d.id}`, kind: 'dashboard', dashboardId: d.id, title: d.name })
   // ---- Templates (built-in catalog, browse + apply) ----
   // Open a template's detail in its own tab (VSCode-style). Applying creates
   // its workflows + dashboards on this connection, then refreshes the rails.
-  const openTemplate = (t) => {
-    const key = `template:${t.id}`
-    setTabs((prev) =>
-      prev.some((tab) => tab.key === key) ? prev : [...prev, { key, kind: 'template', templateId: t.id, title: t.name }]
-    )
-    setActiveTab(key)
-    setSidebarOpen(false)
-  }
+  const openTemplate = (t) => openTab({ key: `template:${t.id}`, kind: 'template', templateId: t.id, title: t.name })
   const onTemplateApplied = (res) => {
     listWorkflows(id).then(setWorkflows)
     fetchWorkflowFolders(id).then(setWorkflowFolders)
@@ -1079,7 +1038,7 @@ export default function Workspace() {
         return n
       })
       setTabs((prev) => prev.map((t) => (t.key === tabKey ? { ...t, key: newKey, title: name } : t)))
-      setActiveTab((cur) => (cur === tabKey ? newKey : cur))
+      setActiveByPane((cur) => cur.map((k) => (k === tabKey ? newKey : k)))
       toast.success(`Saved draft “${name}”.`)
     } catch (e) {
       toast.error(`Save failed: ${e.message}`)
@@ -1102,14 +1061,9 @@ export default function Workspace() {
   // Open a saved schema draft in its own tab (focus if already open; keep its edits).
   const openSchemaDraft = (q) => {
     const key = `schema:${q.id}`
-    setTabs((prev) => {
-      if (prev.some((t) => t.key === key)) return prev
-      // Seed this tab's pending changes from the draft, once.
-      setSchemaPending((p) => ({ ...p, [key]: draftToItems(q.sql) }))
-      return [...prev, { key, kind: 'schemaEditor', title: q.name }]
-    })
-    setActiveTab(key)
-    setSidebarOpen(false)
+    // Seed this tab's pending changes from the draft, once.
+    if (!tabs.some((t) => t.key === key)) setSchemaPending((p) => ({ ...p, [key]: draftToItems(q.sql) }))
+    openTab({ key, kind: 'schemaEditor', title: q.name })
   }
 
   const renameSavedQuery = async (sid, name) => {
@@ -1133,15 +1087,30 @@ export default function Workspace() {
   const persistQueryState = (key, snapshot) =>
     setQueryState((p) => ({ ...p, [key]: snapshot }))
 
+  // Re-point each pane's active tab at something that still exists in it (an
+  // explicit `want` wins), and fold the split away once its pane runs empty.
+  const settlePanes = (list, want = {}) => {
+    setActiveByPane((cur) =>
+      cur.map((k, p) => {
+        const own = list.filter((t) => t.pane === p)
+        const target = want[p] ?? k
+        if (target && own.some((t) => t.key === target)) return target
+        return own.length ? own[own.length - 1].key : null
+      })
+    )
+    if (!list.some((t) => t.pane === 1)) {
+      setSplitDir(null)
+      setFocusedPane(0)
+    }
+  }
+
   // Actually drop a tab (and its pending schema changes / query state).
   const dropTab = (key) => {
     if (schemaPending[key]) setSchemaPending((p) => { const n = { ...p }; delete n[key]; return n })
     if (queryState[key]) setQueryState((p) => { const n = { ...p }; delete n[key]; return n })
-    setTabs((prev) => {
-      const next = prev.filter((t) => t.key !== key)
-      if (activeTab === key) setActiveTab(next.length ? next[next.length - 1].key : null)
-      return next
-    })
+    const next = tabs.filter((t) => t.key !== key)
+    setTabs(next)
+    settlePanes(next)
   }
 
   const removeTab = (key) => {
@@ -1155,31 +1124,86 @@ export default function Workspace() {
     removeTab(key)
   }
 
+  // The "close …" menu entries act inside the tab's own pane; the other pane's
+  // tabs are a separate group and are never touched.
+  const paneOf = (key) => tabs.find((t) => t.key === key)?.pane ?? 0
+
   const closeTabsToRight = (key) => {
-    setTabs((prev) => {
-      const idx = prev.findIndex((t) => t.key === key)
-      if (idx === -1) return prev
-      const next = prev.slice(0, idx + 1)
-      if (!next.some((t) => t.key === activeTab)) setActiveTab(key)
-      return next
-    })
+    const p = paneOf(key)
+    const idx = tabs.filter((t) => t.pane === p).findIndex((t) => t.key === key)
+    if (idx === -1) return
+    const doomed = new Set(tabs.filter((t) => t.pane === p).slice(idx + 1).map((t) => t.key))
+    const next = tabs.filter((t) => !doomed.has(t.key))
+    setTabs(next)
+    settlePanes(next, { [p]: key })
   }
 
   const closeOtherTabs = (key) => {
-    setTabs((prev) => {
-      if (!prev.some((t) => t.key === key)) return prev
-      if (activeTab !== key) setActiveTab(key)
-      return prev.filter((t) => t.key === key)
-    })
+    const p = paneOf(key)
+    const next = tabs.filter((t) => t.pane !== p || t.key === key)
+    setTabs(next)
+    settlePanes(next, { [p]: key })
   }
 
-  const closeAllTabs = () => {
-    setTabs([])
-    setActiveTab(null)
+  const closeAllTabs = (pane = focusedPane) => {
+    const next = tabs.filter((t) => t.pane !== pane)
+    setTabs(next)
+    settlePanes(next)
   }
 
-  // Drag-reorder from the tab bar: move `fromKey` next to `toKey` (before or
-  // after it); `toKey === null` moves it to the end.
+  // ---- Split view ----
+  // A tab belongs to exactly one pane; moving it there is what creates the
+  // split, and the split folds away as soon as the second pane runs empty.
+  const moveTabToPane = (key, pane, dir = splitDir || 'vertical') => {
+    const next = tabs.map((t) => (t.key === key ? { ...t, pane } : t))
+    setTabs(next)
+    if (pane === 1) setSplitDir(dir)
+    settlePanes(next, { [pane]: key })
+    setFocusedPane(pane)
+  }
+
+  // Tab-bar / shortcut toggle: split the focused tab off into the second pane,
+  // or (when already split) merge everything back into the first one.
+  const toggleSplit = (dir = 'vertical') => {
+    if (splitDir) {
+      if (splitDir !== dir) {
+        setSplitDir(dir)
+        return
+      }
+      unsplit()
+      return
+    }
+    const key = activeByPane[0]
+    if (key) moveTabToPane(key, 1, dir)
+  }
+
+  // Fold the split away without losing work: the second pane's tabs join the first.
+  const unsplit = () => {
+    const keep = activeByPane[focusedPane] ?? activeByPane[0] ?? activeByPane[1]
+    const next = tabs.map((t) => (t.pane === 1 ? { ...t, pane: 0 } : t))
+    setTabs(next)
+    setSplitDir(null)
+    setFocusedPane(0)
+    settlePanes(next, { 0: keep })
+  }
+
+  // Dropping a tab onto the other pane's strip: move it there, positioned
+  // before `anchorKey` (or at the end when the drop landed past the last tab).
+  const adoptTab = (pane, key, anchorKey) => {
+    const tab = tabs.find((t) => t.key === key)
+    if (!tab || tab.pane === pane) return
+    const rest = tabs.filter((t) => t.key !== key)
+    const at = anchorKey ? rest.findIndex((t) => t.key === anchorKey) : -1
+    const next = [...rest]
+    next.splice(at === -1 ? next.length : at, 0, { ...tab, pane })
+    setTabs(next)
+    settlePanes(next, { [pane]: key })
+    setFocusedPane(pane)
+  }
+
+  // Drag-reorder within one pane's strip: move `fromKey` next to `toKey` (before
+  // or after it); `toKey === null` moves it to the end. Both keys belong to the
+  // same pane, so reordering the flat list keeps every pane's own order intact.
   const moveTab = (fromKey, toKey, before) => {
     setTabs((prev) => {
       const from = prev.findIndex((t) => t.key === fromKey)
@@ -1209,7 +1233,12 @@ export default function Workspace() {
     // of their tables filtered out) — otherwise the folder tree would vanish.
   ].filter((g) => g.items.length > 0 || (g.type === 'table' && (tableFolders.length > 0 || creatingTableFolder)))
 
-  const current = tabs.find((t) => t.key === activeTab)
+  // The tab on screen in each pane. `current` is the focused pane's — what
+  // tab-scoped actions (save, stage, the sidebar's active row) apply to;
+  // `onScreen` is both, since a split shows two tabs at once.
+  const tabInPane = (p) => tabs.find((t) => t.key === activeByPane[p])
+  const current = tabInPane(focusedPane)
+  const onScreen = [tabInPane(0), tabInPane(1)].filter(Boolean)
 
   // tableName -> its folder (drives the inline dot + the grouped view).
   const folderByTable = useMemo(() => {
@@ -1257,10 +1286,9 @@ export default function Workspace() {
   // One table/view/function sidebar row (used flat and inside table folders).
   // `rowProps` is spread onto the row so the folder view can make it draggable.
   const renderObject = (obj, rowProps = {}) => {
-    const active =
-      obj.type === 'function'
-        ? current?.kind === 'function' && current.name === obj.name
-        : current?.kind === 'table' && current.table === obj.name
+    const active = onScreen.some((t) =>
+      obj.type === 'function' ? t.kind === 'function' && t.name === obj.name : t.kind === 'table' && t.table === obj.name
+    )
     const Icon = obj.type === 'view' ? EyeIcon : obj.type === 'function' ? CodeIcon : TableIcon
     const onOpen = obj.type === 'function' ? () => openFunction(obj.name) : () => openTable(obj.name)
     const rowFolder = obj.type === 'table' ? folderByTable[obj.name] : null
@@ -1361,6 +1389,8 @@ export default function Workspace() {
   useShortcut('workspace.panelSchema', () => selectPanel('schema'))
   useShortcut('workspace.toggleSidebar', toggleSidebar)
   useShortcut('workspace.commitChanges', commitChanges)
+  useShortcut('workspace.splitEditor', () => toggleSplit('vertical'))
+  useShortcut('workspace.focusOtherPane', () => splitDir && setFocusedPane((p) => (p === 0 ? 1 : 0)))
 
   // Commands surfaced in the ⌘K palette. `hint` mirrors the action's current
   // keymap binding so the palette stays in sync with user-customized shortcuts.
@@ -1398,7 +1428,296 @@ export default function Workspace() {
       ? []
       : [{ id: 'view-schema-history', group: 'View', label: `Schema version history (v${conn.schemaVersion ?? 1})`, keywords: 'migrations audit', icon: <TagIcon width={15} height={15} />, run: openSchemaHistory }]),
     { id: 'view-changes', group: 'View', label: 'View staged changes', keywords: 'commit diff pending', icon: <EditIcon width={15} height={15} />, run: () => setChangesOpen(true) },
+    { id: 'split-vertical', group: 'View', label: splitDir === 'vertical' ? 'Unsplit editor' : 'Split editor right', keywords: 'split pane side by side group', icon: <SplitVerticalIcon width={15} height={15} />, hint: formatCombo(bindings['workspace.splitEditor']), run: () => toggleSplit('vertical') },
+    { id: 'split-horizontal', group: 'View', label: splitDir === 'horizontal' ? 'Unsplit editor' : 'Split editor down', keywords: 'split pane stacked group', icon: <SplitHorizontalIcon width={15} height={15} />, run: () => toggleSplit('horizontal') },
   ]
+
+  // ---- Editor panes ----
+  // Shown when nothing is open at all (an *empty pane* of a split gets the
+  // compact placeholder in renderPane instead — it only owns half the area).
+  const emptyWorkspace = (
+    <div className="flex h-full w-full items-center justify-center overflow-auto p-8">
+      <div className="w-full max-w-[560px] text-center">
+        <div className="mx-auto flex h-[88px] w-[88px] items-center justify-center rounded-[22px] border border-edge bg-elevated text-ink-faint">
+          {isRedis ? <KeyIcon width={34} height={34} /> : <TableIcon width={34} height={34} />}
+        </div>
+        <h2 className="mt-7 text-2xl font-bold">{isRedis ? 'No key selected' : 'No table selected'}</h2>
+        <p className="mx-auto mt-3 max-w-[420px] text-sm leading-relaxed text-ink-dim">
+          {isRedis
+            ? 'Pick a key from the keyspace tree to inspect its value, or open a console to run any Redis command.'
+            : 'Pick a table from the sidebar to browse rows, or start a query to explore your data with SQL.'}
+        </p>
+
+        <div className="mt-7 flex items-center justify-center gap-3">
+          <Button variant="primary" size="lg" icon={isRedis ? TerminalIcon : CodeIcon} onClick={() => openQuery()}>
+            {isRedis ? 'New console' : 'New SQL query'}
+          </Button>
+          {!isRedis && (
+            <Button
+              variant="ghost"
+              size="lg"
+              icon={TableIcon}
+              onClick={() => tables[0] && openTable(tables[0])}
+              disabled={tables.length === 0}
+            >
+              Browse tables
+            </Button>
+          )}
+        </div>
+
+        <div className="mt-9">
+          <Button variant="ghost" size="lg" icon={HistoryIcon} onClick={openHistory}>
+            View query history
+          </Button>
+        </div>
+
+        <div className="mt-10 flex flex-wrap items-center justify-center gap-6 text-[11px] text-ink-faint">
+          <span className="flex items-center gap-1.5"><kbd className={kbd}>{formatCombo(bindings['general.search'])}</kbd> Search tables</span>
+          <span className="flex items-center gap-1.5"><kbd className={kbd}>{formatCombo(bindings['workspace.runQuery'])}</kbd> Run query</span>
+          <span className="flex items-center gap-1.5"><kbd className={kbd}>{formatCombo(bindings['general.newTab'])}</kbd> New query</span>
+        </div>
+      </div>
+    </div>
+  )
+
+  // One pane's body: whatever its focused tab shows. Both panes render through
+  // here, so a split mounts two tabs at once — every view is keyed by tab key,
+  // so the two never share state.
+  const renderTabContent = (t) => {
+    if (!conn || !t) return null
+    switch (t.kind) {
+      case 'table':
+        return (
+          <TableView
+            key={`${t.key}:${dataVersion}:${ns.database}:${ns.schema}`}
+            conn={nsConn}
+            table={t.table}
+            onChange={addChange}
+            onOpenReference={openTableFiltered}
+            filters={t.filters || EMPTY_FILTERS}
+            onFiltersChange={(f) => setTabFilters(t.key, f)}
+          />
+        )
+      case 'schema':
+        return <SchemaView key={`${t.key}:${dataVersion}:${ns.database}:${ns.schema}`} conn={nsConn} table={t.table} />
+      case 'function':
+        return <FunctionView key={`${t.key}:${ns.database}:${ns.schema}`} conn={nsConn} name={t.name} />
+      case 'schemaEditor':
+        return (
+          <Suspense fallback={<div className="flex-1 p-8 text-center text-xs text-ink-faint">Loading schema…</div>}>
+            <SchemaEditor
+              key={`${t.key}:${dataVersion}:${ns.database}:${ns.schema}`}
+              conn={nsConn}
+              changes={changes}
+              folders={tableFolders}
+              onUpdateFolder={updateFolderById}
+              onDeleteFolder={removeTableFolder}
+              onSetFolder={setFolderPickerTable}
+              pending={schemaPending[t.key] || []}
+              onPendingChange={(items) => setSchemaPending((p) => ({ ...p, [t.key]: items }))}
+              onStageItems={stageSchemaItems}
+              onSaveDraft={saveSchemaDraft}
+              onUpdateDraft={updateSchemaDraft}
+              draftId={t.key.startsWith('schema:') ? t.key.slice(7) : undefined}
+              onOpenTable={openTable}
+              onOpenSchema={openSchema}
+            />
+          </Suspense>
+        )
+      case 'query':
+        return (
+          <Suspense fallback={<div className="flex-1 p-8 text-center text-xs text-ink-faint">Loading editor…</div>}>
+            {isRedis ? (
+              <RedisConsole
+                key={t.key}
+                tabKey={t.key}
+                conn={nsConn}
+                initialCommand={t.sql ?? ''}
+                persisted={queryState[t.key]}
+                onPersist={persistQueryState}
+                onRan={recordRun}
+                onSave={saveQuery}
+                onMutated={() => setKeyspaceVersion((v) => v + 1)}
+              />
+            ) : (
+              <QueryEditor
+                key={t.key}
+                tabKey={t.key}
+                conn={nsConn}
+                dialect={DIALECT[conn.type]}
+                initialSql={t.sql ?? ''}
+                persisted={queryState[t.key]}
+                onPersist={persistQueryState}
+                onRan={recordRun}
+                onSave={saveQuery}
+                onAnalyze={setAnalyzeSql}
+              />
+            )}
+          </Suspense>
+        )
+      case 'redisKey':
+        return (
+          <RedisKeyView
+            key={`${t.key}:${ns.database}:${keyspaceVersion}`}
+            conn={nsConn}
+            redisKey={t.redisKey}
+            onRunCommand={openQuery}
+            onDeleted={(deletedKey) => {
+              dropTab(`rediskey:${deletedKey}`)
+              setKeyspaceVersion((v) => v + 1)
+            }}
+          />
+        )
+      case 'history':
+        return (
+          <QueryHistoryView
+            history={history}
+            loading={historyLoading}
+            onRefresh={loadHistory}
+            onClear={clearHistoryAll}
+            onDelete={deleteHistoryEntries}
+          />
+        )
+      case 'schemaHistory':
+        return (
+          <SchemaHistoryView
+            migrations={schemaMigrations}
+            loading={schemaHistoryLoading}
+            dialect={DIALECT[conn.type]}
+            onRefresh={loadSchemaHistory}
+            onRollback={setRollbackTarget}
+          />
+        )
+      case 'workflow':
+        return (
+          <Suspense fallback={<div className="flex-1 p-8 text-center text-xs text-ink-faint">Loading workflow…</div>}>
+            <WorkflowEditor key={t.key} conn={conn} workflowId={t.workflowId} />
+          </Suspense>
+        )
+      case 'dashboard':
+        return (
+          <Suspense fallback={<div className="flex-1 p-8 text-center text-xs text-ink-faint">Loading dashboard…</div>}>
+            <DashboardView
+              key={`${t.key}:${ns.database}:${ns.schema}`}
+              conn={nsConn}
+              dashboardId={t.dashboardId}
+              onRename={dashboardRenamed}
+            />
+          </Suspense>
+        )
+      case 'template': {
+        const tpl = TEMPLATES.find((x) => x.id === t.templateId)
+        return tpl ? (
+          <TemplateDetailView
+            key={t.key}
+            template={tpl}
+            connectionId={id}
+            dbType={conn.type}
+            onApplied={onTemplateApplied}
+          />
+        ) : (
+          <div className="flex-1 p-8 text-center text-xs text-ink-faint">Template not found.</div>
+        )
+      }
+      default:
+        return null
+    }
+  }
+
+  // Drag the divider to re-balance the two panes (20–80%). The ratio is a flex
+  // grow factor, so the same handler works split left/right or top/bottom.
+  const startResize = (e) => {
+    e.preventDefault()
+    const box = paneWrapRef.current?.getBoundingClientRect()
+    if (!box) return
+    const vertical = splitDir !== 'horizontal'
+    const move = (ev) => {
+      const r = vertical ? (ev.clientX - box.left) / box.width : (ev.clientY - box.top) / box.height
+      setSplitRatio(Math.min(0.8, Math.max(0.2, r)))
+    }
+    const up = () => {
+      window.removeEventListener('mousemove', move)
+      window.removeEventListener('mouseup', up)
+      document.body.style.userSelect = ''
+      document.body.style.cursor = ''
+    }
+    window.addEventListener('mousemove', move)
+    window.addEventListener('mouseup', up)
+    document.body.style.userSelect = 'none'
+    document.body.style.cursor = vertical ? 'col-resize' : 'row-resize'
+  }
+
+  const renderPane = (p) => {
+    const tab = tabInPane(p)
+    return (
+      <section
+        key={p}
+        onMouseDown={() => setFocusedPane(p)}
+        style={splitDir ? { flexGrow: p === 0 ? splitRatio : 1 - splitRatio, flexBasis: 0 } : undefined}
+        className={`flex min-h-0 min-w-0 flex-col ${splitDir ? '' : 'flex-1'}`}
+      >
+        <TabBar
+          tabs={tabs.filter((t) => t.pane === p)}
+          activeTab={activeByPane[p]}
+          focused={focusedPane === p}
+          onSelect={(key) => {
+            setFocusedPane(p)
+            setPaneActive(p, key)
+          }}
+          onClose={closeTab}
+          onContextMenu={openTabMenu}
+          onReorder={moveTab}
+          onAdopt={(key, anchorKey) => adoptTab(p, key, anchorKey)}
+          emptyHint={splitDir ? 'Drag a tab here' : 'No open tabs'}
+          actions={
+            p === 1 ? (
+              <Tooltip label="Close split (keeps the tabs)" placement="bottom">
+                <IconButton onClick={unsplit} aria-label="Close split">
+                  <CloseIcon width={15} height={15} />
+                </IconButton>
+              </Tooltip>
+            ) : (
+              <div className="flex gap-1 max-[720px]:hidden">
+                <Tooltip label={splitDir === 'vertical' ? 'Unsplit' : 'Split right'} placement="bottom">
+                  <IconButton
+                    active={splitDir === 'vertical'}
+                    onClick={() => toggleSplit('vertical')}
+                    aria-label="Split editor right"
+                  >
+                    <SplitVerticalIcon width={15} height={15} />
+                  </IconButton>
+                </Tooltip>
+                <Tooltip label={splitDir === 'horizontal' ? 'Unsplit' : 'Split down'} placement="bottom">
+                  <IconButton
+                    active={splitDir === 'horizontal'}
+                    onClick={() => toggleSplit('horizontal')}
+                    aria-label="Split editor down"
+                  >
+                    <SplitHorizontalIcon width={15} height={15} />
+                  </IconButton>
+                </Tooltip>
+              </div>
+            )
+          }
+        />
+        <div className="flex min-h-0 flex-1 overflow-hidden">
+          {tab ? (
+            renderTabContent(tab)
+          ) : splitDir ? (
+            // A pane with nothing in it: compact, since it only owns half the area.
+            <div className="flex h-full w-full flex-col items-center justify-center gap-3 p-6 text-center">
+              <p className="text-xs text-ink-faint">Drag a tab here, or start a new one.</p>
+              <Button variant="ghost" icon={isRedis ? TerminalIcon : CodeIcon} onClick={() => openQuery()}>
+                {isRedis ? 'New console' : 'New SQL query'}
+              </Button>
+            </div>
+          ) : (
+            emptyWorkspace
+          )}
+        </div>
+      </section>
+    )
+  }
 
   return (
     <div className="flex h-screen bg-bg">
@@ -1799,192 +2118,28 @@ export default function Workspace() {
           </div>
         </div>
 
-        <TabBar
-          tabs={tabs}
-          activeTab={activeTab}
-          onSelect={setActiveTab}
-          onClose={closeTab}
-          onContextMenu={openTabMenu}
-          onReorder={moveTab}
-        />
-
-        <div className="flex min-h-0 flex-1 overflow-hidden">
-          {conn && current?.kind === 'table' && (
-            <TableView
-              key={`${current.key}:${dataVersion}:${ns.database}:${ns.schema}`}
-              conn={nsConn}
-              table={current.table}
-              onChange={addChange}
-              onOpenReference={openTableFiltered}
-              filters={current.filters || EMPTY_FILTERS}
-              onFiltersChange={(f) => setTabFilters(current.key, f)}
-            />
-          )}
-          {conn && current?.kind === 'schema' && (
-            <SchemaView key={`${current.key}:${dataVersion}:${ns.database}:${ns.schema}`} conn={nsConn} table={current.table} />
-          )}
-          {conn && current?.kind === 'function' && (
-            <FunctionView key={`${current.key}:${ns.database}:${ns.schema}`} conn={nsConn} name={current.name} />
-          )}
-          {conn && current?.kind === 'schemaEditor' && (
-            <Suspense fallback={<div className="flex-1 p-8 text-center text-xs text-ink-faint">Loading schema…</div>}>
-              <SchemaEditor
-                key={`${current.key}:${dataVersion}:${ns.database}:${ns.schema}`}
-                conn={nsConn}
-                changes={changes}
-                folders={tableFolders}
-                onUpdateFolder={updateFolderById}
-                onDeleteFolder={removeTableFolder}
-                onSetFolder={setFolderPickerTable}
-                pending={schemaPending[current.key] || []}
-                onPendingChange={(items) => setSchemaPending((p) => ({ ...p, [current.key]: items }))}
-                onStageItems={stageSchemaItems}
-                onSaveDraft={saveSchemaDraft}
-                onUpdateDraft={updateSchemaDraft}
-                draftId={current.key.startsWith('schema:') ? current.key.slice(7) : undefined}
-                onOpenTable={openTable}
-                onOpenSchema={openSchema}
+        {/* Editor area: one pane, or two with a draggable divider between. */}
+        <div
+          ref={paneWrapRef}
+          className={`flex min-h-0 flex-1 ${splitDir === 'horizontal' ? 'flex-col' : 'flex-row max-[720px]:flex-col'}`}
+        >
+          {renderPane(0)}
+          {splitDir && (
+            <div
+              onMouseDown={startResize}
+              className={`relative z-10 shrink-0 bg-edge transition-colors hover:bg-green ${
+                splitDir === 'horizontal' ? 'h-px cursor-row-resize' : 'w-px cursor-col-resize'
+              }`}
+            >
+              {/* Widen the grab area without widening the line itself. */}
+              <span
+                className={`absolute ${
+                  splitDir === 'horizontal' ? '-inset-y-1.5 inset-x-0' : '-inset-x-1.5 inset-y-0'
+                }`}
               />
-            </Suspense>
-          )}
-          {conn && current?.kind === 'query' && (
-            <Suspense fallback={<div className="flex-1 p-8 text-center text-xs text-ink-faint">Loading editor…</div>}>
-              {isRedis ? (
-                <RedisConsole
-                  key={current.key}
-                  tabKey={current.key}
-                  conn={nsConn}
-                  initialCommand={current.sql ?? ''}
-                  persisted={queryState[current.key]}
-                  onPersist={persistQueryState}
-                  onRan={recordRun}
-                  onSave={saveQuery}
-                  onMutated={() => setKeyspaceVersion((v) => v + 1)}
-                />
-              ) : (
-                <QueryEditor
-                  key={current.key}
-                  tabKey={current.key}
-                  conn={nsConn}
-                  dialect={DIALECT[conn.type]}
-                  initialSql={current.sql ?? ''}
-                  persisted={queryState[current.key]}
-                  onPersist={persistQueryState}
-                  onRan={recordRun}
-                  onSave={saveQuery}
-                  onAnalyze={setAnalyzeSql}
-                />
-              )}
-            </Suspense>
-          )}
-          {conn && current?.kind === 'redisKey' && (
-            <RedisKeyView
-              key={`${current.key}:${ns.database}:${keyspaceVersion}`}
-              conn={nsConn}
-              redisKey={current.redisKey}
-              onRunCommand={openQuery}
-              onDeleted={(deletedKey) => {
-                dropTab(`rediskey:${deletedKey}`)
-                setKeyspaceVersion((v) => v + 1)
-              }}
-            />
-          )}
-          {conn && current?.kind === 'history' && (
-            <QueryHistoryView
-              history={history}
-              loading={historyLoading}
-              onRefresh={loadHistory}
-              onClear={clearHistoryAll}
-              onDelete={deleteHistoryEntries}
-            />
-          )}
-          {conn && current?.kind === 'schemaHistory' && (
-            <SchemaHistoryView
-              migrations={schemaMigrations}
-              loading={schemaHistoryLoading}
-              dialect={DIALECT[conn.type]}
-              onRefresh={loadSchemaHistory}
-              onRollback={setRollbackTarget}
-            />
-          )}
-          {conn && current?.kind === 'workflow' && (
-            <Suspense fallback={<div className="flex-1 p-8 text-center text-xs text-ink-faint">Loading workflow…</div>}>
-              <WorkflowEditor key={current.key} conn={conn} workflowId={current.workflowId} />
-            </Suspense>
-          )}
-          {conn && current?.kind === 'dashboard' && (
-            <Suspense fallback={<div className="flex-1 p-8 text-center text-xs text-ink-faint">Loading dashboard…</div>}>
-              <DashboardView
-                key={`${current.key}:${ns.database}:${ns.schema}`}
-                conn={nsConn}
-                dashboardId={current.dashboardId}
-                onRename={dashboardRenamed}
-              />
-            </Suspense>
-          )}
-          {conn && current?.kind === 'template' && (() => {
-            const tpl = TEMPLATES.find((t) => t.id === current.templateId)
-            return tpl ? (
-              <TemplateDetailView
-                key={current.key}
-                template={tpl}
-                connectionId={id}
-                dbType={conn.type}
-                onApplied={onTemplateApplied}
-              />
-            ) : (
-              <div className="flex-1 p-8 text-center text-xs text-ink-faint">Template not found.</div>
-            )
-          })()}
-          {!current && (
-            <div className="flex h-full w-full items-center justify-center overflow-auto p-8">
-              <div className="w-full max-w-[560px] text-center">
-                <div className="mx-auto flex h-[88px] w-[88px] items-center justify-center rounded-[22px] border border-edge bg-elevated text-ink-faint">
-                  {isRedis ? <KeyIcon width={34} height={34} /> : <TableIcon width={34} height={34} />}
-                </div>
-                <h2 className="mt-7 text-2xl font-bold">{isRedis ? 'No key selected' : 'No table selected'}</h2>
-                <p className="mx-auto mt-3 max-w-[420px] text-sm leading-relaxed text-ink-dim">
-                  {isRedis
-                    ? 'Pick a key from the keyspace tree to inspect its value, or open a console to run any Redis command.'
-                    : 'Pick a table from the sidebar to browse rows, or start a query to explore your data with SQL.'}
-                </p>
-
-                <div className="mt-7 flex items-center justify-center gap-3">
-                  <Button
-                    variant="primary"
-                    size="lg"
-                    icon={isRedis ? TerminalIcon : CodeIcon}
-                    onClick={() => openQuery()}
-                  >
-                    {isRedis ? 'New console' : 'New SQL query'}
-                  </Button>
-                  {!isRedis && (
-                    <Button
-                      variant="ghost"
-                      size="lg"
-                      icon={TableIcon}
-                      onClick={() => tables[0] && openTable(tables[0])}
-                      disabled={tables.length === 0}
-                    >
-                      Browse tables
-                    </Button>
-                  )}
-                </div>
-
-                <div className="mt-9">
-                  <Button variant="ghost" size="lg" icon={HistoryIcon} onClick={openHistory}>
-                    View query history
-                  </Button>
-                </div>
-
-                <div className="mt-10 flex flex-wrap items-center justify-center gap-6 text-[11px] text-ink-faint">
-                  <span className="flex items-center gap-1.5"><kbd className={kbd}>{formatCombo(bindings['general.search'])}</kbd> Search tables</span>
-                  <span className="flex items-center gap-1.5"><kbd className={kbd}>{formatCombo(bindings['workspace.runQuery'])}</kbd> Run query</span>
-                  <span className="flex items-center gap-1.5"><kbd className={kbd}>{formatCombo(bindings['general.newTab'])}</kbd> New query</span>
-                </div>
-              </div>
             </div>
           )}
+          {splitDir && renderPane(1)}
         </div>
 
         {/* Status bar — bottom of the main area only; the rail and sidebar keep
@@ -2008,7 +2163,7 @@ export default function Workspace() {
             Close
           </MenuItem>
           <MenuItem
-            disabled={tabs.length < 2}
+            disabled={tabs.filter((t) => t.pane === paneOf(tabMenu.key)).length < 2}
             onClick={() => {
               closeOtherTabs(tabMenu.key)
               setTabMenu(null)
@@ -2017,7 +2172,10 @@ export default function Workspace() {
             Close other tabs
           </MenuItem>
           <MenuItem
-            disabled={tabs.findIndex((t) => t.key === tabMenu.key) === tabs.length - 1}
+            disabled={(() => {
+              const own = tabs.filter((t) => t.pane === paneOf(tabMenu.key))
+              return own.findIndex((t) => t.key === tabMenu.key) === own.length - 1
+            })()}
             onClick={() => {
               closeTabsToRight(tabMenu.key)
               setTabMenu(null)
@@ -2025,15 +2183,46 @@ export default function Workspace() {
           >
             Close tabs to the right
           </MenuItem>
-          <div className="my-1 h-px bg-edge" />
           <MenuItem
             onClick={() => {
-              closeAllTabs()
+              closeAllTabs(paneOf(tabMenu.key))
               setTabMenu(null)
             }}
           >
             Close all tabs
           </MenuItem>
+          <div className="my-1 h-px bg-edge" />
+          {/* Splitting is just "move this tab to the other pane" — which side it
+              lands on is the split's orientation. */}
+          {paneOf(tabMenu.key) === 1 || splitDir ? (
+            <MenuItem
+              onClick={() => {
+                moveTabToPane(tabMenu.key, paneOf(tabMenu.key) === 1 ? 0 : 1)
+                setTabMenu(null)
+              }}
+            >
+              <SplitVerticalIcon width={14} height={14} /> Move to other group
+            </MenuItem>
+          ) : (
+            <>
+              <MenuItem
+                onClick={() => {
+                  moveTabToPane(tabMenu.key, 1, 'vertical')
+                  setTabMenu(null)
+                }}
+              >
+                <SplitVerticalIcon width={14} height={14} /> Split right
+              </MenuItem>
+              <MenuItem
+                onClick={() => {
+                  moveTabToPane(tabMenu.key, 1, 'horizontal')
+                  setTabMenu(null)
+                }}
+              >
+                <SplitHorizontalIcon width={14} height={14} /> Split down
+              </MenuItem>
+            </>
+          )}
         </ContextMenu>
       )}
 

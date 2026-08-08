@@ -32,7 +32,7 @@ export type AdminWorkspace = {
   name: string
   createdAt?: number
   memberCount: number
-  teamCount: number
+  groupCount: number
   connectionCount: number
   owners: AdminWorkspaceMember[]
 }

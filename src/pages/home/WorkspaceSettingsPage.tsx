@@ -1,18 +1,18 @@
 import { useParams } from 'react-router-dom'
-import { useWorkspaces, can, MembersPanel, WorkspaceGeneral, WorkspaceConfig, TeamsPanel } from '@/features/workspaces'
+import { useWorkspaces, can, MembersPanel, WorkspaceGeneral, WorkspaceConfig } from '@/features/workspaces'
 import { Narrow, SubHead, TabbedSection } from './ui'
 import useTabRoute from './useTabRoute'
 import LoadingState from '@/shared/ui/feedback/LoadingState'
 
-// Workspace section — General / Config / Member / Teams as tabs (a second path segment).
+// Workspace section — General / Config / Member as tabs (a second path segment).
 // Integration + Notification moved to their own /integrations sidebar section.
+//
+// There is no Teams tab: a group of people *is* a node in the resource tree, so
+// its roster is edited where its grants are, on the group itself.
 export default function WorkspaceSettingsPage() {
   const { sub } = useParams()
   const { current } = useWorkspaces()
-  // Members and teams are separate capabilities: a role can be given one and not
-  // the other, so each tab asks for its own rather than sharing one "is owner".
   const canManageMembers = can(current, 'members.manage')
-  const canManageTeams = can(current, 'teams.manage')
 
   const tabs = [
     {
@@ -43,20 +43,6 @@ export default function WorkspaceSettingsPage() {
           <SubHead title="Members" desc="Invite teammates and manage who can access this workspace." />
           {current ? (
             <MembersPanel workspaceId={current.id} canManage={canManageMembers} />
-          ) : (
-            <LoadingState className="" />
-          )}
-        </div>
-      ),
-    },
-    {
-      id: 'teams',
-      label: 'Teams',
-      body: (
-        <div>
-          <SubHead title="Teams" desc="Group members into teams to assign connection access and notifications together." />
-          {current ? (
-            <TeamsPanel workspaceId={current.id} canManage={canManageTeams} />
           ) : (
             <LoadingState className="" />
           )}

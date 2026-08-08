@@ -5,7 +5,7 @@ import { WorkspaceSwitcher } from '@/features/workspaces'
 import { UpdateBanner } from '@/features/system-update'
 import NavItem from '@/shared/ui/navigation/NavItem'
 import IconButton from '@/shared/ui/buttons/IconButton'
-import { BellIcon, BuildingIcon, CloudIcon, DatabaseIcon, GridIcon, Logo, LogoutIcon, MailIcon, MenuIcon, SettingsIcon, ShieldIcon, UsersIcon } from '@/shared/ui/icons'
+import { BellIcon, BuildingIcon, CloudIcon, DatabaseIcon, GridIcon, Logo, LogoutIcon, MailIcon, MenuIcon, SettingsIcon, ShieldIcon, TreeIcon, UsersIcon } from '@/shared/ui/icons'
 
 /**
  * Sidebar navigation model — groups of routes.
@@ -23,6 +23,10 @@ const NAV = [
       { label: 'Connection', Icon: DatabaseIcon, path: '/connections' },
       { label: 'S3 Storage', Icon: CloudIcon, path: '/storage' },
     ],
+  },
+  {
+    group: 'Browse',
+    items: [{ label: 'Resource Tree', Icon: TreeIcon, path: '/resource-tree' }],
   },
   {
     group: 'Manage',
@@ -48,6 +52,10 @@ const ADMIN_NAV = [
       { label: 'Users', Icon: UsersIcon, path: '/admin/users' },
       { label: 'Email', Icon: MailIcon, path: '/admin/email' },
     ],
+  },
+  {
+    group: 'Browse',
+    items: [{ label: 'Resource Tree', Icon: TreeIcon, path: '/resource-tree' }],
   },
   {
     group: 'Account',

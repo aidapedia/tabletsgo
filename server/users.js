@@ -6,7 +6,7 @@
  *            An admin holds no workspace membership at all (see promote()), so
  *            they can never reach a connection or a database.
  *   'user'   everyone else. What they can do is decided per workspace by
- *            `workspace_members.role` ('owner' | 'member').
+ *            the grant on that workspace's node ('owner' | 'member' | a custom slug).
  *
  * See CLAUDE.md "AUTH MODEL".
  */
@@ -15,7 +15,8 @@ import { randomUUID } from 'crypto'
 import { meta } from './meta.js'
 import { sha256 } from './crypto.js'
 import { LOCK_COLUMNS, clearFailures, lockStatus } from './login-guard.js'
-import { isOwnerRole, removeAllMemberships } from './workspaces.js'
+import { isOwnerRole, membershipsOf, removeAllMemberships } from './workspaces.js'
+import { clearMembershipsFor, clearOwnedNodesEverywhere, revokePrincipalEverywhere } from './resource-tree.js'
 import { getRole } from './permissions.js'
 
 export const SYSTEM_ROLES = ['admin', 'user']
@@ -39,12 +40,7 @@ const toPublic = (u) => ({
 // Where this user stands in each workspace — what makes the admin user list
 // actionable ("who owns what") without a second round trip.
 const workspacesOf = (userId) =>
-  meta
-    .prepare(
-      `SELECT w.id, w.name, m.role FROM workspace_members m JOIN workspaces w ON w.id = m.workspace_id
-        WHERE m.user_id = ? ORDER BY w.created_at`
-    )
-    .all(userId)
+  membershipsOf(userId)
     .map((r) => {
       const role = r.role === 'admin' ? 'owner' : r.role
       // `roleName` and `isOwner` so the admin list can render a configurable
@@ -139,6 +135,13 @@ export const deleteUser = (id) => {
   meta.transaction(() => {
     removeAllMemberships(id)
     meta.prepare("DELETE FROM connection_access WHERE principal_type = 'user' AND principal_id = ?").run(id)
+    // Memberships only reach the workspaces they were memberships *of*. Anything
+    // the account owned or was granted at the application root, or in a workspace
+    // it had already left, survives that sweep — so clear it instance-wide before
+    // the row goes, or the tree keeps pointing at a user who no longer exists.
+    clearOwnedNodesEverywhere(id)
+    revokePrincipalEverywhere('user', id)
+    clearMembershipsFor(id)
     meta.prepare('DELETE FROM users WHERE id = ?').run(id)
   })()
 }

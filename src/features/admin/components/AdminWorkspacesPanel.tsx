@@ -254,7 +254,7 @@ function CreateWorkspaceDialog({ onClose, onCreated }: { onClose: () => void; on
           </FormField>
           <FormField
             label="Owner email"
-            hint="They manage the workspace: members, teams and connections. Unknown addresses get an invite."
+            hint="They manage the workspace: members, groups and connections. Unknown addresses get an invite."
           >
             <Input type="email" value={ownerEmail} onChange={(e) => setOwnerEmail(e.target.value)} placeholder="owner@example.com" />
           </FormField>

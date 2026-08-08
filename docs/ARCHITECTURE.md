@@ -60,12 +60,12 @@ src/
 │   │                             #     the only place SMTP is configurable; see `auth-sessions` skill).
 │   │                             #   Reaches nothing inside a workspace — an admin has no membership
 │   ├── workspaces/               # org/tenant layer (multi-workspace): WorkspaceContext (current
-│   │                             #   workspace + switch), WorkspaceSwitcher, MembersPanel, TeamsPanel,
+│   │                             #   workspace + switch), WorkspaceSwitcher, MembersPanel,
 │   │                             #   NotificationSettings (backup-failure emails — the mail server
 │   │                             #     itself is instance-level, see `auth-sessions` skill),
 │   │                             #   WorkspaceGeneral (rename + the default "max sessions per
 │   │                             #     connection" every connection inherits);
-│   │                             #   api (workspaces/members/teams CRUD)
+│   │                             #   api (workspaces/members CRUD)
 │   ├── connections/              # stores/ConnectionsContext (scoped to current workspace); components:
 │   │                             #   ConnectionForm, ConnectionDetail (Data/Access/Backup tabs),
 │   │                             #   ConnectionAccessPanel, DbTypePickerModal (owns DB_CATALOG/TYPE_LABEL),
@@ -97,6 +97,35 @@ src/
 │   │   └── lib/                  #   api (/redis/* client), commands (command catalog for autocomplete
 │   │                             #     + argument hints), tree (buildKeyTree: split keys on ':' — one
 │   │                             #     folder level per segment, no chain folding; TTL/type formatting)
+│   ├── resource-tree/            # the instance-wide resource hierarchy and the access granted on it:
+│   │   │                         #   application → workspace → group → {connection, storage} →
+│   │   │                         #   {dashboard, workflow}. Ownership and grants cascade down it, so this
+│   │   │                         #   is where "who can do what, where" is both shown and edited
+│   │   ├── components/           #   ResourceTree (the collapsible tree; right-click for "new group"
+│   │   │                         #     and "move…", both gated on the node's `canOrganise`), NodeDetail
+│   │   │                         #     (owner / breadcrumb / contents / your resolved access, plus group
+│   │   │                         #     create-rename-delete and the move button — mirrored nodes rename
+│   │   │                         #     with their resource but re-file freely), MoveNodeDialog (the
+│   │   │                         #     destination picker: candidates filtered by the catalog's `children`
+│   │   │                         #     so the shape is the server's, greyed where `canOrganise` is false,
+│   │   │                         #     own subtree excluded), NodeAccessList (the one access panel: owner,
+│   │   │                         #     grants made here and everyone who reaches this through an ancestor
+│   │   │                         #     or a group, in one list grouped by role — only a row granted *here*
+│   │   │                         #     offers a revoke, the rest link to the node where the grant lives, so
+│   │   │                         #     a grant still has exactly one place it's edited), GrantForm (the
+│   │   │                         #     role list is filtered by `grantableOn` so it can't offer what the
+│   │   │                         #     server refuses), NodeMembers (a group's roster — who a grant to that
+│   │   │                         #     group reaches; gated on `teams.manage`, not `resources.organise`,
+│   │   │                         #     because adding someone to a group grants them access, and kept a
+│   │   │                         #     separate panel because a roster is not access to the group itself),
+│   │   │                         #     NodeIcon (one icon per node type, in one place — a group draws as
+│   │   │                         #     people, since the roster is what a grant to it reaches)
+│   │   ├── hooks/                #   useResourceTree (tree + catalog + selection + detail in one place)
+│   │   └── lib/                  #   tree (nestNodes — the payload is flat because a member sees a sparse
+│   │                             #     slice; ancestorIds from the materialized path; nodeHref),
+│   │                             #     access (buildAccessRows: folds owner + grants + resolved people
+│   │                             #     into role buckets, one row per *path* not per person, and unions
+│   │                             #     `grants` in so a grant reaching nobody stays visible/revocable)
 │   ├── table-folders/            # the connected DB's tables grouped by the generic folders tree
 │   │                             #   (type='table', 3-level cap, one folder per table), each folder
 │   │                             #   carrying an optional color. Replaced the old "domains" feature —
@@ -127,9 +156,11 @@ src/
 │   │   │                         #   QueryHistoryView, InsertRowPanel, ChangesPanel, SavedQueriesPanel,
 │   │   │                         #   IconRail (its DB logo at the top opens the ConnectionSwitcherModal via
 │   │   │                         #     onBrowseConnections — no inline connection popover anymore),
-│   │   │                         #   TabBar (the open-tab strip: drag a tab left/right to reorder — insertion
-│   │   │                         #   caret on drag-over, committed on drop; right-click closes this/others/
-│   │   │                         #   to-the-right/all),
+│   │   │                         #   TabBar (one open-tab strip per editor pane: drag a tab left/right to
+│   │   │                         #   reorder — insertion caret on drag-over, committed on drop — or onto the
+│   │   │                         #   other pane's strip to move it there (onAdopt); right-click closes this/
+│   │   │                         #   others/to-the-right/all *within that pane*, or splits the tab off.
+│   │   │                         #   Its `actions` slot holds the split right / split down / unsplit buttons),
 │   │   │                         #   StatusBar (bottom bar of the main area only — the icon rail and Tables
 │   │   │                         #   sidebar keep their full height. DB type + logo,
 │   │   │                         #   connection name, environment pill, current database/schema, and the
@@ -208,7 +239,13 @@ src/
     │                             #   SMTP config) — no tabs, the sidebar switches. Only reachable
     │                             #   with the system role 'admin'; AppRoutes' RequireSystemAdmin /
     │                             #   RequireWorkspaceUser send each audience to the other's home
-    ├── console/                  # WorkspacePage — the per-connection DB console (route /connection/:id)
+    ├── console/                  # WorkspacePage — the per-connection DB console (route /connection/:id).
+    │                             #   Tabs are one flat list; each carries the editor pane (0 | 1) it shows
+    │                             #   in, so a split is just "some tabs live in pane 1". Every open-X helper
+    │                             #   funnels through openTab (focus where it already lives, else the focused
+    │                             #   pane); settlePanes re-points each pane's active tab after any change and
+    │                             #   folds the split away once pane 1 empties. Both panes render through the
+    │                             #   same renderTabContent, so a split mounts two tabs at once
     └── home/                     # the authenticated home shell — one file per sidebar section
         ├── HomeLayout            #   sidebar (grouped nav, rows are real <a> so they can be opened in a
         │                         #   new tab) + <Outlet/> inside THE content container: one max-width,
@@ -226,7 +263,10 @@ src/
         ├── ConnectionFormPage    #   /connections/new (engine in ?type=) and /connections/:id/edit/:tab —
         │                         #   both modes of features/connections' ConnectionForm
         ├── StoragePage           # /storage → S3 storage destinations (StorageList), top-level sidebar item
-        ├── WorkspaceSettingsPage # /workspace → General / Config / Member / Teams tabs
+        ├── ResourceTreePage      # /resource-tree/:nodeId? → the hierarchy on the left, the selected
+        │                         #   node's owner / grants / your-access on the right. The selection is
+        │                         #   in the URL, so a refresh keeps it and a link lands on it
+        ├── WorkspaceSettingsPage # /workspace → General / Config / Member tabs
         └── SettingsPage          # /settings → Account / Theme / Data / Keymap / Updates tabs (Account
                                   #   renders features/auth's ProfileSetting + PasswordSetting; Updates
                                   #   renders UpdatePanel)
@@ -257,15 +297,25 @@ server/
 ├── meta.js               # the app's own SQLite handle, initMetaDb(), snapshotMetaSync()
 ├── migrations.js         # versioned, append-only meta-schema steps (see the `meta-schema` skill)
 ├── auth.js               # the guards — requireAuth, requireSystemAdmin (system role),
-│                         #   requirePermission/requireMember (workspace role) — plus the team /
+│                         #   requirePermission/requireMember (workspace role) — plus the
 │                         #   connection-access rules. `sessionMiddleware` resolves the bearer
-│                         #   token once per request so the ~100 sync guards stay sync
-├── permissions-catalog.js # leaf: the closed set of permission keys + the seeded builtin roles.
-│                         #   Imports nothing, so permissions.js and migrations.js can both use it
-├── permissions.js        # ★ workspace RBAC: `roles` + `role_permissions`, an in-memory policy
-│                         #   cache (the guards are sync), and the one answer to "may this user
-│                         #   do X here". Roles are instance-wide and admin-defined
-├── workspaces.js         # workspaces + workspace_members + teams: the admin listing, ownership
+│                         #   token once per request so the ~100 sync guards stay sync.
+│                         #   `permissionsIn`/`can` resolve through resource-tree.js; membership
+│                         #   is what still gates *opening* a database
+├── permissions-catalog.js # leaf: the closed set of permission keys (each with the node type it
+│                         #   is meaningful at), the node types the resource tree is built from,
+│                         #   and the seeded builtin roles. Imports nothing, so permissions.js,
+│                         #   resource-tree.js and migrations.js can all use it
+├── permissions.js        # ★ the role catalog: `roles` + `role_permissions`, an in-memory policy
+│                         #   cache (the guards are sync), and a role's requirement criteria —
+│                         #   `roleGrantableOn(slug, nodeType)`. Roles are instance-wide, admin-defined
+├── resource-tree.js      # ★ the hierarchy everything hangs off, and where a role is granted:
+│                         #   application → workspace → group → {connection, storage} →
+│                         #   {dashboard, workflow}. Owns `resource_nodes` + `resource_grants` and
+│                         #   resolves every permission by walking a node's ancestors — ownership
+│                         #   short-circuits to everything, `inherit` decides a grant's reach.
+│                         #   `path` is materialized so that walk is one query
+├── workspaces.js         # workspaces + their roster on the workspace node: the admin listing, ownership
 │                         #   changes, and the one delete cascade both delete routes share.
 │                         #   "Owner" = holds `workspace.manage`, never a role-name comparison
 ├── users.js              # the instance user directory (`users`): system roles, invites,

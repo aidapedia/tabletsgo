@@ -6,7 +6,8 @@ import { EditIcon } from '@/shared/ui/icons'
 import Avatar from '@/shared/ui/Avatar'
 import Badge from '@/shared/ui/Badge'
 import PersonRow from '@/shared/ui/PersonRow'
-import { useWorkspaces, can, listTeams, listMembers, type Team, type Member } from '@/features/workspaces'
+import { useWorkspaces, can, listMembers, type Member } from '@/features/workspaces'
+import { fetchResourceTree, type ResourceNode } from '@/features/resource-tree'
 import { useAuth } from '@/features/auth'
 import Select from '@/shared/ui/form/Select'
 import { controlClass } from '@/shared/ui/form/Input'
@@ -27,25 +28,36 @@ export default function ConnectionAccessPanel({ conn, onChange }: { conn: any; o
   const canEditAccess = can(current, 'connections.manage') || (!!user && conn.ownerId === user.id)
   const canTransfer = can(current, 'connections.transfer')
 
-  const [teams, setTeams] = useState<Team[]>([])
+  const [groups, setGroups] = useState<ResourceNode[]>([])
   const [members, setMembers] = useState<Member[]>([])
-  const [teamIds, setTeamIds] = useState<string[]>([])
+  const [groupIds, setGroupIds] = useState<string[]>([])
   const [userIds, setUserIds] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
   const [editing, setEditing] = useState(false)
   const [saving, setSaving] = useState(false)
   // Draft copy used while editing so Cancel can revert.
-  const [draftTeams, setDraftTeams] = useState<string[]>([])
+  const [draftGroups, setDraftGroups] = useState<string[]>([])
   const [draftUsers, setDraftUsers] = useState<string[]>([])
   const [transferring, setTransferring] = useState(false)
 
   const load = () => {
     if (!workspaceId) return
     setLoading(true)
-    Promise.all([listTeams(workspaceId), listMembers(workspaceId), getConnectionAccess(conn.id)]).then(([t, m, access]) => {
-      setTeams(t)
+    Promise.all([fetchResourceTree(), listMembers(workspaceId), getConnectionAccess(conn.id)]).then(([t, m, access]) => {
+      setGroups(
+          t.filter(
+            (n) =>
+              n.workspaceId === workspaceId &&
+              !n.context &&
+              // The workspace's own node is a principal too: it names exactly
+              // "everyone in this workspace", which is what an access list used
+              // to mean when it was empty. Leaving it out of the options would
+              // render an existing row as nothing and drop it on the next save.
+              (n.type === 'group' || n.type === 'workspace')
+          )
+        )
       setMembers(m)
-      setTeamIds(access.teams)
+      setGroupIds(access.groups)
       setUserIds(access.users)
       setLoading(false)
     })
@@ -53,18 +65,18 @@ export default function ConnectionAccessPanel({ conn, onChange }: { conn: any; o
   useEffect(load, [workspaceId, conn.id])
 
   const startEdit = () => {
-    setDraftTeams(teamIds)
+    setDraftGroups(groupIds)
     setDraftUsers(userIds)
     setEditing(true)
   }
-  const toggleTeam = (id: string) => setDraftTeams((p) => toggleId(p, id))
+  const toggleGroup = (id: string) => setDraftGroups((p) => toggleId(p, id))
   const toggleUser = (id: string) => setDraftUsers((p) => toggleId(p, id))
 
   const save = async () => {
     setSaving(true)
     try {
-      await setConnectionAccess(conn.id, { teams: draftTeams, users: draftUsers })
-      setTeamIds(draftTeams)
+      await setConnectionAccess(conn.id, { groups: draftGroups, users: draftUsers })
+      setGroupIds(draftGroups)
       setUserIds(draftUsers)
       setEditing(false)
       toast.success('Access updated.')
@@ -90,8 +102,11 @@ export default function ConnectionAccessPanel({ conn, onChange }: { conn: any; o
 
   if (loading) return <LoadingState className="py-10 text-center" />
 
-  const open = teamIds.length === 0 && userIds.length === 0
-  const assignedTeams = teams.filter((t) => teamIds.includes(t.id))
+  const open = groupIds.length === 0 && userIds.length === 0
+  const assignedGroups = groups.filter((g) => groupIds.includes(g.id))
+  // The workspace node stands for its whole membership, so say that rather than
+  // showing the workspace's name as if it were a group someone joined.
+  const label = (n: ResourceNode) => (n.type === 'workspace' ? `Everyone in ${n.name}` : n.name)
   // Whoever manages every connection already sees this one, so listing them as
   // grantable individuals would be noise.
   const selectableMembers = members.filter((m) => !m.permissions?.includes('connections.manage'))
@@ -153,18 +168,18 @@ export default function ConnectionAccessPanel({ conn, onChange }: { conn: any; o
               <p className="text-[12px] text-ink-dim">Open to everyone in the workspace.</p>
             ) : (
               <div className="flex flex-col gap-4">
-                {assignedTeams.length > 0 && (
+                {assignedGroups.length > 0 && (
                   <div>
-                    <div className="mb-2 text-[11px] font-medium text-ink-dim">Teams</div>
+                    <div className="mb-2 text-[11px] font-medium text-ink-dim">Groups</div>
                     <div className="flex flex-wrap gap-2">
-                      {assignedTeams.map((t) => (
+                      {assignedGroups.map((t) => (
                         <span key={t.id} className="inline-flex items-center gap-1.5 rounded-[8px] border border-edge bg-elevated px-2.5 py-1 text-[11px] text-ink-dim">
-                          {t.name}
-                          <span className="rounded bg-edge px-1 py-0.5 text-[9px] text-ink-faint">{t.memberCount}</span>
+                          {label(t)}
+                          <span className="rounded bg-edge px-1 py-0.5 text-[9px] text-ink-faint">{t.memberCount ?? 0}</span>
                         </span>
                       ))}
                     </div>
-                    <p className="mt-1.5 text-[10px] text-ink-faint">All members of these teams can access this connection.</p>
+                    <p className="mt-1.5 text-[10px] text-ink-faint">Everyone in these groups can access this connection.</p>
                   </div>
                 )}
                 {assignedMembers.length > 0 && (
@@ -185,14 +200,14 @@ export default function ConnectionAccessPanel({ conn, onChange }: { conn: any; o
           </div>
         ) : (
           <div className="mt-3 flex flex-col gap-4">
-            {teams.length > 0 && (
+            {groups.length > 0 && (
               <div>
-                <div className="mb-2 text-[11px] font-medium text-ink-dim">Teams</div>
+                <div className="mb-2 text-[11px] font-medium text-ink-dim">Groups</div>
                 <div className="flex flex-col gap-2">
-                  {teams.map((t) => (
-                    <CheckboxRow key={t.id} checked={draftTeams.includes(t.id)} onChange={() => toggleTeam(t.id)} ariaLabel={t.name}>
-                      <span className="min-w-0 flex-1 truncate text-[12px]">{t.name}</span>
-                      <span className="shrink-0 text-[10px] text-ink-faint">{t.memberCount} member{t.memberCount === 1 ? '' : 's'}</span>
+                  {groups.map((t) => (
+                    <CheckboxRow key={t.id} checked={draftGroups.includes(t.id)} onChange={() => toggleGroup(t.id)} ariaLabel={label(t)}>
+                      <span className="min-w-0 flex-1 truncate text-[12px]">{label(t)}</span>
+                      <span className="shrink-0 text-[10px] text-ink-faint">{t.memberCount ?? 0} member{(t.memberCount ?? 0) === 1 ? '' : 's'}</span>
                     </CheckboxRow>
                   ))}
                 </div>

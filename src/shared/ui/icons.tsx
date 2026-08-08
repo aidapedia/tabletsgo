@@ -70,6 +70,15 @@ export const FolderPlusIcon = (props) => (
   </svg>
 )
 
+export const MoveIcon = (props) => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+    <path d="M2 9V5a2 2 0 0 1 2-2h3.93a2 2 0 0 1 1.66.9l.82 1.2a2 2 0 0 0 1.66.9H20a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-3" />
+    <path d="M2 13h10" />
+    <path d="m9 16 3-3-3-3" />
+  </svg>
+)
+
 export const EditIcon = (props) => (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
     strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
@@ -366,6 +375,20 @@ export const GridIcon = (props) => (
   </svg>
 )
 
+// Sitemap: one node branching into two. The resource tree's own mark — a folder
+// would collide with FolderIcon, which is already what a `group` node renders as
+// inside the tree.
+export const TreeIcon = (props) => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+    <rect x="9" y="2" width="6" height="5" rx="1.5" />
+    <rect x="2" y="17" width="6" height="5" rx="1.5" />
+    <rect x="16" y="17" width="6" height="5" rx="1.5" />
+    <path d="M12 7v4" />
+    <path d="M5 17v-2a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v2" />
+  </svg>
+)
+
 export const HomeIcon = (props) => (
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
     strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
@@ -458,6 +481,24 @@ export const ColumnsIcon = (props) => (
     strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
     <rect x="3" y="3" width="18" height="18" rx="2" />
     <path d="M9 3v18M15 3v18" />
+  </svg>
+)
+
+// Split the editor area side by side (two panes, left/right).
+export const SplitVerticalIcon = (props) => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+    <rect x="3" y="3" width="18" height="18" rx="2" />
+    <path d="M12 3v18" />
+  </svg>
+)
+
+// Split the editor area top and bottom (two panes, stacked).
+export const SplitHorizontalIcon = (props) => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+    <rect x="3" y="3" width="18" height="18" rx="2" />
+    <path d="M3 12h18" />
   </svg>
 )
 
