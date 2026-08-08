@@ -108,8 +108,8 @@ export default function CreateGroupDialog({
         <p className="text-[11px] leading-relaxed text-ink-faint">
           It starts empty and inherits whatever has been granted on{' '}
           <span className="text-ink-dim">{parent.name}</span>
-          {parent.type !== 'group' ? ` (${TYPE_LABEL[parent.type].toLowerCase()})` : ''} and above. Add people to its
-          roster, or grant a role on it, once it exists.
+          {parent.type !== 'group' ? ` (${TYPE_LABEL[parent.type].toLowerCase()})` : ''} and above. Everyone you add to
+          its roster can open the connections you file inside it, so staffing the group is how you scope access to them.
         </p>
 
         <div className="mt-4 flex items-center justify-end gap-2 border-t border-edge pt-3">

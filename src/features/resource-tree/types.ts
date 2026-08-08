@@ -99,6 +99,12 @@ export type NodeAccess = {
   owner: boolean
   /** False = permissions but no data access: opening a database needs membership. */
   member: boolean
+  /** Connection nodes only: may they actually *open* this database? Permissions
+   *  reach down the tree, opening a connection does not — it is answered per
+   *  resource by `userCanAccessConnection` (membership, where it is filed, its
+   *  access list). Undefined on every other node type, where there is nothing to
+   *  open. */
+  canOpen?: boolean
   permissions: string[]
   sources: AccessSource[]
 }

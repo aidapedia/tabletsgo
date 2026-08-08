@@ -28,6 +28,10 @@ export default function ConnectionAccessPanel({ conn, onChange }: { conn: any; o
   const canEditAccess = can(current, 'connections.manage') || (!!user && conn.ownerId === user.id)
   const canTransfer = can(current, 'connections.transfer')
 
+  // The whole visible tree, kept alongside the filtered `groups`: where this
+  // connection is *filed* decides who can open it too, and that needs the
+  // ancestors, not just the grantable groups.
+  const [tree, setTree] = useState<ResourceNode[]>([])
   const [groups, setGroups] = useState<ResourceNode[]>([])
   const [members, setMembers] = useState<Member[]>([])
   const [groupIds, setGroupIds] = useState<string[]>([])
@@ -44,6 +48,7 @@ export default function ConnectionAccessPanel({ conn, onChange }: { conn: any; o
     if (!workspaceId) return
     setLoading(true)
     Promise.all([fetchResourceTree(), listMembers(workspaceId), getConnectionAccess(conn.id)]).then(([t, m, access]) => {
+      setTree(t)
       setGroups(
           t.filter(
             (n) =>
@@ -102,8 +107,23 @@ export default function ConnectionAccessPanel({ conn, onChange }: { conn: any; o
 
   if (loading) return <LoadingState className="py-10 text-center" />
 
-  const open = groupIds.length === 0 && userIds.length === 0
+  const assigned = groupIds.length > 0 || userIds.length > 0
   const assignedGroups = groups.filter((g) => groupIds.includes(g.id))
+  // The groups this connection is *filed under*, which is a second door into it:
+  // their rosters can open it without appearing on the list below. Reading them
+  // off the tree the panel already loaded — the connection's node carries its
+  // ancestors in `path`, and only `group` ancestors count (the workspace node's
+  // roster is everyone, which is exactly what the access list exists to narrow).
+  const holders = (() => {
+    const node = tree.find((n) => n.type === 'connection' && n.resourceId === conn.id)
+    if (!node) return [] as ResourceNode[]
+    const byId = new Map(tree.map((n) => [n.id, n]))
+    return node.path
+      .split('/')
+      .filter(Boolean)
+      .map((id) => byId.get(id))
+      .filter((n): n is ResourceNode => !!n && n.type === 'group')
+  })()
   // The workspace node stands for its whole membership, so say that rather than
   // showing the workspace's name as if it were a group someone joined.
   const label = (n: ResourceNode) => (n.type === 'workspace' ? `Everyone in ${n.name}` : n.name)
@@ -164,10 +184,30 @@ export default function ConnectionAccessPanel({ conn, onChange }: { conn: any; o
 
         {!editing ? (
           <div className="mt-3">
-            {open ? (
-              <p className="text-[12px] text-ink-dim">Open to everyone in the workspace.</p>
+            {!assigned && holders.length === 0 ? (
+              <p className="text-[12px] text-ink-dim">
+                Only the owner and whoever manages every connection. Add people below, or file this connection under a
+                group to give that group's members access.
+              </p>
             ) : (
               <div className="flex flex-col gap-4">
+                {holders.length > 0 && (
+                  <div>
+                    <div className="mb-2 text-[11px] font-medium text-ink-dim">Filed under</div>
+                    <div className="flex flex-wrap gap-2">
+                      {holders.map((h) => (
+                        <span key={h.id} className="inline-flex items-center gap-1.5 rounded-[8px] border border-edge bg-elevated px-2.5 py-1 text-[11px] text-ink-dim">
+                          {h.name}
+                          <span className="rounded bg-edge px-1 py-0.5 text-[9px] text-ink-faint">{h.memberCount ?? 0}</span>
+                        </span>
+                      ))}
+                    </div>
+                    <p className="mt-1.5 text-[10px] text-ink-faint">
+                      Everyone on these groups' rosters can access this connection because it is filed inside them. Move
+                      it in the resource tree to change that.
+                    </p>
+                  </div>
+                )}
                 {assignedGroups.length > 0 && (
                   <div>
                     <div className="mb-2 text-[11px] font-medium text-ink-dim">Groups</div>
@@ -233,7 +273,8 @@ export default function ConnectionAccessPanel({ conn, onChange }: { conn: any; o
               )}
             </div>
             <p className="text-[10px] text-ink-faint">
-              Leave everything unchecked to keep this connection open to all workspace members. Whoever manages every connection always has access.
+              Leave everything unchecked and only the owner, whoever manages every connection, and the rosters of the
+              groups this connection is filed under can open it.
             </p>
             <div className="flex gap-2">
               <Button variant="primary" size="sm" onClick={save} disabled={saving}>

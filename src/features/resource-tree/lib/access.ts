@@ -33,6 +33,36 @@ export type AccessGroup = {
 }
 
 /**
+ * The grant a group makes to *its own roster* — written by `createGroupNode` so
+ * a group means something the moment it exists.
+ *
+ * Pulled out of the rows because as a row it was unreadable: a person-shaped
+ * entry carrying the group's own name, saying "granted here · group of 0",
+ * while the roster it pays out to sat in a second panel further down. It is not
+ * a path *to* this node — it is the answer to "what do the people in this group
+ * get for being in it", which is the roster's heading, not a peer of it.
+ */
+export type RosterRole = {
+  grantId: string
+  roleSlug: string
+  roleName: string
+  inherit: boolean
+}
+
+export type AccessResult = {
+  /** Groups only, and only once the self-grant exists — an admin may revoke it. */
+  rosterRole: RosterRole | null
+  groups: AccessGroup[]
+  /**
+   * `requireAccess` only: the people held back out of the rows because they
+   * cannot open the resource. Returned rather than dropped — they do hold
+   * permissions here, and a list that silently forgot them would be the same
+   * audit hole in the other direction.
+   */
+  withoutAccess: NodeAccess[]
+}
+
+/**
  * Fold the resolved people and the node's own grants into one list grouped by
  * role.
  *
@@ -56,13 +86,35 @@ export type AccessGroup = {
  * grant can reach nobody and still exist: a group with an empty roster, or one
  * made to a user who has since been deleted. Those rows are invisible in the
  * resolved view and would be unrevokable if this list were derived from it alone.
+ *
+ * Two things are lifted *out* of the rows, because rendering them here stated
+ * one fact twice:
+ *
+ *  - the group's grant to its own roster, returned as `rosterRole` — it heads
+ *    the roster instead of sitting beside it (see `RosterRole`);
+ *  - any grant named in `absorbUserGrants`, for a caller that shows that grant
+ *    on the person's roster row instead. A workspace passes its members: their
+ *    membership and their role are written together by `addMember`, so listing
+ *    the roster and then the same names again as grants was one act split in
+ *    two. Never pass a grant this list is the only place to revoke.
+ *
+ * `requireAccess` narrows the resolved pass to the people who can actually *use*
+ * the resource (`canOpen`, answered per connection by the server). On a
+ * connection the two questions come apart: a workspace-wide grant reaches every
+ * connection node in the workspace, while opening one is granted per connection,
+ * so without this the list answers "who holds a role that reaches here" under a
+ * heading everyone reads as "who has access". The people it holds back come out
+ * in `withoutAccess`, and grants made *on this node* are unaffected — they are
+ * unioned in from `grants` below, so nothing revocable here can be filtered
+ * away.
  */
 export function buildAccessRows(
   node: ResourceNode,
   people: NodeAccess[],
   grants: ResourceGrant[],
-  roles: GrantableRole[]
-): AccessGroup[] {
+  roles: GrantableRole[],
+  { absorbUserGrants, requireAccess }: { absorbUserGrants?: Set<string>; requireAccess?: boolean } = {}
+): AccessResult {
   const buckets = new Map<string, AccessRow[]>()
   const index = new Map<string, AccessRow>()
   const localGrants = new Map(grants.map((g) => [g.id, g]))
@@ -73,7 +125,16 @@ export function buildAccessRows(
     index.set(row.key, row)
   }
 
+  const withoutAccess: NodeAccess[] = []
+
   for (const person of people) {
+    // Permissions that reach here without the access to use what is here. Held
+    // back from every row, including a group's `reached` list, so a group's size
+    // is the number of people it actually lets in.
+    if (requireAccess && person.canOpen === false) {
+      withoutAccess.push(person)
+      continue
+    }
     for (const source of person.sources) {
       // Ownership reaches this node without a grant behind it, so it has no row
       // here — see the note above.
@@ -81,6 +142,9 @@ export function buildAccessRows(
 
       // A grant's id identifies the row: a grant to a user reaches exactly that
       // user, and a grant to a group is one row however many people it reaches.
+      // Shown on this person's roster row instead — see `absorbUserGrants`.
+      if (source.here && source.type !== 'group' && absorbUserGrants?.has(person.userId)) continue
+
       const key = source.grantId
         ? `grant:${source.grantId}`
         : `${source.type}:${source.nodeId}:${source.roleSlug}:${source.groupId || person.userId}`
@@ -112,6 +176,7 @@ export function buildAccessRows(
   for (const g of grants) {
     const key = `grant:${g.id}`
     if (index.has(key)) continue
+    if (g.principalType === 'user' && absorbUserGrants?.has(g.principalId)) continue
     const isGroup = g.principalType === 'node'
     push(g.roleSlug, {
       key,
@@ -137,6 +202,22 @@ export function buildAccessRows(
     })
   }
 
+  // The group's grant to itself heads the roster instead of being a row in here.
+  // Matched on the grant's principal, not on its role: an admin may redefine or
+  // re-grant it, and it is the *self* reference that makes it the roster's role.
+  let rosterRole: RosterRole | null = null
+  for (const [slug, rows] of buckets) {
+    const at = rows.findIndex((r) => r.kind === 'group' && r.here && r.source.groupId === node.id)
+    if (at < 0) continue
+    const [row] = rows.splice(at, 1)
+    if (row.grantId) {
+      rosterRole = { grantId: row.grantId, roleSlug: slug, roleName: roleLabel(slug, roles, [row]), inherit: row.inherit !== false }
+    }
+    // A bucket that held only the self-grant is no longer a role anyone holds here.
+    if (!rows.length) buckets.delete(slug)
+    break
+  }
+
   // The catalog's own order, so the list reads strongest-first the way the role
   // editor is arranged.
   const order = roles.map((r) => r.slug)
@@ -147,12 +228,28 @@ export function buildAccessRows(
     return a.localeCompare(b)
   })
 
-  return slugs.map((slug) => ({
-    slug,
-    label: roleLabel(slug, roles, buckets.get(slug)!),
-    // Access granted here first: it's the part of the list that is actionable.
-    rows: buckets.get(slug)!.sort((a, b) => Number(b.here) - Number(a.here) || a.name.localeCompare(b.name)),
-  }))
+  return {
+    rosterRole,
+    withoutAccess,
+    groups: slugs.map((slug) => ({
+      slug,
+      label: roleLabel(slug, roles, buckets.get(slug)!),
+      // Access granted here first: it's the part of the list that is actionable.
+      rows: buckets.get(slug)!.sort((a, b) => Number(b.here) - Number(a.here) || a.name.localeCompare(b.name)),
+    })),
+  }
+}
+
+/**
+ * What one person was granted *directly* on this node, if anything.
+ *
+ * The roster row's role chip: at a workspace every member has one of these
+ * (`addMember` writes the seat and the grant together), so the chip is what lets
+ * the roster absorb those grant rows instead of repeating the same names below.
+ */
+export function directRoleName(grants: ResourceGrant[], roles: GrantableRole[], userId: string) {
+  const grant = grants.find((g) => g.principalType === 'user' && g.principalId === userId)
+  return grant ? roleLabel(grant.roleSlug, roles) : null
 }
 
 /** The catalog's name for a role, falling back to whatever the source called it. */

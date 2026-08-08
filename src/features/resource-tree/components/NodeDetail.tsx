@@ -11,8 +11,7 @@ import { CloseIcon, EditIcon, FolderPlusIcon, MoveIcon, TrashIcon } from '@/shar
 import { createGroup, deleteNode, renameNode } from '../api'
 import { TYPE_LABEL } from '../lib/tree'
 import type { GrantableRole, NodeDetail as NodeDetailData, NodeTypeMeta, ResourceNode } from '../types'
-import NodeAccessList from './NodeAccessList'
-import NodeMembers from './NodeMembers'
+import NodePeople from './NodePeople'
 import MoveNodeDialog from './MoveNodeDialog'
 import NodeIcon from './NodeIcon'
 
@@ -251,27 +250,21 @@ export default function NodeDetail({
               {owner ? `; it belongs to ${owner.name || owner.email}.` : '.'}
             </p>
           ) : (
-            <>
-              {/* One list, grouped by role: the owner, what was granted here, and
-                  everyone who reaches this through an ancestor or a group. */}
-              <NodeAccessList
-                node={node}
-                people={people || []}
-                grants={grants}
-                roles={roles}
-                canGrant={canGrant}
-                onSelect={onSelect}
-                onChanged={onChanged}
-              />
-
-              {/* A group is a roster as well as a folder, and that roster is not
-                  an access list for *this* node: being in it grants whatever the
-                  group was granted, usually somewhere else entirely. Separate
-                  panel, separate permission. */}
-              {node.kind === 'group' && node.type !== 'application' && (
-                <NodeMembers node={node} members={members || []} canManage={canManageMembers} onChanged={onChanged} />
-              )}
-            </>
+            /* One section: who is in this group and what that is worth here,
+               then everyone else who reaches it through an ancestor or a group.
+               Two tables and two permissions behind it — `NodePeople` keeps each
+               block's control over its own. */
+            <NodePeople
+              node={node}
+              people={people || []}
+              grants={grants}
+              roles={roles}
+              members={members || []}
+              canGrant={canGrant}
+              canManageMembers={canManageMembers}
+              onSelect={onSelect}
+              onChanged={onChanged}
+            />
           )}
 
           {/* What's inside */}

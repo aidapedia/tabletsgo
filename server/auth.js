@@ -32,7 +32,15 @@ import { randomUUID } from 'crypto'
 import { createAuthSession, destroyAuthSession, readAuthSession } from './sessions/index.js'
 import { meta } from './meta.js'
 import { OWNER_PERMISSION } from './permissions.js'
-import { groupIdsFor, isNodeMember, nodeFor, permissionsAtResource, permissionsInWorkspace, principalGrantRole } from './resource-tree.js'
+import {
+  groupIdsFor,
+  isNodeMember,
+  memberOfGroupAbove,
+  nodeFor,
+  permissionsAtResource,
+  permissionsInWorkspace,
+  principalGrantRole,
+} from './resource-tree.js'
 
 // ---- Sessions ----
 export const createSession = (userId, context) => createAuthSession(userId, context)
@@ -235,10 +243,12 @@ export const setConnectionAccess = (connectionId, { groups = [], users = [] }) =
   tx()
 }
 
-// Can this user see/open the connection? Whoever manages every connection in the
-// workspace always can, and so does the connection's own owner; an unassigned
-// connection is open to every workspace member; otherwise the user must be a
-// listed individual or belong to a listed group.
+// Can this user open the connection? Membership in the workspace is the floor —
+// without it nothing below is reached. Above that, four ways in, in the order the
+// body tests them: `connections.manage` resolved at this connection, owning it,
+// sitting on the roster of a group it is filed under, or being named on its
+// access list (as a person, or through a group listed there). An empty access
+// list is not "everyone" — with none of the four, the answer is no.
 export const userCanAccessConnection = (conn, userId) => {
   if (!conn) return false
   if (!conn.workspaceId) return true
@@ -253,6 +263,13 @@ export const userCanAccessConnection = (conn, userId) => {
   // connection's node opens this one connection — not the whole workspace.
   if (permissionsAtResource('connection', conn.id, userId).has('connections.manage')) return true
   if (conn.ownerId && conn.ownerId === userId) return true
+  // Where a connection is filed is itself a statement about who may use it: the
+  // people on the roster of a group it sits under can open it, without a row in
+  // the access list. That is what a group is for — Company A holds Team
+  // Promotions and Team Orders, each staffed differently, and the connections
+  // filed under a team are the team's. Only a `group` ancestor counts, never the
+  // workspace node (whose roster is everyone) — see `memberOfGroupAbove`.
+  if (memberOfGroupAbove(nodeFor('connection', conn.id), userId)) return true
   // An empty list means nobody — not everybody. Seeing a connection and being
   // able to open it are different questions: every member sees every connection
   // in their workspace (their membership grant reaches the whole subtree), and

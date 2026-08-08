@@ -683,6 +683,15 @@ here" walks the node's ancestors root-first and unions what each grant carries:
   resources and says nothing about who belongs to it: re-filing a folder never
   hands anyone access.
 
+A group's roster does one thing no grant does: **its people can open the
+connections filed under that group**, without a row on each connection's access
+list (see Connection access). That is the half of "a group is a folder *and* a
+roster" that makes filing a resource into a team mean something. It is data
+access only — never a permission, because belonging to a group is not a
+capability. A new group is created holding a grant of the `member` role **to
+itself**, so its roster resolves through the ordinary machinery from the first
+request instead of waiting for someone to remember that second step.
+
 Memberships still exist and still decide *membership* (which is what gates
 opening a database); `server/workspaces.js` mirrors each one into a grant on its
 workspace node so the two can never drift.
@@ -814,7 +823,9 @@ except an instance admin, who owns it.
 }
 ```
 
-`members` is present only for a group node the caller is not in `context` at.
+`members` is present only for a group node the caller is not in `context` at. On
+a **connection** node each entry in `people` also carries `canOpen` — see
+[Who can reach a node](#who-can-reach-a-node).
 
 **`grants` vs `people`.** `grants` is what was granted *on this node*; `people`
 resolves the whole chain — inherited grants from above, the rosters of granted
@@ -847,6 +858,17 @@ nothing new. A caller who merely holds `resources.organise` gets an ownerless
 group: otherwise that permission alone would be enough to create a group they own
 and move a connection into it, inheriting every permission on that connection.
 
+The new group is created holding a grant of the `member` role **to itself**
+(`principalType: "node"`, `principalId`: the new node's own id, `inherit: true`),
+so its roster resolves through the ordinary grant machinery from the first
+request. Combined with the roster's data access to what is filed inside it (see
+Connection access), that is what makes staffing the group the whole act of
+admitting someone to its resources. The grant is an ordinary row: delete it from
+`DELETE /api/resource-tree/:id/grants/:grantId` like any other. Groups created
+before this shipped simply don't have it — their rosters still open the
+connections filed under them, which is resolved in `server/auth.js` rather than
+from the grant, so nothing needs backfilling.
+
 **Response:** the created Node. `400` if the parent's type cannot hold a group.
 
 ### PUT `/api/resource-tree/:id`
@@ -862,17 +884,28 @@ Re-file a node under a different group. Requires `resources.organise` at **both*
 ends — otherwise moving something into a group you control would be a way to
 grant yourself access to it.
 
+**Moving a `connection` node needs more:** the caller must also hold
+`connections.manage` resolved at that connection, or own it. A group's roster can
+open the connections filed under it (see Connection access), so re-filing one
+changes who may use the database; without this test, `resources.organise` alone
+would be a way to read every connection in the workspace by moving them one at a
+time into a group you sit on. Every other node type moves on
+`resources.organise` as before.
+
 **Sample URL:** `http://localhost:3000/api/resource-tree/n3/move`
 
 **Body:** `{ "parentId": "n2" }` → the updated Node.
 
 `400` if the target cannot hold this type, or if the target is inside the node
 being moved.
+`403` `{ "error": "You need to own this connection to move it." }` for a
+connection the caller neither owns nor manages.
 
 The whole subtree moves with the node, and its `path`/`depth`/`workspaceId` are
-rewritten in one pass. Nothing about *who* has access is copied or rewritten: a
-grant is made on a node, so the node simply starts inheriting what its new parent
-carries and stops inheriting the old one's.
+rewritten in one pass. No *grant* is copied or rewritten: a grant is made on a
+node, so the node simply starts inheriting what its new parent carries and stops
+inheriting the old one's. Data access to a connection does follow the move,
+though — that is the point of filing one into a team.
 
 Both ends are resolved for the client by `canOrganise` on `GET /api/resource-tree`
 — the destination picker offers only nodes whose type may hold this one (per
@@ -1187,6 +1220,14 @@ Access a node never mentions is what makes a permission model impossible to audi
 so it is derived and returned. It is stored nowhere — the grants and rosters it
 reads are the only facts, and access is still edited where the grant lives.
 
+On a **connection** each person additionally carries `canOpen`, because reaching
+a connection node and being able to open the database are different questions: a
+grant on the workspace reaches every connection node inside it, while *opening*
+one is not a permission — it is answered per connection by
+`userCanAccessConnection`. A person with `canOpen: false` holds a role here and
+still cannot query anything. The UI lists the people who can open the connection
+and states the rest separately rather than mixing them.
+
 ```json
 {
   "userId": "u_7", "name": "Dana Reyes", "email": "dana@example.com",
@@ -1205,6 +1246,7 @@ reads are the only facts, and access is still edited where the grant lives.
 | --- | --- |
 | `owner` | Owns this node or an ancestor, so resolves to every permission below it |
 | `member` | `false` = permissions but **no data access**: opening a database needs a roster row on the workspace node |
+| `canOpen` | **Connection nodes only** — may they actually open this database (`userCanAccessConnection`: membership, `connections.manage` here, ownership, the roster of a group it is filed under, or its access list)? Absent on every other node type, which has nothing to open |
 | `sources[].type` | `"owner"` \| `"grant"` (a user grant) \| `"group"` (via a roster) |
 | `sources[].here` | Granted on this very node rather than inherited from above |
 | `sources[].instanceWide` | Granted above every workspace (the application root), so it reaches in without a membership |
@@ -1536,14 +1578,37 @@ member already sees every connection in their workspace, because their membershi
 grant reaches the whole subtree, and opening one is granted per connection. The
 set lists users + groups; a group may be the **workspace node itself**, which
 names exactly "everyone in this workspace" and is what v16 wrote for every
-connection that was implicitly open, so nothing lost access on upgrade. Plus,
-always, whoever holds `connections.manage` and the
-connection's own `ownerId`. Enforced by the `GET /api/connections` list filter and
-the `/api/connections/:id/*` access guard.
+connection that was implicitly open, so nothing lost access on upgrade.
+
+Four ways in, tested in this order by `userCanAccessConnection`
+(`server/auth.js`), all of them behind workspace membership as a floor:
+
+1. `connections.manage` resolved **at this connection** (so a grant on one
+   connection's node opens one connection, not the workspace);
+2. being the connection's own `ownerId`;
+3. **sitting on the roster of a `group` node the connection is filed under** —
+   where a resource lives is itself a statement about who may use it, which is
+   what a group is for. Company A holds Team Promotions and Team Orders, staffed
+   differently, and the connections filed under a team are the team's. Only
+   `type === 'group'` ancestors count, **never the workspace node**, whose roster
+   is every member — counting it would make every access list below dead letter.
+   A group nested inside another still does not merge rosters: reach comes from
+   being under *your* group, never from your group gaining a parent;
+4. being named on this connection's access list, as a user or through a group
+   listed there. This is how one person crosses teams — put User B in Team
+   Database Admin, list that group on a connection in each team, and one row per
+   connection covers the whole roster.
+
+With none of the four, the answer is no. Enforced by the `GET /api/connections`
+list filter and the `/api/connections/:id/*` access guard.
+
+> Because (3) makes placement grant access, `PUT /api/resource-tree/:id/move`
+> asks for manage-or-own before it will re-file a **connection**. See that
+> endpoint.
 
 #### GET `/api/connections/:id/access`
 Read the current assignment (any caller who already has access).
-- **200:** `{ "groups": ["n_42"], "users": ["user_1"] }` (id arrays — `groups` holds group **node** ids; empty = open)
+- **200:** `{ "groups": ["n_42"], "users": ["user_1"] }` (id arrays — `groups` holds group **node** ids; empty = nobody named here, which still leaves the owner, `connections.manage`, and the rosters of the groups this connection is filed under)
 - **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/access`
 
 #### PUT `/api/connections/:id/access`

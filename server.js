@@ -1022,6 +1022,29 @@ app.get('/api/resource-tree/catalog', (req, res) => {
   })
 })
 
+/**
+ * Who reaches this node — with the data-access answer attached where there is
+ * one to give.
+ *
+ * `peopleAtNode` resolves *permissions*: grants up the chain, inheritance, group
+ * rosters. On a connection that is only half the question, because opening a
+ * database is not a permission (CLAUDE.md) — it is `userCanAccessConnection`,
+ * which also reads membership, where the connection is filed and its access
+ * list. Someone holding Member on the workspace therefore reaches every
+ * connection node in it while being able to open none of them.
+ *
+ * The two answers are joined here rather than in `resource-tree.js` because that
+ * module sits *below* `auth.js` in the dependency order and cannot see
+ * `userCanAccessConnection`. Same reason, and the same `canOpen` field, as the
+ * tree route above.
+ */
+const resolvedPeople = (node) => {
+  const people = peopleAtNode(node)
+  if (node.type !== 'connection') return people
+  const conn = getConnection(node.resourceId)
+  return people.map((p) => ({ ...p, canOpen: userCanAccessConnection(conn, p.userId) }))
+}
+
 // One node in full: where it sits, what's in it, who has been granted what, and
 // what the caller themselves may do here.
 app.get('/api/resource-tree/:id', (req, res) => {
@@ -1051,10 +1074,11 @@ app.get('/api/resource-tree/:id', (req, res) => {
     members: node.kind === 'group' && !context ? listNodeMembers(node.id) : undefined,
     // Everyone who can actually reach this node, and why. `grants` is only what
     // was granted *here*; this resolves the ancestors, the inherited grants and
-    // the group rosters too, so access the node never mentions cannot hide.
+    // the group rosters too, so access the node never mentions cannot hide. On a
+    // connection each person also carries `canOpen` — see `resolvedPeople`.
     // Blanked for scaffolding for the same reason grants are: they hold nothing
     // here, so who else does is not theirs to read.
-    people: context ? [] : peopleAtNode(node),
+    people: context ? [] : resolvedPeople(node),
     permissions: mine,
     owner: node.ownerId ? publicUser(userRow(node.ownerId)) : null,
   })
@@ -1098,6 +1122,20 @@ app.put('/api/resource-tree/:id/move', (req, res) => {
   if (!node) return
   const target = requireNode(req, res, req.body?.parentId, 'resources.organise')
   if (!target) return
+  // Re-filing a *connection* is a change to who may open the database, because a
+  // group's roster can use what is filed under it (server/auth.js
+  // `userCanAccessConnection`). `resources.organise` alone would otherwise be a
+  // way to read every database in the workspace: move them one by one into a
+  // group you are on the roster of. So moving one asks the same question its own
+  // routes ask — manage every connection here, or own this one. Tidying the tree
+  // still moves groups and everything else freely.
+  const caller = authUser(req)
+  if (node.type === 'connection' && !isSystemAdmin(caller)) {
+    const conn = getConnection(node.resourceId)
+    if (conn && conn.ownerId !== caller.id && !permissionsAtNode(node, caller.id).has('connections.manage')) {
+      return res.status(403).json({ error: 'You need to own this connection to move it.' })
+    }
+  }
   const result = moveNode(node.id, target.id)
   if (result.error) return res.status(400).json({ error: result.error })
   res.json(result.node)

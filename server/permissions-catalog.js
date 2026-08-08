@@ -241,6 +241,23 @@ export const PERMISSION_SCOPE = new Map(PERMISSIONS.flatMap((g) => g.items.map((
 export const OWNER_PERMISSION = 'workspace.manage'
 
 /**
+ * The role a new group grants its own roster, so a group means something the
+ * moment it exists.
+ *
+ * A group is a folder *and* a set of people, and the second half was previously
+ * inert: adding someone to Team Promotions gave them nothing at Team Promotions
+ * until a human separately made a grant whose principal was Team Promotions.
+ * `createGroupNode` now writes that grant itself, which is what makes "the
+ * people in this group can see what is filed in this group" true by
+ * construction rather than by remembering a second step.
+ *
+ * A slug rather than a permission set on purpose: it is an ordinary grant row,
+ * so an instance admin who redefines `member` redefines what every group's
+ * roster gets, and revoking it on one group is the normal grant deletion.
+ */
+export const ROSTER_ROLE = 'member'
+
+/**
  * The two roles seeded on every instance. They are ordinary rows — an admin may
  * rename them and change what `member` grants — with two exceptions enforced in
  * server/permissions.js: a built-in can't be deleted (memberships reference its

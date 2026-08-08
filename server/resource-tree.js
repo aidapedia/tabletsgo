@@ -64,6 +64,7 @@ import {
   NODE_TYPE_KEYS,
   PERMISSION_KEYS,
   ROOT_NODE_TYPE,
+  ROSTER_ROLE,
   canParent,
   nodeType,
 } from './permissions-catalog.js'
@@ -246,6 +247,31 @@ export const permissionsAtResource = (type, resourceId, userId) => permissionsAt
 export const ownsNode = (node, userId) => {
   if (!node || !userId) return false
   return chainOf(node).some((n) => n.ownerId === userId)
+}
+
+/**
+ * Is this user on the roster of a group at or above `node`?
+ *
+ * The other half of what a group is. `permissionsAtNode` answers what the tree
+ * lets you *do*; this answers whether a resource is filed somewhere you belong —
+ * "everyone on Team Promotions may use what is filed under Team Promotions",
+ * which is the thing filing a connection into a group is meant to express.
+ * `server/auth.js` reads it for `userCanAccessConnection`; permissions
+ * deliberately do not, because belonging to a group is not a capability.
+ *
+ * **Only `type === 'group'` counts, and that restriction is the whole safety
+ * property.** A workspace is a group node too and its roster is every member of
+ * the workspace, so counting it here would say "every member may open every
+ * connection" and make each connection's access list dead letter. The
+ * application root is excluded for the same reason, one level up.
+ */
+export const memberOfGroupAbove = (node, userId) => {
+  if (!node || !userId) return false
+  return memo(`r:${node.id}:${userId}`, () => {
+    const mine = new Set(groupIdsFor(userId))
+    if (!mine.size) return false
+    return chainOf(node).some((n) => n.type === 'group' && mine.has(n.id))
+  })
 }
 
 /**
@@ -730,6 +756,18 @@ const insertNode = ({ parentId, kind, type, resourceId = null, name, ownerId = n
 /**
  * Create a group node by hand — the one type a user makes directly (everything
  * else appears because its resource was created).
+ *
+ * The new group is granted `ROSTER_ROLE` **to itself**, which is what makes its
+ * roster mean something from the first moment: a grant whose principal is this
+ * node reaches whoever is in `node_members` for this node, so adding a person
+ * to the group is the whole act of admitting them. Without it a fresh group was
+ * a folder whose member list did nothing until somebody remembered to make that
+ * grant by hand — a second step nothing prompted, and the usual reason a team
+ * looked staffed while its people could reach none of its resources.
+ *
+ * Best-effort on purpose: the node is the thing being created, and a group that
+ * exists without its convenience grant is repairable from the grant editor,
+ * while failing the create would leave the caller with nothing.
  */
 export const createGroupNode = (parentId, name, { ownerId = null } = {}) => {
   const parent = getNode(parentId)
@@ -737,7 +775,17 @@ export const createGroupNode = (parentId, name, { ownerId = null } = {}) => {
   const clean = String(name || '').trim()
   if (!clean) return { error: 'A name is required.' }
   if (!CUSTOM_NODE_TYPES.length) return { error: 'No group type is available.' }
-  return insertNode({ parentId, kind: 'group', type: 'group', name: clean, ownerId, workspaceId: parent.workspaceId })
+  const result = insertNode({ parentId, kind: 'group', type: 'group', name: clean, ownerId, workspaceId: parent.workspaceId })
+  if (result.node) {
+    addGrant(result.node.id, {
+      principalType: 'node',
+      principalId: result.node.id,
+      roleSlug: ROSTER_ROLE,
+      inherit: true,
+      createdBy: ownerId,
+    })
+  }
+  return result
 }
 
 /**
