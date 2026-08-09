@@ -130,6 +130,17 @@ export type DashboardConfig = { variables: DashboardVariable[]; widgets: Widget[
 export type DashboardSummary = { id: string; name: string; ts: number; folderId?: string | null }
 export type Dashboard = DashboardSummary & { config: DashboardConfig }
 
+// A dashboard as the workspace-wide Dashboard section sees it: the connection it
+// belongs to is a column rather than the context, and the config is reduced to
+// its counts (the list never renders a widget, so it never fetches one).
+export type WorkspaceDashboard = DashboardSummary & {
+  connectionId: string
+  connectionName: string
+  connectionType: string
+  widgetCount: number
+  variableCount: number
+}
+
 // A folder in the dashboards rail. `parentId` builds the tree (null = root);
 // nesting is capped at 3 levels (enforced server-side).
 export type DashboardFolder = { id: string; name: string; parentId: string | null; ts: number }

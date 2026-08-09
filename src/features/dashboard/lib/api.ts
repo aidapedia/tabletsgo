@@ -3,11 +3,19 @@
 
 import { request, safeRequest } from '@/shared/api/request'
 import * as folders from '@/shared/api/folders'
-import type { Dashboard, DashboardConfig, DashboardFolder, DashboardSummary } from '../types'
+import type { Dashboard, DashboardConfig, DashboardFolder, DashboardSummary, WorkspaceDashboard } from '../types'
 
 export async function listDashboards(connectionId: string): Promise<DashboardSummary[]> {
   if (!connectionId) return []
   return safeRequest(`/connections/${connectionId}/dashboards`, [])
+}
+
+// Every dashboard in a workspace the caller can reach — one request rather than
+// one per connection. The server filters by connection access, so this is never
+// wider than listDashboards() would be, connection by connection.
+export async function listWorkspaceDashboards(workspaceId: string): Promise<WorkspaceDashboard[]> {
+  if (!workspaceId) return []
+  return safeRequest(`/workspaces/${workspaceId}/dashboards`, [])
 }
 
 export async function getDashboard(connectionId: string, did: string): Promise<Dashboard> {

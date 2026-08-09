@@ -25,8 +25,10 @@ function StatCard({ Icon, label, value, hint, onClick }: any) {
   )
 }
 
-// Default landing — workspace stats at a glance.
-export default function DashboardPage() {
+// Home — the default landing, workspace stats at a glance. Not to be confused
+// with the Dashboard section (DashboardsPage), which lists the query dashboards
+// built on this workspace's connections.
+export default function HomePage() {
   const { user } = useAuth()
   const navigate = useNavigate()
   const { current } = useWorkspaces()

@@ -151,11 +151,13 @@ const centerState =
 export default function Workspace() {
   const { id } = useParams()
   const navigate = useNavigate()
-  // `?workflow=<id>` — a row of the workspace-wide Workflow section landing
-  // here. The console keeps its tabs in state, so this is the one tab a URL can
-  // ask for; it stays in the address so a refresh reopens the same workflow.
+  // `?workflow=<id>` / `?dashboard=<id>` — a row of the workspace-wide Workflow
+  // or Dashboard section landing here. The console keeps its tabs in state, so
+  // these are the tabs a URL can ask for; they stay in the address so a refresh
+  // reopens the same one.
   const [searchParams] = useSearchParams()
   const deepLink = searchParams.get('workflow')
+  const dashboardLink = searchParams.get('dashboard')
   const { user, logout } = useAuth()
   const toast = useToast()
   const { connections, patchLocalConnection } = useConnections()
@@ -357,7 +359,7 @@ export default function Workspace() {
   }
   const changeSchema = (schema) => setNs((p) => ({ ...p, schema }))
 
-  // Load this connection's saved queries, folders and workflows from the backend.
+  // Load this connection's saved queries, folders, workflows and dashboards from the backend.
   useEffect(() => {
     let alive = true
     fetchSaved(id).then((list) => alive && setSaved(list))
@@ -376,13 +378,25 @@ export default function Workspace() {
       }
     })
     fetchWorkflowFolders(id).then((list) => alive && setWorkflowFolders(list))
-    listDashboards(id).then((list) => alive && setDashboards(list))
+    listDashboards(id).then((list) => {
+      if (!alive) return
+      setDashboards(list)
+      // Same deep link as workflows above, from the Dashboard section. The two
+      // requests race, so `!deepLink` — not just the auto-open claim — is what
+      // makes a URL carrying both resolve the same way every time: workflow wins.
+      const d = dashboardLink && !deepLink && list.find((x) => x.id === dashboardLink)
+      if (d && autoOpenedFor.current !== id) {
+        autoOpenedFor.current = id
+        setPanel('dashboards')
+        openDashboard(d)
+      }
+    })
     fetchDashboardFolders(id).then((list) => alive && setDashboardFolders(list))
     fetchTableFolders(id).then((list) => alive && setTableFolders(list))
     return () => {
       alive = false
     }
-  }, [id, deepLink])
+  }, [id, deepLink, dashboardLink])
 
   // Esc closes the mobile slide-over sidebar drawer while it's open.
   useEffect(() => {

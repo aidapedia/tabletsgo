@@ -5,71 +5,93 @@ import { WorkspaceSwitcher } from '@/features/workspaces'
 import { UpdateBanner } from '@/features/system-update'
 import NavItem from '@/shared/ui/navigation/NavItem'
 import IconButton from '@/shared/ui/buttons/IconButton'
-import { BellIcon, BuildingIcon, CloudIcon, DatabaseIcon, GridIcon, Logo, LogoutIcon, MailIcon, MenuIcon, SettingsIcon, ShieldIcon, TreeIcon, UsersIcon, WorkflowIcon } from '@/shared/ui/icons'
+import { BellIcon, BuildingIcon, CloudIcon, DatabaseIcon, GridIcon, HomeIcon, Logo, LogoutIcon, MailIcon, MenuIcon, SettingsIcon, ShieldIcon, TreeIcon, UsersIcon, WorkflowIcon } from '@/shared/ui/icons'
 
 /**
- * Sidebar navigation model — groups of routes.
+ * Sidebar navigation model — a pinned row plus titled groups.
+ *
+ * `pinned` is the section that answers "where am I" rather than "what do I
+ * work on", so it sits above the group headers with no title of its own.
+ * Groups below it read as: what the workspace holds, how the workspace is run,
+ * and the account. Every group earns its header — a one-item group is a sign
+ * the item belongs in a neighbouring one.
  *
  * `path` is the section's own address and doubles as the active-state test: a
  * row lights up for its path *and everything under it*, so `/connections/42`
  * and `/connections/42/edit` still read as "Connection". `exact` opts out of
  * that for the two paths that prefix their siblings (`/` and `/admin`).
  */
-const NAV = [
-  {
-    group: 'Workspace',
-    items: [
-      { label: 'Dashboard', Icon: GridIcon, path: '/', exact: true },
-      { label: 'Connection', Icon: DatabaseIcon, path: '/connections' },
-      { label: 'Workflow', Icon: WorkflowIcon, path: '/workflows' },
-      { label: 'S3 Storage', Icon: CloudIcon, path: '/storage' },
-    ],
-  },
-  {
-    group: 'Browse',
-    items: [{ label: 'Resource Tree', Icon: TreeIcon, path: '/resource-tree' }],
-  },
-  {
-    group: 'Manage',
-    items: [
-      { label: 'Workspace', Icon: BuildingIcon, path: '/workspace' },
-      { label: 'Member', Icon: UsersIcon, path: '/members' },
-      { label: 'Notification', Icon: BellIcon, path: '/notifications' },
-    ],
-  },
-  {
-    group: 'Account',
-    items: [{ label: 'Setting', Icon: SettingsIcon, path: '/settings' }],
-  },
-]
+const NAV = {
+  pinned: [{ label: 'Home', Icon: HomeIcon, path: '/', exact: true }],
+  groups: [
+    {
+      group: 'Resources',
+      items: [
+        { label: 'Connection', Icon: DatabaseIcon, path: '/connections' },
+        { label: 'Dashboard', Icon: GridIcon, path: '/dashboards' },
+        { label: 'Workflow', Icon: WorkflowIcon, path: '/workflows' },
+        { label: 'S3 Storage', Icon: CloudIcon, path: '/storage' },
+        { label: 'Resource Tree', Icon: TreeIcon, path: '/resource-tree' },
+      ],
+    },
+    {
+      group: 'Workspace',
+      items: [
+        { label: 'General', Icon: BuildingIcon, path: '/workspace' },
+        { label: 'Member', Icon: UsersIcon, path: '/members' },
+        { label: 'Notification', Icon: BellIcon, path: '/notifications' },
+      ],
+    },
+    {
+      group: 'Account',
+      items: [{ label: 'Setting', Icon: SettingsIcon, path: '/settings' }],
+    },
+  ],
+}
 
 // An instance admin belongs to no workspace, so none of the sections above have
-// anything to show them — they get their own three (workspaces, accounts and
-// the instance-wide mail server), plus the same personal settings.
-const ADMIN_NAV = [
-  {
-    group: 'Administration',
-    items: [
-      { label: 'Workspaces', Icon: BuildingIcon, path: '/admin', exact: true },
-      { label: 'Users', Icon: UsersIcon, path: '/admin/users' },
-      { label: 'Email', Icon: MailIcon, path: '/admin/email' },
-    ],
-  },
-  {
-    group: 'Browse',
-    items: [{ label: 'Resource Tree', Icon: TreeIcon, path: '/resource-tree' }],
-  },
-  {
-    group: 'Account',
-    items: [{ label: 'Setting', Icon: SettingsIcon, path: '/settings' }],
-  },
-]
+// anything to show them — `/admin` is their home, so it takes the pinned row,
+// and the instance-wide sections (accounts, the one mail server, the node
+// hierarchy) group under it, plus the same personal settings.
+const ADMIN_NAV = {
+  pinned: [{ label: 'Workspaces', Icon: BuildingIcon, path: '/admin', exact: true }],
+  groups: [
+    {
+      group: 'Administration',
+      items: [
+        { label: 'Users', Icon: UsersIcon, path: '/admin/users' },
+        { label: 'Email', Icon: MailIcon, path: '/admin/email' },
+        { label: 'Resource Tree', Icon: TreeIcon, path: '/resource-tree' },
+      ],
+    },
+    {
+      group: 'Account',
+      items: [{ label: 'Setting', Icon: SettingsIcon, path: '/settings' }],
+    },
+  ],
+}
 
 const isActive = (pathname: string, path: string, exact?: boolean) =>
   exact ? pathname === path : pathname === path || pathname.startsWith(`${path}/`)
 
 function Sidebar({ pathname, onNavigate, user, onLogout, open, onClose, isAdmin }: any) {
-  const groups = isAdmin ? ADMIN_NAV : NAV
+  const nav = isAdmin ? ADMIN_NAV : NAV
+
+  const rows = (items: any[]) => (
+    <div className="flex flex-col gap-0.5">
+      {items.map((item) => (
+        <NavItem
+          key={item.path}
+          href={item.path}
+          active={isActive(pathname, item.path, item.exact)}
+          icon={item.Icon}
+          onClick={(e: MouseEvent) => onNavigate(e, item.path)}
+        >
+          {item.label}
+        </NavItem>
+      ))}
+    </div>
+  )
 
   return (
     <>
@@ -112,22 +134,11 @@ function Sidebar({ pathname, onNavigate, user, onLogout, open, onClose, isAdmin 
 
         {/* Nav */}
         <nav className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
-          {groups.map((group) => (
+          <div className="mb-4">{rows(nav.pinned)}</div>
+          {nav.groups.map((group) => (
             <div key={group.group} className="mb-4 last:mb-0">
               <div className="mb-1 px-2.5 text-[10px] font-bold uppercase tracking-wide text-ink-faint">{group.group}</div>
-              <div className="flex flex-col gap-0.5">
-                {group.items.map((item) => (
-                  <NavItem
-                    key={item.path}
-                    href={item.path}
-                    active={isActive(pathname, item.path, item.exact)}
-                    icon={item.Icon}
-                    onClick={(e: MouseEvent) => onNavigate(e, item.path)}
-                  >
-                    {item.label}
-                  </NavItem>
-                ))}
-              </div>
+              {rows(group.items)}
             </div>
           ))}
         </nav>

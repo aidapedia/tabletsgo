@@ -7,7 +7,8 @@ import AcceptInvitePage from '@/pages/auth/AcceptInvitePage'
 import ForgotPasswordPage from '@/pages/auth/ForgotPasswordPage'
 import ResetPasswordPage from '@/pages/auth/ResetPasswordPage'
 import HomeLayout from '@/pages/home/HomeLayout'
-import DashboardPage from '@/pages/home/DashboardPage'
+import HomePage from '@/pages/home/HomePage'
+import DashboardsPage from '@/pages/home/DashboardsPage'
 import ConnectionsPage from '@/pages/home/ConnectionsPage'
 import ConnectionDetailPage from '@/pages/home/ConnectionDetailPage'
 import ConnectionFormPage from '@/pages/home/ConnectionFormPage'
@@ -104,7 +105,11 @@ export function AppRoutes() {
           </RequireWorkspaceUser>
         }
       >
-        <Route path="/" element={<DashboardPage />} />
+        <Route path="/" element={<HomePage />} />
+        {/* Dashboards live on connections; this is the workspace-wide list of
+            them, alongside /workflows. A row opens the dashboard in its
+            connection's console. */}
+        <Route path="/dashboards" element={<DashboardsPage />} />
         {/* Connections: list, create, detail (tab in the path) and edit are four
             addresses, not four states of one page — each survives a refresh and
             can be pasted to a teammate. `new` and `edit` are static segments, so

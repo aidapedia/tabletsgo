@@ -5,8 +5,10 @@
 // lazy-import it directly from `@/features/dashboard/components/DashboardView`
 // — same pattern as WorkflowEditor in the workflow feature.
 export { default as DashboardsPanel } from '@/features/dashboard/components/DashboardsPanel'
+export { default as WorkspaceDashboardList } from '@/features/dashboard/components/WorkspaceDashboardList'
 export {
   listDashboards,
+  listWorkspaceDashboards,
   getDashboard,
   createDashboard,
   updateDashboard,
@@ -20,4 +22,4 @@ export {
 // Generic markdown renderer (headings/lists/inline) — reused for release notes.
 export { default as MarkdownText } from '@/features/dashboard/components/MarkdownText'
 export { sanitizeConfig, MAX_DASHBOARD_FOLDER_DEPTH } from '@/features/dashboard/types'
-export type { Dashboard, DashboardSummary, DashboardConfig, DashboardExport, DashboardFolder, Widget, DashboardVariable } from '@/features/dashboard/types'
+export type { Dashboard, DashboardSummary, WorkspaceDashboard, DashboardConfig, DashboardExport, DashboardFolder, Widget, DashboardVariable } from '@/features/dashboard/types'

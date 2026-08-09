@@ -257,7 +257,10 @@ src/
         │                         #   re-exports of shared/ui/page's PageHeader / PageTabs / Narrow
         ├── useTabRoute           #   binds a tab bar to a path segment; the bare section path redirects
         │                         #   to the first tab so every tab has a pasteable address
-        ├── DashboardPage (/)     #   connection + member counts
+        ├── HomePage (/)          #   the landing page: connection + member counts
+        ├── DashboardsPage        #   /dashboards → every dashboard in the workspace, across its
+        │                         #   connections (features/dashboard's WorkspaceDashboardList); a row
+        │                         #   navigates to /connection/:id?dashboard=<id>, opened as a console tab
         ├── ConnectionsPage       #   /connections — filter bar (search / env / folder / type / status)
         │                         #   over the connection list, rendered with shared/ui/table's DataTable
         │                         #   (sortable columns, 10/page, row click → detail)

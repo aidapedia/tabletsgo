@@ -1959,6 +1959,21 @@ the query endpoint supports (SQLite, PostgreSQL, future dialects).
 Dashboards can be organized into folders (see **Dashboard folders** below); each
 dashboard carries an optional `folderId` (`null` = root).
 
+### GET `/api/workspaces/:id/dashboards`
+Every dashboard in a workspace, across the connections the caller can open —
+what the home area's **Dashboard** section lists (one request instead of one per
+connection). Newest first. The `config` is summarised rather than returned:
+`widgetCount` and `variableCount` are all the list needs, and a workspace's worth
+of full configs is a lot of JSON for a table that renders no charts.
+
+Membership gates the workspace; each connection is then filtered by connection
+access, so this never shows a dashboard the per-connection route below would
+refuse.
+
+- **200:** `[{ "id", "connectionId", "connectionName", "connectionType", "name", "ts", "folderId", "widgetCount", "variableCount" }]`
+- **403:** `{ "error": "Forbidden" }` — not a member of the workspace.
+- **Example:** `GET http://localhost:3000/api/workspaces/ws-1/dashboards`
+
 ### GET `/api/connections/:id/dashboards`
 List dashboards for a connection (newest first; no config body).
 

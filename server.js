@@ -2058,6 +2058,53 @@ app.all('/api/hooks/wf/:wid/:token', async (req, res) => {
 // the server just stores and returns it, so it stays database-agnostic.
 // Dashboards can live in a folder (folders table, type='dashboard').
 
+// Every dashboard in a workspace, in one list — what the home area's Dashboard
+// section shows. Mirrors the workspace-wide workflows route above: membership
+// gates seeing the workspace at all, then each connection is filtered by whether
+// the caller may open it, so this can never show more than the per-connection
+// route below would.
+//
+// The config is summarised (widget/variable counts) rather than returned: the
+// list only needs the shape of a dashboard, and a workspace's worth of full
+// configs is a lot of JSON to send for a table nobody renders charts from.
+app.get('/api/workspaces/:id/dashboards', (req, res) => {
+  const user = requireMember(req, res, req.params.id)
+  if (!user) return
+  const conns = listConnections().filter((c) => c.workspaceId === req.params.id && userCanAccessConnection(c, user.id))
+  if (!conns.length) return res.json([])
+  const byId = new Map(conns.map((c) => [c.id, c]))
+  const ids = [...byId.keys()]
+  const rows = meta
+    .prepare(
+      `SELECT id, connection_id, name, config, folder_id, ts FROM dashboards
+        WHERE connection_id IN (${ids.map(() => '?').join(', ')})
+        ORDER BY ts DESC`
+    )
+    .all(...ids)
+  res.json(
+    rows.map((r) => {
+      const conn = byId.get(r.connection_id)
+      // A config that won't parse is a dashboard that still exists — report it
+      // with zero widgets rather than failing the whole list.
+      let config = {}
+      try {
+        config = JSON.parse(r.config || '{}')
+      } catch {}
+      return {
+        id: r.id,
+        connectionId: r.connection_id,
+        connectionName: conn.name,
+        connectionType: conn.type,
+        name: r.name,
+        ts: r.ts,
+        folderId: r.folder_id || null,
+        widgetCount: Array.isArray(config.widgets) ? config.widgets.length : 0,
+        variableCount: Array.isArray(config.variables) ? config.variables.length : 0,
+      }
+    })
+  )
+})
+
 app.get('/api/connections/:id/dashboards', (req, res) => {
   const rows = meta
     .prepare('SELECT id, name, folder_id, ts FROM dashboards WHERE connection_id = ? ORDER BY ts DESC')
