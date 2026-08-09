@@ -54,23 +54,17 @@ export function initMetaDb() {
   seedAdminFromEnv()
 }
 
-// Optional pre-seed from env — skips the first-run setup wizard.
+// Optional pre-seed from env — skips the first-run setup wizard. Seeds the
+// instance administrator and nothing else, exactly like the wizard: an admin
+// administers workspaces but never belongs to one (CLAUDE.md "AUTH MODEL"), so
+// a workspace created here could only be ownerless. The admin signs in and
+// creates the first workspace with a real owner (Admin → Workspaces).
 function seedAdminFromEnv() {
   const hasUsers = !!meta.prepare('SELECT 1 FROM users LIMIT 1').get()
   if (hasUsers || !process.env.ADMIN_USERNAME || !process.env.ADMIN_PASSWORD) return
 
-  const uid = randomUUID()
-  const wid = randomUUID()
-  const now = Date.now()
   meta
     .prepare('INSERT INTO users (id, username, password_hash, name, role, status) VALUES (?, ?, ?, ?, ?, ?)')
-    .run(uid, process.env.ADMIN_USERNAME, sha256(process.env.ADMIN_PASSWORD), 'Admin', 'admin', 'active')
-  // The workspace is created without an owner: an instance admin administers
-  // workspaces but never belongs to one (CLAUDE.md "AUTH MODEL"), so making the
-  // seeded admin its owner would contradict the model. Signing in as the admin,
-  // the first task is to invite someone and hand them the workspace.
-  meta
-    .prepare('INSERT INTO workspaces (id, name, settings, created_at) VALUES (?, ?, ?, ?)')
-    .run(wid, process.env.WORKSPACE_NAME || 'My Workspace', '{}', now)
-  console.log(`🌱 Seeded admin ${process.env.ADMIN_USERNAME} + workspace (assign an owner from Admin → Workspaces)`)
+    .run(randomUUID(), process.env.ADMIN_USERNAME, sha256(process.env.ADMIN_PASSWORD), 'Admin', 'admin', 'active')
+  console.log(`🌱 Seeded admin ${process.env.ADMIN_USERNAME} (create your first workspace from Admin → Workspaces)`)
 }

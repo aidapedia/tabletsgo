@@ -25,8 +25,10 @@ function StatCard({ Icon, label, value, hint, onClick }: any) {
   )
 }
 
-// Default landing — workspace stats at a glance.
-export default function DashboardPage() {
+// Home — the default landing, workspace stats at a glance. Not to be confused
+// with the Dashboard section (DashboardsPage), which lists the query dashboards
+// built on this workspace's connections.
+export default function HomePage() {
   const { user } = useAuth()
   const navigate = useNavigate()
   const { current } = useWorkspaces()
@@ -44,13 +46,13 @@ export default function DashboardPage() {
   }, [current?.id])
 
   return (
-    <div className="w-full max-w-[1080px]">
+    <div className="w-full">
       <PageHeader
         title={`Welcome back, ${user?.name || 'there'}`}
         desc={`Here's an overview of ${current?.name || 'your workspace'}.`}
       />
 
-      <div className="mt-7 grid grid-cols-2 gap-4 max-[560px]:grid-cols-1">
+      <div className="mt-7 grid grid-cols-4 gap-4 max-[1000px]:grid-cols-2 max-[560px]:grid-cols-1">
         <StatCard
           Icon={DatabaseIcon}
           label="Connections"
@@ -63,7 +65,7 @@ export default function DashboardPage() {
           label="Members"
           value={memberCount ?? '—'}
           hint="People with access"
-          onClick={() => navigate('/workspace/member')}
+          onClick={() => navigate('/members')}
         />
       </div>
     </div>

@@ -20,9 +20,12 @@ endpoint with its request, response, and an example URL.
   | Tier | Stored in | Values | Can do |
   | --- | --- | --- | --- |
   | System | `users.role` (on `user.role` in every auth response) | `admin` \| `user` | `admin` manages workspaces and accounts via `/api/admin/*` — and *nothing else*. An instance admin holds **no** workspace membership, so every workspace-scoped route `403`s for them by design. |
-  | Workspace | `workspace_members.role` | `owner` \| `member` | `owner` manages the workspace: members, teams, settings, connections and storage destinations. A workspace may have **any number of owners but never zero**. `member` uses the connections they've been granted — full database access (query, edit rows, workflows, dashboards, schema changes) but no create/edit/delete of the connection record itself. |
+  | Workspace | the user grant on the workspace's node | any **role slug** from the instance catalog | Configurable: an instance admin defines what each role grants (see **Roles & permissions**), and routes authorize by *permission*, never by role name. `owner` and `member` are seeded builtins. "Owner" means *holds `workspace.manage`* — a workspace may have **any number of owners but never zero**. Neither tier grants database access on its own: *using* a connection comes from its own access list. |
 
-  Owner-only refusals return `403 { "error": "Only a workspace owner can …" }`;
+  Workspace-tier refusals return
+  `403 { "error": "You do not have permission to do that.", "permission": "<key>" }`
+  when the caller is a member of the workspace and
+  `403 { "error": "Forbidden" }` when they aren't;
   admin-only routes return `403 { "error": "Admin access required" }`.
   The workspace role used to be spelled `admin`; meta migration v8 rewrites it
   to `owner` in place, and the server also normalizes it on read so a
@@ -51,6 +54,10 @@ endpoint with its request, response, and an example URL.
 | `META_DB` | `./data/app.db`    | SQLite file storing app metadata (below).|
 | `ENCRYPTION_KEY` | *(required)* | AES-256-GCM key encrypting connection credentials at rest — server refuses to start without it. Also derives (with a distinct salt) the key used for storage-destination credentials. |
 | `WORKFLOW_SCHEDULER_ENABLED` | `true` | Set to `false` to disable the minutely cron tick that fires workflows with an active hourly/daily schedule (including backups). Useful for local dev/CI. |
+| `LOGIN_MAX_ATTEMPTS` | `5` | Consecutive failed sign-ins that block an account. `0` disables blocking. |
+| `LOGIN_ATTEMPT_WINDOW_MS` | `900000` (15 min) | How close together those failures must be — an older failure restarts the counter. |
+| `LOGIN_LOCKOUT_MS` | `0` | How long a block lasts. `0` = until an instance admin unblocks the account. |
+| `LOGIN_ADMIN_COOLDOWN_MS` | `900000` (15 min) | An instance admin is never blocked indefinitely — they get this cooldown instead. `0` leaves admin sign-ins unthrottled. |
 
 **System requirement:** PostgreSQL backup/restore shells out to `pg_dump`/`pg_restore`, so the `postgresql-client` package must be installed on the host/image running `server.js` (already added to the provided `Dockerfile`).
 
@@ -80,9 +87,6 @@ reassembles this same shape on every read, so API consumers see no difference:
   "filepath": "./demo.db",
   "folder": "Demo",
   "schemaVersion": 1,          // bumped by POST .../schema/migrations
-  "maxSessions": 0,            // concurrent open connections to this database;
-                               //   0 = inherit the workspace default (see
-                               //   "Connection sessions")
   "ownerId": "user_1",         // creator by default; see POST /api/connections
   "ownerName": "Alice",        // resolved read-only (owner's display name)
   "ownerEmail": "alice@x.com"  // resolved read-only (owner's email)
@@ -226,7 +230,13 @@ CREATE TABLE users (
   username TEXT UNIQUE NOT NULL,
   password_hash TEXT NOT NULL,  -- sha256(password) hex
   name TEXT,
-  role TEXT                     -- system role: "admin" (instance admin) | "user"
+  role TEXT,                    -- system role: "admin" (instance admin) | "user"
+  -- Brute-force guard (server/login-guard.js). On the account rather than in
+  -- memory, so a block survives a restart and an admin can see it.
+  failed_logins INTEGER DEFAULT 0, -- consecutive failures inside the window
+  last_failed_at INTEGER,       -- when the last one was (older than the window ⇒ counter restarts)
+  locked_at INTEGER,            -- NULL = not blocked
+  locked_until INTEGER          -- NULL = blocked until an admin lifts it; set = self-expiring
 );
 -- The durable login store. One row per bearer token; the server reads it
 -- through a cache (in-process, or Redis when SESSION_REDIS_URL is set), so a
@@ -238,6 +248,75 @@ CREATE TABLE sessions (
   ns TEXT,                      -- "auth" (the store's namespace)
   context TEXT,                 -- JSON: the session value (userId, ip, userAgent, …)
   expires_at INTEGER            -- SQLite has no TTL, so reads filter on this
+);
+-- Workspace roles an instance admin defines (server/permissions.js). The slug is
+-- what a grant stores, so it is fixed at creation; renaming a role
+-- therefore never touches a membership row. 'owner' and 'member' are seeded
+-- builtins whose slugs match the literals that column held before roles became
+-- configurable, which is why migration v12 rewrote nothing.
+CREATE TABLE roles (
+  id TEXT PRIMARY KEY,
+  slug TEXT NOT NULL UNIQUE,    -- stored in resource_grants.role_slug
+  name TEXT NOT NULL,
+  description TEXT,
+  builtin INTEGER DEFAULT 0,    -- 1 = seeded; editable, never deletable
+  applies_to TEXT,              -- v14: JSON array of node types this role may be
+                                -- granted on; NULL = any type. Half of a grant's
+                                -- requirement criteria (the other half is each
+                                -- permission's `scope` in the catalog).
+  created_at INTEGER,
+  updated_at INTEGER
+);
+-- Seeding only ever *inserts* a builtin that is missing, so a role an admin has
+-- edited is left as they left it. That also meant a builtin seeded before a
+-- permission key existed never picked it up — an install older than v14 had an
+-- `owner` with no `resources.organise`/`resources.grant`, i.e. a workspace owner
+-- who could not move a node or grant a role on one. Meta migration **v17** tops
+-- the builtins back up to the catalog's definition (additively, builtins only).
+-- What a role grants. Rows are permission KEYS from the catalog in
+-- server/permissions-catalog.js — the catalog is code, the grants are data. A key
+-- this image doesn't recognise is ignored on read, which is what lets an older
+-- image open a newer DB.
+CREATE TABLE role_permissions (
+  role_id TEXT NOT NULL,
+  permission TEXT NOT NULL,
+  UNIQUE(role_id, permission)
+);
+-- The resource tree (v14, server/resource-tree.js): one hierarchy of everything
+-- on the instance. Supersedes spacetree_nodes (v13), which is left in place but
+-- never read — see DEPRECATED_TABLES.
+--
+-- `path` is materialized ('/root/<id>/<id>') so "everything under here" is one
+-- indexed prefix match and walking to the root costs a single query — which
+-- matters because the route guards are synchronous and resolve through this.
+CREATE TABLE resource_nodes (
+  id TEXT PRIMARY KEY,          -- the application root is literally 'root'
+  parent_id TEXT,               -- NULL only for the application root
+  kind TEXT NOT NULL,           -- 'group' (holds nodes) | 'resource' (a thing you use)
+  type TEXT NOT NULL,           -- application|workspace|group|connection|storage|dashboard|workflow
+  resource_id TEXT,             -- id in the mirrored table; NULL for the root and custom groups
+  name TEXT NOT NULL,
+  owner_id TEXT,                -- owns this node and, by cascade, everything under it
+  workspace_id TEXT,            -- the workspace this node lives in (NULL for the root)
+  path TEXT NOT NULL,
+  depth INTEGER NOT NULL DEFAULT 0,
+  sort INTEGER DEFAULT 0,
+  created_at INTEGER,
+  updated_at INTEGER
+);
+-- A role handed to a principal at a node. This is where workspace permissions
+-- now come from: migration v14 backfilled one inheriting grant per membership,
+-- and server/workspaces.js keeps the two in step on every add/role-change/remove.
+CREATE TABLE resource_grants (
+  id TEXT PRIMARY KEY,
+  node_id TEXT NOT NULL,
+  principal_type TEXT NOT NULL, -- 'user' | 'node'
+  principal_id TEXT NOT NULL,
+  role_slug TEXT NOT NULL,      -- roles.slug
+  inherit INTEGER NOT NULL DEFAULT 1, -- 0 = this node only, 1 = the whole subtree
+  created_at INTEGER,
+  created_by TEXT,
+  UNIQUE(node_id, principal_type, principal_id, role_slug)
 );
 CREATE TABLE connections (
   id TEXT PRIMARY KEY,
@@ -380,24 +459,30 @@ CREATE TABLE backup_runs (
   finished_at INTEGER,
   ts INTEGER NOT NULL
 );
-CREATE TABLE teams (
+-- Who is inside a group. A group node is both a folder resources are filed
+-- under and the set of people a grant can name, so this is the roster a grant
+-- to that group reaches. Deliberately its own table rather than a flag on
+-- resource_grants: a plain user grant on a group node must never be mistakable
+-- for membership. Superseded `teams`/`team_members` in meta migration v15
+-- (both kept, unread, for rollback compatibility).
+-- The one roster table. A workspace node uses it too (v16): a workspace is a
+-- group like any other, so `workspace_members` became a second roster that had
+-- to be kept saying the same thing, and is now deprecated. Belonging and role
+-- are two facts on the same node — this says who is in it (and therefore who
+-- sees everything inside it), the grant on that node says what they may do. A
+-- member holding no grant is a real state: sees everything, may do nothing.
+CREATE TABLE node_members (
   id TEXT PRIMARY KEY,
-  workspace_id TEXT NOT NULL,
-  name TEXT NOT NULL,
-  created_at INTEGER
-);
-CREATE TABLE team_members (
-  id TEXT PRIMARY KEY,
-  team_id TEXT NOT NULL,
+  node_id TEXT NOT NULL,          -- resource_nodes.id, kind = 'group' (incl. workspace nodes)
   user_id TEXT NOT NULL,
   created_at INTEGER,
-  UNIQUE(team_id, user_id)
+  UNIQUE(node_id, user_id)
 );
 CREATE TABLE connection_access (
   id TEXT PRIMARY KEY,
   connection_id TEXT NOT NULL,
-  principal_type TEXT NOT NULL,   -- "team" | "user"
-  principal_id TEXT NOT NULL,     -- teams.id or users.id
+  principal_type TEXT NOT NULL,   -- "node" | "user"
+  principal_id TEXT NOT NULL,     -- resource_nodes.id (a group) or users.id
   created_at INTEGER,
   UNIQUE(connection_id, principal_type, principal_id)
 );
@@ -448,9 +533,68 @@ admin's first job is `POST /api/admin/users` + `PUT /api/admin/workspaces/:id/me
 ### POST `/api/auth/login`
 - **Body:** `{ "username": "you@example.com", "password": "…" }` (`username` is the email)
 - **200:** `{ "user": { … }, "token": "uuid" }` · **401:** `{ "error": "Invalid email or password" }`
+- **423:** `{ "error": "…", "blocked": true, "lockedUntil": 1735689600000 | null }` — the
+  account is blocked by the brute-force guard (below). `lockedUntil` is `null`
+  when only an admin can lift it.
+- **Example:** `POST http://localhost:3000/api/auth/login`
+
+**Brute-force protection** (`server/login-guard.js`). `LOGIN_MAX_ATTEMPTS`
+consecutive failures (default 5) inside `LOGIN_ATTEMPT_WINDOW_MS` (default 15
+min) block the account; an older failure doesn't count, so the counter restarts
+rather than accumulating over weeks. The state lives on the account
+(`users.failed_logins / last_failed_at / locked_at / locked_until`), so a block
+survives a restart and is visible in `GET /api/admin/users`.
+
+- The block is checked **before** the password is verified: a blocked account
+  can't be probed, and a guessed-correctly password doesn't bypass it.
+- A blocked account is *told* it's blocked, which does reveal the address exists
+  — deliberate, since the person needs to know why and whom to ask. An unknown
+  address is never counted and always gets the generic 401.
+- **An instance admin is never blocked indefinitely** (nobody would be left to
+  unblock them). They get `LOGIN_ADMIN_COOLDOWN_MS` (default 15 min) instead —
+  same threshold, always self-expiring, so the account is neither brute-forceable
+  nor lockable-out by an attacker. Set it to `0` to leave admin logins unthrottled.
+- **Clearing it:** `POST /api/admin/users/:id/unblock`, or any password change
+  (`PUT /api/admin/users/:id` with `password`, or the reset-link flow). A
+  successful sign-in resets the counter.
+- `LOGIN_LOCKOUT_MS` (default `0` = until an admin unblocks) makes ordinary
+  blocks self-expire too.
 
 ### POST `/api/auth/logout`
 Invalidate the current session token. **200:** `{ "ok": true }`
+
+### Your own account (auth required)
+
+The self-service counterpart of `/api/admin/users/*`: these act on the caller and
+only on the caller, so they need no role beyond a valid token. **Email is not
+editable here** — it's the sign-in identity, and changing it (like the system
+role) is an instance-admin action via `PUT /api/admin/users/:id`.
+
+#### GET `/api/auth/me`
+The caller's own profile, re-read from the DB (clients cache it in localStorage).
+- **200:** `{ "user": { "id", "email", "name", "role" } }` · **401:** unauthenticated
+- **Example:** `GET http://localhost:3000/api/auth/me`
+
+#### PATCH `/api/auth/profile`
+Rename yourself. `name` is the only self-editable profile field.
+- **Body:** `{ "name": "Ada Lovelace" }`
+- **200:** `{ "user": { … } }` · **400:** `{ "error": "A name is required." }` (empty/blank)
+- **Example:** `PATCH http://localhost:3000/api/auth/profile`
+
+#### POST `/api/auth/password`
+Change your own password. The current password is **required and re-checked
+server-side** — a session token alone must not let someone lock its owner out.
+A success invalidates *every* session for the user (this browser's included,
+since a stolen copy of the token is indistinguishable from it) and returns a
+fresh one, so the caller stays signed in where they are and is signed out
+everywhere else. It also clears any brute-force block, like every other password
+change.
+- **Body:** `{ "currentPassword": "…", "newPassword": "…" }`
+- **200:** `{ "user", "token" }` — **persist the new token**, the old one is dead
+- **400:** `{ "error": "Both your current and new password are required." }` ·
+  `{ "error": "Your current password is incorrect." }` ·
+  `{ "error": "The new password must be different from the current one." }`
+- **Example:** `POST http://localhost:3000/api/auth/password`
 
 ### POST `/api/auth/forgot`
 Request a password-reset link. **Always 200** `{ "ok": true }` — never reveals
@@ -467,12 +611,33 @@ Set a new password, invalidate the user's other sessions, and log in.
 - **Body:** `{ "password" }` → **200:** `{ "user", "token" }` · **404:** invalid/expired · **400:** missing password
 
 ### GET `/api/setup`
-First-run status. **200:** `{ "needsSetup": true }` (true when no users exist).
+First-run status. **200:** `{ "needsSetup": true, "hasUsers": false }`.
+`needsSetup` is **"the instance has no administrator"**, not "it has no users" —
+an install migrated from before the system role existed has accounts but nobody
+who can reach the admin area. `hasUsers` separates the two cases for the wizard.
+- **Example:** `GET http://localhost:3000/api/setup`
 
 ### POST `/api/setup`
-Create the admin + first workspace (only while `needsSetup`).
-- **Body:** `{ "email", "password", "name", "workspace" }`
-- **200:** `{ "user", "token" }` · **403:** already completed · **400:** missing fields
+Create the **instance administrator — and nothing else**. No workspace is made
+here: an admin holds no workspace access, so the first workspace is theirs to
+create (with an owner) via `POST /api/admin/workspaces` once signed in.
+
+Allowed only while the instance has no admin. The two cases:
+- **`hasUsers: false`** (empty install) — the account is created from the body.
+- **`hasUsers: true`** (adminless install with accounts) — the credentials must
+  match an existing **active** account, which is then promoted. Creating an admin
+  out of nothing is reserved for an empty instance so an adminless install can't
+  be claimed by a stranger. Promotion drops every workspace membership the
+  account had and signs out its other sessions.
+- **Body:** `{ "email", "password", "name" }` (`name` optional; ignored on
+  promotion unless given)
+- **200:** `{ "user", "token" }` · **403:** an admin already exists ·
+  **401:** `{ "error": "Invalid email or password" }` (promotion path) ·
+  **400:** missing email/password, or the email already has an account
+- **Example:** `POST http://localhost:3000/api/setup`
+  ```json
+  { "email": "admin@acme.com", "password": "s3cret", "name": "Jane" }
+  ```
 
 ### GET `/api/invite/:token`
 Validate an invite. **200:** `{ "email", "workspaceName" }` · **404:** invalid/expired.
@@ -482,10 +647,465 @@ Set password, activate, log in. **Body:** `{ "name", "password" }` → **200:** 
 
 ---
 
+## Resource tree (auth required)
+
+One hierarchy of every addressable thing on the instance, and **the place a role
+is granted**. Since meta v14 this tree — not a role column — is what
+every `requirePermission(...)` resolves through (`server/resource-tree.js`).
+
+```
+Application (root, one per instance)
+└── Workspace                     group — mirrors a `workspaces` row
+        ├── Group                     group — created by hand, mirrors nothing
+    ├── Storage                   resource
+    └── Connection                resource
+        ├── Dashboard             resource
+        └── Workflow              resource
+```
+
+A **group** node holds other nodes and is where you organise and grant; a
+**resource** node is a thing someone uses. The closed list of types, and which
+type may parent which, lives in `server/permissions-catalog.js`.
+
+### How a permission resolves
+
+A grant is `(node, principal, role, inherit)`. Answering "may this user do X
+here" walks the node's ancestors root-first and unions what each grant carries:
+
+* **Ownership short-circuits.** `ownerId` on any ancestor ⇒ every permission in
+  that subtree. This is what "the owner of a node can do anything under it"
+  means, and why the application root's owner is instance-wide.
+* **`inherit` decides reach.** `true` applies to the whole subtree; `false`
+  applies to that node alone — how you grant one connection without the workspace.
+* **A principal is a user or a group**, resolved through `node_members` — the
+  roster of the group node the grant names. Membership is flat (a group holds
+  users, never other groups), so nesting a group under another organises
+  resources and says nothing about who belongs to it: re-filing a folder never
+  hands anyone access.
+
+A group's roster does one thing no grant does: **its people can open the
+connections filed under that group**, without a row on each connection's access
+list (see Connection access). That is the half of "a group is a folder *and* a
+roster" that makes filing a resource into a team mean something. It is data
+access only — never a permission, because belonging to a group is not a
+capability. A new group is created holding a grant of the `member` role **to
+itself**, so its roster resolves through the ordinary machinery from the first
+request instead of waiting for someone to remember that second step.
+
+Memberships still exist and still decide *membership* (which is what gates
+opening a database); `server/workspaces.js` mirrors each one into a grant on its
+workspace node so the two can never drift.
+
+> **An instance admin sees the whole tree and resolves to every permission on it
+> (they hold the root), but still holds no membership anywhere — so they cannot
+> open a database.** Visibility and data access are separate questions;
+> `connection_access` answers the second one.
+
+### Requirement criteria
+
+Two independent tests decide whether a role may be granted on a node, and both
+must pass:
+
+1. **`roles.applies_to`** — a JSON array of node types an admin restricted the
+   role to, or `null` for "anywhere".
+2. **Permission scope** — every permission the role carries must be meaningful at
+   that node type (each key declares a `scope` in the catalog). Granting a role
+   holding `workspace.manage` on a single connection is refused rather than
+   stored as a promise no route can keep.
+
+Both are applied on write *and* published to the client, so the grant editor can
+only offer what the server would accept.
+
+### GET `/api/resource-tree`
+
+The whole tree the caller can see, flat — the client nests it via `parentId`.
+
+**Sample URL:** `http://localhost:3000/api/resource-tree`
+
+**Response:** `[{ id, parentId, kind, type, resourceId, name, ownerId, workspaceId, path, depth, context, owned, memberCount, canOrganise, canOpen }]`
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `id` | string | Node id (the application root is literally `"root"`) |
+| `parentId` | string \| null | Parent node id; null only for the application root |
+| `kind` | `"group"` \| `"resource"` | Holds other nodes, or is a thing you use |
+| `type` | `"application"` \| `"workspace"` \| `"group"` \| `"connection"` \| `"storage"` \| `"dashboard"` \| `"workflow"` | Node type |
+| `resourceId` | string \| null | Id in the mirrored table; null for the root and custom groups |
+| `name` | string | Display name |
+| `ownerId` | string \| null | Owns this node and, by cascade, everything under it |
+| `workspaceId` | string \| null | The workspace this node lives in (null for the root) |
+| `path` | string | Materialized ancestor path, `/root/<id>/<id>` |
+| `depth` | number | 0 at the root |
+| `context` | boolean | Present only so descendants have a path back to the root — the caller holds nothing here. Still selectable: `GET /api/resource-tree/:id` answers for it, scoped |
+| `owned` | boolean | The caller owns this node outright |
+| `memberCount` | number \| undefined | Groups only: how many people a grant to this group would reach |
+| `canOrganise` | boolean | Whether the caller may reorganise **here**: file a new group in (`POST /api/resource-tree/:id/groups`, groups only) and re-file this node (`PUT /api/resource-tree/:id/move`). Resolved at the node, so a grant deep in the tree says yes without one above it — it is what lets the UI offer "new group" and "move" only where they are allowed. Answered for resources too: the move guard asks at the node being moved, not at its parent |
+| `canOpen` | boolean \| undefined | Connections only: whether the caller may actually open the database |
+
+An instance admin gets every node. Everyone else gets the nodes they own or hold
+a grant on, everything beneath those, and the ancestors in between marked
+`context: true`.
+
+**Example (workspace owner):**
+```json
+[
+  { "id": "root", "parentId": null, "kind": "group", "type": "application", "resourceId": null, "name": "Application", "ownerId": null, "workspaceId": null, "path": "/root", "depth": 0, "context": true, "owned": false },
+  { "id": "n1", "parentId": "root", "kind": "group", "type": "workspace", "resourceId": "w1", "name": "Acme", "ownerId": "u2", "workspaceId": "w1", "path": "/root/n1", "depth": 1, "context": false, "owned": true },
+  { "id": "n2", "parentId": "n1", "kind": "group", "type": "group", "resourceId": null, "name": "Production", "ownerId": null, "workspaceId": "w1", "path": "/root/n1/n2", "depth": 2, "context": false, "owned": false, "memberCount": 4, "canOrganise": true },
+  { "id": "n3", "parentId": "n2", "kind": "resource", "type": "connection", "resourceId": "c1", "name": "prod-db", "ownerId": "u2", "workspaceId": "w1", "path": "/root/n1/n2/n3", "depth": 3, "context": false, "owned": true, "canOrganise": true, "canOpen": true }
+]
+```
+
+### GET `/api/resource-tree/catalog`
+
+What the tree is made of, and where each role may be granted — criteria already
+applied.
+
+**Sample URL:** `http://localhost:3000/api/resource-tree/catalog`
+
+**Response:** `{ nodeTypes: [{ type, kind, label, description, children, custom?, mirrors?, singleton? }], roles: [{ slug, name, description, builtin, permissions, appliesTo, grantableOn }] }`
+
+```json
+{
+  "nodeTypes": [
+    { "type": "workspace", "kind": "group", "label": "Workspace", "description": "One tenant: its groups, its connections and its storage.", "children": ["group", "connection", "storage"], "mirrors": "workspaces" }
+  ],
+  "roles": [
+    { "slug": "owner", "name": "Owner", "builtin": true, "permissions": ["workspace.manage", "…"], "appliesTo": ["application", "workspace"], "grantableOn": ["application", "workspace"] },
+    { "slug": "member", "name": "Member", "builtin": true, "permissions": [], "appliesTo": null, "grantableOn": ["application", "workspace", "group", "connection", "storage", "dashboard", "workflow"] }
+  ]
+}
+```
+
+### GET `/api/resource-tree/:id`
+
+One node in full: where it sits, what's in it, who has been granted what, and what
+the caller themselves may do here. Seeing the node at all is the permission.
+
+**Scoped to the caller.** `ancestors` and `children` are filtered to nodes the
+caller can already see in `GET /api/resource-tree` — `childrenOf` is the raw
+hierarchy, and at the application root that is *every workspace on the instance*,
+which any caller reaches because the root is an ancestor of everything they hold.
+
+**`context: true`** means the caller holds nothing on this node itself; it is in
+the tree only so what they *do* hold has a path back to the root. Grants come back
+`[]` and `members` is omitted in that case — who else can reach a node you hold
+nothing on is not yours to read. The application root is `context` for everyone
+except an instance admin, who owns it.
+
+**Sample URL:** `http://localhost:3000/api/resource-tree/n_42`
+
+**Response:**
+
+```json
+{
+  "node": { "id": "n_42", "type": "group", "kind": "group", "name": "Production", "...": "..." },
+  "context": false,
+  "ancestors": [ { "id": "root", "type": "application", "name": "Application", "...": "..." } ],
+  "children": [ { "id": "n_43", "type": "connection", "name": "Billing DB", "...": "..." } ],
+  "grants": [ { "id": "g_1", "principalType": "node", "principalId": "n_9", "principalName": "Ops", "roleSlug": "analyst", "inherit": true } ],
+  "members": [ { "userId": "u_7", "email": "sam@example.com", "name": "Sam", "createdAt": 1730000000000 } ],
+  "people": [
+    {
+      "userId": "u_7",
+      "name": "Sam",
+      "email": "sam@example.com",
+      "owner": false,
+      "member": true,
+      "permissions": ["connections.read"],
+      "sources": [
+        { "type": "group", "grantId": "g_1", "nodeId": "n_42", "nodeName": "Production", "groupId": "n_9", "groupName": "Ops", "roleSlug": "analyst", "roleName": "Analyst", "here": true, "instanceWide": false }
+      ]
+    }
+  ],
+  "permissions": ["resources.organise", "resources.grant"],
+  "owner": { "id": "u_3", "email": "ada@example.com", "name": "Ada", "role": "user" }
+}
+```
+
+`members` is present only for a group node the caller is not in `context` at. On
+a **connection** node each entry in `people` also carries `canOpen` — see
+[Who can reach a node](#who-can-reach-a-node).
+
+**`grants` vs `people`.** `grants` is what was granted *on this node*; `people`
+resolves the whole chain — inherited grants from above, the rosters of granted
+groups, and the owner of any ancestor — so access the node itself never mentions
+cannot hide. Each `source` says where its access comes from, and names the
+`grantId` behind it so a caller standing on the granting node can revoke exactly
+that grant (a person can hold the same role twice, through two grants). An
+`owner` source carries no `grantId`: ownership is a column on the node, not a
+grant. `here: true` means the grant lives on this node and is revocable from it;
+otherwise `nodeId`/`nodeName` say where it does live.
+
+The two lists don't imply one another in either direction. A grant to a group
+with an empty roster appears in `grants` and reaches nobody in `people`; a person
+reaching this node through a grant three levels up appears in `people` with no
+row in `grants` at all.
+
+### POST `/api/resource-tree/:id/groups`
+
+Create a group under `:id`. Requires `resources.organise` **at that node**.
+Groups are the only node type created by hand — everything else appears because
+its resource was created.
+
+**Sample URL:** `http://localhost:3000/api/resource-tree/n1/groups`
+
+**Body:** `{ "name": "Production", "ownerId": "u3" }` (`ownerId` optional)
+
+Omitting `ownerId` makes **the caller the owner, but only when they already own
+the parent** — where ownership is theirs by cascade anyway, so recording it grants
+nothing new. A caller who merely holds `resources.organise` gets an ownerless
+group: otherwise that permission alone would be enough to create a group they own
+and move a connection into it, inheriting every permission on that connection.
+
+The new group is created holding a grant of the `member` role **to itself**
+(`principalType: "node"`, `principalId`: the new node's own id, `inherit: true`),
+so its roster resolves through the ordinary grant machinery from the first
+request. Combined with the roster's data access to what is filed inside it (see
+Connection access), that is what makes staffing the group the whole act of
+admitting someone to its resources. The grant is an ordinary row: delete it from
+`DELETE /api/resource-tree/:id/grants/:grantId` like any other. Groups created
+before this shipped simply don't have it — their rosters still open the
+connections filed under them, which is resolved in `server/auth.js` rather than
+from the grant, so nothing needs backfilling.
+
+**Response:** the created Node. `400` if the parent's type cannot hold a group.
+
+### PUT `/api/resource-tree/:id`
+
+Rename a node. Requires `resources.organise`. **Only custom groups** — a mirrored
+node follows its own resource, so this is `400` for a workspace/connection/etc.
+
+**Body:** `{ "name": "Staging" }` → the updated Node.
+
+### PUT `/api/resource-tree/:id/move`
+
+Re-file a node under a different group. Requires `resources.organise` at **both**
+ends — otherwise moving something into a group you control would be a way to
+grant yourself access to it.
+
+**Moving a `connection` node needs more:** the caller must also hold
+`connections.manage` resolved at that connection, or own it. A group's roster can
+open the connections filed under it (see Connection access), so re-filing one
+changes who may use the database; without this test, `resources.organise` alone
+would be a way to read every connection in the workspace by moving them one at a
+time into a group you sit on. Every other node type moves on
+`resources.organise` as before.
+
+**Sample URL:** `http://localhost:3000/api/resource-tree/n3/move`
+
+**Body:** `{ "parentId": "n2" }` → the updated Node.
+
+`400` if the target cannot hold this type, or if the target is inside the node
+being moved.
+`403` `{ "error": "You need to own this connection to move it." }` for a
+connection the caller neither owns nor manages.
+
+The whole subtree moves with the node, and its `path`/`depth`/`workspaceId` are
+rewritten in one pass. No *grant* is copied or rewritten: a grant is made on a
+node, so the node simply starts inheriting what its new parent carries and stops
+inheriting the old one's. Data access to a connection does follow the move,
+though — that is the point of filing one into a team.
+
+Both ends are resolved for the client by `canOrganise` on `GET /api/resource-tree`
+— the destination picker offers only nodes whose type may hold this one (per
+`GET /api/resource-tree/catalog`'s `children`) and greys out the ones the caller
+cannot file into.
+
+### PUT `/api/resource-tree/:id/owner`
+
+Hand a node over. Ownership cascades, so only the **current owner** (or an
+instance admin) may call this.
+
+**Sample URL:** `http://localhost:3000/api/resource-tree/n1/owner`
+
+**Body:** `{ "ownerId": "u5" }` — or `{ "ownerId": null }` to clear it.
+
+**Response:** the updated Node.
+
+`400` if the new owner is not a member of the node's workspace, or is an instance
+admin being made owner of anything below the application root.
+
+### DELETE `/api/resource-tree/:id`
+
+Delete a custom group. Requires `resources.organise`. **The group must be empty** —
+move or delete everything inside it first; nothing is ever silently re-filed.
+`400` for a mirrored node (delete the resource itself; its node goes with it).
+
+**Response:** `{ "ok": true }`
+
+**`409`** when the group still holds something, with what is in the way:
+
+```json
+{
+  "error": "Move or delete the 2 items inside this group first.",
+  "children": [
+    { "id": "n7", "name": "Billing DB", "type": "connection" },
+    { "id": "n8", "name": "Archive", "type": "group" }
+  ]
+}
+```
+
+### GET `/api/resource-tree/:id/grants`
+
+The grants made on this node. Same visibility rule as `GET /:id`.
+
+**Response:** `Grant[]`
+
+### POST `/api/resource-tree/:id/grants`
+
+Give a person or group a role here. Requires `resources.grant` at that node.
+
+**Sample URL:** `http://localhost:3000/api/resource-tree/n2/grants`
+
+**Body:**
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `principalType` | `"user"` \| `"node"` | Who the grant is for |
+| `principalId` | string | User id, or the id of a group node — the grant then reaches everyone on its roster |
+
+**`400` when the user isn't a member of the node's workspace.** Membership is the
+authority on who belongs to a workspace and is what gates opening a database, so
+granting a non-member would leave them half in: resolving to permissions through
+the tree while `memberRole()` returns null, meaning `requireMember` and
+`userCanAccessConnection` both still refuse them. The group-roster route and
+`PUT /api/connections/:id/owner` already applied this rule; grants were the one
+path that skipped it. A grant made on the **application root** has no workspace,
+so it is exempt — that is the one way someone reaches a workspace node without
+being a member of it, and the access view marks it.
+| `roleSlug` | string | A slug from the role catalog |
+| `inherit` | boolean | Default `true` — applies to the whole subtree; `false` = this node only |
+
+```json
+{ "principalType": "user", "principalId": "u4", "roleSlug": "member", "inherit": true }
+```
+
+**Response:** the created Grant. Re-granting the same `(node, principal, role)`
+updates `inherit` rather than duplicating.
+
+`400` with a specific reason when the requirement criteria refuse it:
+
+```json
+{ "error": "Owner can only be granted on: application, workspace." }
+```
+
+### DELETE `/api/resource-tree/:id/grants/:grantId`
+
+Revoke a grant. Requires `resources.grant`.
+
+**Response:** `{ "ok": true }`
+
+### Nodes follow their resources
+
+A node is created, renamed and deleted alongside the row it mirrors — never on
+its own. `POST /api/connections` accepts an optional `parentNodeId` to file the
+new connection straight into a group instead of at the workspace root. Removing
+someone from a workspace revokes every grant they held anywhere in its subtree
+and clears any node ownership inside it.
+
+---
+
+## Roles & permissions (auth required)
+
+Workspace access is an **instance-wide role catalog**: an instance admin defines
+what each role may do, and a workspace owner assigns their people to it. A
+membership (the grant on the workspace's node) stores a role **slug**, and every
+workspace-scoped route authorizes by *permission*, never by role name — so
+redefining a role changes who may call a route without touching the route.
+
+The account's *system* role (`admin` | `user`) is **not** part of this model and
+is not configurable. Instance administration deliberately carries no workspace
+data access; making the system tier editable would only be a way around that.
+
+**Permission keys** (the closed set, from `server/permissions-catalog.js`):
+
+`scope` is the shallowest node type the key means anything at — the criterion
+that decides where a role carrying it may be granted (see Resource tree).
+
+| Key | Scope | Allows |
+| --- | --- | --- |
+| `workspace.manage` | workspace | Rename the workspace; change general settings, experiments and the session policy. Also the anchor of the last-owner rule — "owner" means *holds this*. |
+| `workspace.delete` | workspace | `DELETE /api/workspaces/:id`. |
+| `members.manage` | workspace | Invite, remove, and change a member's role. |
+| `teams.manage` | workspace | Change who belongs to a group. Key unchanged when teams became groups (v15) — `role_permissions` stores these strings and drops unknown ones, so renaming it would silently strip the power from every role holding it. Deliberately not `resources.organise`: adding someone to a group grants them access, tidying the tree must not. Old text: create/rename/delete teams and change their membership. |
+| `notifications.manage` | workspace | The `notifications` block on `PUT /api/workspaces/:id`. |
+| `storage.manage` | workspace | Create/edit/delete storage destinations. |
+| `connections.create` | workspace | `POST /api/connections` and `POST /api/connections/import`. |
+| `connections.manage` | connection | Edit/delete/export/set access on every connection in scope — the whole workspace, or one connection when granted on its node. |
+| `connections.transfer` | connection | `PUT /api/connections/:id/owner`. |
+| `resources.organise` | workspace | Create, rename, move and delete the groups resources are filed under. |
+| `resources.grant` | workspace | Give a person or group a role on a node, and take it away again. |
+
+Deliberately absent: *using* a database (queries, row edits, workflows,
+dashboards, schema changes) is not a permission. That is a per-resource grant on
+the connection itself (`connection_access` — see Connection access), because it
+answers a per-connection question, not a workspace-wide one.
+
+Two seeded built-in roles, `owner` (every permission) and `member` (none). Their
+slugs match the literals a membership held before roles became
+configurable, so meta migration v12 rewrote nothing. A built-in can be renamed and
+re-permissioned but never deleted, and `owner` always keeps `workspace.manage`.
+
+A failed workspace-tier check returns
+`403 { "error": "You do not have permission to do that.", "permission": "<key>" }`
+when the caller is in the workspace, and `403 { "error": "Forbidden" }` when they
+aren't — so a client can tell "ask an owner" from "wrong workspace".
+
+- `GET /api/roles` → `[{ id, slug, name, description, builtin, permissions, appliesTo, grantableOn, memberCount, grantCount, createdAt, updatedAt }]`.
+  Readable by **any signed-in user**: assigning a member a role needs the names,
+  and the UI explains what each grants. Built-ins first, then alphabetical.
+  `memberCount` is how many memberships hold the role and `grantCount` how many
+  tree grants do (two grouped queries, not one per role) — together they are who
+  an edit affects, and whether a delete will be refused. `appliesTo` is the
+  admin-set node-type restriction (null = anywhere) and `grantableOn` is where the
+  role may actually be granted once every criterion is applied. The write
+  endpoints below return the role **without** the counts.
+- **Example:** `GET http://localhost:3000/api/roles`
+
+### Managing roles (`/api/admin/*`, system admin only)
+
+> **API-only today — there is no Roles screen.** The app assigns roles (the
+> member dropdowns read `GET /api/roles`) but does not create them, so an
+> instance ships with the two seeded builtins unless an admin adds more through
+> these endpoints. They are fully enforced either way; the UI is what's missing.
+
+- `GET /api/admin/permissions` → the catalog grouped for a role editor:
+  `[{ group, items: [{ key, label, description, scope }] }]`. It comes from the
+  server's **code**, not its database, so a UI can only ever offer a permission
+  some route actually enforces. `scope` is where the key means anything.
+- `POST /api/admin/roles` `{ name, description?, permissions?, appliesTo? }` → the
+  created role. The slug is derived from the name (`"Data Analyst"` →
+  `data-analyst`, suffixed `-2`, `-3` … if taken) and is **fixed for the life of
+  the role**, because memberships store it. Unknown permission keys and unknown
+  node types are dropped silently. `appliesTo` restricts which node types the role
+  may be granted on; omit it (or send `null`) for "anywhere". `400` when `name` is
+  empty.
+- `PUT /api/admin/roles/:slug` `{ name?, description?, permissions?, appliesTo? }` →
+  the updated role. Omitting `permissions` leaves the grants alone; sending it
+  **replaces** them wholesale (not a partial patch). `appliesTo` is three-valued:
+  absent leaves the criteria alone, `null` widens them to any node type, an array
+  narrows them — and narrowing decides only what may be granted *next*, it never
+  revokes a grant someone already holds. Renaming never touches a membership row.
+  Editing `owner` always keeps `workspace.manage`, whatever the body says.
+  `404` for an unknown slug.
+- `DELETE /api/admin/roles/:slug` → `{ ok: true }`.
+  `400` for a built-in; `409 { error, inUse }` while any membership **or tree
+  grant** still holds the role — those people would otherwise fail closed to no
+  access, so move them first.
+- **Example:** `POST http://localhost:3000/api/admin/roles` body
+  `{ "name": "Data Analyst", "description": "Builds connections, runs queries", "permissions": ["connections.create"], "appliesTo": ["workspace", "group"] }`
+
+---
+
 ## Workspaces (auth required)
 
-- `GET /api/workspaces` → `[{ id, name, role, createdAt, experiments, notifications }]`
-  the caller belongs to. `experiments` is `{ [key]: boolean }` (see Beta experiments
+- `GET /api/workspaces` → `[{ id, name, role, permissions, createdAt, experiments, notifications }]`
+  the caller belongs to. `role` is a **role slug** from the instance's catalog and
+  `permissions` is what that role grants here (see Roles & permissions below) —
+  ships on the list route, not just the detail one, so permission-gated nav
+  doesn't flicker while the detail request is in flight. **Don't branch on the
+  slug**: ask `permissions`. `experiments` is `{ [key]: boolean }` (see Beta experiments
   below) — included for every member, not just admins, since it gates what the
   whole workspace sees. `notifications` ships here too (not just the detail route)
   so a settings panel that only calls `refresh()`/`listWorkspaces()` after saving
@@ -493,7 +1113,7 @@ Set password, activate, log in. **Body:** `{ "name", "password" }` → **200:** 
 - `POST /api/workspaces` `{ name }` → creates one; caller becomes `owner`.
   An instance admin gets `403` here (they cannot own a workspace) — they use
   `POST /api/admin/workspaces`, which names someone else as the owner.
-- `GET /api/workspaces/:id` → `{ id, name, role, createdAt, experiments, notifications, sessions }`;
+- `GET /api/workspaces/:id` → `{ id, name, role, permissions, createdAt, experiments, notifications, sessions }`;
   `sessions` is `{ maxPerConnection, instanceDefault }` — the workspace-wide cap on
   concurrent sessions per connection (0 = unlimited) plus the read-only
   `MAX_SESSIONS_PER_CONNECTION` env fallback that applies while it's 0, so the
@@ -505,10 +1125,13 @@ Set password, activate, log in. **Body:** `{ "name", "password" }` → **200:** 
   fields only — no password ever leaves the server. A workspace **cannot**
   configure its own SMTP (removed in meta migration v10); this field exists so
   the Notification tab can say what will send, or that nothing will.
-- `PUT /api/workspaces/:id` (owner) `{ name?, experiments?, notifications?, sessions? }` → `{ ok: true }`.
+- `PUT /api/workspaces/:id` `{ name?, experiments?, notifications?, sessions? }` → `{ ok: true }`.
+  Checked **field by field**, not once for the whole route: `name`/`experiments`/
+  `sessions` need `workspace.manage`, `notifications` needs
+  `notifications.manage`, so a role can be trusted with one and not the other.
   `sessions` is `{ maxPerConnection }` (integer, 0 = unlimited; negatives and junk
-  clamp to 0) — the default every connection in the workspace inherits unless it
-  sets its own `maxSessions`.
+  clamp to 0) — the cap every connection in the workspace is held to. It is the
+  only place this is configurable: there is no per-connection override.
   There is no `smtp` here — the mail server is instance-level, set at
   `PUT /api/admin/smtp`; an older client still sending one is ignored, not
   rejected. `experiments` is a partial `{ [key]: boolean }`, merged onto the
@@ -526,42 +1149,145 @@ Set password, activate, log in. **Body:** `{ "name", "password" }` → **200:** 
   that ends up failed (after any configured retries — see the Backup section) emails
   every listed member via the instance's SMTP config (see `smtpConfig`). Manual
   "Run now" failures never trigger this.
-- `DELETE /api/workspaces/:id` (owner) → deletes it + its connections/queries.
+- `DELETE /api/workspaces/:id` (`workspace.delete`) → deletes it + its connections/queries.
   `400` if it's the caller's only workspace. Live driver handles for its
   connections are released and their sessions ended before the cascade runs.
 
 ### Members
-- `GET /api/workspaces/:id/members` → `[{ userId, email, name, role, status, systemRole, createdAt }]`.
-  `role` is the workspace role (`owner` | `member`); `systemRole` is the account's
-  system role, so the UI can tell an instance admin apart.
-- `POST /api/workspaces/:id/members` (owner) `{ email }` → `{ member, inviteLink, emailed }`.
-  Existing accounts are added directly as `member`; otherwise a pending user +
-  invite link is created (and emailed when SMTP is configured; `inviteLink`
-  returned regardless). `400` if the email belongs to an instance admin — such an
-  account cannot join a workspace.
-- `PUT /api/workspaces/:id/members/:userId` (owner) `{ role }` → `{ ok: true, role }`.
-  Promotes a member to `owner` or demotes an owner back to `member`. `400` when
-  demoting the **last** owner ("The workspace needs at least one owner.") or when
-  the target is an instance admin.
-- `DELETE /api/workspaces/:id/members/:userId` (owner) → `{ ok: true }`. Can't
-  remove yourself or the last owner. Also drops the removed user from every team
-  in this workspace and from any individual connection grants.
+All three mutations need `members.manage`.
+- `GET /api/workspaces/:id/members` → `[{ userId, email, name, role, permissions, isOwner, status, systemRole, createdAt }]`.
+  `role` is the role slug; `permissions` is what it grants and `isOwner` whether
+  that includes `workspace.manage` — both resolved server-side so a client never
+  has to interpret a slug. `systemRole` is the account's system role, so the UI
+  can tell an instance admin apart.
+- `POST /api/workspaces/:id/members` `{ email, role? }` → `{ member, inviteLink, emailed }`.
+  `role` defaults to `member` and must be a slug in the catalog (`400` otherwise) —
+  invite straight into a role instead of adding then promoting. Existing accounts
+  are added directly; otherwise a pending user + invite link is created (and
+  emailed when SMTP is configured; `inviteLink` returned regardless). `400` if the
+  email belongs to an instance admin — such an account cannot join a workspace.
+- `PUT /api/workspaces/:id/members/:userId` `{ role }` → `{ ok: true, role }`.
+  Moves the member to any role in the catalog. `400` for an unknown slug, when the
+  target is an instance admin, or when this would move the **last** member holding
+  `workspace.manage` to a role that doesn't ("The workspace needs at least one
+  owner.") — the check is on the permission, so a custom role granting
+  `workspace.manage` satisfies it too.
+- `DELETE /api/workspaces/:id/members/:userId` → `{ ok: true }`. Can't
+  remove yourself or the last owner. Also drops the removed user from every group
+  in this workspace, from any individual connection grants, and from ownership of
+  any node inside it.
 - **Example:** `PUT http://localhost:3000/api/workspaces/ws_123/members/u_456` body `{ "role": "owner" }`.
 
-### Teams
-Workspace-scoped groups of members. A team can be assigned as an access principal
-to a connection (see Connection access) and as a notification recipient. Managed
-from the frontend's Workspace → Teams tab. Any member can read; only owners mutate.
-- `GET /api/workspaces/:id/teams` → `[{ id, name, memberCount, createdAt }]`.
-- `POST /api/workspaces/:id/teams` (owner) `{ name }` → `{ id, name, memberCount: 0, createdAt }`.
-- `PUT /api/workspaces/:id/teams/:teamId` (owner) `{ name }` → `{ ok: true }`.
-- `DELETE /api/workspaces/:id/teams/:teamId` (owner) → `{ ok: true }`. Cascades:
-  removes the team's members and any `connection_access` rows assigning it.
-- `GET /api/workspaces/:id/teams/:teamId/members` → `[{ userId, email, name }]`.
-- `POST /api/workspaces/:id/teams/:teamId/members` (owner) `{ userId }` → `{ ok: true }`.
-  `400` if the user isn't a member of the workspace.
-- `DELETE /api/workspaces/:id/teams/:teamId/members/:userId` (owner) → `{ ok: true }`.
-- **Example:** `POST http://localhost:3000/api/workspaces/ws_123/teams` body `{ "name": "Backend" }`.
+### Workspace membership
+
+A workspace's members live in `node_members` on the workspace's own node — the
+same roster table every group uses (meta migration v16 moved them; the old
+`workspace_members` table is kept, unread, for rollback). Two facts sit on that
+node:
+
+| Fact | Where | Means |
+| --- | --- | --- |
+| Belonging | `node_members` row | They are in the workspace, and **see every resource in it** |
+| Role | the user grant on that node | What they may actually **do** |
+
+So a member holding no grant is a real, useful state: the whole workspace is
+visible to them and they can act on none of it. `isMember()` answers belonging;
+`memberRole()` reads the grant and returns `null` for a member without one — use
+`isMember` for "do they belong", never `memberRole` truthiness.
+
+The roster routes above work on a workspace node too, with two differences the
+server applies by node type:
+
+- the permission is **`members.manage`**, not `teams.manage` — admitting someone
+  to the workspace and staffing a folder are different powers;
+- adding goes through the workspace module (roster + membership grant written
+  together), removing runs the full member cascade and refuses to drop the last
+  owner or yourself. An instance admin can never be added.
+
+The UI keeps invitations on the workspace's Members page rather than here, since
+joining a workspace needs an email and an invite token.
+
+### Who can reach a node
+
+`GET /api/resource-tree/:id` carries a `people` array: everyone who can reach that
+node, resolved up the whole chain, and **why**.
+
+This is not the same as `grants`. That field is what was granted *at* this node,
+so on a connection it will not show the people arriving through an inherited grant
+higher up, the people arriving because they are on the roster of a group granted
+somewhere above, or the owner of an ancestor who short-circuits to everything.
+Access a node never mentions is what makes a permission model impossible to audit,
+so it is derived and returned. It is stored nowhere — the grants and rosters it
+reads are the only facts, and access is still edited where the grant lives.
+
+On a **connection** each person additionally carries `canOpen`, because reaching
+a connection node and being able to open the database are different questions: a
+grant on the workspace reaches every connection node inside it, while *opening*
+one is not a permission — it is answered per connection by
+`userCanAccessConnection`. A person with `canOpen: false` holds a role here and
+still cannot query anything. The UI lists the people who can open the connection
+and states the rest separately rather than mixing them.
+
+```json
+{
+  "userId": "u_7", "name": "Dana Reyes", "email": "dana@example.com",
+  "owner": false,
+  "member": true,
+  "permissions": ["connections.manage"],
+  "sources": [
+    { "type": "group", "nodeId": "n_1", "nodeName": "Main", "groupId": "n_9",
+      "groupName": "Analytics", "roleSlug": "analyst", "roleName": "Analyst",
+      "here": false, "instanceWide": false }
+  ]
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `owner` | Owns this node or an ancestor, so resolves to every permission below it |
+| `member` | `false` = permissions but **no data access**: opening a database needs a roster row on the workspace node |
+| `canOpen` | **Connection nodes only** — may they actually open this database (`userCanAccessConnection`: membership, `connections.manage` here, ownership, the roster of a group it is filed under, or its access list)? Absent on every other node type, which has nothing to open |
+| `sources[].type` | `"owner"` \| `"grant"` (a user grant) \| `"group"` (via a roster) |
+| `sources[].here` | Granted on this very node rather than inherited from above |
+| `sources[].instanceWide` | Granted above every workspace (the application root), so it reaches in without a membership |
+
+Every path is listed, not just the first — two ways into a node are two different
+things to revoke. Instance admins are deliberately absent: they administer every
+node without holding a grant, and hold no data access at all.
+
+Blanked (`[]`) for a scaffolding node, the same as `grants`.
+
+At a **workspace** node this list equals the workspace's member list, because
+`server/workspaces.js` mirrors every membership into a grant there and a grant to a
+non-member is refused. The only rows that can differ are application-root grants,
+flagged `instanceWide`.
+
+### Groups (people)
+A group node is both a folder resources are filed under **and** a named set of
+people, so there is no separate teams API: the roster lives on the node, next to
+the grants made there. See "Resource tree" above for creating, renaming, moving
+and deleting the group itself.
+
+Reading the roster needs only to be able to see the node; changing it needs
+`teams.manage` — **not** `resources.organise`. Adding someone to a group grants
+them access (every grant naming that group reaches them, and none of it shows on
+the grant list of the node they just reached), so tidying the tree deliberately
+does not carry that power.
+
+- `GET /api/resource-tree/:id/members` → `[{ userId, email, name, createdAt }]`.
+  `400` if the node is not a group.
+- `POST /api/resource-tree/:id/members` `{ userId }` → `{ ok: true }`.
+  `400` if the user isn't a member of the group's workspace — a group scopes
+  access inside one workspace, so its roster can't reach outside it.
+- `DELETE /api/resource-tree/:id/members/:userId` → `{ ok: true }`.
+- **Example:** `POST http://localhost:3000/api/resource-tree/n_42/members` body `{ "userId": "u_456" }`.
+
+Deleting a group takes its roster with it, plus every grant and access row that
+named it as a principal — a grant whose roster no longer exists would otherwise
+be stranded.
+
+> Migrated from `teams`/`team_members` by meta migration v15. The old tables are
+> kept but never read; the old `/api/workspaces/:id/teams*` routes are gone.
 
 ---
 
@@ -575,23 +1301,38 @@ here that reaches a connection or a database.
 
 ### Workspaces
 
-- `GET /api/admin/workspaces` → `[{ id, name, createdAt, memberCount, teamCount, connectionCount, owners }]`
+- `GET /api/admin/workspaces` → `[{ id, name, createdAt, memberCount, groupCount, connectionCount, owners }]`
   for **every** workspace on the instance. `owners` is the member objects whose
-  role is `owner` — an empty array means the workspace is currently ownerless
+  role carries `workspace.manage` — an empty array means the workspace is
+  currently ownerless
   (its owners left, or it was just created), which is the state an admin acts on.
 - `POST /api/admin/workspaces` `{ name, ownerEmail }` → `{ workspace, inviteLink, emailed }`.
-  Creates the workspace and hands it to `ownerEmail`. An unknown address gets a
-  pending account plus an `inviteLink` (emailed when SMTP is configured; returned
-  either way). `400` if `ownerEmail` belongs to an instance admin.
+  Creates the workspace and hands it to `ownerEmail`, which **must be an account
+  that already exists** — create the user with `POST /api/admin/users` first
+  (`400 No account with that email` otherwise; nothing is created). An owner
+  whose account is still `pending` gets an `inviteLink` scoped to the new
+  workspace (emailed when SMTP is configured; returned either way); for an
+  active owner `inviteLink` is `null`. `400` if `ownerEmail` belongs to an
+  instance admin.
+
+  ```
+  POST /api/admin/workspaces
+  { "name": "Acme Production", "ownerEmail": "owner@example.com" }
+
+  → { "workspace": { "id": "ws_9f3", "name": "Acme Production", "createdAt": 1754630400000,
+                     "memberCount": 1, "groupCount": 0, "connectionCount": 0 },
+      "inviteLink": "https://tabletsgo.example.com/invite/8c1d…", "emailed": true }
+  ```
 - `PUT /api/admin/workspaces/:id` `{ name }` → `{ ok: true, name }`.
 - `DELETE /api/admin/workspaces/:id` → `{ ok: true, connectionsDeleted }`. Releases
   the live driver handles and ends the sessions first, then cascades the metadata
-  (connections, queries, folders, workflows, dashboards, history, teams, storage
+  (connections, queries, folders, workflows, dashboards, history, groups, storage
   destinations).
-- `GET /api/admin/workspaces/:id/members` → `[{ userId, email, name, role, status, systemRole, createdAt }]`.
+- `GET /api/admin/workspaces/:id/members` → `[{ userId, email, name, role, permissions, isOwner, status, systemRole, createdAt }]`.
 - `PUT /api/admin/workspaces/:id/members/:userId` `{ role }` → `{ ok: true, role }`.
-  `role` is `owner` | `member`. Adds the user to the workspace if they aren't in
-  it yet — this is how an admin rescues a workspace whose owners have all left.
+  `role` is any slug from the catalog (`400` otherwise). Adds the user to the
+  workspace if they aren't in it yet — this is how an admin rescues a workspace
+  whose owners have all left.
   `400` when demoting the last owner, or when the target is an instance admin.
 - `DELETE /api/admin/workspaces/:id/members/:userId` → `{ ok: true }`. `400` when
   it would remove the last owner.
@@ -600,8 +1341,11 @@ here that reaches a connection or a database.
 
 ### Users
 
-- `GET /api/admin/users` → `[{ id, email, name, role, status, workspaces }]` where
-  `workspaces` is `[{ id, name, role }]` — what the account would lose if promoted.
+- `GET /api/admin/users` → `[{ id, email, name, role, status, blocked, blockedAt,
+  blockedUntil, failedAttempts, workspaces }]` where `workspaces` is
+  `[{ id, name, role }]` — what the account would lose if promoted. `status` is the
+  invite lifecycle (`active` | `pending`); `blocked` is the brute-force guard and
+  is independent of it (`blockedUntil: null` = only an admin can lift it).
 - `POST /api/admin/users` `{ email, name?, password?, role? }` → `{ user, inviteLink }`.
   With `password` the account is active immediately; without it the account is
   `pending` and `inviteLink` is how they set one. `role` is `admin` | `user`
@@ -612,10 +1356,19 @@ here that reaches a connection or a database.
     workspace — promotion strips every membership, so it would orphan it. The body
     carries `workspaces: [{ id, name }]`; reassign ownership first.
   - `400` when demoting the last instance admin.
+- `POST /api/admin/users/:id/unblock` → the updated user. Lifts a brute-force
+  block and clears the failed-attempt counter; a no-op on an account that isn't
+  blocked. `404` when the user doesn't exist.
 - `DELETE /api/admin/users/:id` → `{ ok: true }`. `400` for your own account or the
   last instance admin; `409` (same shape as above) when the account is the only
-  owner of a workspace.
+  owner of a workspace. The cascade drops every membership, then releases any
+  resource-tree node the account still owned and every grant it held **instance-wide** —
+  memberships only reach the workspaces they were memberships *of*, so a node owned
+  in a workspace the account had already left would otherwise keep a dangling owner.
+  The nodes themselves survive; they become ownerless, and a parent node's owner
+  can reassign them.
 - **Example:** `PUT http://localhost:3000/api/admin/users/u_123` body `{ "role": "admin" }`.
+- **Example:** `POST http://localhost:3000/api/admin/users/u_123/unblock`.
 
 ### Email (SMTP)
 
@@ -658,7 +1411,7 @@ with the password AES-256-GCM encrypted at rest — it is never returned.
 List connections in a workspace the caller belongs to. Results are further filtered
 by **connection access** (see below): a connection with no access rows is visible to
 every workspace member; one with access rows is visible only to workspace owners, its
-assigned individual members, and members of its assigned teams.
+assigned individual members, and everyone in its assigned groups.
 - **Query:** `workspace` (required — the workspace id). Missing → `[]`.
 
 - **200:** `Connection[]` (array of connection objects)
@@ -676,23 +1429,51 @@ Test connectivity without saving. Body is a connection-shaped object.
 - **400:** `{ "ok": false, "message": "Unsupported connection type: mysql" }`
 - **Example:** `POST http://localhost:3000/api/test-connection`
 
+> **Who may change a connection record.** `PUT`, `DELETE`, `/export` and
+> `/access` all use one rule: hold **`connections.manage`** (any connection in the
+> workspace) *or* be the connection's own **`ownerId`** (that one connection,
+> whatever your role). That is what lets a plain member run the connections they
+> own — edit them, back them up, set their access list — without being given the
+> whole workspace. Failing it returns
+> `403 { "error": "You need to own this connection to <action>." }`.
+> Using the *database* behind a connection is a different question entirely — see
+> Connection access.
+
 ### POST `/api/connections`
-Create a connection. Server assigns the `id` (UUID). The `ownerId` defaults to the
-authenticated caller unless one is supplied in the body. The response includes the
-resolved `ownerName` / `ownerEmail`.
+Create a connection (**`connections.create`**). Server assigns the `id` (UUID). The
+`ownerId` defaults to the authenticated caller unless one is supplied in the body.
+The response includes the resolved `ownerName` / `ownerEmail`.
 
 - **Body:** connection object **without** `id` (see Data models); `ownerId` optional
 - **200:** the created connection (with `id`, `ownerId`, `ownerName`, `ownerEmail`)
+- **403:** `{ "error": "You do not have permission to do that.", "permission": "connections.create" }`
 - **Example:** `POST http://localhost:3000/api/connections`
 
 ### PUT `/api/connections/:id`
-Update a connection. Merges body into the existing record; drops cached
-pools/handles so the next query reconnects with new settings.
+Update a connection (manage-or-own, see above). Merges body into the existing
+record; drops cached pools/handles so the next query reconnects with new settings.
 
 - **Body:** partial or full connection fields to change
 - **200:** the updated connection
 - **404:** `{ "error": "Connection not found" }`
 - **Example:** `PUT http://localhost:3000/api/connections/demo-sqlite`
+
+### PUT `/api/connections/:id/owner`
+Hand the connection to another member of the workspace (**`connections.transfer`**).
+
+Its own permission rather than part of `connections.manage`, because it is the one
+change that can take a connection *away* from the caller: the new owner may edit,
+back up and delete it, and the previous owner keeps that only if their role does.
+
+- **Body:** `{ "ownerId": "user_456" }`
+- **200:** the updated connection (with the new `ownerId` / `ownerName` / `ownerEmail`)
+- **400:** `{ "error": "That person is not a member of this workspace." }` —
+  ownership is not a way to grant workspace access. Also `400` if the target is an
+  instance admin (they hold no membership at all), or if the connection has no
+  `workspaceId`.
+- **403:** `{ "error": "You do not have permission to do that.", "permission": "connections.transfer" }`
+- **404:** `{ "error": "Connection not found" }`
+- **Example:** `PUT http://localhost:3000/api/connections/demo-sqlite/owner` body `{ "ownerId": "user_456" }`
 
 ### DELETE `/api/connections/:id`
 Delete a connection and cascade-delete its saved queries, folders (including
@@ -786,22 +1567,56 @@ schedules (workflow + backup) arrive **paused**.
 - **Example:** `POST http://localhost:3000/api/connections/import`
 
 ### Connection access
-Controls which teams / individual members may see and open a connection. An empty
-set means the connection is open to every workspace member (backward compatible).
-Any set restricts visibility to workspace admins + the listed users + members of the
-listed teams. Enforced by the `GET /api/connections` list filter and the
-`/api/connections/:id/*` access guard.
+Controls which groups / individual members may see and **open** a connection. This
+is the per-resource grant that workspace permissions deliberately don't cover: it
+answers "may this person use this database", which is a question about one
+connection, not about the workspace.
+
+**An empty set means nobody** — not everybody (changed in v16). Seeing a
+connection and being able to open it are different questions: every workspace
+member already sees every connection in their workspace, because their membership
+grant reaches the whole subtree, and opening one is granted per connection. The
+set lists users + groups; a group may be the **workspace node itself**, which
+names exactly "everyone in this workspace" and is what v16 wrote for every
+connection that was implicitly open, so nothing lost access on upgrade.
+
+Four ways in, tested in this order by `userCanAccessConnection`
+(`server/auth.js`), all of them behind workspace membership as a floor:
+
+1. `connections.manage` resolved **at this connection** (so a grant on one
+   connection's node opens one connection, not the workspace);
+2. being the connection's own `ownerId`;
+3. **sitting on the roster of a `group` node the connection is filed under** —
+   where a resource lives is itself a statement about who may use it, which is
+   what a group is for. Company A holds Team Promotions and Team Orders, staffed
+   differently, and the connections filed under a team are the team's. Only
+   `type === 'group'` ancestors count, **never the workspace node**, whose roster
+   is every member — counting it would make every access list below dead letter.
+   A group nested inside another still does not merge rosters: reach comes from
+   being under *your* group, never from your group gaining a parent;
+4. being named on this connection's access list, as a user or through a group
+   listed there. This is how one person crosses teams — put User B in Team
+   Database Admin, list that group on a connection in each team, and one row per
+   connection covers the whole roster.
+
+With none of the four, the answer is no. Enforced by the `GET /api/connections`
+list filter and the `/api/connections/:id/*` access guard.
+
+> Because (3) makes placement grant access, `PUT /api/resource-tree/:id/move`
+> asks for manage-or-own before it will re-file a **connection**. See that
+> endpoint.
 
 #### GET `/api/connections/:id/access`
 Read the current assignment (any caller who already has access).
-- **200:** `{ "teams": ["team_1"], "users": ["user_1"] }` (id arrays; empty = open)
+- **200:** `{ "groups": ["n_42"], "users": ["user_1"] }` (id arrays — `groups` holds group **node** ids; empty = nobody named here, which still leaves the owner, `connections.manage`, and the rosters of the groups this connection is filed under)
 - **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/access`
 
 #### PUT `/api/connections/:id/access`
-Replace the assignment (workspace **admin** only). Send the full desired set.
-- **Body:** `{ "teams": ["team_1"], "users": ["user_1"] }` (either may be omitted → treated as `[]`)
-- **200:** the stored `{ teams, users }`
-- **403:** `{ "error": "Admin only" }`
+Replace the assignment (manage-or-own, see the note above the connection routes).
+Send the full desired set.
+- **Body:** `{ "groups": ["n_42"], "users": ["user_1"] }` (either may be omitted → treated as `[]`)
+- **200:** the stored `{ groups, users }`
+- **403:** `{ "error": "You need to own this connection to change a connection's access list." }`
 - **Example:** `PUT http://localhost:3000/api/connections/demo-sqlite/access`
 
 ---
@@ -1012,6 +1827,20 @@ not a workflow.
 > ordinary graphs — graphs containing `export`/`storage` get a 30-minute cap instead,
 > since a full database dump + upload can legitimately take longer.
 
+### GET `/api/workspaces/:id/workflows`
+Every workflow in a workspace, across the connections the caller can open —
+what the home area's **Workflow** section lists (one request instead of one per
+connection). Newest first, no graph body. `lastRun` is the most recent recorded
+run (`null` if it has never run), `nextRunAt` the scheduled next fire.
+
+Membership gates the workspace; each connection is then filtered by connection
+access, so this never shows a workflow the per-connection route below would
+refuse.
+
+- **200:** `[{ "id", "connectionId", "connectionName", "connectionType", "name", "ts", "protected", "scheduleEnabled", "nextRunAt", "folderId", "lastRun": { "status": "success" | "failed", "at" } | null }]`
+- **403:** `{ "error": "Forbidden" }` — not a member of the workspace.
+- **Example:** `GET http://localhost:3000/api/workspaces/ws-1/workflows`
+
 ### GET `/api/connections/:id/workflows`
 List workflows for a connection (newest first; no graph body). `folderId` is the
 containing folder (null = root; see the polymorphic Folders API with `type=workflow`).
@@ -1129,6 +1958,21 @@ the query endpoint supports (SQLite, PostgreSQL, future dialects).
 
 Dashboards can be organized into folders (see **Dashboard folders** below); each
 dashboard carries an optional `folderId` (`null` = root).
+
+### GET `/api/workspaces/:id/dashboards`
+Every dashboard in a workspace, across the connections the caller can open —
+what the home area's **Dashboard** section lists (one request instead of one per
+connection). Newest first. The `config` is summarised rather than returned:
+`widgetCount` and `variableCount` are all the list needs, and a workspace's worth
+of full configs is a lot of JSON for a table that renders no charts.
+
+Membership gates the workspace; each connection is then filtered by connection
+access, so this never shows a dashboard the per-connection route below would
+refuse.
+
+- **200:** `[{ "id", "connectionId", "connectionName", "connectionType", "name", "ts", "folderId", "widgetCount", "variableCount" }]`
+- **403:** `{ "error": "Forbidden" }` — not a member of the workspace.
+- **Example:** `GET http://localhost:3000/api/workspaces/ws-1/dashboards`
 
 ### GET `/api/connections/:id/dashboards`
 List dashboards for a connection (newest first; no config body).
@@ -1547,9 +2391,11 @@ There is no "open session" endpoint — nothing to leak or get out of sync with 
 real sockets. They live in the session store (in-process, or Redis when
 `SESSION_REDIS_URL` is set), which is what makes the count correct across replicas.
 
-**The limit** resolves most-specific-first: the connection's `maxSessions` → the
-workspace's `settings.sessions.maxPerConnection` → `MAX_SESSIONS_PER_CONNECTION`
-→ unlimited. 0 at every level means unlimited (the shipped default). Opening a
+**The limit** resolves most-specific-first: the workspace's
+`settings.sessions.maxPerConnection` → `MAX_SESSIONS_PER_CONNECTION` → unlimited.
+0 at both levels means unlimited (the shipped default). A connection carries no
+override of its own — a cap protects the database server, so it's a workspace
+decision, not one to re-answer per connection. Opening a
 *new* session past the limit fails with `429` (`GET /handshake` reports it as
 `reason: "at_capacity"` instead — see above). Backup/restore are deliberately
 exempt: a scheduled dump must not fail because people are browsing.
@@ -2024,25 +2870,39 @@ Liveness probe. Also reports boot readiness and the running identity.
 | POST   | `/api/connections`                        | Create connection               |
 | PUT    | `/api/connections/:id`                    | Update connection               |
 | DELETE | `/api/connections/:id`                    | Delete connection (+ cascade)   |
-| GET    | `/api/connections/:id/access`             | Read connection access (teams/users) |
+| GET    | `/api/connections/:id/access`             | Read connection access (groups/users) |
+| PUT    | `/api/connections/:id/owner`              | Transfer connection ownership   |
 | PUT    | `/api/connections/:id/access`             | Set connection access (admin)   |
-| GET    | `/api/workspaces/:id/teams`               | List teams (+ member counts)    |
-| POST   | `/api/workspaces/:id/teams`               | Create team (admin)             |
-| PUT    | `/api/workspaces/:id/teams/:teamId`       | Rename team (admin)             |
-| DELETE | `/api/workspaces/:id/teams/:teamId`       | Delete team (admin, cascade)    |
-| GET    | `/api/workspaces/:id/teams/:teamId/members` | List team members             |
-| POST   | `/api/workspaces/:id/teams/:teamId/members` | Add team member (admin)       |
-| DELETE | `/api/workspaces/:id/teams/:teamId/members/:userId` | Remove team member (admin) |
+| GET    | `/api/resource-tree`                      | The visible resource tree, flat |
+| GET    | `/api/resource-tree/catalog`              | Node types + where each role may be granted |
+| GET    | `/api/resource-tree/:id`                  | One node: ancestors, children, grants, your access |
+| POST   | `/api/resource-tree/:id/groups`           | Create a group under this node  |
+| PUT    | `/api/resource-tree/:id`                  | Rename a group                  |
+| PUT    | `/api/resource-tree/:id/move`             | Re-file a node under another group |
+| PUT    | `/api/resource-tree/:id/owner`            | Hand a node over (owner only)   |
+| DELETE | `/api/resource-tree/:id`                  | Delete a group (must be empty)  |
+| GET    | `/api/resource-tree/:id/grants`           | Grants made on this node        |
+| POST   | `/api/resource-tree/:id/grants`           | Grant a role here               |
+| DELETE | `/api/resource-tree/:id/grants/:grantId`  | Revoke a grant                  |
+| GET    | `/api/resource-tree/:id/members`          | Who is inside this group        |
+| POST   | `/api/resource-tree/:id/members`          | Add someone to the group        |
+| DELETE | `/api/resource-tree/:id/members/:userId`  | Remove someone from the group   |
+| GET    | `/api/roles`                              | The instance's role catalog     |
+| GET    | `/api/admin/permissions`                  | The permission catalog (grouped)|
+| POST   | `/api/admin/roles`                        | Create a role                   |
+| PUT    | `/api/admin/roles/:slug`                  | Rename / re-permission a role   |
+| DELETE | `/api/admin/roles/:slug`                  | Delete a custom, unused role    |
 | GET    | `/api/admin/workspaces`                   | Every workspace + its owners    |
 | POST   | `/api/admin/workspaces`                   | Create one, assign an owner     |
 | PUT    | `/api/admin/workspaces/:id`               | Rename a workspace              |
 | DELETE | `/api/admin/workspaces/:id`               | Delete a workspace + contents   |
 | GET    | `/api/admin/workspaces/:id/members`       | Its membership list             |
-| PUT    | `/api/admin/workspaces/:id/members/:uid`  | Grant / revoke ownership        |
+| PUT    | `/api/admin/workspaces/:id/members/:uid`  | Set a member's role             |
 | DELETE | `/api/admin/workspaces/:id/members/:uid`  | Remove a member                 |
 | GET    | `/api/admin/users`                        | Every account on the instance   |
 | POST   | `/api/admin/users`                        | Create an account               |
 | PUT    | `/api/admin/users/:id`                    | Rename / reset password / role  |
+| POST   | `/api/admin/users/:id/unblock`            | Lift a brute-force block        |
 | DELETE | `/api/admin/users/:id`                    | Delete an account               |
 | GET    | `/api/admin/smtp`                         | The mail server + the env layer |
 | PUT    | `/api/admin/smtp`                         | Save the mail server config     |

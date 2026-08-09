@@ -23,8 +23,8 @@
  * A handle belongs to the process that opened it, so the local `handles` map is
  * the authority for releasing one, and the cache is where its record lives.
  * Both are per-process, which is the honest model: another replica's handles
- * aren't ours to count or close. With more than one replica, `maxSessions` is
- * therefore enforced per replica.
+ * aren't ours to count or close. With more than one replica, the session limit
+ * is therefore enforced per replica.
  */
 
 import { randomUUID } from 'crypto'

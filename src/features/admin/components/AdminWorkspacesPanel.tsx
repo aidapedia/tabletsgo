@@ -10,9 +10,12 @@ import SearchInput from '@/shared/ui/form/SearchInput'
 import EmptyState from '@/shared/ui/feedback/EmptyState'
 import TypeToConfirmDialog from '@/shared/ui/feedback/TypeToConfirmDialog'
 import { useToast } from '@/shared/ui/feedback/Toast'
+import Modal from '@/shared/ui/overlay/Modal'
 import DataTable, { type Column } from '@/shared/ui/table/DataTable'
+import { RowAction, RowActions } from '@/shared/ui/table/RowActions'
 import useDataTable from '@/shared/ui/table/useDataTable'
 import { CopyIcon, PlusIcon, TrashIcon } from '@/shared/ui/icons'
+import { listRoles, type Role } from '@/features/workspaces'
 import {
   createWorkspaceAs,
   deleteWorkspaceAs,
@@ -34,13 +37,22 @@ import {
  * workspace's *existence and ownership* — not its contents. There's no way in
  * from here to a connection or a database; handing someone ownership is how
  * work gets done inside one.
+ *
+ * The "new workspace" dialog is controlled (`creating` / `onCreatingChange`) so
+ * the page can put its button in the section header, next to the title — where
+ * ConnectionsPage puts "New connection".
  */
-export default function AdminWorkspacesPanel() {
+export default function AdminWorkspacesPanel({
+  creating,
+  onCreatingChange,
+}: {
+  creating: boolean
+  onCreatingChange: (next: boolean) => void
+}) {
   const toast = useToast()
   const [rows, setRows] = useState<AdminWorkspace[]>([])
   const [loading, setLoading] = useState(true)
   const [query, setQuery] = useState('')
-  const [creating, setCreating] = useState(false)
   const [selected, setSelected] = useState<AdminWorkspace | null>(null)
   const [deleting, setDeleting] = useState<AdminWorkspace | null>(null)
 
@@ -102,20 +114,18 @@ export default function AdminWorkspacesPanel() {
     {
       key: 'actions',
       header: '',
-      width: 40,
+      width: 60,
       align: 'right',
       render: (w) => (
-        <TextButton
-          tone="faint"
-          className="hover:!text-red"
-          aria-label={`Delete ${w.name}`}
-          onClick={(e) => {
-            e.stopPropagation()
-            setDeleting(w)
-          }}
-        >
-          <TrashIcon width={15} height={15} />
-        </TextButton>
+        <RowActions>
+          <RowAction
+            icon={TrashIcon}
+            label="Delete"
+            aria={`Delete ${w.name}`}
+            tone="danger"
+            onClick={() => setDeleting(w)}
+          />
+        </RowActions>
       ),
     },
   ]
@@ -124,11 +134,14 @@ export default function AdminWorkspacesPanel() {
 
   return (
     <div>
-      <div className="mb-4 flex items-center gap-2">
-        <SearchInput className="flex-1" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search workspaces…" />
-        <Button variant="primary" size="sm" className="shrink-0" onClick={() => setCreating(true)}>
-          <PlusIcon width={14} height={14} /> New workspace
-        </Button>
+      {/* Search — bare row, same shape as the connections list. */}
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <SearchInput
+          className="min-w-[220px] flex-1"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search workspaces…"
+        />
       </div>
 
       <DataTable
@@ -136,15 +149,26 @@ export default function AdminWorkspacesPanel() {
         rowKey={(w) => w.id}
         onRowClick={(w) => setSelected(w)}
         loading={loading}
-        empty={<EmptyState>No workspaces yet — create one and hand it to an owner.</EmptyState>}
+        empty={
+          query.trim() ? (
+            <EmptyState>No workspaces match that search.</EmptyState>
+          ) : (
+            <div className="flex flex-col items-center gap-3">
+              <span>No workspaces yet — create one and hand it to an owner.</span>
+              <Button variant="primary" size="sm" icon={PlusIcon} onClick={() => onCreatingChange(true)}>
+                Add new workspace
+              </Button>
+            </div>
+          )
+        }
         {...table}
       />
 
       {creating && (
         <CreateWorkspaceDialog
-          onClose={() => setCreating(false)}
+          onClose={() => onCreatingChange(false)}
           onCreated={() => {
-            setCreating(false)
+            onCreatingChange(false)
             load()
           }}
         />
@@ -166,22 +190,38 @@ export default function AdminWorkspacesPanel() {
   )
 }
 
-// A workspace needs an owner to be useful, so the owner's email is part of
-// creating one rather than a follow-up step. An unknown address gets a pending
-// account plus an invite link.
+// A workspace needs an owner to be useful, so the owner is part of creating one
+// rather than a follow-up step. The owner is picked from the accounts that
+// already exist — creating a person as a side effect of creating a workspace
+// made accounts appear that nobody had reviewed, so the admin creates the user
+// on the Users tab first. A picked account may still be `pending`, in which
+// case the server hands back their invite link.
 function CreateWorkspaceDialog({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
   const toast = useToast()
   const [name, setName] = useState('')
-  const [ownerEmail, setOwnerEmail] = useState('')
+  const [ownerId, setOwnerId] = useState('')
+  const [users, setUsers] = useState<AdminUser[]>([])
+  const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [inviteLink, setInviteLink] = useState<string | null>(null)
 
+  useEffect(() => {
+    listUsers().then((list) => {
+      setUsers(list)
+      setLoading(false)
+    })
+  }, [])
+
+  // Instance admins hold no workspace membership, so they can't own one.
+  const candidates = users.filter((u) => u.role !== 'admin')
+  const owner = candidates.find((u) => u.id === ownerId)
+
   const submit = async (e) => {
     e.preventDefault()
-    if (!name.trim() || !ownerEmail.trim()) return
+    if (!name.trim() || !owner) return
     setSaving(true)
     try {
-      const { inviteLink: link, emailed } = await createWorkspaceAs(name.trim(), ownerEmail.trim())
+      const { inviteLink: link, emailed } = await createWorkspaceAs(name.trim(), owner.email)
       if (link) {
         setInviteLink(link)
         toast.success(emailed ? 'Workspace created. Invite emailed to the owner.' : 'Workspace created — share the invite link.')
@@ -201,8 +241,7 @@ function CreateWorkspaceDialog({ onClose, onCreated }: { onClose: () => void; on
       {inviteLink ? (
         <div>
           <p className="text-[12px] leading-relaxed text-ink-dim">
-            The owner doesn’t have an account yet. Send them this link so they can set a password and take over the
-            workspace.
+            The owner hasn’t set a password yet. Send them this link so they can set one and take over the workspace.
           </p>
           <div className="mt-3 flex items-center gap-2 rounded-soft border border-edge bg-elevated px-2.5 py-2">
             <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-dim">{inviteLink}</span>
@@ -229,16 +268,38 @@ function CreateWorkspaceDialog({ onClose, onCreated }: { onClose: () => void; on
             <Input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Acme Production" />
           </FormField>
           <FormField
-            label="Owner email"
-            hint="They manage the workspace: members, teams and connections. Unknown addresses get an invite."
+            label="Owner"
+            hint="They manage the workspace: members, groups and connections. Search by name or email."
           >
-            <Input type="email" value={ownerEmail} onChange={(e) => setOwnerEmail(e.target.value)} placeholder="owner@example.com" />
+            {loading ? (
+              <div className={`${controlClass} text-ink-faint`}>Loading accounts…</div>
+            ) : candidates.length === 0 ? (
+              <p className="rounded-soft border border-dashed border-edge-strong px-3 py-4 text-center text-[11px] text-ink-dim">
+                No accounts yet — create the owner's user on the Users tab first, then come back.
+              </p>
+            ) : (
+              <Select
+                portal // the modal body scrolls, which would clip the menu
+                className={controlClass}
+                value={ownerId}
+                placeholder="Search people…"
+                searchable
+                searchPlaceholder="Name or email…"
+                options={candidates.map((u) => ({
+                  value: u.id,
+                  label: u.name || u.email,
+                  hint: u.name ? u.email : undefined,
+                  keywords: u.email,
+                }))}
+                onChange={setOwnerId}
+              />
+            )}
           </FormField>
           <div className="mt-5 flex justify-end gap-2">
             <Button size="sm" onClick={onClose} type="button">
               Cancel
             </Button>
-            <Button variant="primary" size="sm" type="submit" disabled={saving}>
+            <Button variant="primary" size="sm" type="submit" disabled={saving || !owner || !name.trim()}>
               {saving ? 'Creating…' : 'Create workspace'}
             </Button>
           </div>
@@ -265,22 +326,29 @@ function OwnershipDialog({
   // can be pulled into it — without this the dialog is a dead end for a
   // workspace with no members (nothing to promote).
   const [users, setUsers] = useState<AdminUser[]>([])
+  // The instance's role catalog — an admin may have defined more than the two
+  // builtins, and this dialog assigns any of them.
+  const [roles, setRoles] = useState<Role[]>([])
   const [adding, setAdding] = useState('')
-  const [addRole, setAddRole] = useState<AdminWorkspaceMember['role']>('member')
+  const [addRole, setAddRole] = useState('member')
   const [name, setName] = useState(workspace.name)
   const [loading, setLoading] = useState(true)
 
   const load = () => {
     setLoading(true)
-    Promise.all([listWorkspaceMembersAs(workspace.id), listUsers()]).then(([m, u]) => {
+    Promise.all([listWorkspaceMembersAs(workspace.id), listUsers(), listRoles()]).then(([m, u, r]) => {
       setMembers(m)
       setUsers(u)
+      setRoles(r)
       setLoading(false)
     })
   }
   useEffect(load, [workspace.id])
 
-  const ownerCount = members.filter((m) => m.role === 'owner').length
+  // "Owner" is whoever holds workspace.manage, which the server resolves — a
+  // custom role can carry it too, so this never compares a role name.
+  const ownerCount = members.filter((m) => m.isOwner).length
+  const roleOptions = roles.map((r) => ({ value: r.slug, label: r.name }))
 
   // Instance admins can't join a workspace, and existing members are already
   // listed below with their own role control.
@@ -296,7 +364,7 @@ function OwnershipDialog({
       setAddRole('member')
       load()
       onChanged()
-      toast.success(`${who?.name || who?.email || 'They'} joined as ${addRole}.`)
+      toast.success(`${who?.name || who?.email || 'They'} joined as ${roles.find((r) => r.slug === addRole)?.name || addRole}.`)
     } catch (err) {
       toast.error(err.message)
     }
@@ -314,11 +382,12 @@ function OwnershipDialog({
     }
   }
 
-  const changeRole = async (m: AdminWorkspaceMember, role: AdminWorkspaceMember['role']) => {
+  const changeRole = async (m: AdminWorkspaceMember, role: string) => {
     const prev = members
     setMembers((list) => list.map((x) => (x.userId === m.userId ? { ...x, role } : x)))
     try {
       await setWorkspaceRoleAs(workspace.id, m.userId, role)
+      load() // isOwner/permissions for the new role come from the server
       onChanged()
     } catch (err) {
       setMembers(prev)
@@ -366,15 +435,12 @@ function OwnershipDialog({
               {m.status === 'pending' && <Badge tone="amber" className="shrink-0">pending</Badge>}
               <Select
                 portal // the member list scrolls (max-h + overflow-y-auto), which would clip the menu
-                className={`${controlClass} !w-[104px] shrink-0 !py-1`}
+                className={`${controlClass} !w-[132px] shrink-0 !py-1`}
                 value={m.role}
                 // The workspace must keep at least one owner.
-                disabled={m.role === 'owner' && ownerCount <= 1}
-                options={[
-                  { value: 'owner', label: 'Owner' },
-                  { value: 'member', label: 'Member' },
-                ]}
-                onChange={(role) => changeRole(m, role as AdminWorkspaceMember['role'])}
+                disabled={!!m.isOwner && ownerCount <= 1}
+                options={roleOptions}
+                onChange={(role) => changeRole(m, role)}
               />
               <TextButton
                 tone="faint"
@@ -407,20 +473,26 @@ function OwnershipDialog({
                   width by stylesheet order, not class order — same reason the schema
                   designer's selects use `!w-auto`. */}
               <Select
+                portal // the modal body scrolls, which would clip the menu
                 className={`${controlClass} !w-auto min-w-0 flex-1`}
                 value={adding}
                 placeholder="Add someone…"
-                options={candidates.map((u) => ({ value: u.id, label: u.name ? `${u.name} · ${u.email}` : u.email }))}
+                searchable
+                searchPlaceholder="Name or email…"
+                options={candidates.map((u) => ({
+                  value: u.id,
+                  label: u.name || u.email,
+                  hint: u.name ? u.email : undefined,
+                  keywords: u.email,
+                }))}
                 onChange={setAdding}
               />
               <Select
-                className={`${controlClass} !w-[104px] shrink-0`}
+                portal
+                className={`${controlClass} !w-[132px] shrink-0`}
                 value={addRole}
-                options={[
-                  { value: 'member', label: 'Member' },
-                  { value: 'owner', label: 'Owner' },
-                ]}
-                onChange={(r) => setAddRole(r as AdminWorkspaceMember['role'])}
+                options={roleOptions}
+                onChange={setAddRole}
               />
               <Button variant="primary" size="sm" className="shrink-0" disabled={!adding} onClick={add}>
                 Add
@@ -439,20 +511,3 @@ function OwnershipDialog({
   )
 }
 
-// Local modal shell — the admin dialogs are plain forms, not slide-overs.
-function Modal({ title, children, onClose }: { title: string; children: React.ReactNode; onClose: () => void }) {
-  return (
-    <div
-      className="fixed inset-0 z-[60] flex animate-fade items-center justify-center bg-black/60 p-6 backdrop-blur-[3px]"
-      onMouseDown={onClose}
-    >
-      <div
-        className="w-full max-w-[460px] animate-pop rounded-[16px] border border-edge-strong bg-panel p-5"
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        <h3 className="mb-4 text-sm font-bold text-ink">{title}</h3>
-        {children}
-      </div>
-    </div>
-  )
-}

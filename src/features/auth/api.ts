@@ -1,12 +1,18 @@
 import { request, safeRequest } from '@/shared/api/request'
 
-// First-run status — whether the setup wizard should be shown.
+// First-run status. `needsSetup` is "this instance has no administrator" — not
+// "it has no users": an install migrated from before the system role existed has
+// accounts but nobody who can reach the admin area. `hasUsers` separates the two,
+// because the wizard asks for different things in each case.
 export async function getSetupStatus() {
-  return safeRequest<{ needsSetup: boolean }>('/setup', { needsSetup: false })
+  return safeRequest<{ needsSetup: boolean; hasUsers: boolean }>('/setup', { needsSetup: false, hasUsers: true })
 }
 
-// Create the admin account + first workspace. Returns { user, token }.
-export async function submitSetup(payload: { email: string; password: string; name?: string; workspace: string }) {
+// Create the instance administrator — no workspace: an admin holds no workspace
+// access, so the first workspace is theirs to create once signed in. On an
+// instance that already has accounts the credentials must match one of them and
+// that account is promoted instead. Returns { user, token }.
+export async function submitSetup(payload: { email: string; password: string; name?: string }) {
   return request('/setup', { method: 'POST', body: payload })
 }
 
@@ -16,6 +22,21 @@ export async function getInvite(token: string) {
 }
 export async function acceptInvite(token: string, payload: { name: string; password: string }) {
   return request(`/invite/${encodeURIComponent(token)}/accept`, { method: 'POST', body: payload })
+}
+
+// ---- The signed-in user's own account ----
+// Self-service counterparts of the admin user routes: they always act on the
+// caller. Email isn't editable here — it's the sign-in identity.
+export async function getMe() {
+  return request<{ user: any }>('/auth/me')
+}
+export async function updateProfile(payload: { name: string }) {
+  return request<{ user: any }>('/auth/profile', { method: 'PATCH', body: payload })
+}
+// Resolves to a fresh { user, token }: changing the password invalidates every
+// session, so the caller must re-persist the new token to stay signed in.
+export async function changePassword(payload: { currentPassword: string; newPassword: string }) {
+  return request<{ user: any; token: string }>('/auth/password', { method: 'POST', body: payload })
 }
 
 // Password reset. `forgotPassword` always resolves (never reveals if the email

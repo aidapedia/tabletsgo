@@ -1,5 +1,5 @@
 import { request, safeRequest } from '@/shared/api/request'
-import type { WorkspaceRole } from '@/features/workspaces'
+import type { Permission, WorkspaceRole } from '@/features/workspaces'
 
 /**
  * Instance administration — the `/api/admin/*` surface, open only to accounts
@@ -17,6 +17,11 @@ export type AdminWorkspaceMember = {
   email: string
   name: string
   role: WorkspaceRole
+  // What this person's role grants, and whether it carries `workspace.manage`
+  // (which is what "owner" means now that roles are configurable). Resolved
+  // server-side so nothing here has to interpret a role slug.
+  permissions?: Permission[]
+  isOwner?: boolean
   status: 'active' | 'pending'
   systemRole?: SystemRole
   createdAt?: number
@@ -27,18 +32,32 @@ export type AdminWorkspace = {
   name: string
   createdAt?: number
   memberCount: number
-  teamCount: number
+  groupCount: number
   connectionCount: number
   owners: AdminWorkspaceMember[]
 }
 
+/**
+ * `status` is the invite lifecycle ('pending' until they set a password);
+ * `blocked` is separate — the brute-force guard blocked the account after
+ * `failedAttempts` bad sign-ins. `blockedUntil` is null for the ordinary block,
+ * which only an admin lifts; an instance admin is only ever thrown a cooldown,
+ * so theirs always carries a timestamp.
+ */
 export type AdminUser = {
   id: string
   email: string
   name: string
   role: SystemRole
   status: 'active' | 'pending'
-  workspaces: { id: string; name: string; role: WorkspaceRole }[]
+  blocked: boolean
+  blockedAt: number | null
+  blockedUntil: number | null
+  failedAttempts: number
+  // `roleName` is the role's display name and `isOwner` whether it carries
+  // workspace.manage — both resolved server-side, since a role slug means
+  // whatever an admin has defined it to mean.
+  workspaces: { id: string; name: string; role: WorkspaceRole; roleName?: string; isOwner?: boolean }[]
 }
 
 // ---- Workspaces ----
@@ -47,8 +66,8 @@ export async function listAllWorkspaces() {
   return safeRequest<AdminWorkspace[]>('/admin/workspaces', [])
 }
 
-// `ownerEmail` may be an unknown address — the server then creates a pending
-// account and returns an invite link.
+// `ownerEmail` must belong to an account that already exists — the server
+// refuses an unknown address. A `pending` owner gets an invite link back.
 export async function createWorkspaceAs(name: string, ownerEmail: string) {
   return request<{ workspace: AdminWorkspace; inviteLink: string | null; emailed: boolean }>('/admin/workspaces', {
     method: 'POST',
@@ -94,6 +113,12 @@ export async function updateUser(id: string, patch: { name?: string; password?: 
 
 export async function deleteUser(id: string) {
   return request(`/admin/users/${id}`, { method: 'DELETE' })
+}
+
+// Lift a brute-force block and clear the failed-attempt counter. Setting a new
+// password does the same, so this is the "it was really them" path.
+export async function unblockUser(id: string) {
+  return request<AdminUser>(`/admin/users/${id}/unblock`, { method: 'POST' })
 }
 
 // ---- Global email (SMTP) ----

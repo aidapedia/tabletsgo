@@ -9,9 +9,15 @@
  *            workspace membership, so `memberRole` returns null for them and
  *            every workspace-scoped guard below denies them. Instance
  *            administration carries no data access, by design.
- *   workspace `workspace_members.role` — 'owner' | 'member'. Owners manage
- *            their own workspace (members, teams, settings, connections);
- *            members only use the connections they've been granted.
+ *   workspace  the grant on the workspace's node — a role *slug* from `roles`
+ *            (server/permissions.js). What it grants is data an instance admin
+ *            edits, so this tier is asked about by permission
+ *            (`requirePermission(req, res, wsId, 'members.manage')`) rather than
+ *            by name. 'owner' and 'member' are seeded builtins.
+ *
+ * The system tier is deliberately NOT part of that model: making it configurable
+ * would only be a way to grant an instance admin the workspace data they are
+ * meant not to have.
  *
  * A login is a bearer token in the session store (server/sessions): a row in
  * the meta DB's `sessions` table, read through an in-process cache, so it
@@ -25,6 +31,16 @@
 import { randomUUID } from 'crypto'
 import { createAuthSession, destroyAuthSession, readAuthSession } from './sessions/index.js'
 import { meta } from './meta.js'
+import { OWNER_PERMISSION } from './permissions.js'
+import {
+  groupIdsFor,
+  isNodeMember,
+  memberOfGroupAbove,
+  nodeFor,
+  permissionsAtResource,
+  permissionsInWorkspace,
+  principalGrantRole,
+} from './resource-tree.js'
 
 // ---- Sessions ----
 export const createSession = (userId, context) => createAuthSession(userId, context)
@@ -99,26 +115,72 @@ export const requireSystemAdmin = (req, res) => {
  * 'admin' is the pre-v8 spelling of 'owner'; normalizing here means a DB that
  * has been rolled back and forward again never exposes a mixed vocabulary.
  */
-export const memberRole = (workspaceId, userId) => {
-  const m = meta.prepare('SELECT role FROM workspace_members WHERE workspace_id = ? AND user_id = ?').get(workspaceId, userId)
-  if (!m) return null
-  return m.role === 'admin' ? 'owner' : m.role
+export const isMember = (workspaceId, userId) => {
+  if (!workspaceId || !userId) return false
+  const node = nodeFor('workspace', workspaceId)
+  return !!node && isNodeMember(node.id, userId)
 }
 
-export const isWorkspaceOwner = (workspaceId, userId) => memberRole(workspaceId, userId) === 'owner'
+/**
+ * The role slug this member holds in this workspace, or null if they aren't one.
+ *
+ * Belonging and role are now two different facts on the same node: the roster
+ * (`node_members`) says who is in the workspace, the grant sitting on that node
+ * says what they may do. So this reads the grant, and **`isMember` is what
+ * answers "do they belong"** — a member holding no grant is a real state (sees
+ * everything, may do nothing) and would read as `null` here.
+ */
+export const memberRole = (workspaceId, userId) => {
+  const node = nodeFor('workspace', workspaceId)
+  if (!node || !isNodeMember(node.id, userId)) return null
+  const slug = principalGrantRole(node.id, 'user', userId)
+  return slug === 'admin' ? 'owner' : slug
+}
 
 /**
- * Guard for anything that changes a workspace or what's in it — members, teams,
- * settings, connections, storage destinations. Sends the response and returns
- * null when the caller isn't an owner, so routes read
- * `if (!requireOwner(req, res, id)) return`.
+ * Everything the caller may do in this workspace.
+ *
+ * Resolved through the resource tree (server/resource-tree.js), not by looking up
+ * a role column: the answer is the union of every grant on the workspace's node
+ * and its ancestors, plus everything at all if the caller owns one of them. A
+ * plain member gets exactly what their membership role always gave — the
+ * membership is mirrored into a grant on that node — while a grant made higher up
+ * or lower down now counts too, which is the whole point of the tree.
  */
-export const requireOwner = (req, res, workspaceId) => {
+export const permissionsIn = (workspaceId, userId) => (workspaceId ? permissionsInWorkspace(workspaceId, userId) : new Set())
+
+// The permission check. `workspaceId` null/undefined ⇒ false, so a resource with
+// no workspace never accidentally authorizes anyone.
+export const can = (workspaceId, userId, permission) => permissionsIn(workspaceId, userId).has(permission)
+
+/**
+ * "Owner" is no longer a role name, it's a capability: whoever holds
+ * `workspace.manage`. Keeping the concept behind this helper is what lets a
+ * renamed or custom role satisfy the last-owner invariant just like the built-in
+ * `owner` does.
+ */
+export const isWorkspaceOwner = (workspaceId, userId) => can(workspaceId, userId, OWNER_PERMISSION)
+
+/**
+ * The workspace-tier guard. Routes read
+ * `if (!requirePermission(req, res, id, 'teams.manage')) return` — a route asks
+ * for the capability it needs and never compares a role name, so redefining what
+ * a role grants changes who may call it without touching the route.
+ *
+ * The 403 distinguishes "you're in this workspace but may not do this" from
+ * "you're not in this workspace at all", which is what the UI needs to tell a
+ * member to ask an owner versus telling them the workspace doesn't exist.
+ */
+export const requirePermission = (req, res, workspaceId, permission) => {
   const user = requireAuth(req, res)
   if (!user) return null
-  const role = memberRole(workspaceId, user.id)
-  if (role !== 'owner') {
-    res.status(403).json({ error: role ? 'Only a workspace owner can do that.' : 'Forbidden' })
+  if (!permissionsIn(workspaceId, user.id).has(permission)) {
+    // The membership is what distinguishes "you're in this workspace but may not
+    // do this" from "you're not in this workspace at all" — the tree can grant
+    // someone a permission here without making them a member, and either way the
+    // first message is the one that tells them to go ask an owner.
+    const inside = isMember(workspaceId, user.id)
+    res.status(403).json({ error: inside ? 'You do not have permission to do that.' : 'Forbidden', permission })
     return null
   }
   return user
@@ -128,70 +190,99 @@ export const requireOwner = (req, res, workspaceId) => {
 export const requireMember = (req, res, workspaceId) => {
   const user = requireAuth(req, res)
   if (!user) return null
-  if (!memberRole(workspaceId, user.id)) {
+  if (!isMember(workspaceId, user.id)) {
     res.status(403).json({ error: 'Forbidden' })
     return null
   }
   return user
 }
 
+/**
+ * The workspace as this user sees it. `permissions` ships with it so the client
+ * can hide what the caller can't do from one payload instead of re-deriving the
+ * rules — the server still enforces every one of them.
+ */
 export const workspaceForUser = (id, userId) => {
   const role = memberRole(id, userId)
   if (!role) return null
   const w = meta.prepare('SELECT id, name, created_at FROM workspaces WHERE id = ?').get(id)
-  return w ? { id: w.id, name: w.name, role, createdAt: w.created_at } : null
+  // `role` is still the membership's role — what the members UI shows — but
+  // `permissions` is the resolved answer, which may be wider if the tree grants
+  // them something above or beside their membership.
+  return w ? { id: w.id, name: w.name, role, permissions: [...permissionsIn(id, userId)], createdAt: w.created_at } : null
 }
 
 export const getUserByEmail = (email) =>
   meta.prepare('SELECT id, username, name, role, status FROM users WHERE username = ?').get(email)
 
-// ---- Team / connection-access helpers ----
-// Team ids the user belongs to within a given workspace.
-export const teamIdsForUser = (workspaceId, userId) =>
-  meta
-    .prepare(
-      `SELECT tm.team_id AS id FROM team_members tm JOIN teams t ON t.id = tm.team_id
-       WHERE t.workspace_id = ? AND tm.user_id = ?`
-    )
-    .all(workspaceId, userId)
-    .map((r) => r.id)
+// ---- Connection-access helpers ----
+//
+// A connection's access list names the same principals a grant does — a user, or
+// a group node standing for its roster. It stays separate from the grant tables
+// on purpose: *opening* a database is not a permission (CLAUDE.md), it is a
+// per-resource question, so there is no `connections.query`-shaped key.
 
-// Assigned principals for a connection, split into team/user id arrays.
+// Assigned principals for a connection, split into group/user id arrays.
 export const connectionAccess = (connectionId) => {
   const rows = meta.prepare('SELECT principal_type, principal_id FROM connection_access WHERE connection_id = ?').all(connectionId)
   return {
-    teams: rows.filter((r) => r.principal_type === 'team').map((r) => r.principal_id),
+    groups: rows.filter((r) => r.principal_type === 'node').map((r) => r.principal_id),
     users: rows.filter((r) => r.principal_type === 'user').map((r) => r.principal_id),
   }
 }
 
 // Replace a connection's access list atomically. Empty arrays => open to all members.
-export const setConnectionAccess = (connectionId, { teams = [], users = [] }) => {
+export const setConnectionAccess = (connectionId, { groups = [], users = [] }) => {
   const now = Date.now()
   const tx = meta.transaction(() => {
     meta.prepare('DELETE FROM connection_access WHERE connection_id = ?').run(connectionId)
     const ins = meta.prepare('INSERT OR IGNORE INTO connection_access (id, connection_id, principal_type, principal_id, created_at) VALUES (?, ?, ?, ?, ?)')
-    for (const t of teams) ins.run(randomUUID(), connectionId, 'team', t, now)
+    for (const g of groups) ins.run(randomUUID(), connectionId, 'node', g, now)
     for (const u of users) ins.run(randomUUID(), connectionId, 'user', u, now)
   })
   tx()
 }
 
-// Can this user see/open the connection? Owners always can; an unassigned
-// connection is open to every workspace member; otherwise the user must be a
-// listed individual or belong to a listed team.
+// Can this user open the connection? Membership in the workspace is the floor —
+// without it nothing below is reached. Above that, four ways in, in the order the
+// body tests them: `connections.manage` resolved at this connection, owning it,
+// sitting on the roster of a group it is filed under, or being named on its
+// access list (as a person, or through a group listed there). An empty access
+// list is not "everyone" — with none of the four, the answer is no.
 export const userCanAccessConnection = (conn, userId) => {
   if (!conn) return false
   if (!conn.workspaceId) return true
-  const role = memberRole(conn.workspaceId, userId)
-  if (!role) return false
-  if (role === 'owner') return true
-  const { teams, users } = connectionAccess(conn.id)
-  if (teams.length === 0 && users.length === 0) return true
+  // Membership gates data access, and deliberately still does after the resource
+  // tree took over permissions: an instance admin owns the application node and
+  // so resolves to every permission on every connection, but they hold no
+  // membership, and instance administration is meant to carry no data access
+  // (CLAUDE.md "AUTH MODEL"). Removing this line is what would hand every admin a
+  // key to every database.
+  if (!isMember(conn.workspaceId, userId)) return false
+  // Resolved through the tree, so `connections.manage` granted on this one
+  // connection's node opens this one connection — not the whole workspace.
+  if (permissionsAtResource('connection', conn.id, userId).has('connections.manage')) return true
+  if (conn.ownerId && conn.ownerId === userId) return true
+  // Where a connection is filed is itself a statement about who may use it: the
+  // people on the roster of a group it sits under can open it, without a row in
+  // the access list. That is what a group is for — Company A holds Team
+  // Promotions and Team Orders, each staffed differently, and the connections
+  // filed under a team are the team's. Only a `group` ancestor counts, never the
+  // workspace node (whose roster is everyone) — see `memberOfGroupAbove`.
+  if (memberOfGroupAbove(nodeFor('connection', conn.id), userId)) return true
+  // An empty list means nobody — not everybody. Seeing a connection and being
+  // able to open it are different questions: every member sees every connection
+  // in their workspace (their membership grant reaches the whole subtree), and
+  // opening one is granted per connection. Meta migration v16 wrote today's
+  // implicit "open to all members" down explicitly first, as the workspace node,
+  // so no existing connection lost access when the default flipped.
+  const { groups, users } = connectionAccess(conn.id)
   if (users.includes(userId)) return true
-  if (teams.length === 0) return false
-  const myTeams = new Set(teamIdsForUser(conn.workspaceId, userId))
-  return teams.some((t) => myTeams.has(t))
+  if (!groups.length) return false
+  // A group principal may be the workspace node itself, which names exactly
+  // "everyone in this workspace" — the roster lookup answers both the same way.
+  const mine = new Set(groupIdsFor(userId))
+  return groups.some((g) => mine.has(g))
 }
 
 // Absolute base URL of the frontend, for building invite links.

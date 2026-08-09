@@ -1,11 +1,16 @@
 /**
  * How many sessions a connection may hold at once.
  *
- * Three levels, most specific first: the connection's own `maxSessions`, the
- * workspace default (`settings.sessions.maxPerConnection`), then the
- * instance-wide MAX_SESSIONS_PER_CONNECTION env fallback. 0 (or unset) at every
- * level means unlimited — that's the shipped default, so nothing changes for an
- * install that never configures a limit.
+ * Two levels, most specific first: the workspace default
+ * (`settings.sessions.maxPerConnection`), then the instance-wide
+ * MAX_SESSIONS_PER_CONNECTION env fallback. 0 (or unset) at both levels means
+ * unlimited — that's the shipped default, so nothing changes for an install
+ * that never configures a limit.
+ *
+ * There is deliberately no per-connection override: a cap protects the database
+ * server, and who may set one is a workspace-owner decision, not something to
+ * re-answer on every connection. (`connections.max_sessions` still exists as a
+ * column — migrations are additive-only — but nothing reads it.)
  */
 
 import { MAX_SESSIONS_PER_CONNECTION } from '../config.js'
@@ -27,11 +32,9 @@ export function workspaceMaxSessions(workspaceId) {
 /**
  * The effective limit for a connection: `{ max, source }` where `max` 0 means
  * unlimited. `source` is what the UI shows next to the number so a user can
- * tell an inherited limit from one set on the connection itself.
+ * tell which level the limit came from.
  */
 export function resolveMaxSessions(conn) {
-  const own = positive(conn?.maxSessions)
-  if (own) return { max: own, source: 'connection' }
   const ws = workspaceMaxSessions(conn?.workspaceId)
   if (ws) return { max: ws, source: 'workspace' }
   const instance = positive(MAX_SESSIONS_PER_CONNECTION)

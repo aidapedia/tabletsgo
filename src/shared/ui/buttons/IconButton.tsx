@@ -21,7 +21,7 @@ type IconButtonProps = {
 export default function IconButton({ active = false, size = 'md', className = '', children, ...props }: IconButtonProps) {
   return (
     <button
-      className={`flex items-center justify-center ${SIZES[size]} ${
+      className={`flex items-center justify-center disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent ${SIZES[size]} ${
         active ? 'bg-elevated text-ink' : 'text-ink-dim hover:bg-elevated hover:text-ink'
       } ${className}`}
       {...props}

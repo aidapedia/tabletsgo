@@ -1,5 +1,5 @@
 import { AdminSmtpPanel } from '@/features/admin'
-import { Section } from '@/pages/home/ui'
+import { Narrow, Section } from '@/pages/home/ui'
 
 /**
  * `/admin/email` — the instance-wide mail server.
@@ -14,9 +14,12 @@ export default function AdminEmailPage() {
     <Section
       title="Email"
       desc="The mail server this instance sends from. Every workspace inherits it unless its owner configures one of their own."
-      max={760}
     >
-      <AdminSmtpPanel />
+      {/* The page spans the same container as every other section; only the
+          form column is capped, so the header still lines up with the rest. */}
+      <Narrow>
+        <AdminSmtpPanel />
+      </Narrow>
     </Section>
   )
 }

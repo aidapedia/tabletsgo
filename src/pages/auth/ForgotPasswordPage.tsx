@@ -51,7 +51,7 @@ export default function ForgotPasswordPage() {
           <Form onSubmit={handleSubmit}>
             <h2 className="text-[20px] font-bold">Reset your password</h2>
             <p className="mt-1.5 mb-6 text-[12px] text-ink-dim">Enter your account email and we'll send you a reset link.</p>
-            <FormField label="Email" className="mb-6">
+            <FormField label="Email" className="!mb-6">
               <Input
                 type="email"
                 autoComplete="username"

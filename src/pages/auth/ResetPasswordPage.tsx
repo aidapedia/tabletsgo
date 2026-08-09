@@ -79,7 +79,7 @@ export default function ResetPasswordPage() {
         <div className="mb-[18px] rounded-soft border border-red/25 bg-red/10 px-3.5 py-2.5 text-[11px] text-[#ff9b9b]">{error}</div>
       )}
 
-      <FormField label="New password" className="mb-6">
+      <FormField label="New password" className="!mb-6">
         <PasswordInput
           autoComplete="new-password"
           placeholder="••••••••"

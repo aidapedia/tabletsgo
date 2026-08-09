@@ -20,10 +20,10 @@ services:
       # to start without it. Generate one with:
       #   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
       - ENCRYPTION_KEY=${ENCRYPTION_KEY:-}
-      # Optional admin pre-seed — leave unset to use the in-browser setup wizard.
+      # Optional admin pre-seed (the admin account only, no workspace) — leave
+      # unset to use the in-browser setup wizard.
       - ADMIN_USERNAME=${ADMIN_USERNAME:-}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
-      - WORKSPACE_NAME=${WORKSPACE_NAME:-}
       # Optional SMTP for member-invite emails — the fallback under the mail
       # server an admin configures in Administration > Email (that one wins).
       - SMTP_HOST=${SMTP_HOST:-}
@@ -44,6 +44,15 @@ services:
       - SESSION_TTL_MS=${SESSION_TTL_MS:-}
       - SESSION_IDLE_TTL_MS=${SESSION_IDLE_TTL_MS:-}
       - MAX_SESSIONS_PER_CONNECTION=${MAX_SESSIONS_PER_CONNECTION:-}
+      # Sign-in brute-force protection: how many consecutive failures block an
+      # account, the window they must fall in, and how long the block lasts
+      # (0 = until an instance admin lifts it in Administration > Users). An
+      # instance admin is never blocked indefinitely — they get the self-expiring
+      # cooldown instead, so the instance can't be locked out on purpose.
+      - LOGIN_MAX_ATTEMPTS=${LOGIN_MAX_ATTEMPTS:-}
+      - LOGIN_ATTEMPT_WINDOW_MS=${LOGIN_ATTEMPT_WINDOW_MS:-}
+      - LOGIN_LOCKOUT_MS=${LOGIN_LOCKOUT_MS:-}
+      - LOGIN_ADMIN_COOLDOWN_MS=${LOGIN_ADMIN_COOLDOWN_MS:-}
       # In-app update checker. UPDATE_IMAGE/UPDATE_REPO default to the official
       # image + repo; override only for a fork. One-click apply needs the Docker
       # socket mounted (see the volumes section) — otherwise the wizard shows the

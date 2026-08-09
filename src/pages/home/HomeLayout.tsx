@@ -1,39 +1,96 @@
-import { useState } from 'react'
+import { useState, type MouseEvent } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/features/auth'
 import { WorkspaceSwitcher } from '@/features/workspaces'
 import { UpdateBanner } from '@/features/system-update'
 import NavItem from '@/shared/ui/navigation/NavItem'
 import IconButton from '@/shared/ui/buttons/IconButton'
-import { BellIcon, BuildingIcon, CloudIcon, DatabaseIcon, GridIcon, Logo, LogoutIcon, MailIcon, MenuIcon, SettingsIcon, ShieldIcon, UsersIcon } from '@/shared/ui/icons'
+import { BellIcon, BuildingIcon, CloudIcon, DatabaseIcon, GridIcon, HomeIcon, Logo, LogoutIcon, MailIcon, MenuIcon, SettingsIcon, ShieldIcon, TreeIcon, UsersIcon, WorkflowIcon } from '@/shared/ui/icons'
 
-// Sidebar navigation model — one clickable item per section. Each section is its
-// own route; the id doubles as the path segment (`dashboard` → `/`). Integration
-// and Notification live as tabs under the Integrations section.
-const NAV = [
-  { id: 'dashboard', label: 'Dashboard', Icon: GridIcon, path: '/' },
-  { id: 'connections', label: 'Connection', Icon: DatabaseIcon, path: '/connections' },
-  { id: 'storage', label: 'S3 Storage', Icon: CloudIcon, path: '/storage' },
-  { id: 'workspace', label: 'Workspace', Icon: BuildingIcon, path: '/workspace' },
-  { id: 'notifications', label: 'Notification', Icon: BellIcon, path: '/notifications' },
-  { id: 'settings', label: 'Setting', Icon: SettingsIcon, path: '/settings' },
-] as const
+/**
+ * Sidebar navigation model — a pinned row plus titled groups.
+ *
+ * `pinned` is the section that answers "where am I" rather than "what do I
+ * work on", so it sits above the group headers with no title of its own.
+ * Groups below it read as: what the workspace holds, how the workspace is run,
+ * and the account. Every group earns its header — a one-item group is a sign
+ * the item belongs in a neighbouring one.
+ *
+ * `path` is the section's own address and doubles as the active-state test: a
+ * row lights up for its path *and everything under it*, so `/connections/42`
+ * and `/connections/42/edit` still read as "Connection". `exact` opts out of
+ * that for the two paths that prefix their siblings (`/` and `/admin`).
+ */
+const NAV = {
+  pinned: [{ label: 'Home', Icon: HomeIcon, path: '/', exact: true }],
+  groups: [
+    {
+      group: 'Resources',
+      items: [
+        { label: 'Connection', Icon: DatabaseIcon, path: '/connections' },
+        { label: 'Dashboard', Icon: GridIcon, path: '/dashboards' },
+        { label: 'Workflow', Icon: WorkflowIcon, path: '/workflows' },
+        { label: 'S3 Storage', Icon: CloudIcon, path: '/storage' },
+        { label: 'Resource Tree', Icon: TreeIcon, path: '/resource-tree' },
+      ],
+    },
+    {
+      group: 'Workspace',
+      items: [
+        { label: 'General', Icon: BuildingIcon, path: '/workspace' },
+        { label: 'Member', Icon: UsersIcon, path: '/members' },
+        { label: 'Notification', Icon: BellIcon, path: '/notifications' },
+      ],
+    },
+    {
+      group: 'Account',
+      items: [{ label: 'Setting', Icon: SettingsIcon, path: '/settings' }],
+    },
+  ],
+}
 
 // An instance admin belongs to no workspace, so none of the sections above have
-// anything to show them — they get their own three (workspaces, accounts and
-// the instance-wide mail server), plus personal settings.
-const ADMIN_NAV = [
-  { id: 'admin', label: 'Workspaces', Icon: BuildingIcon, path: '/admin' },
-  { id: 'users', label: 'Users', Icon: UsersIcon, path: '/admin/users' },
-  { id: 'email', label: 'Email', Icon: MailIcon, path: '/admin/email' },
-  { id: 'settings', label: 'Setting', Icon: SettingsIcon, path: '/settings' },
-] as const
+// anything to show them — `/admin` is their home, so it takes the pinned row,
+// and the instance-wide sections (accounts, the one mail server, the node
+// hierarchy) group under it, plus the same personal settings.
+const ADMIN_NAV = {
+  pinned: [{ label: 'Workspaces', Icon: BuildingIcon, path: '/admin', exact: true }],
+  groups: [
+    {
+      group: 'Administration',
+      items: [
+        { label: 'Users', Icon: UsersIcon, path: '/admin/users' },
+        { label: 'Email', Icon: MailIcon, path: '/admin/email' },
+        { label: 'Resource Tree', Icon: TreeIcon, path: '/resource-tree' },
+      ],
+    },
+    {
+      group: 'Account',
+      items: [{ label: 'Setting', Icon: SettingsIcon, path: '/settings' }],
+    },
+  ],
+}
 
-function Sidebar({ activeTab, onNavigate, user, onLogout, open, onClose, isAdmin }: any) {
-  const NavLeaf = ({ id, label, Icon, path, soon }: any) => (
-    <NavItem active={activeTab === id} icon={Icon} badge={soon && 'Soon'} onClick={() => onNavigate(path)}>
-      {label}
-    </NavItem>
+const isActive = (pathname: string, path: string, exact?: boolean) =>
+  exact ? pathname === path : pathname === path || pathname.startsWith(`${path}/`)
+
+function Sidebar({ pathname, onNavigate, user, onLogout, open, onClose, isAdmin }: any) {
+  const nav = isAdmin ? ADMIN_NAV : NAV
+
+  const rows = (items: any[]) => (
+    <div className="flex flex-col gap-0.5">
+      {items.map((item) => (
+        <NavItem
+          key={item.path}
+          href={item.path}
+          active={isActive(pathname, item.path, item.exact)}
+          icon={item.Icon}
+          onClick={(e: MouseEvent) => onNavigate(e, item.path)}
+        >
+          {item.label}
+        </NavItem>
+      ))}
+    </div>
   )
 
   return (
@@ -77,11 +134,13 @@ function Sidebar({ activeTab, onNavigate, user, onLogout, open, onClose, isAdmin
 
         {/* Nav */}
         <nav className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
-          <div className="flex flex-col gap-0.5">
-            {(isAdmin ? ADMIN_NAV : NAV).map((entry) => (
-              <NavLeaf key={entry.id} {...entry} />
-            ))}
-          </div>
+          <div className="mb-4">{rows(nav.pinned)}</div>
+          {nav.groups.map((group) => (
+            <div key={group.group} className="mb-4 last:mb-0">
+              <div className="mb-1 px-2.5 text-[10px] font-bold uppercase tracking-wide text-ink-faint">{group.group}</div>
+              {rows(group.items)}
+            </div>
+          ))}
         </nav>
 
         {/* User profile + logout */}
@@ -111,13 +170,11 @@ export default function HomeLayout() {
 
   const isAdmin = user?.role === 'admin'
 
-  // Active section = first path segment (`/workspace/member` → `workspace`, `/` → `dashboard`).
-  // The admin area is two sections under one segment, so `/admin/users` picks
-  // the second one out of the path rather than the first.
-  const segments = location.pathname.split('/').filter(Boolean)
-  const activeTab = (isAdmin && segments[0] === 'admin' ? segments[1] || 'admin' : segments[0]) || 'dashboard'
-
-  const go = (path: string) => {
+  // Nav rows are real links, so a modified click (new tab/window) is left to the
+  // browser; only a plain click is taken over for client-side routing.
+  const go = (e: MouseEvent, path: string) => {
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || (e as any).button > 0) return
+    e.preventDefault()
     setSidebarOpen(false)
     navigate(path)
   }
@@ -125,7 +182,7 @@ export default function HomeLayout() {
   return (
     <div className="flex h-screen bg-bg">
       <Sidebar
-        activeTab={activeTab}
+        pathname={location.pathname}
         onNavigate={go}
         user={user}
         onLogout={logout}
@@ -145,9 +202,14 @@ export default function HomeLayout() {
           </span>
         </div>
 
+        {/* The one content container: every page gets the same width and gutters,
+            so nothing sets its own (use `<Narrow>` for content that needs to be
+            narrower than the page). */}
         <main className="min-h-0 flex-1 overflow-y-auto px-8 py-10 max-[600px]:px-4 max-[600px]:py-7">
-          <UpdateBanner />
-          <Outlet />
+          <div className="mx-auto w-full max-w-[1280px]">
+            <UpdateBanner />
+            <Outlet />
+          </div>
         </main>
       </div>
     </div>

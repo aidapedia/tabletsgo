@@ -101,12 +101,12 @@ export default function ConnectionImportModal({
         </FormField>
 
         {isSqlite ? (
-          <FormField label="Database file path" className="mt-4" hint="The path on this server — it may differ from where the file was exported.">
+          <FormField label="Database file path" hint="The path on this server — it may differ from where the file was exported.">
             <Input value={filepath} onChange={(e) => setFilepath(e.target.value)} placeholder="/data/app.db" />
           </FormField>
         ) : (
           !doc.includesSecrets && (
-            <FormField label="Password" className="mt-4" hint="This export was taken without the password. Leave blank to fill it in later.">
+            <FormField label="Password" hint="This export was taken without the password. Leave blank to fill it in later.">
               <PasswordInput value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••" />
             </FormField>
           )

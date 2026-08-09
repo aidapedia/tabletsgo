@@ -3,7 +3,7 @@ import { useToast } from '@/shared/ui/feedback/Toast'
 import LoadingState from '@/shared/ui/feedback/LoadingState'
 import NumberStepper from '@/shared/ui/form/NumberStepper'
 import SettingRow from '@/shared/ui/form/SettingRow'
-import { useWorkspaces, updateWorkspace, getWorkspace } from '@/features/workspaces'
+import { useWorkspaces, can, updateWorkspace, getWorkspace } from '@/features/workspaces'
 
 // How long to wait after the last edit before persisting — the stepper fires on
 // every click/keystroke, so one request per change would hammer the server.
@@ -51,10 +51,10 @@ export default function WorkspaceConfig() {
 
   if (!current || loading) return <LoadingState className="" />
 
-  const isOwner = current.role === 'owner'
+  const canManage = can(current, 'workspace.manage')
 
   const changeMaxSessions = (next: number) => {
-    if (!isOwner) return
+    if (!canManage) return
     setMaxSessions(next)
     if (timerRef.current) clearTimeout(timerRef.current)
     timerRef.current = setTimeout(async () => {
@@ -78,8 +78,8 @@ export default function WorkspaceConfig() {
         desc={
           <>
             How many connections to a database this workspace keeps open at once — one per database being browsed. 0 means{' '}
-            {instanceDefault ? `the server default (${instanceDefault})` : 'unlimited'}. A connection can override it in its
-            own settings.
+            {instanceDefault ? `the server default (${instanceDefault})` : 'unlimited'}. This applies to every connection in
+            the workspace.
           </>
         }
       >
@@ -93,7 +93,7 @@ export default function WorkspaceConfig() {
         />
       </SettingRow>
 
-      {!isOwner && <p className="text-[11px] text-ink-faint">Only workspace admins can change these settings.</p>}
+      {!canManage && <p className="text-[11px] text-ink-faint">Your role can’t change these settings.</p>}
     </div>
   )
 }

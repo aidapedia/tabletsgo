@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { useWorkspaces, NotificationSettings, getWorkspace, type InstanceSmtp } from '@/features/workspaces'
-import { Section } from './ui'
+import { useWorkspaces, can, NotificationSettings, getWorkspace, type InstanceSmtp } from '@/features/workspaces'
+import { Narrow, Section } from './ui'
 import LoadingState from '@/shared/ui/feedback/LoadingState'
 
 // Notification section — the emails Tabletsgo sends for this workspace. The
@@ -12,17 +12,19 @@ export default function NotificationsPage() {
   const [checked, setChecked] = useState(false)
 
   useEffect(() => {
-    if (!current || current.role !== 'owner') return
+    // Only someone who can change the notification settings is shown which mail
+    // server they'd be sent through.
+    if (!can(current, 'notifications.manage')) return
     getWorkspace(current.id).then((w) => {
       setSmtp(w.smtp || null)
       setChecked(true)
     })
-  }, [current?.id, current?.role])
+  }, [current?.id, current?.permissions])
 
   return (
     <Section title="Notification" desc="Manage the notifications Tabletsgo sends to your team.">
       {current ? (
-        <>
+        <Narrow>
           {checked && (
             <p className="mb-5 text-[12px] text-ink-dim">
               {smtp
@@ -31,7 +33,7 @@ export default function NotificationsPage() {
             </p>
           )}
           <NotificationSettings workspaceId={current.id} />
-        </>
+        </Narrow>
       ) : (
         <LoadingState className="" />
       )}

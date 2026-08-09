@@ -201,3 +201,15 @@ html.theme-light {
   background-size: 64px 64px;
   mask-image: radial-gradient(circle at 50% 45%, black, transparent 70%);
 }
+
+/* ---------- Form field spacing ---------- */
+/* FormField carries its own `mb-4` so adding a field to a form never means also
+   remembering its margin. In a *row* (a flex row or a grid) that margin is dead
+   space under the row — the container's gap already spaces those — so drop it
+   there. `:where()` keeps the specificity at `.form-field`, and the rule is
+   unlayered so it still beats the utility; a caller who wants the margin back
+   in a row asks for it with `!mb-4`. `flex-col` is excluded: a column of fields
+   stacks like a form and wants the gap. */
+:where(.flex:not(.flex-col), .grid) > .form-field {
+  margin-bottom: 0;
+}

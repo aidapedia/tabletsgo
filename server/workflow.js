@@ -312,3 +312,42 @@ export async function runDueWorkflows() {
     )
   }
 }
+
+// ---- Workspace-wide listing ----
+
+/**
+ * Every workflow filed under `connectionIds`, newest first, with the outcome of
+ * its most recent run.
+ *
+ * The per-connection list route reads the table itself; this exists because the
+ * workspace-wide Workflow page would otherwise fan out one request per
+ * connection. It reads exactly the ids it is handed — deciding which connections
+ * the caller may see stays with the route.
+ */
+export function listWorkflowsForConnections(connectionIds) {
+  if (!connectionIds.length) return []
+  const holes = connectionIds.map(() => '?').join(', ')
+  const rows = meta
+    .prepare(
+      `SELECT w.id, w.connection_id, w.name, w.ts, w.protected, w.schedule_enabled, w.next_run_at, w.folder_id,
+              r.status AS last_status, r.started_at AS last_run_at
+         FROM workflows w
+         LEFT JOIN workflow_runs r ON r.id = (
+           SELECT id FROM workflow_runs WHERE workflow_id = w.id ORDER BY started_at DESC LIMIT 1
+         )
+        WHERE w.connection_id IN (${holes})
+        ORDER BY w.ts DESC`
+    )
+    .all(...connectionIds)
+  return rows.map((r) => ({
+    id: r.id,
+    connectionId: r.connection_id,
+    name: r.name,
+    ts: r.ts,
+    protected: !!r.protected,
+    scheduleEnabled: !!r.schedule_enabled,
+    nextRunAt: r.next_run_at || null,
+    folderId: r.folder_id || null,
+    lastRun: r.last_run_at ? { status: r.last_status, at: r.last_run_at } : null,
+  }))
+}

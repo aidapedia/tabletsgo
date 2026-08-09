@@ -15,5 +15,5 @@ export {
   setWorkspaceRoleAs,
   removeWorkspaceMemberAs,
 } from './api'
-export { listUsers, createUser, updateUser, deleteUser } from './api'
+export { listUsers, createUser, updateUser, deleteUser, unblockUser } from './api'
 export { getGlobalSmtp, updateGlobalSmtp, clearGlobalSmtp, testGlobalSmtp } from './api'

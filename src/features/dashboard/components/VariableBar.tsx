@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import Popover from '@/shared/ui/overlay/Popover'
 import Checkbox from '@/shared/ui/form/Checkbox'
 import Button from '@/shared/ui/buttons/Button'
+import SearchInput from '@/shared/ui/form/SearchInput'
 import { ChevronDown, FilterIcon } from '@/shared/ui/icons'
 import type { DashboardVariable, VariableValues } from '../types'
 import { resolveVariableOptions, type VariableOption } from '../lib/variables'
@@ -308,25 +309,47 @@ function OverflowRow({
 
 // Single-select option list: pick one, the caller closes the dropdown.
 function SingleOptions({ options, value, onChange }: { options: VariableOption[]; value?: string; onChange: (v: string) => void }) {
-  if (!options.length) return <div className="px-3 py-2 text-[11px] text-ink-faint">No options</div>
+  const [search, setSearch] = useState('')
+  const filtered = useMemo(
+    () => (search ? options.filter((o) => o.label.toLowerCase().includes(search.toLowerCase())) : options),
+    [options, search],
+  )
   return (
-    <div className="max-h-[260px] overflow-y-auto p-1">
-      {options.map((o) => {
-        const active = o.value === value
-        return (
-          <button
-            key={String(o.value)}
-            type="button"
-            onClick={() => onChange(o.value)}
-            className={`flex w-full items-center justify-between gap-2 rounded px-2.5 py-1.5 text-left text-[11px] transition-colors ${
-              active ? 'bg-green/15 text-green-bright' : 'text-ink-dim hover:bg-card-hover hover:text-ink'
-            }`}
-          >
-            <span className="min-w-0 flex-1 truncate">{o.label}</span>
-            {active && <span className="shrink-0 text-green">✓</span>}
-          </button>
-        )
-      })}
+    <div>
+      {options.length > 6 && (
+        <div className="px-1.5 pt-1.5">
+          <SearchInput
+            placeholder="Search…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="w-full"
+            inputClassName="!h-7 !text-[11px]"
+            iconSize={13}
+          />
+        </div>
+      )}
+      {!filtered.length ? (
+        <div className="px-3 py-2 text-[11px] text-ink-faint">No options</div>
+      ) : (
+        <div className="max-h-[260px] overflow-y-auto p-1">
+          {filtered.map((o) => {
+            const active = o.value === value
+            return (
+              <button
+                key={String(o.value)}
+                type="button"
+                onClick={() => onChange(o.value)}
+                className={`flex w-full items-center justify-between gap-2 rounded px-2.5 py-1.5 text-left text-[11px] transition-colors ${
+                  active ? 'bg-green/15 text-green-bright' : 'text-ink-dim hover:bg-card-hover hover:text-ink'
+                }`}
+              >
+                <span className="min-w-0 flex-1 truncate">{o.label}</span>
+                {active && <span className="shrink-0 text-green">✓</span>}
+              </button>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }
@@ -341,13 +364,29 @@ function MultiOptions({
   value?: string | string[]
   onChange: (v: string[]) => void
 }) {
-  if (!options.length) return <div className="px-3 py-2 text-[11px] text-ink-faint">No options</div>
+  const [search, setSearch] = useState('')
+  const filtered = useMemo(
+    () => (search ? options.filter((o) => o.label.toLowerCase().includes(search.toLowerCase())) : options),
+    [options, search],
+  )
   const selected = Array.isArray(value) ? value : value ? [value] : []
   const allSelected = selected.length === options.length
   const toggle = (val: string) => onChange(selected.includes(val) ? selected.filter((s) => s !== val) : [...selected, val])
 
   return (
     <div className="p-1">
+      {options.length > 6 && (
+        <div className="px-1.5 py-1">
+          <SearchInput
+            placeholder="Search…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="w-full"
+            inputClassName="!h-7 !text-[11px]"
+            iconSize={13}
+          />
+        </div>
+      )}
       <label className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 hover:bg-card-hover">
         <Checkbox
           checked={allSelected}
@@ -358,14 +397,18 @@ function MultiOptions({
         <span className="text-[11px] font-medium text-ink">Select all</span>
       </label>
       <div className="my-1 h-px bg-edge" />
-      <div className="max-h-[220px] overflow-y-auto">
-        {options.map((o) => (
-          <label key={String(o.value)} className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 hover:bg-card-hover">
-            <Checkbox checked={selected.includes(o.value)} onChange={() => toggle(o.value)} ariaLabel={o.label} />
-            <span className="min-w-0 flex-1 truncate text-[11px] text-ink-dim">{o.label}</span>
-          </label>
-        ))}
-      </div>
+      {!filtered.length ? (
+        <div className="px-3 py-2 text-[11px] text-ink-faint">No matching options</div>
+      ) : (
+        <div className="max-h-[220px] overflow-y-auto">
+          {filtered.map((o) => (
+            <label key={String(o.value)} className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 hover:bg-card-hover">
+              <Checkbox checked={selected.includes(o.value)} onChange={() => toggle(o.value)} ariaLabel={o.label} />
+              <span className="min-w-0 flex-1 truncate text-[11px] text-ink-dim">{o.label}</span>
+            </label>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

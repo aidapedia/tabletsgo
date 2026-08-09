@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/backend-docs-reminder.js",
+            "timeout": 10,
+            "statusMessage": "Checking backend docs rule"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/kurniajigunawan/.local/share/uv/tools/graphifyy/bin/graphify hook-guard search"
+          }
+        ]
+      },
+      {
+        "matcher": "Read|Glob",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/Users/kurniajigunawan/.local/share/uv/tools/graphifyy/bin/graphify hook-guard read"
+          }
+        ]
+      }
+    ]
+  }
+}

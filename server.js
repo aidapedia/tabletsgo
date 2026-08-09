@@ -7,7 +7,7 @@
  *
  *   db/           the engine-agnostic database layer (sqlite | postgres | redis)
  *   meta.js       the app's own SQLite store; migrations.js evolves its schema
- *   auth.js       sessions, guards, workspace/team access rules
+ *   auth.js       sessions, guards, workspace/connection access rules
  *   connections.js  connection records (credentials encrypted at rest)
  *   folders.js    the polymorphic folder tree
  *   storage.js    S3-compatible + local backup destinations
@@ -49,16 +49,19 @@ import {
   authUser,
   baseUrl,
   bearerToken,
+  can,
   connectionAccess,
   createSession,
   deleteSession,
   getUserByEmail,
+  isMember,
   isSystemAdmin,
   memberRole,
+  permissionsIn,
   publicUser,
   requireAuth,
   requireMember,
-  requireOwner,
+  requirePermission,
   requireSystemAdmin,
   sessionMiddleware,
   setConnectionAccess,
@@ -67,19 +70,42 @@ import {
   workspaceForUser,
 } from './server/auth.js'
 import {
-  WORKSPACE_ROLES,
   addMember as addWorkspaceMember,
   countOwners,
+  isOwnerRole,
   createWorkspace as createWorkspaceRow,
   deleteWorkspaceCascade,
   getWorkspaceRow,
   listAllWorkspaces,
   listUserSoleOwnerships,
   listWorkspaceMembers,
+  membershipsOf,
   removeMember as removeWorkspaceMember,
   renameWorkspace,
   setMemberRole as setWorkspaceMemberRole,
 } from './server/workspaces.js'
+import {
+  NODE_TYPES,
+  PERMISSIONS,
+  PERMISSION_KEYS,
+  countRoleUsage,
+  createRole,
+  deleteRole,
+  getRole,
+  listRoles,
+  roleExists,
+  roleGrantableOn,
+  roleUsageCounts,
+  updateRole,
+} from './server/permissions.js'
+import { CUSTOM_NODE_TYPES } from './server/permissions-catalog.js'
+import {
+  LOCK_COLUMNS,
+  clearFailures,
+  loginRefusal,
+  recordFailure,
+  unlockUser as unblockUser,
+} from './server/login-guard.js'
 import {
   SYSTEM_ROLES,
   countAdmins,
@@ -90,6 +116,7 @@ import {
   listUsers,
   setSystemRole,
   updateUser,
+  verifyPassword,
 } from './server/users.js'
 import {
   connectionSessionStats,
@@ -141,7 +168,7 @@ import {
   testStorage,
   updateStorage,
 } from './server/storage.js'
-import { executeAndRecord, nextRunForGraph, runDueWorkflows } from './server/workflow.js'
+import { executeAndRecord, listWorkflowsForConnections, nextRunForGraph, runDueWorkflows } from './server/workflow.js'
 import {
   canRestore,
   createSchedule,
@@ -157,6 +184,30 @@ import {
   validateScheduleBody,
 } from './server/backup/index.js'
 import { buildConnectionExport, importConnectionDoc } from './server/connection-transfer.js'
+import {
+  addGrant,
+  addNodeMember,
+  chainOf,
+  childrenOf,
+  createGroupNode,
+  createResourceNode,
+  deleteNode,
+  deleteResourceNode,
+  getNode,
+  listGrants,
+  listNodeMembers,
+  memberCounts,
+  peopleAtNode,
+  moveNode,
+  ownsNode,
+  permissionsAtNode,
+  removeGrant,
+  removeNodeMember,
+  renameNode,
+  renameResourceNode,
+  setNodeOwner,
+  visibleTree,
+} from './server/resource-tree.js'
 import {
   cachedUpdateInfo,
   dockerSelfUpdate,
@@ -214,13 +265,33 @@ const fail = (res, error, fallbackStatus = 500) => res.status(error.status || fa
 // Authentication
 // ============================================================================
 
+// The lock the guard just created, in row shape, so the refusal message for the
+// attempt that tripped it is built the same way as every later one.
+const lockRow = (lock) => ({ locked_at: lock.lockedAt, locked_until: lock.lockedUntil, failed_logins: lock.attempts })
+
 // Authenticate a user (by email, stored in `username`). Returns a session token.
+//
+// Repeated failures block the account (server/login-guard.js). The block is
+// checked before the password is verified, so a locked account can neither be
+// probed nor signed into with a guessed password; an unknown address is never
+// counted and gets the same generic answer as a wrong password.
 app.post('/api/auth/login', async (req, res) => {
   const { username, password } = req.body || {}
-  const row = meta.prepare('SELECT id, username, name, role, status, password_hash FROM users WHERE username = ?').get(username)
+  const row = meta
+    .prepare(`SELECT id, username, name, role, status, password_hash, ${LOCK_COLUMNS} FROM users WHERE username = ?`)
+    .get(username)
+  if (row) {
+    const refusal = loginRefusal(row)
+    if (refusal) return res.status(refusal.status).json(refusal.body)
+  }
   if (!row || row.status === 'pending' || row.password_hash !== sha256(password)) {
+    if (row && row.status !== 'pending') {
+      const lock = recordFailure(row)
+      if (lock) return res.status(423).json(loginRefusal({ ...row, ...lockRow(lock) }).body)
+    }
     return res.status(401).json({ error: 'Invalid email or password' })
   }
+  clearFailures(row.id)
   res.json({ user: publicUser(row), token: await createSession(row.id, sessionContext(req)) })
 })
 
@@ -229,6 +300,53 @@ app.post('/api/auth/logout', async (req, res) => {
   const token = bearerToken(req)
   if (token) await deleteSession(token)
   res.json({ ok: true })
+})
+
+// ---- The signed-in user's own account -------------------------------------
+// These three are the self-service counterpart of /api/admin/users/*: they act
+// on the caller and only on the caller, so they need no role beyond being
+// authenticated. The email is the login identity and is deliberately not
+// editable here — changing it is an admin action.
+
+// The caller's own profile, re-read from the DB (the client caches it).
+app.get('/api/auth/me', (req, res) => {
+  const user = requireAuth(req, res)
+  if (!user) return
+  res.json({ user: publicUser(user) })
+})
+
+// Rename yourself. Name is the only self-editable profile field.
+app.patch('/api/auth/profile', (req, res) => {
+  const user = requireAuth(req, res)
+  if (!user) return
+  const name = (req.body?.name ?? '').trim()
+  if (!name) return res.status(400).json({ error: 'A name is required.' })
+  updateUser(user.id, { name })
+  res.json({ user: publicUser(userRow(user.id)) })
+})
+
+// Change your own password. The current password is required — a session token
+// alone must not let someone lock its owner out of their account.
+//
+// A successful change signs out every session (this one included, since we
+// can't tell the other devices apart from a stolen copy of this token) and
+// hands back a fresh one, so the caller stays logged in where they are.
+app.post('/api/auth/password', async (req, res) => {
+  const user = requireAuth(req, res)
+  if (!user) return
+  const { currentPassword, newPassword } = req.body || {}
+  if (!currentPassword || !newPassword) {
+    return res.status(400).json({ error: 'Both your current and new password are required.' })
+  }
+  if (!verifyPassword(user.id, currentPassword)) {
+    return res.status(400).json({ error: 'Your current password is incorrect.' })
+  }
+  if (currentPassword === newPassword) {
+    return res.status(400).json({ error: 'The new password must be different from the current one.' })
+  }
+  updateUser(user.id, { password: newPassword })
+  await destroyAuthSessionsForUser(user.id)
+  res.json({ user: publicUser(userRow(user.id)), token: await createSession(user.id, sessionContext(req)) })
 })
 
 // Request a password reset. Always 200 — never reveal whether the email exists.
@@ -274,37 +392,61 @@ app.post('/api/auth/reset/:token', async (req, res) => {
   meta
     .prepare("UPDATE users SET password_hash = ?, status = 'active', reset_token = NULL, reset_expires = NULL WHERE id = ?")
     .run(sha256(password), u.id)
+  // Setting a new password through an emailed link proves control of the
+  // mailbox, so it lifts a brute-force block as well — otherwise the one
+  // self-service recovery path would dead-end at the login page.
+  clearFailures(u.id)
   await destroyAuthSessionsForUser(u.id) // sign out everywhere else
   const user = meta.prepare('SELECT id, username, name, role FROM users WHERE id = ?').get(u.id)
   res.json({ user: publicUser(user), token: await createSession(u.id, sessionContext(req)) })
 })
 
-// First-run status — true when no users exist yet (setup wizard needed).
+// First-run status — the wizard runs until the instance has an *administrator*,
+// not until it has users. An install migrated from a version that predated the
+// system role (migrateToWorkspaces) has accounts but no admin, and the admin
+// area would otherwise be unreachable by everyone. `hasUsers` tells the wizard
+// which of its two shapes to render.
 app.get('/api/setup', (req, res) => {
-  res.json({ needsSetup: !meta.prepare('SELECT 1 FROM users LIMIT 1').get() })
+  res.json({
+    needsSetup: countAdmins() === 0,
+    hasUsers: !!meta.prepare('SELECT 1 FROM users LIMIT 1').get(),
+  })
 })
 
-// First-run setup — creates the admin account + first workspace. Only allowed
-// while no users exist, so it can't be used to hijack an initialized instance.
+// First-run setup — creates the instance administrator, and nothing else. No
+// workspace is made here: an admin holds no workspace access (CLAUDE.md "AUTH
+// MODEL"), so an ownerless workspace created alongside them is just debt. The
+// admin signs in and creates the first workspace with a real owner.
+//
+// Allowed only while the instance has no admin. On an instance that already has
+// accounts the credentials must match one of them and that account is promoted
+// — creating an admin out of nothing is reserved for a genuinely empty install,
+// so an adminless legacy instance can't be claimed by a passing stranger.
 app.post('/api/setup', async (req, res) => {
+  if (countAdmins() > 0) return res.status(403).json({ error: 'Setup has already been completed.' })
+  const email = (req.body?.email || '').trim()
+  const { password, name } = req.body || {}
+  if (!email || !password) return res.status(400).json({ error: 'Email and password are required.' })
+
   if (meta.prepare('SELECT 1 FROM users LIMIT 1').get()) {
-    return res.status(403).json({ error: 'Setup has already been completed.' })
+    const existing = getUserByEmail(email)
+    if (!existing || existing.status === 'pending' || !verifyPassword(existing.id, password)) {
+      return res.status(401).json({ error: 'Invalid email or password' })
+    }
+    // Promotion drops every workspace membership, which can leave a legacy
+    // workspace ownerless — recoverable, and only from here: the new admin
+    // assigns an owner from the admin area (PUT /api/admin/workspaces/:id/members).
+    setSystemRole(existing.id, 'admin')
+    if (name?.trim()) updateUser(existing.id, { name: name.trim() })
+    // The sessions this account already holds were authorized for access it no
+    // longer has — same reason the admin role-change route signs them out.
+    await destroyAuthSessionsForUser(existing.id)
+    return res.json({ user: publicUser(userRow(existing.id)), token: await createSession(existing.id, sessionContext(req)) })
   }
-  const { email, password, name, workspace } = req.body || {}
-  if (!email || !password || !workspace?.trim()) {
-    return res.status(400).json({ error: 'Email, password and workspace name are required.' })
-  }
-  const uid = randomUUID()
-  meta
-    .prepare('INSERT INTO users (id, username, password_hash, name, role, status) VALUES (?, ?, ?, ?, ?, ?)')
-    .run(uid, email.trim(), sha256(password), name?.trim() || 'Admin', 'admin', 'active')
-  // The first account is the instance admin, so it is deliberately *not* made a
-  // member of the workspace it names — an admin never holds workspace access
-  // (CLAUDE.md "AUTH MODEL"). The workspace is created ownerless; the admin's
-  // first job is to invite someone and make them its owner.
-  createWorkspaceRow(workspace.trim())
-  const user = meta.prepare('SELECT id, username, name, role FROM users WHERE id = ?').get(uid)
-  res.json({ user: publicUser(user), token: await createSession(uid, sessionContext(req)) })
+
+  if (getUserByEmail(email)) return res.status(400).json({ error: 'That email already has an account.' })
+  const { user: created } = createUser({ email, name: name?.trim() || 'Admin', password, role: 'admin' })
+  res.json({ user: publicUser(userRow(created.id)), token: await createSession(created.id, sessionContext(req)) })
 })
 
 // Validate an invite token → who it's for and which workspace.
@@ -354,27 +496,28 @@ app.use('/api/admin', (req, res, next) => {
 
 app.get('/api/admin/workspaces', (_req, res) => res.json(listAllWorkspaces()))
 
-// Create a workspace and hand it to someone. `ownerEmail` may name an existing
-// account or a new one — an unknown address gets a pending account plus an
-// invite link, so an admin can stand up a workspace for a person who has never
-// signed in.
+// Create a workspace and hand it to someone. `ownerEmail` must name an account
+// that already exists — creating a person as a side effect of creating a
+// workspace produced accounts nobody had reviewed, so the admin creates the
+// user first (POST /api/admin/users) and assigns them here. An account that is
+// still `pending` is fine: it gets a fresh invite link scoped to the new
+// workspace.
 app.post('/api/admin/workspaces', async (req, res) => {
   const name = (req.body?.name || '').trim()
   const ownerEmail = (req.body?.ownerEmail || '').trim().toLowerCase()
   if (!name) return res.status(400).json({ error: 'Workspace name is required.' })
   if (!ownerEmail) return res.status(400).json({ error: 'An owner email is required — a workspace needs someone to run it.' })
 
-  let owner = getUserByEmail(ownerEmail)
+  const owner = getUserByEmail(ownerEmail)
+  if (!owner) {
+    return res.status(400).json({ error: 'No account with that email — create the user first, then assign them.' })
+  }
   if (isSystemAdmin(owner)) {
     return res.status(400).json({ error: 'That account administers the instance and cannot own a workspace.' })
   }
   const ws = createWorkspaceRow(name)
   let inviteLink = null
-  if (!owner) {
-    const { user: created, inviteToken } = createUser({ email: ownerEmail, name: ownerEmail, inviteWorkspaceId: ws.id })
-    owner = { id: created.id, username: ownerEmail, status: 'pending' }
-    inviteLink = `${baseUrl(req)}/invite/${inviteToken}`
-  } else if (owner.status === 'pending') {
+  if (owner.status === 'pending') {
     inviteLink = `${baseUrl(req)}/invite/${issueInviteToken(owner.id, ws.id)}`
   }
   addWorkspaceMember(ws.id, owner.id, 'owner')
@@ -391,7 +534,7 @@ app.post('/api/admin/workspaces', async (req, res) => {
       }
     }
   }
-  res.json({ workspace: { ...ws, memberCount: 1, teamCount: 0, connectionCount: 0 }, inviteLink, emailed })
+  res.json({ workspace: { ...ws, memberCount: 1, groupCount: 0, connectionCount: 0 }, inviteLink, emailed })
 })
 
 app.put('/api/admin/workspaces/:id', (req, res) => {
@@ -420,15 +563,15 @@ app.get('/api/admin/workspaces/:id/members', (req, res) => {
 app.put('/api/admin/workspaces/:id/members/:userId', (req, res) => {
   if (!getWorkspaceRow(req.params.id)) return res.status(404).json({ error: 'Workspace not found' })
   const role = req.body?.role
-  if (!WORKSPACE_ROLES.includes(role)) return res.status(400).json({ error: "Role must be 'owner' or 'member'." })
+  if (!roleExists(role)) return res.status(400).json({ error: 'Unknown role.' })
   const target = userRow(req.params.userId)
   if (!target) return res.status(404).json({ error: 'User not found' })
   if (isSystemAdmin(target)) return res.status(400).json({ error: 'An instance admin cannot belong to a workspace.' })
 
   const current = memberRole(req.params.id, req.params.userId)
-  if (!current) addWorkspaceMember(req.params.id, req.params.userId, role)
+  if (!isMember(req.params.id, req.params.userId)) addWorkspaceMember(req.params.id, req.params.userId, role)
   else {
-    if (current === 'owner' && role === 'member' && countOwners(req.params.id) <= 1) {
+    if (isOwnerRole(current) && !isOwnerRole(role) && countOwners(req.params.id) <= 1) {
       return res.status(400).json({ error: 'The workspace needs at least one owner.' })
     }
     setWorkspaceMemberRole(req.params.id, req.params.userId, role)
@@ -438,11 +581,59 @@ app.put('/api/admin/workspaces/:id/members/:userId', (req, res) => {
 
 app.delete('/api/admin/workspaces/:id/members/:userId', (req, res) => {
   const current = memberRole(req.params.id, req.params.userId)
-  if (!current) return res.status(404).json({ error: 'Member not found' })
-  if (current === 'owner' && countOwners(req.params.id) <= 1) {
+  if (!isMember(req.params.id, req.params.userId)) return res.status(404).json({ error: 'Member not found' })
+  if (isOwnerRole(current) && countOwners(req.params.id) <= 1) {
     return res.status(400).json({ error: 'The workspace needs at least one owner.' })
   }
   removeWorkspaceMember(req.params.id, req.params.userId)
+  res.json({ ok: true })
+})
+
+// ---- Roles ----
+//
+// Workspace roles are instance-wide and defined here: an admin sets the access
+// model once, and a workspace owner assigns people to it. The system tier
+// (users.role) is deliberately not part of this — see server/permissions.js.
+
+// The permission catalog: everything a role can be given, grouped for the editor.
+// It comes from code, not the DB, so the UI can only offer what a route enforces.
+app.get('/api/admin/permissions', (_req, res) => res.json(PERMISSIONS))
+
+app.post('/api/admin/roles', (req, res) => {
+  const name = (req.body?.name || '').trim()
+  if (!name) return res.status(400).json({ error: 'A role name is required.' })
+  res.json(
+    createRole({
+      name,
+      description: req.body?.description || '',
+      permissions: req.body?.permissions || [],
+      // The node types this role may be granted on — omit for "anywhere".
+      appliesTo: Array.isArray(req.body?.appliesTo) ? req.body.appliesTo : null,
+    })
+  )
+})
+
+// Rename a role or change what it grants. The slug is fixed at creation because
+// memberships store it, so a rename never touches a single membership row.
+app.put('/api/admin/roles/:slug', (req, res) => {
+  if (!roleExists(req.params.slug)) return res.status(404).json({ error: 'Role not found' })
+  const { name, description, permissions, appliesTo } = req.body || {}
+  if (name !== undefined && !String(name).trim()) return res.status(400).json({ error: 'A role name is required.' })
+  // `appliesTo` is three-valued (see updateRole): absent leaves the criteria
+  // alone, null widens them to any node type, an array narrows them.
+  res.json(updateRole(req.params.slug, { name, description, permissions, appliesTo }))
+})
+
+// Delete a custom role. Refused while anyone holds it — those memberships would
+// silently fail closed to no access — and builtins are never deletable.
+app.delete('/api/admin/roles/:slug', (req, res) => {
+  const role = getRole(req.params.slug)
+  if (!role) return res.status(404).json({ error: 'Role not found' })
+  if (role.builtin) return res.status(400).json({ error: 'A built-in role cannot be deleted.' })
+  // Memberships *and* tree grants — either one would fail closed to no access.
+  const inUse = countRoleUsage(req.params.slug)
+  if (inUse) return res.status(409).json({ error: `${inUse} member${inUse === 1 ? '' : 's'} or grant${inUse === 1 ? '' : 's'} still hold this role.`, inUse })
+  deleteRole(req.params.slug)
   res.json({ ok: true })
 })
 
@@ -490,6 +681,17 @@ app.put('/api/admin/users/:id', async (req, res) => {
   // A changed password or a changed role invalidates what the open sessions
   // were authorized for — make them sign in again.
   if (password || (role !== undefined && role !== target.role)) await destroyAuthSessionsForUser(req.params.id)
+  res.json(getUser(req.params.id))
+})
+
+// Lift a brute-force block: clears the failed-attempt counter and lets the
+// account sign in again. The only way back in for a blocked account other than
+// a password reset — an admin is never blocked indefinitely, so this can't be
+// the door that locks itself.
+app.post('/api/admin/users/:id/unblock', (req, res) => {
+  const target = userRow(req.params.id)
+  if (!target) return res.status(404).json({ error: 'User not found' })
+  unblockUser(req.params.id)
   res.json(getUser(req.params.id))
 })
 
@@ -577,24 +779,48 @@ app.post('/api/admin/smtp/test', async (req, res) => {
 // Workspaces
 // ============================================================================
 
+// The instance's role catalog, readable by any signed-in user: a workspace owner
+// needs the names to assign one, and the client needs the permission lists to
+// explain what each grants. Editing them is admin-only (/api/admin/roles).
+//
+// `memberCount` rides along (one grouped query, not one per role) so the admin
+// list can show who is affected by an edit — and why a delete would be refused.
+app.get('/api/roles', (req, res) => {
+  if (!requireAuth(req, res)) return
+  const usage = roleUsageCounts()
+  res.json(
+    listRoles().map((r) => ({
+      ...r,
+      memberCount: usage[r.slug]?.members || 0,
+      // Grants on tree nodes hold this role too, and also block a delete.
+      grantCount: usage[r.slug]?.grants || 0,
+      grantableOn: NODE_TYPES.filter((t) => roleGrantableOn(r.slug, t.type).ok).map((t) => t.type),
+    }))
+  )
+})
+
 // Workspaces the caller belongs to.
 app.get('/api/workspaces', (req, res) => {
   const user = requireAuth(req, res)
   if (!user) return
-  const rows = meta
-    .prepare(
-      `SELECT w.id, w.name, w.created_at, w.settings, m.role
-       FROM workspace_members m JOIN workspaces w ON w.id = m.workspace_id
-       WHERE m.user_id = ? ORDER BY w.created_at`
-    )
-    .all(user.id)
+  const rows = membershipsOf(user.id)
   // Beta experiment flags + notification prefs ship in the list response (not
   // just the detail route) so nav-level gating and this settings panel don't
   // go stale after a save that only refreshes via listWorkspaces().
+  // `permissions` rides along for the same reason: every nav item and button
+  // gated on a capability would otherwise flicker until the detail route lands.
   res.json(
     rows.map((r) => {
       const settings = safeJson(r.settings)
-      return { id: r.id, name: r.name, role: r.role, createdAt: r.created_at, experiments: settings.experiments || {}, notifications: settings.notifications || {} }
+      return {
+        id: r.id,
+        name: r.name,
+        role: r.role,
+        permissions: [...permissionsIn(r.id, user.id)],
+        createdAt: r.created_at,
+        experiments: settings.experiments || {},
+        notifications: settings.notifications || {},
+      }
     })
   )
 })
@@ -641,15 +867,27 @@ app.get('/api/workspaces/:id', (req, res) => {
   res.json(ws)
 })
 
-// Rename + beta experiment flags + notification/session policy (owner).
+/**
+ * Rename + beta experiment flags + notification/session policy.
+ *
+ * One route, two permissions: notification preferences are a separate capability
+ * from the workspace's own settings (a role can be given `notifications.manage`
+ * and nothing else), so the body is checked field by field rather than the whole
+ * route being gated on `workspace.manage`.
+ */
 app.put('/api/workspaces/:id', (req, res) => {
-  const user = requireOwner(req, res, req.params.id)
+  const user = requireAuth(req, res)
   if (!user) return
-  const row = meta.prepare('SELECT settings FROM workspaces WHERE id = ?').get(req.params.id)
-  if (!row) return res.status(404).json({ error: 'Workspace not found' })
   // No `smtp` here on purpose: the mail server is instance-level (admin-only).
   // An older client still sending one is ignored rather than rejected.
   const { name, experiments, notifications, sessions } = req.body || {}
+  const needsManage = name?.trim() || experiments || sessions
+  if (needsManage && !requirePermission(req, res, req.params.id, 'workspace.manage')) return
+  if (notifications && !requirePermission(req, res, req.params.id, 'notifications.manage')) return
+  if (!needsManage && !notifications && !isMember(req.params.id, user.id)) return res.status(403).json({ error: 'Forbidden' })
+
+  const row = meta.prepare('SELECT settings FROM workspaces WHERE id = ?').get(req.params.id)
+  if (!row) return res.status(404).json({ error: 'Workspace not found' })
   if (name?.trim()) meta.prepare('UPDATE workspaces SET name = ? WHERE id = ?').run(name.trim(), req.params.id)
   if (experiments || notifications || sessions) {
     const settings = safeJson(row.settings)
@@ -672,11 +910,11 @@ app.put('/api/workspaces/:id', (req, res) => {
   res.json({ ok: true })
 })
 
-// Delete a workspace and everything scoped to it (owner). Never the caller's last one.
+// Delete a workspace and everything scoped to it. Never the caller's last one.
 app.delete('/api/workspaces/:id', async (req, res) => {
-  const user = requireOwner(req, res, req.params.id)
+  const user = requirePermission(req, res, req.params.id, 'workspace.delete')
   if (!user) return
-  const mine = meta.prepare('SELECT COUNT(*) c FROM workspace_members WHERE user_id = ?').get(user.id).c
+  const mine = membershipsOf(user.id).length
   if (mine <= 1) return res.status(400).json({ error: 'You must belong to at least one workspace.' })
   await dropWorkspace(req.params.id)
   res.json({ ok: true })
@@ -692,8 +930,371 @@ async function dropWorkspace(workspaceId) {
     db.releaseConnection(conn)
     await endAllConnectionSessions(conn.id)
   }
+  // The workspace's whole subtree goes with it — deleteWorkspaceCascade does it
+  // inside the same transaction as the rest of the metadata.
   return deleteWorkspaceCascade(workspaceId)
 }
+
+// ---- Resource tree ----
+//
+// One hierarchy of every addressable thing on the instance, and the place a role
+// is granted. Application → Workspace → {Team, Group} → {Connection, Storage} →
+// {Dashboard, Workflow}. See server/resource-tree.js for how a grant resolves.
+//
+// Authorization here is the tree answering about itself: what you may do to a
+// node is resolved *at* that node, so the owner of a group can reorganise and
+// grant inside it without holding anything at workspace level. An instance admin
+// passes because the application root is theirs.
+
+// May the caller do `permission` at this node? Returns the node, or null having
+// already sent the response — the same shape as the guards in server/auth.js.
+const requireNode = (req, res, nodeId, permission) => {
+  const user = requireAuth(req, res)
+  if (!user) return null
+  const node = getNode(nodeId)
+  if (!node) {
+    res.status(404).json({ error: 'Node not found' })
+    return null
+  }
+  if (isSystemAdmin(user)) return node
+  if (!permission) {
+    // A read: seeing the node at all is the permission.
+    if (!visibleTree(user).some((n) => n.id === node.id)) {
+      res.status(403).json({ error: 'Forbidden' })
+      return null
+    }
+    return node
+  }
+  if (!permissionsAtNode(node, user.id).has(permission)) {
+    res.status(403).json({ error: 'You do not have permission to do that.', permission })
+    return null
+  }
+  return node
+}
+
+// The whole tree the caller can see, flat — the client nests it. Connection nodes
+// carry `canOpen` because visibility and data access are different questions:
+// the tree shows you a connection exists, `connection_access` decides whether you
+// may open it.
+app.get('/api/resource-tree', (req, res) => {
+  const user = requireAuth(req, res)
+  if (!user) return
+  try {
+    const counts = memberCounts()
+    const admin = isSystemAdmin(user)
+    const nodes = visibleTree(user).map((n) => ({
+      ...n,
+      owned: !!n.ownerId && n.ownerId === user.id,
+      // Groups are principals, so their size is part of reading the tree — it is
+      // how many people a grant to this group actually reaches.
+      memberCount: n.kind === 'group' ? counts.get(n.id) || 0 : undefined,
+      canOpen: n.type === 'connection' ? userCanAccessConnection(getConnection(n.resourceId), user.id) : undefined,
+      // Whether the caller may reorganise *here*: file a new group inside a
+      // group, and re-file this node somewhere else. Resolved at the node, like
+      // every other permission, so the tree can offer both exactly where the
+      // request would succeed instead of finding out by being refused. Answered
+      // for resources too — a connection is the thing you most often move, and
+      // the move guard asks at the node being moved, not at its parent.
+      canOrganise: admin || permissionsAtNode(n, user.id).has('resources.organise'),
+    }))
+    res.json(nodes)
+  } catch (error) {
+    console.error('resource-tree error:', error.message)
+    res.json([])
+  }
+})
+
+// What the tree is made of, and which roles may be granted where — so the grant
+// editor never offers a choice the server would refuse.
+app.get('/api/resource-tree/catalog', (req, res) => {
+  if (!requireAuth(req, res)) return
+  res.json({
+    nodeTypes: NODE_TYPES,
+    roles: listRoles().map((r) => ({
+      slug: r.slug,
+      name: r.name,
+      description: r.description,
+      builtin: r.builtin,
+      permissions: r.permissions,
+      appliesTo: r.appliesTo,
+      grantableOn: NODE_TYPES.filter((t) => roleGrantableOn(r.slug, t.type).ok).map((t) => t.type),
+    })),
+  })
+})
+
+/**
+ * Who reaches this node — with the data-access answer attached where there is
+ * one to give.
+ *
+ * `peopleAtNode` resolves *permissions*: grants up the chain, inheritance, group
+ * rosters. On a connection that is only half the question, because opening a
+ * database is not a permission (CLAUDE.md) — it is `userCanAccessConnection`,
+ * which also reads membership, where the connection is filed and its access
+ * list. Someone holding Member on the workspace therefore reaches every
+ * connection node in it while being able to open none of them.
+ *
+ * The two answers are joined here rather than in `resource-tree.js` because that
+ * module sits *below* `auth.js` in the dependency order and cannot see
+ * `userCanAccessConnection`. Same reason, and the same `canOpen` field, as the
+ * tree route above.
+ */
+const resolvedPeople = (node) => {
+  const people = peopleAtNode(node)
+  if (node.type !== 'connection') return people
+  const conn = getConnection(node.resourceId)
+  return people.map((p) => ({ ...p, canOpen: userCanAccessConnection(conn, p.userId) }))
+}
+
+// One node in full: where it sits, what's in it, who has been granted what, and
+// what the caller themselves may do here.
+app.get('/api/resource-tree/:id', (req, res) => {
+  const user = requireAuth(req, res)
+  if (!user) return
+  const node = requireNode(req, res, req.params.id, null)
+  if (!node) return
+  const mine = isSystemAdmin(user) ? [...PERMISSION_KEYS] : [...permissionsAtNode(node, user.id)]
+
+  // The tree already decided what this person may see; the detail payload has to
+  // give the same answer, because `childrenOf` is the raw hierarchy. At the
+  // application root that is *every workspace on the instance* — which a caller
+  // reaches whenever a node they do hold something in sits underneath it.
+  const seen = visibleTree(user)
+  const visible = new Set(seen.map((n) => n.id))
+  // Scaffolding: in the payload only so what's underneath has a path to the root.
+  // They hold nothing here, so who else was granted what — and who is in it — is
+  // not theirs to read.
+  const context = !!seen.find((n) => n.id === node.id)?.context
+
+  res.json({
+    node,
+    context,
+    ancestors: chainOf(node).slice(0, -1).filter((a) => visible.has(a.id)),
+    children: childrenOf(node.id).filter((c) => visible.has(c.id)),
+    grants: context ? [] : listGrants(node.id),
+    members: node.kind === 'group' && !context ? listNodeMembers(node.id) : undefined,
+    // Everyone who can actually reach this node, and why. `grants` is only what
+    // was granted *here*; this resolves the ancestors, the inherited grants and
+    // the group rosters too, so access the node never mentions cannot hide. On a
+    // connection each person also carries `canOpen` — see `resolvedPeople`.
+    // Blanked for scaffolding for the same reason grants are: they hold nothing
+    // here, so who else does is not theirs to read.
+    people: context ? [] : resolvedPeople(node),
+    permissions: mine,
+    owner: node.ownerId ? publicUser(userRow(node.ownerId)) : null,
+  })
+})
+
+// Create a group — the one node type made by hand. Everything else appears
+// because its resource was created.
+app.post('/api/resource-tree/:id/groups', (req, res) => {
+  const parent = requireNode(req, res, req.params.id, 'resources.organise')
+  if (!parent) return
+  // You own what you create — but only inside a subtree you already own, where
+  // ownership is yours by cascade anyway and writing it down grants nothing new.
+  // Ungated, `resources.organise` alone would be enough to mint a group you own
+  // and move a connection into it, inheriting every permission on that
+  // connection: the move guard checks both ends, and both ends would be legal.
+  const caller = authUser(req)
+  const ownerId = req.body?.ownerId || (ownsNode(parent, caller.id) ? caller.id : null)
+  const result = createGroupNode(parent.id, req.body?.name, { ownerId })
+  if (result.error) return res.status(400).json({ error: result.error })
+  res.json(result.node)
+})
+
+// Rename a node. Mirrored nodes are renamed by their own resource's route, so
+// this is refused for them rather than letting the two drift.
+app.put('/api/resource-tree/:id', (req, res) => {
+  const node = requireNode(req, res, req.params.id, 'resources.organise')
+  if (!node) return
+  if (!CUSTOM_NODE_TYPES.includes(node.type)) {
+    return res.status(400).json({ error: `Rename the ${node.type} itself — its node follows automatically.` })
+  }
+  const result = renameNode(node.id, req.body?.name)
+  if (result.error) return res.status(400).json({ error: result.error })
+  res.json(result.node)
+})
+
+// Re-file a node under a different group. Needs `resources.organise` at both
+// ends: moving a connection out of a group you control and into one you don't
+// would otherwise be a way to grant yourself access to it.
+app.put('/api/resource-tree/:id/move', (req, res) => {
+  const node = requireNode(req, res, req.params.id, 'resources.organise')
+  if (!node) return
+  const target = requireNode(req, res, req.body?.parentId, 'resources.organise')
+  if (!target) return
+  // Re-filing a *connection* is a change to who may open the database, because a
+  // group's roster can use what is filed under it (server/auth.js
+  // `userCanAccessConnection`). `resources.organise` alone would otherwise be a
+  // way to read every database in the workspace: move them one by one into a
+  // group you are on the roster of. So moving one asks the same question its own
+  // routes ask — manage every connection here, or own this one. Tidying the tree
+  // still moves groups and everything else freely.
+  const caller = authUser(req)
+  if (node.type === 'connection' && !isSystemAdmin(caller)) {
+    const conn = getConnection(node.resourceId)
+    if (conn && conn.ownerId !== caller.id && !permissionsAtNode(node, caller.id).has('connections.manage')) {
+      return res.status(403).json({ error: 'You need to own this connection to move it.' })
+    }
+  }
+  const result = moveNode(node.id, target.id)
+  if (result.error) return res.status(400).json({ error: result.error })
+  res.json(result.node)
+})
+
+// Hand a node over. Ownership cascades, so this is the strongest thing the tree
+// can do — only the current owner (who resolves to every permission here) or an
+// instance admin can.
+app.put('/api/resource-tree/:id/owner', (req, res) => {
+  const user = requireAuth(req, res)
+  if (!user) return
+  const node = getNode(req.params.id)
+  if (!node) return res.status(404).json({ error: 'Node not found' })
+  const ownsIt = ownsNode(node, user.id)
+  if (!isSystemAdmin(user) && !ownsIt) return res.status(403).json({ error: 'Only the owner can hand this over.' })
+
+  const ownerId = req.body?.ownerId || null
+  if (ownerId) {
+    const target = userRow(ownerId)
+    if (!target) return res.status(404).json({ error: 'User not found' })
+    // An instance admin holds no membership anywhere by design; making one the
+    // owner of a workspace node would hand them the data access that rule exists
+    // to withhold.
+    if (target.role === 'admin' && node.type !== 'application') {
+      return res.status(400).json({ error: 'An instance admin cannot own a workspace resource.' })
+    }
+    if (node.workspaceId && !isMember(node.workspaceId, ownerId)) {
+      return res.status(400).json({ error: 'The new owner must be a member of this workspace.' })
+    }
+  }
+  res.json(setNodeOwner(node.id, ownerId))
+})
+
+// Delete a group. What was filed inside it moves up rather than disappearing —
+// the resources still exist.
+app.delete('/api/resource-tree/:id', (req, res) => {
+  const node = requireNode(req, res, req.params.id, 'resources.organise')
+  if (!node) return
+  if (!CUSTOM_NODE_TYPES.includes(node.type)) {
+    return res.status(400).json({ error: `Delete the ${node.type} itself — its node goes with it.` })
+  }
+  // A node is deletable only when nothing is under it: re-filing what it held is
+  // the user's call, not a silent reparent they never asked for. It also settles
+  // by construction what `reparent` was there to prevent — a resource left with
+  // no node, invisible in the tree and unanswerable by the resolver.
+  const inside = childrenOf(node.id)
+  if (inside.length) {
+    return res.status(409).json({
+      error: `Move or delete the ${inside.length} item${inside.length === 1 ? '' : 's'} inside this group first.`,
+      children: inside.map((n) => ({ id: n.id, name: n.name, type: n.type })),
+    })
+  }
+  const result = deleteNode(node.id)
+  if (result.error) return res.status(400).json({ error: result.error })
+  res.json({ ok: true })
+})
+
+// ---- Grants on a node ----
+
+app.get('/api/resource-tree/:id/grants', (req, res) => {
+  const node = requireNode(req, res, req.params.id, null)
+  if (!node) return
+  res.json(listGrants(node.id))
+})
+
+// Give a person or group a role here. The role's requirement criteria decide
+// whether it may be granted at this node type at all (server/permissions.js).
+app.post('/api/resource-tree/:id/grants', (req, res) => {
+  const user = requireAuth(req, res)
+  if (!user) return
+  const node = requireNode(req, res, req.params.id, 'resources.grant')
+  if (!node) return
+  const { principalType, principalId, roleSlug, inherit } = req.body || {}
+  const result = addGrant(node.id, {
+    principalType,
+    principalId,
+    roleSlug,
+    inherit: inherit !== false,
+    createdBy: user.id,
+  })
+  if (result.error) return res.status(400).json({ error: result.error })
+  res.json(result.grant)
+})
+
+app.delete('/api/resource-tree/:id/grants/:grantId', (req, res) => {
+  const node = requireNode(req, res, req.params.id, 'resources.grant')
+  if (!node) return
+  removeGrant(req.params.grantId)
+  res.json({ ok: true })
+})
+
+// ---- Membership: who is inside a group ----
+//
+// Governed by `teams.manage`, deliberately NOT by `resources.organise`. Adding
+// someone to a group is granting them access — every grant naming that group
+// reaches them the moment they are in it — and none of that shows up on the
+// grant list of the node they just reached. Tidying the tree must not carry that
+// power with it.
+
+app.get('/api/resource-tree/:id/members', (req, res) => {
+  const node = requireNode(req, res, req.params.id, null)
+  if (!node) return
+  if (node.kind !== 'group') return res.status(400).json({ error: 'Only a group holds people.' })
+  res.json(listNodeMembers(node.id))
+})
+
+// A workspace's roster *is* its membership, so it answers to `members.manage`;
+// every other group's roster answers to `teams.manage`. Two capabilities, kept
+// separate on purpose: staffing a folder and admitting someone to the workspace
+// are different powers, and a role may carry one without the other.
+const rosterPermission = (node) => (node.type === 'workspace' ? 'members.manage' : 'teams.manage')
+
+app.post('/api/resource-tree/:id/members', (req, res) => {
+  const node = requireNode(req, res, req.params.id, null)
+  if (!node) return
+  if (!requireNode(req, res, req.params.id, rosterPermission(node))) return
+  const userId = req.body?.userId
+  if (!userId) return res.status(400).json({ error: 'userId is required.' })
+  const target = userRow(userId)
+  if (!target) return res.status(404).json({ error: 'User not found' })
+  // An instance admin holds no workspace membership by design — that is what
+  // keeps instance administration away from workspace data.
+  if (isSystemAdmin(target)) return res.status(400).json({ error: 'An instance admin cannot belong to a workspace.' })
+  // A group inside a workspace can only staff itself from that workspace's
+  // members. The workspace node is the exception: its roster is where membership
+  // begins, so requiring membership first would be circular.
+  if (node.type !== 'workspace' && node.workspaceId && !isMember(node.workspaceId, userId)) {
+    return res.status(400).json({ error: 'That person is not a member of this workspace.' })
+  }
+  if (node.type === 'workspace') {
+    // Goes through the workspace module so the roster and the membership's grant
+    // are written together, exactly as an invite would.
+    addWorkspaceMember(node.resourceId, userId, 'member')
+    return res.json({ ok: true })
+  }
+  const result = addNodeMember(node.id, userId)
+  if (result.error) return res.status(400).json({ error: result.error })
+  res.json({ ok: true })
+})
+
+app.delete('/api/resource-tree/:id/members/:userId', (req, res) => {
+  const node = requireNode(req, res, req.params.id, null)
+  if (!node) return
+  const user = requireNode(req, res, req.params.id, rosterPermission(node))
+  if (!user) return
+  if (node.type === 'workspace') {
+    // Removing a workspace member is the full cascade (their grants, their group
+    // seats, anything they owned inside), and it must not strand the workspace.
+    if (req.params.userId === authUser(req).id) return res.status(400).json({ error: "You can't remove yourself." })
+    const role = memberRole(node.resourceId, req.params.userId)
+    if (role && isOwnerRole(role) && countOwners(node.resourceId) <= 1) {
+      return res.status(400).json({ error: 'The workspace needs at least one owner.' })
+    }
+    removeWorkspaceMember(node.resourceId, req.params.userId)
+    return res.json({ ok: true })
+  }
+  removeNodeMember(node.id, req.params.userId)
+  res.json({ ok: true })
+})
 
 // ---- Members ----
 
@@ -704,21 +1305,23 @@ app.get('/api/workspaces/:id/members', (req, res) => {
   res.json(listWorkspaceMembers(req.params.id))
 })
 
-// Promote a member to owner, or demote an owner back to member (owner). A
-// workspace can have any number of owners but never zero, and an instance admin
-// can't be given one of the seats.
+// Move a member to a different role. Any role in the instance catalog is valid;
+// a workspace can have any number of owners but never zero, and an instance
+// admin can't be given a seat at all.
 app.put('/api/workspaces/:id/members/:userId', (req, res) => {
-  const user = requireOwner(req, res, req.params.id)
+  const user = requirePermission(req, res, req.params.id, 'members.manage')
   if (!user) return
   const role = req.body?.role
-  if (!WORKSPACE_ROLES.includes(role)) return res.status(400).json({ error: "Role must be 'owner' or 'member'." })
+  if (!roleExists(role)) return res.status(400).json({ error: 'Unknown role.' })
   const current = memberRole(req.params.id, req.params.userId)
-  if (!current) return res.status(404).json({ error: 'Member not found' })
+  if (!isMember(req.params.id, req.params.userId)) return res.status(404).json({ error: 'Member not found' })
   const target = userRow(req.params.userId)
-  if (role === 'owner' && isSystemAdmin(target)) {
-    return res.status(400).json({ error: 'An instance admin cannot own a workspace.' })
+  if (isSystemAdmin(target)) {
+    return res.status(400).json({ error: 'An instance admin cannot belong to a workspace.' })
   }
-  if (current === 'owner' && role === 'member' && countOwners(req.params.id) <= 1) {
+  // "Owner" is whoever holds workspace.manage — so this catches moving the last
+  // one to any role that doesn't, not just to the built-in 'member'.
+  if (isOwnerRole(current) && !isOwnerRole(role) && countOwners(req.params.id) <= 1) {
     return res.status(400).json({ error: 'The workspace needs at least one owner.' })
   }
   setWorkspaceMemberRole(req.params.id, req.params.userId, role)
@@ -729,13 +1332,17 @@ app.put('/api/workspaces/:id/members/:userId', (req, res) => {
 // unknown/pending emails get a pending account + an invite link. The link is
 // always returned so it works without SMTP.
 app.post('/api/workspaces/:id/members', async (req, res) => {
-  const user = requireOwner(req, res, req.params.id)
+  const user = requirePermission(req, res, req.params.id, 'members.manage')
   if (!user) return
   const email = (req.body?.email || '').trim().toLowerCase()
   if (!email) return res.status(400).json({ error: 'Email is required.' })
+  // Invite straight into a role rather than always landing on 'member' and
+  // needing a second call to move them.
+  const role = req.body?.role || 'member'
+  if (!roleExists(role)) return res.status(400).json({ error: 'Unknown role.' })
 
   let target = getUserByEmail(email)
-  if (target && memberRole(req.params.id, target.id)) {
+  if (target && isMember(req.params.id, target.id)) {
     return res.status(400).json({ error: 'That person is already a member.' })
   }
   if (isSystemAdmin(target)) {
@@ -753,7 +1360,7 @@ app.post('/api/workspaces/:id/members', async (req, res) => {
     inviteLink = `${baseUrl(req)}/invite/${issueInviteToken(target.id, req.params.id)}`
   }
 
-  addWorkspaceMember(req.params.id, target.id, 'member')
+  addWorkspaceMember(req.params.id, target.id, role)
 
   // Email the invite link when SMTP is configured — non-fatal, link is returned regardless.
   let emailed = false
@@ -771,126 +1378,29 @@ app.post('/api/workspaces/:id/members', async (req, res) => {
   }
 
   res.json({
-    member: { userId: target.id, email, name: target.name || email, role: 'member', status: target.status },
+    member: { userId: target.id, email, name: target.name || email, role, status: target.status },
     inviteLink,
     emailed,
   })
 })
 
-// Remove a member (owner). Can't remove yourself or the last owner.
+// Remove a member. Can't remove yourself or the last owner.
 app.delete('/api/workspaces/:id/members/:userId', (req, res) => {
-  const user = requireOwner(req, res, req.params.id)
+  const user = requirePermission(req, res, req.params.id, 'members.manage')
   if (!user) return
   if (req.params.userId === user.id) return res.status(400).json({ error: "You can't remove yourself." })
   const role = memberRole(req.params.id, req.params.userId)
-  if (!role) return res.status(404).json({ error: 'Member not found' })
-  if (role === 'owner' && countOwners(req.params.id) <= 1) {
+  if (!isMember(req.params.id, req.params.userId)) return res.status(404).json({ error: 'Member not found' })
+  if (isOwnerRole(role) && countOwners(req.params.id) <= 1) {
     return res.status(400).json({ error: 'The workspace needs at least one owner.' })
   }
-  // Drops the membership plus everything it granted (team seats, individual
+  // Drops the membership plus everything it granted (group seats, individual
   // connection grants).
   removeWorkspaceMember(req.params.id, req.params.userId)
   // Clean up a pending user that no longer belongs to any workspace.
-  const left = meta.prepare('SELECT COUNT(*) c FROM workspace_members WHERE user_id = ?').get(req.params.userId).c
+  const left = membershipsOf(req.params.userId).length
   const u = meta.prepare('SELECT status FROM users WHERE id = ?').get(req.params.userId)
   if (left === 0 && u?.status === 'pending') meta.prepare('DELETE FROM users WHERE id = ?').run(req.params.userId)
-  res.json({ ok: true })
-})
-
-// ============================================================================
-// Teams (workspace-scoped groups of members)
-// ============================================================================
-
-// List a workspace's teams with member counts (any member can view).
-app.get('/api/workspaces/:id/teams', (req, res) => {
-  const user = requireAuth(req, res)
-  if (!user) return
-  if (!memberRole(req.params.id, user.id)) return res.status(403).json({ error: 'Forbidden' })
-  const rows = meta
-    .prepare(
-      `SELECT t.id, t.name, t.created_at,
-              (SELECT COUNT(*) FROM team_members tm WHERE tm.team_id = t.id) AS memberCount
-       FROM teams t WHERE t.workspace_id = ? ORDER BY t.created_at`
-    )
-    .all(req.params.id)
-  res.json(rows.map((r) => ({ id: r.id, name: r.name, memberCount: r.memberCount, createdAt: r.created_at })))
-})
-
-// Create a team (admin).
-app.post('/api/workspaces/:id/teams', (req, res) => {
-  const user = requireOwner(req, res, req.params.id)
-  if (!user) return
-  const name = (req.body?.name || '').trim()
-  if (!name) return res.status(400).json({ error: 'Team name is required.' })
-  const id = randomUUID()
-  const now = Date.now()
-  meta.prepare('INSERT INTO teams (id, workspace_id, name, created_at) VALUES (?, ?, ?, ?)').run(id, req.params.id, name, now)
-  res.json({ id, name, memberCount: 0, createdAt: now })
-})
-
-// Rename a team (admin).
-app.put('/api/workspaces/:id/teams/:teamId', (req, res) => {
-  const user = requireOwner(req, res, req.params.id)
-  if (!user) return
-  const team = meta.prepare('SELECT id FROM teams WHERE id = ? AND workspace_id = ?').get(req.params.teamId, req.params.id)
-  if (!team) return res.status(404).json({ error: 'Team not found' })
-  const name = (req.body?.name || '').trim()
-  if (!name) return res.status(400).json({ error: 'Team name is required.' })
-  meta.prepare('UPDATE teams SET name = ? WHERE id = ?').run(name, req.params.teamId)
-  res.json({ ok: true })
-})
-
-// Delete a team (admin) — cascades its members and any connection assignments.
-app.delete('/api/workspaces/:id/teams/:teamId', (req, res) => {
-  const user = requireOwner(req, res, req.params.id)
-  if (!user) return
-  const team = meta.prepare('SELECT id FROM teams WHERE id = ? AND workspace_id = ?').get(req.params.teamId, req.params.id)
-  if (!team) return res.status(404).json({ error: 'Team not found' })
-  meta.prepare('DELETE FROM team_members WHERE team_id = ?').run(req.params.teamId)
-  meta.prepare("DELETE FROM connection_access WHERE principal_type = 'team' AND principal_id = ?").run(req.params.teamId)
-  meta.prepare('DELETE FROM teams WHERE id = ?').run(req.params.teamId)
-  res.json({ ok: true })
-})
-
-// List a team's members (any workspace member can view).
-app.get('/api/workspaces/:id/teams/:teamId/members', (req, res) => {
-  const user = requireAuth(req, res)
-  if (!user) return
-  if (!memberRole(req.params.id, user.id)) return res.status(403).json({ error: 'Forbidden' })
-  const team = meta.prepare('SELECT id FROM teams WHERE id = ? AND workspace_id = ?').get(req.params.teamId, req.params.id)
-  if (!team) return res.status(404).json({ error: 'Team not found' })
-  const rows = meta
-    .prepare(
-      `SELECT u.id AS userId, u.username AS email, u.name
-       FROM team_members tm JOIN users u ON u.id = tm.user_id
-       WHERE tm.team_id = ? ORDER BY tm.created_at`
-    )
-    .all(req.params.teamId)
-  res.json(rows)
-})
-
-// Add a member to a team (admin). The user must belong to the workspace.
-app.post('/api/workspaces/:id/teams/:teamId/members', (req, res) => {
-  const user = requireOwner(req, res, req.params.id)
-  if (!user) return
-  const team = meta.prepare('SELECT id FROM teams WHERE id = ? AND workspace_id = ?').get(req.params.teamId, req.params.id)
-  if (!team) return res.status(404).json({ error: 'Team not found' })
-  const userId = req.body?.userId
-  if (!userId) return res.status(400).json({ error: 'userId is required.' })
-  if (!memberRole(req.params.id, userId)) return res.status(400).json({ error: 'That person is not a workspace member.' })
-  meta
-    .prepare('INSERT OR IGNORE INTO team_members (id, team_id, user_id, created_at) VALUES (?, ?, ?, ?)')
-    .run(randomUUID(), req.params.teamId, userId, Date.now())
-  res.json({ ok: true })
-})
-
-// Remove a member from a team (admin).
-app.delete('/api/workspaces/:id/teams/:teamId/members/:userId', (req, res) => {
-  const user = requireOwner(req, res, req.params.id)
-  if (!user) return
-  const team = meta.prepare('SELECT id FROM teams WHERE id = ? AND workspace_id = ?').get(req.params.teamId, req.params.id)
-  if (!team) return res.status(404).json({ error: 'Team not found' })
-  meta.prepare('DELETE FROM team_members WHERE team_id = ? AND user_id = ?').run(req.params.teamId, req.params.userId)
   res.json({ ok: true })
 })
 
@@ -904,7 +1414,7 @@ app.get('/api/connections', (req, res) => {
   if (!user) return
   const workspaceId = req.query.workspace
   if (!workspaceId) return res.json([])
-  if (!memberRole(workspaceId, user.id)) return res.status(403).json({ error: 'Forbidden' })
+  if (!isMember(workspaceId, user.id)) return res.status(403).json({ error: 'Forbidden' })
   res.json(listConnections().filter((c) => c.workspaceId === workspaceId && userCanAccessConnection(c, user.id)))
 })
 
@@ -917,29 +1427,39 @@ app.post('/api/test-connection', async (req, res) => {
   }
 })
 
-// Add connection to a workspace (owner). Members use connections; they don't
-// define them — the credentials a connection carries are the workspace's, not
-// something an individual member gets to point somewhere else.
+// Add a connection to a workspace. Defining one is `connections.create`: the
+// credentials it carries are the workspace's, not something anyone who can use a
+// database gets to point somewhere else.
 app.post('/api/connections', (req, res) => {
   const workspaceId = req.body.workspaceId
   if (!workspaceId) return res.status(403).json({ error: 'Forbidden' })
-  const user = requireOwner(req, res, workspaceId)
+  const user = requirePermission(req, res, workspaceId, 'connections.create')
   if (!user) return
   // Default the owner to the creating user (unless one was explicitly provided).
   const conn = { ...req.body, id: randomUUID(), workspaceId, ownerId: req.body.ownerId || user.id }
   saveConnection(conn)
+  // File it in the resource tree. `parentId` lets the caller drop it straight
+  // into a group they organise with; without one it lands under the workspace.
+  createResourceNode('connection', conn.id, {
+    parentId: req.body.parentNodeId || null,
+    name: conn.name,
+    ownerId: conn.ownerId,
+    workspaceId,
+  })
   res.json(getConnection(conn.id))
 })
 
-// Import an export document as a brand-new connection in `workspaceId` (owner).
+// Import an export document as a brand-new connection in `workspaceId`.
 // Mounted above the `/api/connections/:id` guard so "import" isn't read as an id.
 app.post('/api/connections/import', (req, res) => {
   const { workspaceId, document, name, settings } = req.body || {}
   if (!workspaceId) return res.status(403).json({ error: 'Forbidden' })
-  const user = requireOwner(req, res, workspaceId)
+  const user = requirePermission(req, res, workspaceId, 'connections.create')
   if (!user) return
   try {
-    res.json(importConnectionDoc(document, { workspaceId, ownerId: user.id, name, settings }))
+    const imported = importConnectionDoc(document, { workspaceId, ownerId: user.id, name, settings })
+    createResourceNode('connection', imported.id, { name: imported.name, ownerId: user.id, workspaceId })
+    res.json(imported)
   } catch (error) {
     fail(res, error)
   }
@@ -951,37 +1471,39 @@ app.get('/api/storages', (req, res) => {
   if (!user) return
   const workspaceId = req.query.workspace
   if (!workspaceId) return res.json([])
-  if (!memberRole(workspaceId, user.id)) return res.status(403).json({ error: 'Forbidden' })
+  if (!isMember(workspaceId, user.id)) return res.status(403).json({ error: 'Forbidden' })
   res.json(listStorageRows(workspaceId))
 })
 
-// Create a storage destination (owner) — it holds credentials for somewhere the
-// workspace's data gets written, so it's owner-level like a connection.
+// Create a storage destination — it holds credentials for somewhere the
+// workspace's data gets written, so it carries its own permission.
 app.post('/api/storages', (req, res) => {
   const body = req.body || {}
   if (!body.workspaceId) return res.status(403).json({ error: 'Forbidden' })
-  const user = requireOwner(req, res, body.workspaceId)
+  const user = requirePermission(req, res, body.workspaceId, 'storage.manage')
   if (!user) return
   if (!body.name?.trim() || !body.bucket?.trim()) return res.status(400).json({ error: 'A name and bucket are required' })
-  res.json(createStorage(body.workspaceId, body))
+  const dest = createStorage(body.workspaceId, body)
+  createResourceNode('storage', dest.id, { name: dest.name, workspaceId: body.workspaceId })
+  res.json(dest)
 })
 
 // Guard every per-storage route: reading needs membership, changing needs
-// ownership.
+// `storage.manage`.
 app.use('/api/storages/:sid', (req, res, next) => {
   const user = requireAuth(req, res)
   if (!user) return
   const dest = getStorage(req.params.sid)
   if (!dest) return res.status(404).json({ error: 'Storage destination not found' })
-  const role = memberRole(dest.workspaceId, user.id)
-  if (!role) return res.status(403).json({ error: 'Forbidden' })
-  if (req.method !== 'GET' && role !== 'owner') return res.status(403).json({ error: 'Only a workspace owner can do that.' })
+  if (!isMember(dest.workspaceId, user.id)) return res.status(403).json({ error: 'Forbidden' })
+  if (req.method !== 'GET' && !requirePermission(req, res, dest.workspaceId, 'storage.manage')) return
   next()
 })
 
 app.put('/api/storages/:sid', (req, res) => {
   const merged = { ...getStorage(req.params.sid), ...(req.body || {}) }
   if (!merged.name?.trim() || !merged.bucket?.trim()) return res.status(400).json({ error: 'A name and bucket are required' })
+  renameResourceNode('storage', req.params.sid, merged.name.trim())
   res.json(updateStorage(req.params.sid, merged))
 })
 
@@ -990,6 +1512,7 @@ app.delete('/api/storages/:sid', (req, res) => {
     return res.status(409).json({ error: 'This storage destination is used by a workflow and cannot be deleted.' })
   }
   deleteStorage(req.params.sid)
+  deleteResourceNode('storage', req.params.sid)
   res.json({ ok: true })
 })
 
@@ -1010,9 +1533,15 @@ app.use('/api/connections/:id', (req, res, next) => {
 
 /**
  * Editing the *connection record* — its credentials, target host, access list —
- * is an owner's job; using the database behind it is a member's. So this guard
- * sits on the handful of routes that change the record, while every /:id/* data
- * route stays open to members (CLAUDE.md "AUTH MODEL").
+ * versus using the database behind it. This guard sits on the handful of routes
+ * that change the record; every /:id/* data route stays open to whoever the
+ * access list grants (CLAUDE.md "AUTH MODEL").
+ *
+ * Two ways to pass, which is the point of `connections.owner_id`: hold
+ * `connections.manage` and you may change any connection in the workspace; own
+ * this one and you may change it whatever your role. That is what lets a plain
+ * member run their own connection — its backups, its access list — without being
+ * given the whole workspace.
  */
 const requireConnectionOwner = (req, res, what = 'change a connection') => {
   const conn = getConnection(req.params.id)
@@ -1020,8 +1549,9 @@ const requireConnectionOwner = (req, res, what = 'change a connection') => {
     res.status(404).json({ error: 'Connection not found' })
     return null
   }
-  if (conn.workspaceId && memberRole(conn.workspaceId, authUser(req).id) !== 'owner') {
-    res.status(403).json({ error: `Only a workspace owner can ${what}.` })
+  const userId = authUser(req).id
+  if (conn.workspaceId && conn.ownerId !== userId && !can(conn.workspaceId, userId, 'connections.manage')) {
+    res.status(403).json({ error: `You need to own this connection to ${what}.` })
     return null
   }
   return conn
@@ -1034,6 +1564,7 @@ app.put('/api/connections/:id', async (req, res) => {
   if (!existing) return res.status(404).json({ error: 'Connection not found' })
   const updated = { ...existing, ...req.body, id: req.params.id }
   saveConnection(updated)
+  renameResourceNode('connection', req.params.id, updated.name)
 
   // Drop any cached pool/handle so the next query reconnects with the new
   // config (otherwise edits to host/credentials/database are ignored), and end
@@ -1063,6 +1594,9 @@ app.delete('/api/connections/:id', async (req, res) => {
   meta.prepare('DELETE FROM dashboards WHERE connection_id = ?').run(req.params.id)
   meta.prepare('DELETE FROM query_history WHERE connection_id = ?').run(req.params.id)
   meta.prepare('DELETE FROM connection_access WHERE connection_id = ?').run(req.params.id)
+  // Takes the connection's node and everything filed under it (its dashboard and
+  // workflow nodes), plus every grant made on any of them.
+  deleteResourceNode('connection', req.params.id)
   res.json({ ok: true })
 })
 
@@ -1078,7 +1612,34 @@ app.get('/api/connections/:id/export', (req, res) => {
   res.json(doc)
 })
 
-// ---- Connection access (which teams/members may see this connection) ----
+/**
+ * Hand a connection to someone else in the workspace.
+ *
+ * Its own permission rather than part of `connections.manage`, because it is the
+ * one change that can take a connection *away* from the caller: an owner moving
+ * a connection to a member gives that member full control of the record and
+ * keeps none for themselves unless their role says otherwise.
+ *
+ * The new owner must already be a member — ownership is not a way to grant
+ * workspace access — and an instance admin can never hold it, for the same
+ * reason they hold no membership.
+ */
+app.put('/api/connections/:id/owner', (req, res) => {
+  const conn = getConnection(req.params.id)
+  if (!conn) return res.status(404).json({ error: 'Connection not found' })
+  if (!conn.workspaceId) return res.status(400).json({ error: 'This connection does not belong to a workspace.' })
+  if (!requirePermission(req, res, conn.workspaceId, 'connections.transfer')) return
+
+  const ownerId = req.body?.ownerId
+  if (!ownerId) return res.status(400).json({ error: 'ownerId is required.' })
+  if (!isMember(conn.workspaceId, ownerId)) return res.status(400).json({ error: 'That person is not a member of this workspace.' })
+  if (isSystemAdmin(userRow(ownerId))) return res.status(400).json({ error: 'An instance admin cannot own a connection.' })
+
+  saveConnection({ ...conn, ownerId })
+  res.json(getConnection(req.params.id))
+})
+
+// ---- Connection access (which groups/members may see this connection) ----
 // Any user who passes the access guard can read the assignment; only a
 // workspace owner can change it.
 app.get('/api/connections/:id/access', (req, res) => {
@@ -1087,9 +1648,9 @@ app.get('/api/connections/:id/access', (req, res) => {
 
 app.put('/api/connections/:id/access', (req, res) => {
   if (!requireConnectionOwner(req, res, "change a connection's access list")) return
-  const teams = Array.isArray(req.body?.teams) ? req.body.teams : []
+  const groups = Array.isArray(req.body?.groups) ? req.body.groups : []
   const users = Array.isArray(req.body?.users) ? req.body.users : []
-  setConnectionAccess(req.params.id, { teams, users })
+  setConnectionAccess(req.params.id, { groups, users })
   res.json(connectionAccess(req.params.id))
 })
 
@@ -1280,6 +1841,23 @@ app.delete('/api/connections/:id/saved/:sid', (req, res) => {
 // A workflow can be marked `protected` (undeletable) — `DELETE` 409s on it,
 // everything else behaves like a normal workflow. Nothing currently sets this
 // automatically (backups are a separate system — see the Backup section below).
+
+// Every workflow in a workspace, in one list — what the home area's Workflow
+// section shows. Membership gates seeing the workspace at all; each connection
+// is then filtered by whether the caller may open it, so this can never show
+// more than the per-connection routes below would.
+app.get('/api/workspaces/:id/workflows', (req, res) => {
+  const user = requireMember(req, res, req.params.id)
+  if (!user) return
+  const conns = listConnections().filter((c) => c.workspaceId === req.params.id && userCanAccessConnection(c, user.id))
+  const byId = new Map(conns.map((c) => [c.id, c]))
+  res.json(
+    listWorkflowsForConnections([...byId.keys()]).map((w) => {
+      const conn = byId.get(w.connectionId)
+      return { ...w, connectionName: conn.name, connectionType: conn.type }
+    })
+  )
+})
 
 app.get('/api/connections/:id/workflows', (req, res) => {
   const rows = meta
@@ -1479,6 +2057,53 @@ app.all('/api/hooks/wf/:wid/:token', async (req, res) => {
 // The config shape is owned by the frontend (src/features/dashboard/types.ts);
 // the server just stores and returns it, so it stays database-agnostic.
 // Dashboards can live in a folder (folders table, type='dashboard').
+
+// Every dashboard in a workspace, in one list — what the home area's Dashboard
+// section shows. Mirrors the workspace-wide workflows route above: membership
+// gates seeing the workspace at all, then each connection is filtered by whether
+// the caller may open it, so this can never show more than the per-connection
+// route below would.
+//
+// The config is summarised (widget/variable counts) rather than returned: the
+// list only needs the shape of a dashboard, and a workspace's worth of full
+// configs is a lot of JSON to send for a table nobody renders charts from.
+app.get('/api/workspaces/:id/dashboards', (req, res) => {
+  const user = requireMember(req, res, req.params.id)
+  if (!user) return
+  const conns = listConnections().filter((c) => c.workspaceId === req.params.id && userCanAccessConnection(c, user.id))
+  if (!conns.length) return res.json([])
+  const byId = new Map(conns.map((c) => [c.id, c]))
+  const ids = [...byId.keys()]
+  const rows = meta
+    .prepare(
+      `SELECT id, connection_id, name, config, folder_id, ts FROM dashboards
+        WHERE connection_id IN (${ids.map(() => '?').join(', ')})
+        ORDER BY ts DESC`
+    )
+    .all(...ids)
+  res.json(
+    rows.map((r) => {
+      const conn = byId.get(r.connection_id)
+      // A config that won't parse is a dashboard that still exists — report it
+      // with zero widgets rather than failing the whole list.
+      let config = {}
+      try {
+        config = JSON.parse(r.config || '{}')
+      } catch {}
+      return {
+        id: r.id,
+        connectionId: r.connection_id,
+        connectionName: conn.name,
+        connectionType: conn.type,
+        name: r.name,
+        ts: r.ts,
+        folderId: r.folder_id || null,
+        widgetCount: Array.isArray(config.widgets) ? config.widgets.length : 0,
+        variableCount: Array.isArray(config.variables) ? config.variables.length : 0,
+      }
+    })
+  )
+})
 
 app.get('/api/connections/:id/dashboards', (req, res) => {
   const rows = meta
@@ -2085,7 +2710,9 @@ app.delete('/api/connections/:id/sessions/:sessionId', async (req, res) => {
   if (!conn) return
   const user = authUser(req)
   const force = ['1', 'true', 'yes'].includes(String(req.query.force || '').toLowerCase())
-  if (force && conn.workspaceId && memberRole(conn.workspaceId, user.id) !== 'owner') {
+  // Asks for the capability, not the role name: an admin may have defined some
+  // other role that manages the workspace, and it should close sessions too.
+  if (force && conn.workspaceId && !can(conn.workspaceId, user.id, 'workspace.manage')) {
     return res.status(403).json({ error: 'Only a workspace owner can close someone else’s session.' })
   }
   try {

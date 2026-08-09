@@ -60,6 +60,24 @@ export async function listWorkflows(connectionId: string): Promise<WorkflowSumma
   return safeRequest(`/connections/${connectionId}/workflows`, [])
 }
 
+// One row of the workspace-wide list: a workflow plus the connection it is
+// filed under, because that list spans every connection in the workspace.
+export type WorkspaceWorkflow = WorkflowSummary & {
+  connectionId: string
+  connectionName: string
+  connectionType: string
+  nextRunAt: number | null
+  lastRun: { status: 'success' | 'failed'; at: number } | null
+}
+
+// Every workflow in a workspace the caller can reach — one request rather than
+// one per connection. The server filters by connection access, so this is never
+// wider than listWorkflows() would be, connection by connection.
+export async function listWorkspaceWorkflows(workspaceId: string): Promise<WorkspaceWorkflow[]> {
+  if (!workspaceId) return []
+  return safeRequest(`/workspaces/${workspaceId}/workflows`, [])
+}
+
 export async function getWorkflow(connectionId: string, wid: string): Promise<Workflow> {
   return request(`/connections/${connectionId}/workflows/${wid}`)
 }

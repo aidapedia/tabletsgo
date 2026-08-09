@@ -7,12 +7,23 @@ import { Input } from '@/shared/ui/form/Input'
 import PasswordInput from '@/shared/ui/form/PasswordInput'
 import { Form, FormField } from '@/shared/ui/form/Form'
 
-// First-run wizard: create the admin account and the first workspace. Shown
-// (before the login page) only while no users exist — see RequireSetup.
-export default function SetupPage() {
+type Props = {
+  /** The instance already has accounts — the wizard promotes one instead of creating one. */
+  hasUsers?: boolean
+  onComplete?: () => void
+}
+
+// The wizard runs until the instance has an administrator, and it creates only
+// that account — no workspace. An admin holds no workspace access, so the first
+// workspace is theirs to create, with a real owner, once they are signed in.
+//
+// Two shapes, because an instance with no admin isn't always an empty one:
+//   - empty instance  → create the administrator account
+//   - has accounts    → prove control of one of them and promote it
+export default function SetupPage({ hasUsers = false, onComplete }: Props) {
   const { authenticate } = useAuth()
   const navigate = useNavigate()
-  const [form, setForm] = useState({ name: '', email: '', password: '', workspace: '' })
+  const [form, setForm] = useState({ name: '', email: '', password: '' })
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
@@ -27,9 +38,9 @@ export default function SetupPage() {
         email: form.email.trim(),
         password: form.password,
         name: form.name.trim(),
-        workspace: form.workspace.trim(),
       })
       authenticate(user, token)
+      onComplete?.()
       navigate('/')
     } catch (err) {
       setError(err.message)
@@ -48,8 +59,12 @@ export default function SetupPage() {
           </span>
         </div>
 
-        <h2 className="text-[20px] font-bold">Welcome — let's get set up</h2>
-        <p className="mt-1.5 mb-6 text-[12px] text-ink-dim">Create your admin account and your first workspace.</p>
+        <h2 className="text-[20px] font-bold">{hasUsers ? 'This instance has no administrator' : "Welcome — let's get set up"}</h2>
+        <p className="mt-1.5 mb-6 text-[12px] text-ink-dim">
+          {hasUsers
+            ? 'Sign in with an existing account to make it the instance administrator.'
+            : 'Create the instance administrator. Workspaces come after you sign in.'}
+        </p>
 
         {error && (
           <div className="mb-[18px] rounded-soft border border-red/25 bg-red/10 px-3.5 py-2.5 text-[11px] text-[#ff9b9b]">
@@ -57,25 +72,43 @@ export default function SetupPage() {
           </div>
         )}
 
-        <FormField label="Workspace name" className="mb-[18px]">
-          <Input type="text" placeholder="Acme Inc." value={form.workspace} onChange={set('workspace')} required autoFocus />
-        </FormField>
-
-        <div className="mb-[18px] grid grid-cols-2 gap-3">
+        {!hasUsers && (
           <FormField label="Your name">
-            <Input type="text" placeholder="Jane Doe" value={form.name} onChange={set('name')} />
+            <Input type="text" placeholder="Jane Doe" value={form.name} onChange={set('name')} autoFocus />
           </FormField>
-          <FormField label="Admin email">
-            <Input type="email" autoComplete="username" placeholder="admin@acme.com" value={form.email} onChange={set('email')} required />
-          </FormField>
-        </div>
+        )}
 
-        <FormField label="Password" className="mb-6">
-          <PasswordInput autoComplete="new-password" placeholder="••••••••" value={form.password} onChange={set('password')} required />
+        <FormField label={hasUsers ? 'Account email' : 'Admin email'}>
+          <Input
+            type="email"
+            autoComplete="username"
+            placeholder="admin@acme.com"
+            value={form.email}
+            onChange={set('email')}
+            required
+            autoFocus={hasUsers}
+          />
         </FormField>
+
+        <FormField label={hasUsers ? 'Current password' : 'Password'} className="!mb-6">
+          <PasswordInput
+            autoComplete={hasUsers ? 'current-password' : 'new-password'}
+            placeholder="••••••••"
+            value={form.password}
+            onChange={set('password')}
+            required
+          />
+        </FormField>
+
+        {hasUsers && (
+          <p className="-mt-3 mb-6 text-[11px] leading-snug text-ink-faint">
+            An administrator holds no workspace access, so this account leaves every workspace it belongs to. You can put
+            an owner back from the admin area afterwards.
+          </p>
+        )}
 
         <Button type="submit" variant="primary" size="lg" className="w-full" disabled={loading}>
-          {loading ? 'Creating…' : 'Create workspace'}
+          {loading ? 'Working…' : hasUsers ? 'Make this account admin' : 'Create admin account'}
         </Button>
       </Form>
     </div>
