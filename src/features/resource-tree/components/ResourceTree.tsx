@@ -3,7 +3,9 @@ import { ChevronRight, MoveIcon, PlusIcon } from '@/shared/ui/icons'
 import EmptyState from '@/shared/ui/feedback/EmptyState'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
 import ContextMenu from '@/shared/ui/overlay/ContextMenu'
-import { ancestorIds, nestNodes } from '../lib/tree'
+import { useAuth } from '@/features/auth'
+import { CreateWorkspaceDialog } from '@/features/admin'
+import { ancestorIds, canHold, nestNodes } from '../lib/tree'
 import type { NodeTypeMeta, ResourceNode } from '../types'
 import CreateGroupDialog from './CreateGroupDialog'
 import MoveNodeDialog from './MoveNodeDialog'
@@ -25,10 +27,14 @@ const rowIdle = 'text-ink-dim hover:bg-elevated hover:text-ink'
  * discloses nothing the tree didn't already.
  *
  * Right-clicking offers the two things that change the shape of the tree: a new
- * group inside a group, and re-filing this node somewhere else. Both are gated on
+ * node inside this one, and re-filing this node somewhere else. Both are gated on
  * `canOrganise`, which the server resolves per node — a grant deep in the tree
  * lets you organise there without holding anything at workspace level, so the row
  * itself is the only place that answer can come from.
+ *
+ * *What* a node may hold comes from the catalog, not from its `kind`: the
+ * application root is a group that holds workspaces only, so it offers "New
+ * workspace" and never "New group" — the offer the server would have refused.
  */
 export default function ResourceTree({
   nodes,
@@ -56,6 +62,19 @@ export default function ResourceTree({
   emptyLabel?: string
 }) {
   const { roots, childrenOf } = useMemo(() => nestNodes(nodes), [nodes])
+  const { user } = useAuth()
+  // A workspace is created with an owner, which is an instance-admin act: the
+  // server refuses POST /api/admin/workspaces to anyone else, so the item is
+  // theirs alone rather than an enabled row that always fails.
+  const isSystemAdmin = user?.role === 'admin'
+
+  // What this node may hold, of the two things a user makes by hand. Never both:
+  // no type in the catalog parents a workspace and a group.
+  const creatable = (node: ResourceNode): 'group' | 'workspace' | null => {
+    if (canHold(nodeTypes, node, 'group')) return 'group'
+    if (canHold(nodeTypes, node, 'workspace') && isSystemAdmin) return 'workspace'
+    return null
+  }
 
   // Collapsed rather than expanded ids: a tree that grows while you're looking at
   // it should reveal the new node, not hide it.
@@ -65,6 +84,7 @@ export default function ResourceTree({
   // rather than in the row, because where it lands and what it will inherit are
   // the parts worth seeing, and neither fits on a tree row.
   const [creatingIn, setCreatingIn] = useState<ResourceNode | null>(null)
+  const [creatingWorkspace, setCreatingWorkspace] = useState(false)
   const [moving, setMoving] = useState<ResourceNode | null>(null)
 
   // Reveal the selection when it changes from outside (a deep link, a search
@@ -104,10 +124,11 @@ export default function ResourceTree({
     else if (hasChildren) toggle(node.id)
   }
 
-  // A row with nothing to offer keeps the browser's own menu: the root can only
-  // hold a new group, and a resource can only be moved.
+  // A row with nothing to offer keeps the browser's own menu: a node that holds
+  // nothing you can create and has nowhere to move is not worth a menu.
   const handleContextMenu = (e: React.MouseEvent, node: ResourceNode) => {
-    if (node.kind !== 'group' && !node.parentId) return
+    const canMove = nodeTypes.length > 0 && !!node.parentId
+    if (!creatable(node) && !canMove) return
     e.preventDefault()
     setMenu({ x: e.clientX, y: e.clientY, node })
   }
@@ -186,9 +207,20 @@ export default function ResourceTree({
 
       {menu && (
         <ContextMenu x={menu.x} y={menu.y} width={220} onClose={() => setMenu(null)}>
-          {menu.node.kind === 'group' && (
+          {creatable(menu.node) === 'group' && (
             <MenuItem disabled={!menu.node.canOrganise} onClick={() => startCreate(menu.node)}>
               <PlusIcon width={14} height={14} /> New group
+            </MenuItem>
+          )}
+          {creatable(menu.node) === 'workspace' && (
+            <MenuItem
+              disabled={!menu.node.canOrganise}
+              onClick={() => {
+                setCreatingWorkspace(true)
+                setMenu(null)
+              }}
+            >
+              <PlusIcon width={14} height={14} /> New workspace
             </MenuItem>
           )}
           {nodeTypes.length > 0 && menu.node.parentId && (
@@ -213,6 +245,18 @@ export default function ResourceTree({
             </p>
           )}
         </ContextMenu>
+      )}
+
+      {creatingWorkspace && (
+        <CreateWorkspaceDialog
+          onClose={() => setCreatingWorkspace(false)}
+          onCreated={() => {
+            setCreatingWorkspace(false)
+            // The node mirroring it is created with the row, so the tree has it
+            // as soon as it reloads.
+            onChanged?.()
+          }}
+        />
       )}
 
       {creatingIn && (
