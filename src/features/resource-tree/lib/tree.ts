@@ -1,4 +1,4 @@
-import type { NodeType, ResourceNode } from '../types'
+import type { NodeType, NodeTypeMeta, ResourceNode } from '../types'
 
 /**
  * Nest the flat node list the server sends.
@@ -54,6 +54,26 @@ export function nodeHref(node: ResourceNode): string | null {
     default:
       return null
   }
+}
+
+/**
+ * What a node of this type may hold, straight from the catalog the server
+ * publishes — the same `children` list `canParent()` enforces on the way in.
+ *
+ * Asking the catalog rather than `kind` is what keeps the UI from offering a
+ * shape the server refuses: the application root is a group *and* holds only
+ * workspaces, so "new group" belongs on a workspace or a group, never there.
+ * An empty catalog (the read degraded) falls back to the rule that has always
+ * held rather than offering everything.
+ */
+export function childTypes(nodeTypes: NodeTypeMeta[], type: NodeType): NodeType[] {
+  return nodeTypes.find((t) => t.type === type)?.children || []
+}
+
+/** May a node created by hand of type `child` be filed directly into `node`? */
+export function canHold(nodeTypes: NodeTypeMeta[], node: ResourceNode, child: NodeType): boolean {
+  if (!nodeTypes.length) return child === 'group' && node.kind === 'group' && node.type !== 'application'
+  return childTypes(nodeTypes, node.type).includes(child)
 }
 
 /** Human label for a type, for the places that don't have the catalog to hand. */

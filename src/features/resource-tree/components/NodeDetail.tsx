@@ -8,8 +8,10 @@ import EmptyState from '@/shared/ui/feedback/EmptyState'
 import LoadingState from '@/shared/ui/feedback/LoadingState'
 import { useToast } from '@/shared/ui/feedback/Toast'
 import { CloseIcon, EditIcon, FolderPlusIcon, MoveIcon, TrashIcon } from '@/shared/ui/icons'
+import { useAuth } from '@/features/auth'
+import { CreateWorkspaceDialog } from '@/features/admin'
 import { createGroup, deleteNode, renameNode } from '../api'
-import { TYPE_LABEL } from '../lib/tree'
+import { canHold, TYPE_LABEL } from '../lib/tree'
 import type { GrantableRole, NodeDetail as NodeDetailData, NodeTypeMeta, ResourceNode } from '../types'
 import NodePeople from './NodePeople'
 import MoveNodeDialog from './MoveNodeDialog'
@@ -51,7 +53,9 @@ export default function NodeDetail({
   onChanged: () => void
 }) {
   const toast = useToast()
+  const { user } = useAuth()
   const [creating, setCreating] = useState(false)
+  const [creatingWorkspace, setCreatingWorkspace] = useState(false)
   const [groupName, setGroupName] = useState('')
   const [renaming, setRenaming] = useState(false)
   const [newName, setNewName] = useState('')
@@ -71,9 +75,12 @@ export default function NodeDetail({
   // workspace's roster is its membership, so there it is `members.manage`; the
   // server picks the same way.
   const canManageMembers = permissions.includes(node.type === 'workspace' ? 'members.manage' : 'teams.manage')
-  // Only a group can hold a new group; the catalog's `children` list is what the
-  // server enforces, and `group` is in it for every group type.
-  const canAddGroup = canOrganise && node.kind === 'group'
+  // What may be filed here comes from the catalog's `children` list — the same
+  // one the server enforces. Being a group is not enough: the application root
+  // is one and holds workspaces only, so it offers "new workspace" instead, and
+  // only to the instance admin who can name the owner a workspace needs.
+  const canAddGroup = canOrganise && canHold(nodeTypes, node, 'group')
+  const canAddWorkspace = canOrganise && canHold(nodeTypes, node, 'workspace') && user?.role === 'admin'
   // Re-filing needs `resources.organise` here *and* at the destination; the
   // picker resolves the far end, this is the near one. The root has nowhere to
   // go, which is the only node that can't move at all — every other node shows
@@ -279,6 +286,16 @@ export default function NodeDetail({
                   <FolderPlusIcon width={14} height={14} />
                 </IconButton>
               )}
+              {canAddWorkspace && (
+                <IconButton
+                  size="sm"
+                  className="ml-auto"
+                  onClick={() => setCreatingWorkspace(true)}
+                  aria-label="New workspace"
+                >
+                  <FolderPlusIcon width={14} height={14} />
+                </IconButton>
+              )}
             </div>
 
             {creating && (
@@ -342,6 +359,16 @@ export default function NodeDetail({
           </div>
         </div>
       </div>
+
+      {creatingWorkspace && (
+        <CreateWorkspaceDialog
+          onClose={() => setCreatingWorkspace(false)}
+          onCreated={() => {
+            setCreatingWorkspace(false)
+            onChanged()
+          }}
+        />
+      )}
 
       {moving && (
         <MoveNodeDialog
