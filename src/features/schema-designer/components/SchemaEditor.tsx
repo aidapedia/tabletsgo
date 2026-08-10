@@ -263,6 +263,10 @@ const CREATE_TABLE_RE = /^\s*CREATE TABLE\s+"([^"]+)"\s*\(([\s\S]*)\)\s*;?\s*$/i
 // name -> item id
 // map of constraints being dropped (only the local `pending` id is trackable
 // for undo — items already pushed to the Changes panel are display-only).
+// Stable empty defaults — see the note on SchemaEditor's signature.
+const NO_FOLDERS = []
+const NO_PENDING = []
+
 function parsePendingForeignKeys(items) {
   const added = []
   const dropped = new Map() // constraint name -> pending item id (or null once in Changes)
@@ -545,8 +549,25 @@ function pathWithJumps(points, verticals) {
   return d
 }
 
-export default function SchemaEditor({ conn, changes, folders = [], onUpdateFolder, onDeleteFolder, onSetFolder, pending = [], onPendingChange, onStageItems, onSaveDraft, onUpdateDraft, draftId, onOpenTable, onOpenSchema }) {
+// Every callback here is optional (each is invoked with `?.`, and `changes` is
+// read as `changes || []`): the console passes the full set, the standalone
+// draft page passes only what a diagram with no database can use. Annotated
+// `any` like SchemaPanel next door so the signature says so.
+//
+// The array defaults are module constants, never `= []` inline: `folders` and
+// `pending` are dependencies of `layoutNodes`, which the node-building effect
+// depends on in turn. A fresh `[]` each render makes that effect fire on every
+// render and `setNodes` with new objects each time — a loop React Flow can
+// never settle, because it loses every node's measured size on each pass. It
+// only bites a host that omits the prop (the console passes both).
+export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUpdateFolder, onDeleteFolder, onSetFolder, pending = NO_PENDING, onPendingChange, onStageItems, onSaveDraft, onUpdateDraft, draftId, onOpenTable, onOpenSchema }: any) {
   const dialect = conn.type === 'postgresql' ? 'postgresql' : 'sqlite'
+  // Submit hands the staged DDL to a Changes queue, so it exists exactly when
+  // the host has one — `onStageItems`. The console does; the standalone editor
+  // page does not, whether or not there is a database behind the draft (a
+  // from-scratch one has nothing to execute against, and a connection-linked
+  // one commits in that connection's console). Save and Export are the whole
+  // story without a queue.
   const types = useColumnTypes(conn)
   const toast = useToast()
 
@@ -1354,21 +1375,29 @@ export default function SchemaEditor({ conn, changes, folders = [], onUpdateFold
             tab was opened from one, otherwise create the first draft. Save as
             draft — only meaningful once linked, forks a *copy* into a new draft
             (Save / Save As), so it's hidden on a fresh editor. */}
-        <Button
-          variant="primary"
-          size="sm"
-          icon={SaveIcon}
-          onClick={() => { onStageItems?.(pending); clearPending() }}
-          disabled={pending.length === 0}
-        >
-          Submit
-        </Button>
+        {onStageItems && (
+          <Button
+            variant="primary"
+            size="sm"
+            icon={SaveIcon}
+            onClick={() => { onStageItems(pending); clearPending() }}
+            disabled={pending.length === 0}
+          >
+            Submit
+          </Button>
+        )}
 
+        {/* Enabled with nothing staged *once there is a draft to write to*:
+            emptying the changes is itself an edit — you removed the last staged
+            statement and want the draft to record that — and with Save disabled
+            at zero there was no way to persist it, so the draft kept the
+            statement you had just deleted. Only creating the first draft still
+            needs something in it; an unnamed, empty new draft is nothing. */}
         <Button
           variant="ghost"
           size="sm"
           onClick={() => (draftId ? onUpdateDraft?.(draftId, pending) : setNaming(true))}
-          disabled={pending.length === 0}
+          disabled={pending.length === 0 && !draftId}
         >
           Save
         </Button>
@@ -1378,7 +1407,6 @@ export default function SchemaEditor({ conn, changes, folders = [], onUpdateFold
             variant="ghost"
             size="sm"
             onClick={() => setNaming(true)}
-            disabled={pending.length === 0}
           >
             Save as
           </Button>
@@ -1455,10 +1483,6 @@ export default function SchemaEditor({ conn, changes, folders = [], onUpdateFold
         >
           {loading ? (
             <div className="flex h-full items-center justify-center text-xs text-ink-faint">Loading schema…</div>
-          ) : augmented.length === 0 ? (
-            <div className="flex h-full items-center justify-center text-xs text-ink-faint">
-              No tables yet — right-click to create one.
-            </div>
           ) : (
             <>
               <ReactFlow
@@ -1533,6 +1557,19 @@ export default function SchemaEditor({ conn, changes, folders = [], onUpdateFold
                   nodeStrokeColor="#6fcf6a"
                 />
               </ReactFlow>
+
+              {/* An empty schema still gets the canvas: the grid, the pan/zoom
+                  and the right-click menu are *how* the first table is made, so
+                  the hint sits over them instead of replacing them with a
+                  screen. `pointer-events-none` is the whole trick — the
+                  right-click lands on the canvas underneath. */}
+              {augmented.length === 0 && (
+                <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
+                  <span className="rounded-soft border border-dashed border-edge-strong bg-panel/80 px-3 py-2 text-xs text-ink-faint">
+                    No tables yet — right-click to create one.
+                  </span>
+                </div>
+              )}
 
               {/* Zoom / fit controls — bottom-left of the canvas */}
               <div className="absolute bottom-3 left-3 z-10 flex items-center gap-0.5 rounded-soft border border-edge bg-elevated p-1">

@@ -172,7 +172,13 @@ src/
 │   │   ├── components/           #   SchemaEditor, SchemaSidebar (accordion: Draft Schema / Table List /
 │   │   │                         #     References / Table Folders — click to focus/edit), CreateTablePanel,
 │   │   │                         #     TableEditPanel, columnFields, SchemaHistoryPanel (schema-version audit trail)
-│   │   └── lib/                  #   rollback (best-effort rollback SQL for staged DDL)
+│   │   ├── components/           #   …plus WorkspaceSchemaList (the workspace-wide draft table behind
+│   │   │                         #     /schemas) and NewSchemaDialog (from a connection ⟶ the console,
+│   │   │                         #     or from scratch ⟶ pick a dialect). SchemaEditor stays out of the
+│   │   │                         #     barrel so React Flow never lands in the home chunk
+│   │   └── lib/                  #   rollback (best-effort rollback SQL for staged DDL),
+│   │                             #   api (workspace-wide list, one-draft-either-kind read,
+│   │                             #   from-scratch draft CRUD)
 │   ├── workflow/                 # workflow automations (React Flow builder + server-side runner, incl.
 │   │   │                         #   real hourly/daily scheduling via the Schedule trigger node's Active toggle;
 │   │   │                         #   JSON export/import of a workflow's graph; folders — grouped via the generic
@@ -272,6 +278,18 @@ src/
         ├── WorkflowsPage         # /workflows → every workflow in the workspace, across its connections
         │                         #   (features/workflow's WorkspaceWorkflowList); a row navigates to
         │                         #   /connection/:id?workflow=<id>, which the console opens as a tab
+        ├── SchemasPage           # /schemas → every schema draft in the workspace: the ones designed
+        │                         #   against a connection and the from-scratch ones (schema-designer's
+        │                         #   WorkspaceSchemaList). "New schema" (NewSchemaDialog) either sends you
+        │                         #   to /connection/:id?schema=new for a live database, or creates a
+        │                         #   workspace-level draft. Every row opens at /schemas/:id
+        ├── SchemaDraftPage       # /schemas/:id → the schema editor page, hosting either kind of draft.
+        │                         #   Loads it via GET /api/workspaces/:id/schemas/:draftId, which resolves
+        │                         #   both tables and enforces connection access; a connection-linked draft
+        │                         #   draws that live database and saves back to its saved query (plus an
+        │                         #   "Open in console" link), a from-scratch one starts empty and saves to
+        │                         #   its draft row. Submit is hidden either way — committing DDL is the
+        │                         #   console's Changes queue; Export is how the DDL leaves
         ├── ResourceTreePage      # /resource-tree/:nodeId? → the hierarchy on the left, the selected
         │                         #   node's owner / grants / your-access on the right. The selection is
         │                         #   in the URL, so a refresh keeps it and a link lands on it
@@ -345,6 +363,9 @@ server/
 ├── mail.js               # SMTP resolution (admin app-settings → env) + the transactional emails
 ├── connections.js        # connection records: rowToConnection/connectionToRow + CRUD + schemaVersion
 ├── folders.js            # FOLDER_TYPES + the polymorphic folder tree (depth/height/ancestor checks)
+├── schema-drafts.js      # from-scratch schema drafts (schema_drafts): a diagram the *workspace* owns
+│                         #   because it has no connection — the row carries the dialect its DDL targets.
+│                         #   Drafts designed against a connection stay saved queries (kind = 'schema')
 ├── storage.js            # storage destinations (S3-compatible + built-in local disk) and object ops:
 │                         #   store/fetch/list/delete/prune. Every step branches on `dest.local`, not a caller
 ├── db/                   # ★ the engine-agnostic database layer — see the `db-engine` skill

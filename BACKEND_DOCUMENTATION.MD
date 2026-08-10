@@ -1623,6 +1623,144 @@ Send the full desired set.
 
 ## Saved queries (per connection)
 
+### GET `/api/workspaces/:id/schemas`
+Every **schema draft** in a workspace — what the home area's **Schema Editor**
+section lists (one request instead of one per connection). Newest first.
+
+Two kinds come back in the one list, told apart by `connectionId`:
+
+| `connectionId` | Kind | Where it lives | What the editor draws |
+| --- | --- | --- | --- |
+| an id | designed **against a connection** | a saved query with `kind = "schema"` | that database's live tables |
+| `null` | designed **from scratch** | `schema_drafts` (see below) | an empty canvas |
+
+Both open at the same address — `/schemas/:id`, which loads the draft through
+`GET /api/workspaces/:id/schemas/:draftId` below.
+
+For a from-scratch draft `connectionName` is `null` and `connectionType` is the
+dialect the row stored rather than a connection's engine.
+
+Either way the DDL is summarised rather than returned — `statementCount` is all
+the list needs, and rendering a draft needs the editor. It counts the
+`;`-separated statements, the same split the editor uses to seed a tab.
+
+Membership gates the workspace; each connection is then filtered by connection
+access, so this never shows an attached draft the per-connection route below
+would refuse. A workspace with no reachable connection is **not** an empty
+answer — its from-scratch drafts hang off the workspace and are still listed.
+
+- **200:** `[{ "id", "connectionId", "connectionName", "connectionType", "name", "ts", "statementCount" }]`
+- **403:** `{ "error": "Forbidden" }` — not a member of the workspace.
+- **Example:** `GET http://localhost:3000/api/workspaces/ws-1/schemas`
+
+```json
+[
+  {
+    "id": "sq-9",
+    "connectionId": "demo-sqlite",
+    "connectionName": "Demo SQLite",
+    "connectionType": "sqlite",
+    "name": "orders ERD",
+    "ts": 1754812800000,
+    "statementCount": 4
+  },
+  {
+    "id": "0ec3a7a4-f43b-49f6-99e8-2404fbc2687c",
+    "connectionId": null,
+    "connectionName": null,
+    "connectionType": "postgresql",
+    "name": "Billing schema",
+    "ts": 1754812000000,
+    "statementCount": 2
+  }
+]
+```
+
+### GET `/api/workspaces/:id/schemas/:draftId`
+One draft **with its DDL**, whichever kind it is — what the schema editor page
+(`/schemas/:id`) loads. The list above returns two kinds from two tables; this
+resolves both through the one address, so the caller never has to know which
+table the id came from. The shape is the list's row with `sql` in place of
+`statementCount`.
+
+Access is the list's rule enforced per draft rather than by filtering:
+membership to reach the workspace, then connection access for a draft that
+targets one. A member who cannot open that database gets **403** here, exactly
+as they would from that connection's own `/saved` route — which is what lets the
+editor page host a connection-linked draft without the console.
+
+Saving is not here: a from-scratch draft writes back through
+`PUT /api/workspaces/:id/schema-drafts/:draftId`, a connection-linked one
+through `PUT /api/connections/:id/saved/:sid` — each row keeps its one owner.
+
+- **200:** `{ "id", "name", "sql", "ts", "connectionId", "connectionName", "connectionType" }`
+- **403:** `{ "error": "Forbidden" }` — not a member of the workspace — or `{ "error": "You do not have access to this connection" }` — a member, but the draft targets a connection they cannot open.
+- **404:** `{ "error": "Schema draft not found" }` — no such draft, or it belongs to another workspace.
+- **Example:** `GET http://localhost:3000/api/workspaces/ws-1/schemas/sq-9`
+
+```json
+{
+  "id": "sq-9",
+  "name": "orders ERD",
+  "sql": "CREATE TABLE \"orders\" (\n  \"id\" serial PRIMARY KEY\n);",
+  "ts": 1754812800000,
+  "connectionId": "demo-sqlite",
+  "connectionName": "Demo SQLite",
+  "connectionType": "sqlite"
+}
+```
+
+### GET `/api/schema-engines`
+The engines a from-scratch schema can be designed for — what fills the **New
+schema → From scratch** database-type picker. Read from the driver registry: an
+engine that reports no column types is schemaless (Redis), so there is no schema
+to draw and it is absent. Authentication only; the answer is the same for
+everyone.
+
+- **200:** `[{ "type": "postgresql", "label": "PostgreSQL", "dataTypes": ["serial", "integer", …] }]`
+- **401:** `{ "error": "Unauthorized" }`
+- **Example:** `GET http://localhost:3000/api/schema-engines`
+
+### POST `/api/workspaces/:id/schema-drafts`
+Start a schema with no database behind it. The workspace holds it and the row
+carries `dbType`, the dialect its DDL is written for — the one thing a
+connection would otherwise have answered.
+
+Membership is the whole gate: designing a schema is not a permission (using a
+database is per-connection access, and this draft has no database at all).
+
+- **Body:** `{ "name": "Billing schema", "dbType": "postgresql", "sql"?: "CREATE TABLE …;" }`
+- **200:** `{ "id", "workspaceId", "name", "dbType", "sql", "createdBy", "ts" }`
+- **400:** `{ "error": "A schema name is required" }` / `{ "error": "Pick a database type a schema can be designed for" }` — the latter for an unknown or schemaless `dbType`.
+- **403:** `{ "error": "Forbidden" }` — not a member of the workspace.
+- **Example:** `POST http://localhost:3000/api/workspaces/ws-1/schema-drafts`
+
+### GET `/api/workspaces/:id/schema-drafts/:draftId`
+One from-scratch draft **with its DDL** — what the standalone editor loads.
+
+- **200:** `{ "id", "workspaceId", "name", "dbType", "sql", "createdBy", "ts" }`
+- **404:** `{ "error": "Schema draft not found" }` — also when the draft belongs to another workspace.
+- **Example:** `GET http://localhost:3000/api/workspaces/ws-1/schema-drafts/dr-1`
+
+### PUT `/api/workspaces/:id/schema-drafts/:draftId`
+Update a from-scratch draft. Partial — send `name`, `sql`, or both; the diagram
+saves `sql`, a rename saves `name`. `sql` is the staged statements joined by
+`;`, the same shape a saved schema query has.
+
+- **Body:** `{ "name"?: "Billing schema v2", "sql"?: "CREATE TABLE \"invoices\" (id INTEGER);" }`
+- **200:** the updated draft
+- **400:** `{ "error": "A schema name is required" }` — `name` sent but blank.
+- **404:** `{ "error": "Schema draft not found" }`
+- **Example:** `PUT http://localhost:3000/api/workspaces/ws-1/schema-drafts/dr-1`
+
+### DELETE `/api/workspaces/:id/schema-drafts/:draftId`
+Delete a from-scratch draft. Nothing points at these rows, so there is no
+cascade; every draft in a workspace also dies with the workspace.
+
+- **200:** `{ "ok": true }`
+- **404:** `{ "error": "Schema draft not found" }`
+- **Example:** `DELETE http://localhost:3000/api/workspaces/ws-1/schema-drafts/dr-1`
+
 ### GET `/api/connections/:id/saved`
 List saved queries for a connection (newest first).
 
@@ -1630,7 +1768,12 @@ List saved queries for a connection (newest first).
 - **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/saved`
 
 ### POST `/api/connections/:id/saved`
-Create a saved query.
+Create a saved query — or, with `kind: "schema"`, a schema draft designed
+against this connection.
+
+`sql` is required for a saved **query**, which is nothing without it, and
+optional for a schema **draft**: an empty draft is a real state (a diagram with
+nothing staged yet). A name is always required.
 
 - **Body:** `{ "name": "Active users", "sql": "SELECT ...", "kind": "query" }` (`kind` optional, defaults `"query"`)
 - **200:** `{ "id", "name", "sql", "kind", "ts" }`
@@ -1646,8 +1789,13 @@ Update fields of a saved query. Any subset of `name`, `sql`, `folderId`.
   - Update SQL: `{ "sql": "SELECT 1" }`
   - Move to folder: `{ "folderId": "folder-uuid" }`
   - Move to root: `{ "folderId": null }`
+Same split as the create above, decided by the stored row's `kind` rather than
+anything in the body: `"sql": ""` empties a **schema draft** (that is how the
+editor records removing the last staged statement) and is refused on a saved
+**query**.
+
 - **200:** `{ "ok": true }`
-- **400:** `{ "error": "Nothing to update" }` (or name/SQL validation messages)
+- **400:** `{ "error": "Nothing to update" }` / `{ "error": "A name is required" }` / `{ "error": "SQL is required" }` — the last only for `kind = "query"`.
 - **404:** `{ "error": "Not found" }`
 - **Example:** `PUT http://localhost:3000/api/connections/demo-sqlite/saved/abc-123`
 

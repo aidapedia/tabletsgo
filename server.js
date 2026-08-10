@@ -185,6 +185,14 @@ import {
 } from './server/backup/index.js'
 import { buildConnectionExport, importConnectionDoc } from './server/connection-transfer.js'
 import {
+  createDraft as createSchemaDraft,
+  deleteDraft as deleteSchemaDraft,
+  getDraft as getSchemaDraft,
+  listDrafts as listSchemaDrafts,
+  statementCount as schemaStatementCount,
+  updateDraft as updateSchemaDraft,
+} from './server/schema-drafts.js'
+import {
   addGrant,
   addNodeMember,
   chainOf,
@@ -1792,10 +1800,16 @@ app.put('/api/connections/:id/tables/:table/folder', (req, res) => {
   res.json({ ok: true })
 })
 
+// A saved *query* is nothing without its SQL, so it is required. A schema
+// draft (`kind = 'schema'`) is not: it is a diagram whose staged DDL happens to
+// be empty — you cleared the changes, or forked a copy before staging any — and
+// refusing that is what left the editor unable to save a draft it had just
+// emptied. Same split on the update below.
 app.post('/api/connections/:id/saved', (req, res) => {
   const { name, sql, kind } = req.body || {}
-  if (!name?.trim() || !sql?.trim()) return res.status(400).json({ error: 'A name and SQL are required' })
-  const entry = { id: randomUUID(), name: name.trim(), sql: sql.trim(), kind: kind || 'query', ts: Date.now() }
+  if (!name?.trim()) return res.status(400).json({ error: 'A name and SQL are required' })
+  if ((kind || 'query') !== 'schema' && !sql?.trim()) return res.status(400).json({ error: 'A name and SQL are required' })
+  const entry = { id: randomUUID(), name: name.trim(), sql: (sql || '').trim(), kind: kind || 'query', ts: Date.now() }
   meta
     .prepare('INSERT INTO saved_queries (id, connection_id, name, sql, kind, ts) VALUES (?, ?, ?, ?, ?, ?)')
     .run(entry.id, req.params.id, entry.name, entry.sql, entry.kind, entry.ts)
@@ -1805,6 +1819,13 @@ app.post('/api/connections/:id/saved', (req, res) => {
 app.put('/api/connections/:id/saved/:sid', (req, res) => {
   const body = req.body || {}
   const { name, sql } = body
+  // The row's own kind decides whether empty SQL is allowed, so read it first
+  // rather than trusting a `kind` in the body — this is the same 404 the write
+  // below would have produced, only reached before the validation.
+  const row = meta
+    .prepare('SELECT kind FROM saved_queries WHERE id = ? AND connection_id = ?')
+    .get(req.params.sid, req.params.id)
+  if (!row) return res.status(404).json({ error: 'Not found' })
   const sets = []
   const vals = []
   if (name != null) {
@@ -1813,7 +1834,7 @@ app.put('/api/connections/:id/saved/:sid', (req, res) => {
     vals.push(name.trim())
   }
   if (sql != null) {
-    if (!sql.trim()) return res.status(400).json({ error: 'SQL is required' })
+    if (!sql.trim() && row.kind !== 'schema') return res.status(400).json({ error: 'SQL is required' })
     sets.push('sql = ?')
     vals.push(sql.trim())
   }
@@ -2103,6 +2124,161 @@ app.get('/api/workspaces/:id/dashboards', (req, res) => {
       }
     })
   )
+})
+
+// Every schema draft in a workspace, in one list — what the home area's Schema
+// section shows. A draft is a saved_queries row with kind='schema': the staged,
+// uncommitted DDL of a schema-editor tab. Same gating as the workspace-wide
+// dashboards route above — membership to see the workspace, then per-connection
+// access — so this can never show more than the per-connection /saved route.
+//
+// The DDL itself is summarised (a statement count) rather than returned: the
+// list only needs the size of a draft, and rendering one needs the editor.
+app.get('/api/workspaces/:id/schemas', (req, res) => {
+  const user = requireMember(req, res, req.params.id)
+  if (!user) return
+  const conns = listConnections().filter((c) => c.workspaceId === req.params.id && userCanAccessConnection(c, user.id))
+  const byId = new Map(conns.map((c) => [c.id, c]))
+  const ids = [...byId.keys()]
+  // No reachable connection is not an empty answer — the from-scratch drafts
+  // below hang off the workspace, so they are still there to list.
+  const rows = ids.length
+    ? meta
+        .prepare(
+          `SELECT id, connection_id, name, sql, ts FROM saved_queries
+            WHERE kind = 'schema' AND connection_id IN (${ids.map(() => '?').join(', ')})
+            ORDER BY ts DESC`
+        )
+        .all(...ids)
+    : []
+  // Both kinds of draft, in one list: designed against a connection (a saved
+  // query) or from scratch (a workspace row with a dialect and no connection).
+  // `connectionId: null` is what tells them apart — and where a row opens.
+  const attached = rows.map((r) => {
+    const conn = byId.get(r.connection_id)
+    return {
+      id: r.id,
+      connectionId: r.connection_id,
+      connectionName: conn.name,
+      connectionType: conn.type,
+      name: r.name,
+      ts: r.ts,
+      statementCount: schemaStatementCount(r.sql),
+    }
+  })
+  const scratch = listSchemaDrafts(req.params.id).map((d) => ({
+    id: d.id,
+    connectionId: null,
+    connectionName: null,
+    connectionType: d.dbType,
+    name: d.name,
+    ts: d.ts,
+    statementCount: schemaStatementCount(d.sql),
+  }))
+  res.json([...attached, ...scratch].sort((x, y) => (y.ts || 0) - (x.ts || 0)))
+})
+
+// One draft by id, whichever kind it is — what the standalone schema editor
+// page (/schemas/:id) loads. The list above says a draft either hangs off a
+// connection (a saved query) or off the workspace (a from-scratch row); this
+// resolves both through one address, so the editor page has one thing to fetch
+// and the caller never has to know which table the id came from.
+//
+// Access is the same rule the list applies, enforced per draft rather than by
+// filtering: membership to reach the workspace, then `userCanAccessConnection`
+// for a draft that targets a connection. A member who cannot open that database
+// gets 403 here, exactly as they would from the connection's own /saved route.
+app.get('/api/workspaces/:id/schemas/:draftId', (req, res) => {
+  const user = requireMember(req, res, req.params.id)
+  if (!user) return
+  const scratch = getSchemaDraft(req.params.draftId)
+  if (scratch && scratch.workspaceId === req.params.id) {
+    return res.json({
+      id: scratch.id,
+      name: scratch.name,
+      sql: scratch.sql,
+      ts: scratch.ts,
+      connectionId: null,
+      connectionName: null,
+      connectionType: scratch.dbType,
+    })
+  }
+  const row = meta
+    .prepare("SELECT id, connection_id, name, sql, ts FROM saved_queries WHERE id = ? AND kind = 'schema'")
+    .get(req.params.draftId)
+  if (!row) return res.status(404).json({ error: 'Schema draft not found' })
+  const conn = getConnection(row.connection_id)
+  if (!conn || conn.workspaceId !== req.params.id) return res.status(404).json({ error: 'Schema draft not found' })
+  if (!userCanAccessConnection(conn, user.id))
+    return res.status(403).json({ error: 'You do not have access to this connection' })
+  res.json({
+    id: row.id,
+    name: row.name,
+    sql: row.sql || '',
+    ts: row.ts,
+    connectionId: conn.id,
+    connectionName: conn.name,
+    connectionType: conn.type,
+  })
+})
+
+// The engines a from-scratch schema can be designed for. Comes from the driver
+// registry (an engine reporting no column types is schemaless, so there is
+// nothing to draw) — never a hand-kept list in the UI.
+app.get('/api/schema-engines', (req, res) => {
+  if (!requireAuth(req, res)) return
+  res.json(db.designableEngines())
+})
+
+// A schema designed from scratch: no connection, so the workspace holds it and
+// the row carries the dialect its DDL is written for. Membership is the gate —
+// designing a schema is not a permission (see permissions-catalog.js: using a
+// database is per-connection access, and this one has no database at all).
+app.post('/api/workspaces/:id/schema-drafts', (req, res) => {
+  const user = requireMember(req, res, req.params.id)
+  if (!user) return
+  const { name, dbType } = req.body || {}
+  if (!name?.trim()) return res.status(400).json({ error: 'A schema name is required' })
+  const engine = db.designableEngines().find((e) => e.type === dbType)
+  if (!engine) return res.status(400).json({ error: 'Pick a database type a schema can be designed for' })
+  res.json(
+    createSchemaDraft({
+      workspaceId: req.params.id,
+      name: name.trim(),
+      dbType: engine.type,
+      sql: typeof req.body?.sql === 'string' ? req.body.sql : '',
+      createdBy: user.id,
+    })
+  )
+})
+
+// One draft, with its DDL — what the standalone editor loads.
+app.get('/api/workspaces/:id/schema-drafts/:draftId', (req, res) => {
+  const user = requireMember(req, res, req.params.id)
+  if (!user) return
+  const draft = getSchemaDraft(req.params.draftId)
+  if (!draft || draft.workspaceId !== req.params.id) return res.status(404).json({ error: 'Schema draft not found' })
+  res.json(draft)
+})
+
+// Partial: `name`, `sql`, or both.
+app.put('/api/workspaces/:id/schema-drafts/:draftId', (req, res) => {
+  const user = requireMember(req, res, req.params.id)
+  if (!user) return
+  const draft = getSchemaDraft(req.params.draftId)
+  if (!draft || draft.workspaceId !== req.params.id) return res.status(404).json({ error: 'Schema draft not found' })
+  const { name, sql } = req.body || {}
+  if (name !== undefined && !String(name).trim()) return res.status(400).json({ error: 'A schema name is required' })
+  res.json(updateSchemaDraft(draft.id, { ...(name !== undefined && { name: String(name).trim() }), ...(sql !== undefined && { sql: String(sql) }) }))
+})
+
+app.delete('/api/workspaces/:id/schema-drafts/:draftId', (req, res) => {
+  const user = requireMember(req, res, req.params.id)
+  if (!user) return
+  const draft = getSchemaDraft(req.params.draftId)
+  if (!draft || draft.workspaceId !== req.params.id) return res.status(404).json({ error: 'Schema draft not found' })
+  deleteSchemaDraft(draft.id)
+  res.json({ ok: true })
 })
 
 app.get('/api/connections/:id/dashboards', (req, res) => {

@@ -151,13 +151,14 @@ const centerState =
 export default function Workspace() {
   const { id } = useParams()
   const navigate = useNavigate()
-  // `?workflow=<id>` / `?dashboard=<id>` — a row of the workspace-wide Workflow
-  // or Dashboard section landing here. The console keeps its tabs in state, so
-  // these are the tabs a URL can ask for; they stay in the address so a refresh
-  // reopens the same one.
+  // `?workflow=<id>` / `?dashboard=<id>` / `?schema=<id>` — a row of the
+  // workspace-wide Workflow, Dashboard or Schema section landing here. The
+  // console keeps its tabs in state, so these are the tabs a URL can ask for;
+  // they stay in the address so a refresh reopens the same one.
   const [searchParams] = useSearchParams()
   const deepLink = searchParams.get('workflow')
   const dashboardLink = searchParams.get('dashboard')
+  const schemaLink = searchParams.get('schema')
   const { user, logout } = useAuth()
   const toast = useToast()
   const { connections, patchLocalConnection } = useConnections()
@@ -362,7 +363,30 @@ export default function Workspace() {
   // Load this connection's saved queries, folders, workflows and dashboards from the backend.
   useEffect(() => {
     let alive = true
-    fetchSaved(id).then((list) => alive && setSaved(list))
+    fetchSaved(id).then((list) => {
+      if (!alive) return
+      setSaved(list)
+      // Deep link from the workspace-wide Schema section.
+      if (deepLink || dashboardLink || autoOpenedFor.current === id) return
+      // `?schema=new` is the Schema section's "From a connection": there is no
+      // draft to find, just an empty designer on this database. Any other value
+      // is a draft id.
+      if (schemaLink === 'new') {
+        autoOpenedFor.current = id
+        setPanel('schema')
+        openSchemaEditor()
+        return
+      }
+      // Ordered last of the three for the same reason dashboards sit behind
+      // workflows: the requests race, so a URL carrying more than one resolves
+      // the same way every time.
+      const d = schemaLink && list.find((x) => x.id === schemaLink && x.kind === 'schema')
+      if (d) {
+        autoOpenedFor.current = id
+        setPanel('schema')
+        openSchemaDraft(d)
+      }
+    })
     fetchFolders(id).then((list) => alive && setFolders(list))
     listWorkflows(id).then((list) => {
       if (!alive) return
@@ -396,7 +420,7 @@ export default function Workspace() {
     return () => {
       alive = false
     }
-  }, [id, deepLink, dashboardLink])
+  }, [id, deepLink, dashboardLink, schemaLink])
 
   // Esc closes the mobile slide-over sidebar drawer while it's open.
   useEffect(() => {

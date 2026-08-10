@@ -114,6 +114,21 @@ function ensureBaseSchema(db) {
       -- like dashboards.folder_id, it is intentionally NOT inlined here so v4's
       -- plain ALTER doesn't collide on fresh installs (which also run v4).
     );
+    -- A schema drafted from scratch: a diagram that belongs to a workspace
+    -- rather than to a connection, so there is no database behind it and
+    -- nothing to commit -- db_type is the dialect its DDL is written for.
+    -- Drafts designed *against* a connection stay in saved_queries (kind =
+    -- 'schema'); this table is only the connection-less kind.
+    CREATE TABLE IF NOT EXISTS schema_drafts (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      db_type TEXT NOT NULL,       -- 'sqlite' | 'postgresql' | … (a connection type)
+      sql TEXT,                    -- staged DDL, statements joined by ';'
+      created_by TEXT,             -- users.id of whoever started it
+      ts INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_schema_drafts_workspace ON schema_drafts (workspace_id);
     CREATE TABLE IF NOT EXISTS dashboards (
       id TEXT PRIMARY KEY,
       connection_id TEXT NOT NULL,
@@ -1101,6 +1116,34 @@ export const MIGRATIONS = [
         if (!row) continue
         for (const permission of role.permissions) ins.run(row.id, permission)
       }
+    },
+  },
+  {
+    version: 18,
+    name: 'schema drafts that belong to a workspace instead of a connection',
+    up(db) {
+      // "New schema → from scratch": a diagram designed before there is a
+      // database to design it against. saved_queries can't hold one — its
+      // connection_id is NOT NULL, and widening that would mean every reader of
+      // a saved query having to handle a row with no connection. So the
+      // connection-less kind gets its own table, and the dialect it targets
+      // (which a connection would otherwise have answered) is stored on the row.
+      // IF NOT EXISTS because a fresh install runs *both* halves: step v1 calls
+      // ensureBaseSchema (which creates this table) and then every later step,
+      // this one included. Same reason every table-adding step above is written
+      // this way.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS schema_drafts (
+          id TEXT PRIMARY KEY,
+          workspace_id TEXT NOT NULL,
+          name TEXT NOT NULL,
+          db_type TEXT NOT NULL,
+          sql TEXT,
+          created_by TEXT,
+          ts INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_schema_drafts_workspace ON schema_drafts (workspace_id);
+      `)
     },
   },
 ]

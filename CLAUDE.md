@@ -100,6 +100,7 @@ server/
 ├── users.js  workspaces.js  app-settings.js  mail.js                          → skill auth-sessions
 ├── connections.js       # connection records (encrypted credentials blob)
 ├── folders.js           # the polymorphic folder tree (4 types, depth caps)
+├── schema-drafts.js     # from-scratch schema drafts: a diagram a *workspace* owns, no connection
 ├── storage.js           # storage destinations (S3 + local disk) and object ops
 ├── db/                  # ★ the engine-agnostic database layer                → skill db-engine
 ├── workflow.js          # the node-graph executor + scheduler

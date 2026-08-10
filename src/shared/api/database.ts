@@ -136,6 +136,9 @@ export async function getIndexes(conn, table) {
 }
 
 export async function getTypes(conn) {
+  // A schema designed from scratch has a dialect but no connection to ask, so
+  // there is no request to make — the caller's static per-dialect list stands.
+  if (!conn?.id) return []
   const data = await safeRequest<any>(`/connections/${conn.id}/types`, { types: [] })
   return data.types || []
 }
@@ -148,6 +151,9 @@ export async function getNamespaces(conn, database?) {
 }
 
 export async function getDiagram(conn) {
+  // Same as getTypes: no connection means no live schema to draw — the canvas
+  // starts empty rather than asking for /connections/null/diagram.
+  if (!conn?.id) return { tables: [], foreignKeys: [] }
   return safeRequest(withNs(conn, `/connections/${conn.id}/diagram`), { tables: [], foreignKeys: [] })
 }
 

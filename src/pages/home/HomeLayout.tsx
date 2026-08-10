@@ -5,7 +5,7 @@ import { WorkspaceSwitcher } from '@/features/workspaces'
 import { UpdateBanner } from '@/features/system-update'
 import NavItem from '@/shared/ui/navigation/NavItem'
 import IconButton from '@/shared/ui/buttons/IconButton'
-import { BellIcon, BuildingIcon, CloudIcon, DatabaseIcon, GridIcon, HomeIcon, Logo, LogoutIcon, MailIcon, MenuIcon, SettingsIcon, ShieldIcon, TreeIcon, UsersIcon, WorkflowIcon } from '@/shared/ui/icons'
+import { BellIcon, BuildingIcon, CloudIcon, DatabaseIcon, DiagramIcon, GridIcon, HomeIcon, Logo, LogoutIcon, MailIcon, MenuIcon, SettingsIcon, ShieldIcon, TreeIcon, UsersIcon, WorkflowIcon } from '@/shared/ui/icons'
 
 /**
  * Sidebar navigation model — a pinned row plus titled groups.
@@ -29,6 +29,7 @@ const NAV = {
       items: [
         { label: 'Connection', Icon: DatabaseIcon, path: '/connections' },
         { label: 'Dashboard', Icon: GridIcon, path: '/dashboards' },
+        { label: 'Schema Editor', Icon: DiagramIcon, path: '/schemas' },
         { label: 'Workflow', Icon: WorkflowIcon, path: '/workflows' },
         { label: 'S3 Storage', Icon: CloudIcon, path: '/storage' },
         { label: 'Resource Tree', Icon: TreeIcon, path: '/resource-tree' },

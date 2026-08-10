@@ -19,6 +19,8 @@ import StoragePage from '@/pages/home/StoragePage'
 import SettingsPage from '@/pages/home/SettingsPage'
 import ResourceTreePage from '@/pages/home/ResourceTreePage'
 import WorkflowsPage from '@/pages/home/WorkflowsPage'
+import SchemasPage from '@/pages/home/SchemasPage'
+import SchemaDraftPage from '@/pages/home/SchemaDraftPage'
 import WorkspacePage from '@/pages/console/WorkspacePage'
 import AdminWorkspacesPage from '@/pages/admin/AdminWorkspacesPage'
 import AdminUsersPage from '@/pages/admin/AdminUsersPage'
@@ -136,6 +138,14 @@ export function AppRoutes() {
         {/* Workflows live on connections; this is the workspace-wide list of
             them. A row opens the workflow in its connection's console. */}
         <Route path="/workflows" element={<WorkflowsPage />} />
+        {/* Same for schema drafts — the cross-connection list. */}
+        <Route path="/schemas" element={<SchemasPage />} />
+        {/* The schema editor page: it hosts the designer for either kind of
+            draft — one designed against a connection (drawn from that live
+            database, for anyone with access to it) or one from scratch, which
+            has no console to open in at all. Committing DDL stays in the
+            console; this address is the diagram and its drafts. */}
+        <Route path="/schemas/:id" element={<SchemaDraftPage />} />
       </Route>
       {/* Personal settings (theme, local data, updates) belong to the account,
           not to a workspace — so both halves of the app get them. */}
