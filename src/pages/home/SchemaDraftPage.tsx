@@ -31,6 +31,11 @@ const SchemaEditor = lazy(() => import('@/features/schema-designer/components/Sc
  * carries an "Open in console" link and the editor hides Submit (no queue to
  * submit into, see `onStageItems` in SchemaEditor).
  *
+ * The page is full-screen — it is routed outside `HomeLayout`, so a diagram
+ * gets the whole viewport the way the console does instead of a fixed-height
+ * box inside the shell's padded scroller. The header strip below is the only
+ * chrome, and it carries the way back to the Schema list.
+ *
  * The two kinds differ only in `connectionId`, and it decides two things: the
  * `conn` handed to the editor (a real id draws the live tables, a null one
  * leaves the canvas empty and makes `connectionType` the whole dialect), and
@@ -124,16 +129,23 @@ export default function SchemaDraftPage() {
     }
   }
 
-  if (loading || !draft || !conn) return <LoadingState className="" />
+  if (loading || !draft || !conn)
+    return (
+      <div className="flex h-screen items-center justify-center bg-bg">
+        <LoadingState className="" />
+      </div>
+    )
 
   return (
-    <div className="w-full">
-      <div className="mb-4 flex items-center gap-3">
+    <div className="flex h-screen flex-col bg-bg">
+      {/* One header strip, the console's height and gutters — the canvas gets
+          everything below it. */}
+      <div className="flex shrink-0 items-center gap-3 border-b border-edge bg-panel px-3 py-2">
         <Button variant="ghost" size="sm" icon={ChevronLeft} onClick={() => navigate('/schemas')}>
           Schema Editor
         </Button>
         <div className="min-w-0 flex-1">
-          <h1 className="truncate text-[17px] font-bold tracking-[-0.3px]">{draft.name}</h1>
+          <h1 className="truncate text-[13px] font-bold tracking-[-0.3px]">{draft.name}</h1>
           <p className="flex items-center gap-1.5 text-[11px] text-ink-faint">
             {draft.connectionId ? (
               <>
@@ -160,15 +172,13 @@ export default function SchemaDraftPage() {
         )}
       </div>
 
-      {/* A *definite* height, not a minimum: the editor's sidebar sizes its
-          accordion with `h-full` + `flex-1`, so every ancestor needs a height a
-          percentage can resolve against. The console gets that from `h-screen`;
-          this page lives inside HomeLayout's auto-height scroller, so it states
-          one — viewport minus the layout's padding and the header above. With a
-          minimum instead, the sidebar fell back to content height and the open
-          section had no free space to grow into (its neighbours bunched up
-          under it instead of sitting at the bottom). */}
-      <div className="flex h-[calc(100vh-11rem)] min-h-[420px] flex-col overflow-hidden rounded-card border border-edge bg-panel">
+      {/* The editor's sidebar sizes its accordion with `h-full` + `flex-1`, so
+          every ancestor needs a height a percentage can resolve against — that
+          now comes from the page's own `h-screen`, the same way the console
+          gets it, rather than the viewport-minus-chrome height this box used to
+          state while it lived inside HomeLayout's scroller. `min-h-0` is what
+          keeps the flex child from refusing to shrink below its content. */}
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
         <Suspense fallback={<LoadingState className="" />}>
           <SchemaEditor
             conn={conn}

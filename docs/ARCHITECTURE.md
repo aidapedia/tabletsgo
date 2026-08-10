@@ -284,6 +284,8 @@ src/
         │                         #   to /connection/:id?schema=new for a live database, or creates a
         │                         #   workspace-level draft. Every row opens at /schemas/:id
         ├── SchemaDraftPage       # /schemas/:id → the schema editor page, hosting either kind of draft.
+        │                         #   Full-screen: routed *outside* HomeLayout (own header strip + h-screen),
+        │                         #   so the diagram gets the whole viewport the way the console does.
         │                         #   Loads it via GET /api/workspaces/:id/schemas/:draftId, which resolves
         │                         #   both tables and enforces connection access; a connection-linked draft
         │                         #   draws that live database and saves back to its saved query (plus an

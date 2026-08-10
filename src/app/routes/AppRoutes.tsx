@@ -140,13 +140,25 @@ export function AppRoutes() {
         <Route path="/workflows" element={<WorkflowsPage />} />
         {/* Same for schema drafts — the cross-connection list. */}
         <Route path="/schemas" element={<SchemasPage />} />
-        {/* The schema editor page: it hosts the designer for either kind of
-            draft — one designed against a connection (drawn from that live
-            database, for anyone with access to it) or one from scratch, which
-            has no console to open in at all. Committing DDL stays in the
-            console; this address is the diagram and its drafts. */}
-        <Route path="/schemas/:id" element={<SchemaDraftPage />} />
       </Route>
+      {/* The schema editor page: it hosts the designer for either kind of
+          draft — one designed against a connection (drawn from that live
+          database, for anyone with access to it) or one from scratch, which
+          has no console to open in at all. Committing DDL stays in the
+          console; this address is the diagram and its drafts.
+
+          It sits *outside* HomeLayout on purpose: a diagram is a canvas, so it
+          gets the whole viewport the way the console does, rather than a panel
+          inside the shell's padded scroller. Its own header carries the way
+          back. */}
+      <Route
+        path="/schemas/:id"
+        element={
+          <RequireWorkspaceUser>
+            <SchemaDraftPage />
+          </RequireWorkspaceUser>
+        }
+      />
       {/* Personal settings (theme, local data, updates) belong to the account,
           not to a workspace — so both halves of the app get them. */}
       <Route
