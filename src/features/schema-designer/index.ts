@@ -10,3 +10,7 @@ export { default as TableEditPanel } from './components/TableEditPanel'
 export * from './components/columnFields'
 export { default as NewSchemaDialog } from './components/NewSchemaDialog'
 export type { SchemaDraft, SchemaDraftDetail, SchemaEngine, WorkspaceSchemaDraft } from './types'
+// The design document (layout + notes + groups) is the schema editor's other
+// half — the hosts that save a draft need its type, and the design file format
+// is public API for anyone importing one.
+export type { SchemaDesignDoc, SchemaGroupLayout, SchemaLayout, SchemaNote } from './lib/design'

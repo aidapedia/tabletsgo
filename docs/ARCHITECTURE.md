@@ -168,7 +168,9 @@ src/
 │   │   │                         #   Env + version live here only; the top toolbar no longer shows them)
 │   │   └── lib/                  #   savedQueries, queryHistory (backend calls)
 │   ├── schema-designer/          # visual schema design (React Flow ERD + table/column editors; tables
-│   │   │                         #   sharing a folder are clustered into a draggable, editable region)
+│   │   │                         #   sharing a folder are clustered into a draggable, editable region;
+│   │   │                         #   sticky notes pinned to the canvas, and the whole arrangement —
+│   │   │                         #   table/group/note positions — saved with the draft)
 │   │   ├── components/           #   SchemaEditor, SchemaSidebar (accordion: Draft Schema / Table List /
 │   │   │                         #     References / Table Folders — click to focus/edit), CreateTablePanel,
 │   │   │                         #     TableEditPanel, columnFields, SchemaHistoryPanel (schema-version audit trail)
@@ -178,7 +180,9 @@ src/
 │   │   │                         #     barrel so React Flow never lands in the home chunk
 │   │   └── lib/                  #   rollback (best-effort rollback SQL for staged DDL),
 │   │                             #   api (workspace-wide list, one-draft-either-kind read,
-│   │                             #   from-scratch draft CRUD)
+│   │                             #   from-scratch draft CRUD), design (the diagram's *design*:
+│   │                             #   layout + notes + groups, and the portable .design.json
+│   │                             #   export/import document)
 │   ├── workflow/                 # workflow automations (React Flow builder + server-side runner, incl.
 │   │   │                         #   real hourly/daily scheduling via the Schedule trigger node's Active toggle;
 │   │   │                         #   JSON export/import of a workflow's graph; folders — grouped via the generic
@@ -307,7 +311,7 @@ conflate them.
 
 ### Future decomposition candidates
 Out of scope so far: `pages/console/WorkspacePage.tsx` (~2200 lines),
-`schema-designer/SchemaEditor.tsx` (~1470), `workspace/TableView.tsx` (~900), and
+`schema-designer/SchemaEditor.tsx` (~1800), `workspace/TableView.tsx` (~900), and
 `server.js` (~2900 — the remaining step is moving route handlers into
 `server/routes/*.js` express routers).
 

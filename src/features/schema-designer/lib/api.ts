@@ -4,6 +4,7 @@
 
 import { request, safeRequest } from '@/shared/api/request'
 import type { SchemaDraft, SchemaDraftDetail, SchemaEngine, WorkspaceSchemaDraft } from '../types'
+import type { SchemaLayout } from './design'
 
 // Every schema draft in a workspace the caller can reach — one request rather
 // than one per connection. The server filters by connection access, so this is
@@ -34,16 +35,16 @@ export async function getSchemaDraft(workspaceId: string, id: string): Promise<S
 
 export async function createSchemaDraft(
   workspaceId: string,
-  fields: { name: string; dbType: string; sql?: string }
+  fields: { name: string; dbType: string; sql?: string; layout?: SchemaLayout | null }
 ): Promise<SchemaDraft> {
   return request(`/workspaces/${workspaceId}/schema-drafts`, { method: 'POST', body: fields })
 }
 
-// Partial — the diagram saves `sql`, a rename saves `name`.
+// Partial — the diagram saves `sql` and `layout` together, a rename saves `name`.
 export async function updateSchemaDraft(
   workspaceId: string,
   id: string,
-  fields: { name?: string; sql?: string }
+  fields: { name?: string; sql?: string; layout?: SchemaLayout | null }
 ): Promise<SchemaDraft> {
   return request(`/workspaces/${workspaceId}/schema-drafts/${id}`, { method: 'PUT', body: fields })
 }

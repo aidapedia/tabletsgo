@@ -1146,6 +1146,24 @@ export const MIGRATIONS = [
       `)
     },
   },
+  {
+    version: 19,
+    name: 'schema drafts remember their diagram layout (positions, notes, groups)',
+    up(db) {
+      // A schema draft used to be its DDL and nothing else, so opening one
+      // re-ran dagre and scattered the diagram the designer had arranged. The
+      // layout is that arrangement — where each table, group region and note
+      // sits — held as one JSON document beside the SQL rather than as columns,
+      // because it is read and written whole by the editor and never queried.
+      //
+      // Both kinds of draft get it: a draft designed against a connection is a
+      // saved_queries row (kind = 'schema'), a from-scratch one is a
+      // schema_drafts row. Nullable, so every existing draft keeps opening —
+      // a draft with no stored layout is simply one dagre still arranges.
+      addColumn(db, 'saved_queries', 'layout TEXT')
+      addColumn(db, 'schema_drafts', 'layout TEXT')
+    },
+  },
 ]
 
 // Tables kept only so an older image can still open a newer DB (rollback

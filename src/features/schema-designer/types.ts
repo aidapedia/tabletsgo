@@ -1,3 +1,5 @@
+import type { SchemaLayout } from './lib/design'
+
 // A schema draft as the workspace-wide list sees it: a saved query with
 // `kind = 'schema'`, plus the connection it belongs to. The console has the
 // connection as context; this list has it as a column, so it carries the name
@@ -23,6 +25,8 @@ export type SchemaDraftDetail = {
   id: string
   name: string
   sql: string
+  /** The saved diagram arrangement (positions, notes, groups) — null until one is saved. */
+  layout: SchemaLayout | null
   ts: number
   connectionId: string | null
   connectionName: string | null
@@ -37,6 +41,7 @@ export type SchemaDraft = {
   name: string
   dbType: string
   sql: string
+  layout: SchemaLayout | null
   createdBy: string | null
   ts: number
 }

@@ -456,6 +456,15 @@ export const InfoIcon = (props) => (
   </svg>
 )
 
+// A sticky note — the schema editor's canvas annotation.
+export const NoteIcon = (props) => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+    <path d="M4 4h16v10l-6 6H4z" />
+    <path d="M20 14h-6v6" />
+  </svg>
+)
+
 export const UploadIcon = (props) => (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
     strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>

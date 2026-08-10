@@ -1077,11 +1077,13 @@ export default function Workspace() {
     }
   }
 
-  // Schema editor "Save as draft" — store the SQL in Saved Queries (schema kind).
-  const saveSchemaDraft = async (items, name) => {
+  // Schema editor "Save as draft" — store the SQL in Saved Queries (schema kind)
+  // together with the diagram's layout (table/group/note positions), so
+  // reopening the draft gets the arrangement back and not just the DDL.
+  const saveSchemaDraft = async (items, name, layout) => {
     const tabKey = activeTab // the schema-editor tab that triggered the save
     try {
-      const entry = await createSaved(id, { name, sql: items.map((i) => i.sql).join('\n'), kind: 'schema' })
+      const entry = await createSaved(id, { name, sql: items.map((i) => i.sql).join('\n'), kind: 'schema', layout })
       setSaved((prev) => [entry, ...prev])
       // Link the active schema-editor tab to the saved draft: re-key it so it
       // dedupes with the draft, its title tracks the name, and it keeps its
@@ -1102,11 +1104,11 @@ export default function Workspace() {
 
   // Schema editor "Save" on a tab already linked to an existing draft — persist
   // its current pending items back to that draft (no new draft created).
-  const updateSchemaDraft = async (draftId, items) => {
+  const updateSchemaDraft = async (draftId, items, layout) => {
     const sql = items.map((i) => i.sql).join('\n')
-    setSaved((prev) => prev.map((s) => (s.id === draftId ? { ...s, sql } : s)))
+    setSaved((prev) => prev.map((s) => (s.id === draftId ? { ...s, sql, layout } : s)))
     try {
-      await updateSaved(id, draftId, { sql })
+      await updateSaved(id, draftId, { sql, layout })
       toast.success('Draft saved.')
     } catch (e) {
       toast.error(`Save failed: ${e.message}`)
@@ -1574,6 +1576,9 @@ export default function Workspace() {
               onSaveDraft={saveSchemaDraft}
               onUpdateDraft={updateSchemaDraft}
               draftId={t.key.startsWith('schema:') ? t.key.slice(7) : undefined}
+              // The saved draft's diagram arrangement, seeded once per tab —
+              // a fresh (unsaved) schema tab has none, and dagre arranges it.
+              layout={t.key.startsWith('schema:') ? saved.find((q) => q.id === t.key.slice(7))?.layout : undefined}
               onOpenTable={openTable}
               onOpenSchema={openSchema}
             />

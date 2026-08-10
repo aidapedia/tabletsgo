@@ -82,9 +82,19 @@ export function buildConnectionExport(connectionId, { includeSecrets = false } =
     .map((r) => ({ tableName: r.table_name, folderId: r.folder_id }))
 
   const savedQueries = meta
-    .prepare('SELECT id, name, sql, kind, folder_id, ts FROM saved_queries WHERE connection_id = ? ORDER BY ts ASC')
+    .prepare('SELECT id, name, sql, kind, folder_id, layout, ts FROM saved_queries WHERE connection_id = ? ORDER BY ts ASC')
     .all(connectionId)
-    .map((r) => ({ id: r.id, name: r.name, sql: r.sql, kind: r.kind || 'query', folderId: r.folder_id || null, ts: r.ts }))
+    .map((r) => ({
+      id: r.id,
+      name: r.name,
+      sql: r.sql,
+      kind: r.kind || 'query',
+      folderId: r.folder_id || null,
+      // A schema draft's diagram arrangement travels with it — a bundle that
+      // dropped it would import the DDL and re-scatter the diagram.
+      layout: r.layout ? safeJson(r.layout) : null,
+      ts: r.ts,
+    }))
 
   const workflows = meta
     .prepare('SELECT id, name, graph, folder_id, schedule_enabled, ts FROM workflows WHERE connection_id = ? ORDER BY ts ASC')
@@ -260,10 +270,22 @@ export function importConnectionDoc(doc, { workspaceId, ownerId, name, settings:
       counts.tables++
     }
 
-    const insQuery = meta.prepare('INSERT INTO saved_queries (id, connection_id, name, sql, kind, folder_id, ts) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    const insQuery = meta.prepare(
+      'INSERT INTO saved_queries (id, connection_id, name, sql, kind, folder_id, layout, ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+    )
     for (const q of Array.isArray(doc.savedQueries) ? doc.savedQueries : []) {
       if (!q?.name?.trim() || !q?.sql?.trim()) continue
-      insQuery.run(randomUUID(), connectionId, q.name.trim(), q.sql.trim(), q.kind || 'query', folderFor(q.folderId, 'query'), Number(q.ts) || Date.now())
+      const layout = q.layout && typeof q.layout === 'object' && !Array.isArray(q.layout) ? JSON.stringify(q.layout) : null
+      insQuery.run(
+        randomUUID(),
+        connectionId,
+        q.name.trim(),
+        q.sql.trim(),
+        q.kind || 'query',
+        folderFor(q.folderId, 'query'),
+        layout,
+        Number(q.ts) || Date.now()
+      )
       counts.savedQueries++
     }
 

@@ -189,6 +189,7 @@ import {
   deleteDraft as deleteSchemaDraft,
   getDraft as getSchemaDraft,
   listDrafts as listSchemaDrafts,
+  schemaLayout,
   statementCount as schemaStatementCount,
   updateDraft as updateSchemaDraft,
 } from './server/schema-drafts.js'
@@ -1668,9 +1669,22 @@ app.put('/api/connections/:id/access', (req, res) => {
 
 app.get('/api/connections/:id/saved', (req, res) => {
   const rows = meta
-    .prepare('SELECT id, name, sql, kind, folder_id, ts FROM saved_queries WHERE connection_id = ? ORDER BY ts DESC')
+    .prepare('SELECT id, name, sql, kind, folder_id, layout, ts FROM saved_queries WHERE connection_id = ? ORDER BY ts DESC')
     .all(req.params.id)
-  res.json(rows.map((r) => ({ ...r, kind: r.kind || 'query', folderId: r.folder_id || null })))
+  // `layout` is the schema editor's diagram arrangement and only a schema draft
+  // ever has one — a plain query row carries null, not an empty object, so the
+  // editor can tell "never arranged" from "arranged into nothing".
+  res.json(
+    rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      sql: r.sql,
+      kind: r.kind || 'query',
+      folderId: r.folder_id || null,
+      layout: r.layout ? safeJson(r.layout) : null,
+      ts: r.ts,
+    }))
+  )
 })
 
 app.get('/api/connections/:id/folders', (req, res) => {
@@ -1806,13 +1820,21 @@ app.put('/api/connections/:id/tables/:table/folder', (req, res) => {
 // refusing that is what left the editor unable to save a draft it had just
 // emptied. Same split on the update below.
 app.post('/api/connections/:id/saved', (req, res) => {
-  const { name, sql, kind } = req.body || {}
+  const { name, sql, kind, layout } = req.body || {}
   if (!name?.trim()) return res.status(400).json({ error: 'A name and SQL are required' })
   if ((kind || 'query') !== 'schema' && !sql?.trim()) return res.status(400).json({ error: 'A name and SQL are required' })
-  const entry = { id: randomUUID(), name: name.trim(), sql: (sql || '').trim(), kind: kind || 'query', ts: Date.now() }
+  const entry = {
+    id: randomUUID(),
+    name: name.trim(),
+    sql: (sql || '').trim(),
+    kind: kind || 'query',
+    // Only a schema draft arranges a diagram; a query row has nothing to place.
+    layout: schemaLayout(layout),
+    ts: Date.now(),
+  }
   meta
-    .prepare('INSERT INTO saved_queries (id, connection_id, name, sql, kind, ts) VALUES (?, ?, ?, ?, ?, ?)')
-    .run(entry.id, req.params.id, entry.name, entry.sql, entry.kind, entry.ts)
+    .prepare('INSERT INTO saved_queries (id, connection_id, name, sql, kind, layout, ts) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run(entry.id, req.params.id, entry.name, entry.sql, entry.kind, entry.layout ? JSON.stringify(entry.layout) : null, entry.ts)
   res.json(entry)
 })
 
@@ -1842,6 +1864,13 @@ app.put('/api/connections/:id/saved/:sid', (req, res) => {
   if ('folderId' in body) {
     sets.push('folder_id = ?')
     vals.push(body.folderId || null)
+  }
+  // Saving the schema editor sends `sql` and `layout` together; a rename sends
+  // neither. An explicit null forgets the arrangement.
+  if ('layout' in body) {
+    sets.push('layout = ?')
+    const layout = schemaLayout(body.layout)
+    vals.push(layout ? JSON.stringify(layout) : null)
   }
   if (!sets.length) return res.status(400).json({ error: 'Nothing to update' })
   const r = meta
@@ -2197,6 +2226,7 @@ app.get('/api/workspaces/:id/schemas/:draftId', (req, res) => {
       id: scratch.id,
       name: scratch.name,
       sql: scratch.sql,
+      layout: scratch.layout,
       ts: scratch.ts,
       connectionId: null,
       connectionName: null,
@@ -2204,7 +2234,7 @@ app.get('/api/workspaces/:id/schemas/:draftId', (req, res) => {
     })
   }
   const row = meta
-    .prepare("SELECT id, connection_id, name, sql, ts FROM saved_queries WHERE id = ? AND kind = 'schema'")
+    .prepare("SELECT id, connection_id, name, sql, layout, ts FROM saved_queries WHERE id = ? AND kind = 'schema'")
     .get(req.params.draftId)
   if (!row) return res.status(404).json({ error: 'Schema draft not found' })
   const conn = getConnection(row.connection_id)
@@ -2215,6 +2245,7 @@ app.get('/api/workspaces/:id/schemas/:draftId', (req, res) => {
     id: row.id,
     name: row.name,
     sql: row.sql || '',
+    layout: row.layout ? safeJson(row.layout) : null,
     ts: row.ts,
     connectionId: conn.id,
     connectionName: conn.name,
@@ -2247,6 +2278,7 @@ app.post('/api/workspaces/:id/schema-drafts', (req, res) => {
       name: name.trim(),
       dbType: engine.type,
       sql: typeof req.body?.sql === 'string' ? req.body.sql : '',
+      layout: schemaLayout(req.body?.layout),
       createdBy: user.id,
     })
   )
@@ -2261,15 +2293,23 @@ app.get('/api/workspaces/:id/schema-drafts/:draftId', (req, res) => {
   res.json(draft)
 })
 
-// Partial: `name`, `sql`, or both.
+// Partial: `name`, `sql`, `layout`, or any combination — saving the editor
+// sends the DDL and the diagram arrangement together, a rename sends neither.
 app.put('/api/workspaces/:id/schema-drafts/:draftId', (req, res) => {
   const user = requireMember(req, res, req.params.id)
   if (!user) return
   const draft = getSchemaDraft(req.params.draftId)
   if (!draft || draft.workspaceId !== req.params.id) return res.status(404).json({ error: 'Schema draft not found' })
-  const { name, sql } = req.body || {}
+  const body = req.body || {}
+  const { name, sql } = body
   if (name !== undefined && !String(name).trim()) return res.status(400).json({ error: 'A schema name is required' })
-  res.json(updateSchemaDraft(draft.id, { ...(name !== undefined && { name: String(name).trim() }), ...(sql !== undefined && { sql: String(sql) }) }))
+  res.json(
+    updateSchemaDraft(draft.id, {
+      ...(name !== undefined && { name: String(name).trim() }),
+      ...(sql !== undefined && { sql: String(sql) }),
+      ...('layout' in body && { layout: schemaLayout(body.layout) }),
+    })
+  )
 })
 
 app.delete('/api/workspaces/:id/schema-drafts/:draftId', (req, res) => {

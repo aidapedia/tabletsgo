@@ -7,8 +7,10 @@ export async function fetchSaved(connectionId) {
   return safeRequest(`/connections/${connectionId}/saved`, [])
 }
 
-export async function createSaved(connectionId, { name, sql, kind }: any) {
-  return request(`/connections/${connectionId}/saved`, { method: 'POST', body: { name, sql, kind } })
+// `layout` is the schema editor's diagram arrangement — only a schema draft
+// (kind = 'schema') ever sends one, and the server stores it beside the SQL.
+export async function createSaved(connectionId, { name, sql, kind, layout }: any) {
+  return request(`/connections/${connectionId}/saved`, { method: 'POST', body: { name, sql, kind, layout } })
 }
 
 export async function renameSaved(connectionId, savedId, name) {

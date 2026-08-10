@@ -2,7 +2,7 @@ import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useWorkspaces } from '@/features/workspaces'
 import { createSchemaDraft, getWorkspaceSchema, updateSchemaDraft } from '@/features/schema-designer/lib/api'
-import type { SchemaDraftDetail } from '@/features/schema-designer'
+import type { SchemaDraftDetail, SchemaLayout } from '@/features/schema-designer'
 // Deep import, not the `@/features/workspace` barrel: that barrel re-exports
 // the whole DB console (QueryEditor pulls CodeMirror in), and this page only
 // wants the saved-query write.
@@ -88,7 +88,9 @@ export default function SchemaDraftPage() {
     [draft]
   )
 
-  const save = async (items: any[]) => {
+  // The DDL and the arrangement are one save: a diagram is where its tables sit
+  // and what is written beside them as much as it is the statements it stages.
+  const save = async (items: any[], layout: SchemaLayout) => {
     if (!current?.id || !draft) return
     setSaving(true)
     // Stored the same way either kind is — statements joined by `;` — so
@@ -98,11 +100,11 @@ export default function SchemaDraftPage() {
       if (draft.connectionId) {
         // A connection draft is that connection's saved query; writing it
         // through the route the console uses keeps one owner for the row.
-        await updateSaved(draft.connectionId, draft.id, { sql })
-        setDraft({ ...draft, sql })
+        await updateSaved(draft.connectionId, draft.id, { sql, layout })
+        setDraft({ ...draft, sql, layout })
       } else {
-        const updated = await updateSchemaDraft(current.id, draft.id, { sql })
-        setDraft({ ...draft, sql: updated.sql, ts: updated.ts })
+        const updated = await updateSchemaDraft(current.id, draft.id, { sql, layout })
+        setDraft({ ...draft, sql: updated.sql, layout: updated.layout, ts: updated.ts })
       }
       toast.success('Schema saved')
     } catch (error) {
@@ -115,13 +117,13 @@ export default function SchemaDraftPage() {
   // "Save as" forks a *copy*, the same as it does in the console — a new draft
   // of the same kind (the connection's saved query, or a workspace row keeping
   // the dialect), then this page follows it to its own address.
-  const saveAs = async (items: any[], name: string) => {
+  const saveAs = async (items: any[], name: string, layout: SchemaLayout) => {
     if (!current?.id || !draft) return
     const sql = items.map((i) => i.sql).join('\n')
     try {
       const copy: any = draft.connectionId
-        ? await createSaved(draft.connectionId, { name, sql, kind: 'schema' })
-        : await createSchemaDraft(current.id, { name, dbType: draft.connectionType, sql })
+        ? await createSaved(draft.connectionId, { name, sql, kind: 'schema', layout })
+        : await createSchemaDraft(current.id, { name, dbType: draft.connectionType, sql, layout })
       toast.success(`Saved draft “${name}”.`)
       navigate(`/schemas/${copy.id}`)
     } catch (error) {
@@ -185,8 +187,9 @@ export default function SchemaDraftPage() {
             pending={pending}
             onPendingChange={setPending}
             draftId={draft.id}
-            onUpdateDraft={(_draftId: string, items: any[]) => save(items)}
-            onSaveDraft={(items: any[], name: string) => saveAs(items, name)}
+            layout={draft.layout}
+            onUpdateDraft={(_draftId: string, items: any[], layout: SchemaLayout) => save(items, layout)}
+            onSaveDraft={(items: any[], name: string, layout: SchemaLayout) => saveAs(items, name, layout)}
           />
         </Suspense>
       </div>
