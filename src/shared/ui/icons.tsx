@@ -269,6 +269,14 @@ export const MoreVerticalIcon = (props) => (
   </svg>
 )
 
+export const MoreHorizontalIcon = (props) => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" {...props}>
+    <circle cx="5" cy="12" r="1.6" />
+    <circle cx="12" cy="12" r="1.6" />
+    <circle cx="19" cy="12" r="1.6" />
+  </svg>
+)
+
 export const LogoutIcon = (props) => (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
     strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
@@ -606,5 +614,14 @@ export const BuildingIcon = (props) => (
     strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
     <rect x="4" y="3" width="16" height="18" rx="1.5" />
     <path d="M9 7h1M14 7h1M9 11h1M14 11h1M9 15h1M14 15h1M10 21v-3h4v3" />
+  </svg>
+)
+
+// Sidebar collapse/expand affordance — the rail is the filled-in left column.
+export const PanelLeftIcon = (props) => (
+  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+    <rect x="3" y="3" width="18" height="18" rx="2" />
+    <path d="M9 3v18" />
   </svg>
 )

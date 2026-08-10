@@ -1,18 +1,8 @@
-import { CodeIcon, DatabaseIcon, DbLogo, DiagramIcon, GridIcon, HomeIcon, KeyIcon, LogoutIcon, WandIcon, WorkflowIcon } from '@/shared/ui/icons'
-import Popover from '@/shared/ui/overlay/Popover'
+import { CodeIcon, DatabaseIcon, DbLogo, DiagramIcon, GridIcon, HomeIcon, WandIcon, WorkflowIcon } from '@/shared/ui/icons'
 import Tooltip from '@/shared/ui/overlay/Tooltip'
-import IconButton from '@/shared/ui/buttons/IconButton'
-import MenuItem from '@/shared/ui/navigation/MenuItem'
-
-function RailButton({ icon: Icon, label, active = false, onClick }) {
-  return (
-    <Tooltip label={label} placement="right">
-      <IconButton size="xl" active={active} aria-label={label} onClick={onClick} className={active ? '' : '!text-ink-faint'}>
-        <Icon />
-      </IconButton>
-    </Tooltip>
-  )
-}
+import RailItem, { RailDivider } from '@/shared/ui/navigation/RailItem'
+import AccountTile from '@/shared/ui/AccountTile'
+import AccountMenu from '@/shared/ui/AccountMenu'
 
 export default function IconRail({
   user,
@@ -36,75 +26,64 @@ export default function IconRail({
   browserLabel = 'Data browser',
 }) {
   const current = connections.find((c) => c.id === currentId)
-  const initial = user?.name?.[0]?.toUpperCase() || 'A'
 
+  // 3.5rem = the two px-2 gutters + a 2.5rem target, so the rail tracks the
+  // density setting's root font-size instead of stranding the slack on one
+  // side; + 1px is the border-r, which border-box counts inside the width and
+  // which doesn't scale. See the fuller note in HomeLayout's <aside>.
   return (
-    <div className="flex w-[56px] shrink-0 flex-col items-center border-r border-edge bg-bg py-3">
+    <div className="flex w-[calc(3.5rem_+_1px)] shrink-0 flex-col border-r border-edge bg-bg px-2 py-3">
       {/* Connection switcher — opens the searchable folder-tree modal */}
       <Tooltip
         label={current?.environment ? `${current.name} · ${current.environment}` : current?.name || 'Connections'}
         placement="right"
       >
-        <IconButton size="xl" onClick={onBrowseConnections} aria-label="Switch connection">
+        <button
+          onClick={onBrowseConnections}
+          aria-label="Switch connection"
+          className="flex h-10 w-10 items-center justify-center rounded-soft text-ink-dim transition-colors hover:bg-card-hover hover:text-ink"
+        >
           <DbLogo type={current?.type} className="h-9 w-9" />
-        </IconButton>
+        </button>
       </Tooltip>
 
-      <div className="my-2 h-px w-7 bg-edge" />
+      <RailDivider />
 
-      <div className="flex flex-col items-center gap-1.5">
-        <RailButton icon={BrowserIcon} label={browserLabel} active={active === 'browser'} onClick={onBrowser} />
-        <RailButton icon={CodeIcon} label="Saved queries" active={active === 'queries'} onClick={onQueries} />
-        <RailButton icon={WorkflowIcon} label="Workflows" active={active === 'workflows'} onClick={onWorkflows} />
-        <RailButton icon={GridIcon} label="Dashboards" active={active === 'dashboards'} onClick={onDashboards} />
-        {showSchema && <RailButton icon={DiagramIcon} label="Schema" active={active === 'schema'} onClick={onSchema} />}
-        <RailButton icon={WandIcon} label="Templates" active={active === 'templates'} onClick={onTemplates} />
+      <div className="flex flex-col gap-1.5">
+        <RailItem icon={BrowserIcon} label={browserLabel} active={active === 'browser'} onClick={onBrowser} />
+        <RailItem icon={CodeIcon} label="Saved queries" active={active === 'queries'} onClick={onQueries} />
+        <RailItem icon={WorkflowIcon} label="Workflows" active={active === 'workflows'} onClick={onWorkflows} />
+        <RailItem icon={GridIcon} label="Dashboards" active={active === 'dashboards'} onClick={onDashboards} />
+        {showSchema && <RailItem icon={DiagramIcon} label="Schema" active={active === 'schema'} onClick={onSchema} />}
+        <RailItem icon={WandIcon} label="Templates" active={active === 'templates'} onClick={onTemplates} />
       </div>
 
-      <div className="mt-auto flex flex-col items-center gap-1.5">
-        <RailButton icon={HomeIcon} label="Home" onClick={onHome} />
-        <Popover
-          align="left"
-          placement="top"
-          width={220}
-          trigger={({ toggle }) => (
+      <div className="mt-auto flex flex-col gap-1.5">
+        <RailItem icon={HomeIcon} label="Home" onClick={onHome} />
+        <AccountMenu
+          user={user}
+          onLogout={onLogout}
+          trigger={({ open, toggle }) => (
             <Tooltip label={user?.name || 'Profile'} placement="right">
               <button
                 aria-label="User profile"
                 onClick={toggle}
-                className="relative mt-1 flex h-9 w-9 items-center justify-center rounded-[11px] bg-green text-xs font-bold text-white hover:bg-green-bright"
+                className={`relative mt-1 flex h-10 w-10 items-center justify-center rounded-soft transition-colors hover:bg-card-hover ${
+                  open ? 'bg-card-hover' : ''
+                }`}
               >
-                {initial}
-                <span className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-bg bg-green" />
+                {/* The dot is positioned against the tile, not the 40px
+                    target — anchored to the button it would float off into the
+                    padding once the tile got smaller. The console is the only
+                    place presence means anything, so it stays on this rail. */}
+                <span className="relative flex">
+                  <AccountTile label={user?.name} size={30} />
+                  <span className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-bg bg-green" />
+                </span>
               </button>
             </Tooltip>
           )}
-        >
-          {({ close }) => (
-            <div className="p-1">
-              <div className="flex items-center gap-2.5 px-2.5 py-2">
-                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[11px] bg-green text-[13px] font-bold text-white">
-                  {initial}
-                </span>
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-[12px] font-semibold text-ink">{user?.name || 'Account'}</div>
-                  <div className="truncate text-[11px] text-ink-faint">{user?.email}</div>
-                </div>
-              </div>
-              <div className="my-1 h-px bg-edge" />
-              <MenuItem
-                danger
-                onClick={() => {
-                  close()
-                  onLogout?.()
-                }}
-              >
-                <LogoutIcon width={15} height={15} />
-                <span className="flex-1">Sign out</span>
-              </MenuItem>
-            </div>
-          )}
-        </Popover>
+        />
       </div>
     </div>
   )
