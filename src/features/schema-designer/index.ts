@@ -2,8 +2,8 @@
 // plus the create-table / edit-table / column editors.
 //
 // `SchemaEditor` is deliberately absent — it pulls React Flow, dagre and
-// html-to-image, so it stays behind a direct lazy import in the console
-// (see WorkspacePage) and never lands in a chunk that only lists drafts.
+// html-to-image, so it stays behind a direct lazy import on the editor page
+// (see SchemaDraftPage) and never lands in a chunk that only lists drafts.
 export { default as WorkspaceSchemaList } from './components/WorkspaceSchemaList'
 export { default as CreateTablePanel } from './components/CreateTablePanel'
 export { default as TableEditPanel } from './components/TableEditPanel'

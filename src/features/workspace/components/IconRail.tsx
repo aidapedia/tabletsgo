@@ -19,7 +19,7 @@ export default function IconRail({
   onHome,
   onLogout,
   // Schemaless engines (Redis) have nothing for the schema designer to draw, so
-  // the rail hides that entry rather than opening an empty panel.
+  // the rail hides that entry rather than leaving for an editor with no diagram.
   showSchema = true,
   // What the browser panel holds — tables for the SQL engines, keys for Redis.
   browserIcon: BrowserIcon = DatabaseIcon,
@@ -54,7 +54,9 @@ export default function IconRail({
         <RailItem icon={CodeIcon} label="Saved queries" active={active === 'queries'} onClick={onQueries} />
         <RailItem icon={WorkflowIcon} label="Workflows" active={active === 'workflows'} onClick={onWorkflows} />
         <RailItem icon={GridIcon} label="Dashboards" active={active === 'dashboards'} onClick={onDashboards} />
-        {showSchema && <RailItem icon={DiagramIcon} label="Schema" active={active === 'schema'} onClick={onSchema} />}
+        {/* Unlike its neighbours this one leaves the console: the diagram lives
+            on the Schema Editor page, so there is no panel here to mark active. */}
+        {showSchema && <RailItem icon={DiagramIcon} label="Schema editor" onClick={onSchema} />}
         <RailItem icon={WandIcon} label="Templates" active={active === 'templates'} onClick={onTemplates} />
       </div>
 

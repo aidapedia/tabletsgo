@@ -47,15 +47,18 @@ function SourceCard({
 /**
  * "New schema" — pick where the diagram starts.
  *
- * **From a connection** opens the designer in that connection's console, on the
- * live schema: the tables are already drawn and what you stage runs against
- * them. Nothing is created here — the console owns that tab, so this only
- * navigates.
+ * **From a connection** designs against a live database: the tables are already
+ * drawn, the column types are that engine's, and Release runs the staged DDL
+ * against it. The draft is stored as that connection's saved query.
  *
  * **From scratch** has no database behind it, so the one thing a connection
  * would have answered is asked instead: which dialect to write DDL in. That
- * makes a workspace-level draft, edited on its own page and exported as SQL
- * (there is nothing to run it against until it's applied to a connection).
+ * makes a workspace-level draft, exported as SQL until it's linked to a
+ * connection.
+ *
+ * Both kinds are named here and both open on the same editor page — the source
+ * decides where the draft is stored and whether there is a database to draw,
+ * not which screen edits it.
  *
  * The engine list comes from the backend driver registry, so an engine with no
  * schema to draw (Redis) is absent without this file naming it.
@@ -68,7 +71,7 @@ export default function NewSchemaDialog({
 }: {
   connections: { id: string; name: string; type: string }[]
   onClose: () => void
-  onFromConnection: (connectionId: string) => void
+  onFromConnection: (connectionId: string, name: string) => Promise<void> | void
   onFromScratch: (fields: { name: string; dbType: string }) => Promise<void> | void
 }) {
   const [source, setSource] = useState<Source>('connection')
@@ -98,15 +101,15 @@ export default function NewSchemaDialog({
     if (!dbType && engines.length) setDbType(engines[0].type)
   }, [engines, dbType])
 
-  const canSubmit = source === 'connection' ? !!connectionId : !!name.trim() && !!dbType
+  const canSubmit = !!name.trim() && (source === 'connection' ? !!connectionId : !!dbType)
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!canSubmit || busy) return
-    if (source === 'connection') return onFromConnection(connectionId)
     setBusy(true)
     try {
-      await onFromScratch({ name: name.trim(), dbType })
+      if (source === 'connection') await onFromConnection(connectionId, name.trim())
+      else await onFromScratch({ name: name.trim(), dbType })
     } finally {
       setBusy(false)
     }
@@ -132,9 +135,15 @@ export default function NewSchemaDialog({
           />
         </div>
 
+        {/* The name is asked for either way — both sources create a draft that
+            the Schema list then has to show a row for. */}
+        <FormField label="Name">
+          <Input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Billing schema" />
+        </FormField>
+
         {source === 'connection' ? (
           designable.length ? (
-            <FormField label="Connection" hint="The designer opens in this connection's console.">
+            <FormField label="Connection" hint="The diagram is drawn from this database's live tables.">
               <Select
                 value={connectionId}
                 onChange={setConnectionId}
@@ -147,18 +156,13 @@ export default function NewSchemaDialog({
             </EmptyState>
           )
         ) : (
-          <>
-            <FormField label="Name">
-              <Input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Billing schema" />
-            </FormField>
-            <FormField label="Database type" hint="Decides the column types and the SQL the diagram generates.">
-              <Select
-                value={dbType}
-                onChange={setDbType}
-                options={engines.map((e) => ({ value: e.type, label: e.label, hint: `${e.dataTypes.length} column types` }))}
-              />
-            </FormField>
-          </>
+          <FormField label="Database type" hint="Decides the column types and the SQL the diagram generates.">
+            <Select
+              value={dbType}
+              onChange={setDbType}
+              options={engines.map((e) => ({ value: e.type, label: e.label, hint: `${e.dataTypes.length} column types` }))}
+            />
+          </FormField>
         )}
 
         <div className="mt-5 flex justify-end gap-2">
@@ -166,7 +170,7 @@ export default function NewSchemaDialog({
             Cancel
           </Button>
           <Button type="submit" variant="primary" size="sm" disabled={!canSubmit || busy}>
-            {busy ? 'Creating…' : source === 'connection' ? 'Open designer' : 'Create schema'}
+            {busy ? 'Creating…' : 'Create schema'}
           </Button>
         </div>
       </Form>

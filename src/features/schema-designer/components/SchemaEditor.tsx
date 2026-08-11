@@ -635,16 +635,19 @@ function pathWithJumps(points, verticals) {
 }
 
 // Every callback here is optional (each is invoked with `?.`, and `changes` is
-// read as `changes || []`): the console passes the full set, the standalone
-// draft page passes only what a diagram with no database can use. Annotated
-// `any` like SchemaPanel next door so the signature says so.
+// read as `changes || []`), so a host wires up only what it can answer for. The
+// draft page is now the only host: it passes the connection's table folders,
+// and Release rather than Submit. `changes` / `onStageItems` / `onOpenTable` /
+// `onOpenSchema` are the console's half of the contract — a diagram hosted
+// beside a Changes queue and a data grid — and stay optional for a host that
+// has one again. Annotated `any` so the signature says all of that.
 //
 // The array defaults are module constants, never `= []` inline: `folders` and
 // `pending` are dependencies of `layoutNodes`, which the node-building effect
 // depends on in turn. A fresh `[]` each render makes that effect fire on every
 // render and `setNodes` with new objects each time — a loop React Flow can
 // never settle, because it loses every node's measured size on each pass. It
-// only bites a host that omits the prop (the console passes both).
+// only bites a host that omits the prop.
 export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUpdateFolder, onDeleteFolder, onSetFolder, pending = NO_PENDING, onPendingChange, onStageItems, onSaveDraft, onUpdateDraft, draftId, layout, onOpenTable, onOpenSchema, releaseTarget = null, releaseHint = '', onRelease, releasing = false, layoutRef }: any) {
   const dialect = conn.type === 'postgresql' ? 'postgresql' : 'sqlite'
   // Submit hands the staged DDL to a Changes queue, so it exists exactly when
@@ -1715,11 +1718,12 @@ export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUp
       {/* Toolbar / action list — Save sits on the left; Export on the right.
           Save is always shown but disabled until there are pending changes. */}
       <div className="flex items-center gap-2 border-b border-edge px-3 py-2">
-        {/* Submit — move the pending changes into the Changes queue, ready to
-            execute. Save — persist as a draft: update the linked draft when this
-            tab was opened from one, otherwise create the first draft. Save as
-            draft — only meaningful once linked, forks a *copy* into a new draft
-            (Save / Save As), so it's hidden on a fresh editor. */}
+        {/* Submit — move the pending changes into a host's Changes queue, ready
+            to execute; shown only for a host that has one. Save — persist as a
+            draft: update the linked draft when this editor was opened from one,
+            otherwise create the first draft. Save as draft — only meaningful
+            once linked, forks a *copy* into a new draft (Save / Save As), so
+            it's hidden on a fresh editor. */}
         {onStageItems && (
           <Button
             variant="primary"

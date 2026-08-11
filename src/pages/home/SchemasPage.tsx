@@ -4,6 +4,10 @@ import { useWorkspaces } from '@/features/workspaces'
 import { useConnections } from '@/features/connections'
 import { NewSchemaDialog, WorkspaceSchemaList, type WorkspaceSchemaDraft } from '@/features/schema-designer'
 import { createSchemaDraft } from '@/features/schema-designer/lib/api'
+// Deep import, not the `@/features/workspace` barrel: that barrel re-exports the
+// whole DB console (QueryEditor pulls CodeMirror in), and this page only wants
+// the saved-query write a connection-linked draft is stored as.
+import { createSaved } from '@/features/workspace/lib/savedQueries'
 import Button from '@/shared/ui/buttons/Button'
 import LoadingState from '@/shared/ui/feedback/LoadingState'
 import { useToast } from '@/shared/ui/feedback/Toast'
@@ -11,9 +15,10 @@ import { PlusIcon } from '@/shared/ui/icons'
 import { PageHeader } from './ui'
 
 // Schema — every schema draft in the current workspace, across its connections
-// plus the ones designed from scratch. Designing against a live database belongs
-// to the console (that is where the diagram and its DDL run); this section is
-// the overview the console can't give, and where a new schema starts.
+// plus the ones designed from scratch. The console has no diagram of its own:
+// both kinds are designed on the editor page this list opens, which draws a
+// connection draft from that live database and releases its DDL there. This
+// section is the overview and where a new schema starts.
 export default function SchemasPage() {
   const { current } = useWorkspaces()
   const { connections } = useConnections()
@@ -25,16 +30,21 @@ export default function SchemasPage() {
 
   // Every draft opens in the schema editor page, whichever kind it is — the
   // designer needs connection *access*, which this list already required to
-  // show the row, not the whole console. A connection-linked draft still gets
-  // there in one click (the editor page carries an "Open in console" link),
-  // because running its DDL is the console's Changes queue.
+  // show the row, not the whole console.
   const open = (draft: WorkspaceSchemaDraft) => navigate(`/schemas/${draft.id}`)
 
-  // "From a connection" creates nothing here — the console owns that tab, so
-  // this only asks it for a fresh schema editor on that connection.
-  const fromConnection = (connectionId: string) => {
-    setCreating(false)
-    navigate(`/connection/${connectionId}?schema=new`)
+  // "From a connection" is an empty draft *on* that connection: per-connection
+  // drafts are that connection's saved queries (kind = 'schema'), so it is
+  // written through the same route the editor page saves it back through. Both
+  // kinds then open at the same address.
+  const fromConnection = async (connectionId: string, name: string) => {
+    try {
+      const entry = await createSaved(connectionId, { name, sql: '', kind: 'schema', layout: null })
+      setCreating(false)
+      navigate(`/schemas/${entry.id}`)
+    } catch (error) {
+      toast.error((error as Error)?.message || 'Could not create the schema')
+    }
   }
 
   const fromScratch = async (fields: { name: string; dbType: string }) => {

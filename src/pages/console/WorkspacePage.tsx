@@ -34,16 +34,12 @@ import {
   deleteFolder,
   moveFolder,
 } from '@/features/workspace/lib/savedQueries'
-import { draftToItems } from '@/shared/lib/schemaDraft'
 import SearchInput from '@/shared/ui/form/SearchInput'
 import TableView, { makeFilter } from '@/features/workspace/components/TableView'
 import CreateTablePanel from '@/features/schema-designer/components/CreateTablePanel'
-import SchemaPanel from '@/features/schema-designer/components/SchemaPanel'
 
 // Lazy — pulls in the (heavy) CodeMirror editor only when a query tab opens.
 const QueryEditor = lazy(() => import('@/features/workspace/components/QueryEditor'))
-// Lazy — React Flow is heavy; only load when the schema editor opens.
-const SchemaEditor = lazy(() => import('@/features/schema-designer/components/SchemaEditor'))
 // Lazy — React Flow again; only load when a workflow tab opens.
 const WorkflowEditor = lazy(() => import('@/features/workflow/components/WorkflowEditor'))
 // Lazy — recharts + react-grid-layout; only load when a dashboard tab opens.
@@ -128,11 +124,9 @@ import {
   WorkflowIcon,
 } from '@/shared/ui/icons'
 import {
-  TableFolderPickerPanel,
   TableFolderList,
   FolderDot,
   fetchTableFolders,
-  updateTableFolder,
   deleteTableFolder,
 } from '@/features/table-folders'
 import { TemplatesPanel, TemplateDetailView, TEMPLATES } from '@/features/templates'
@@ -151,14 +145,14 @@ const centerState =
 export default function Workspace() {
   const { id } = useParams()
   const navigate = useNavigate()
-  // `?workflow=<id>` / `?dashboard=<id>` / `?schema=<id>` — a row of the
-  // workspace-wide Workflow, Dashboard or Schema section landing here. The
-  // console keeps its tabs in state, so these are the tabs a URL can ask for;
-  // they stay in the address so a refresh reopens the same one.
+  // `?workflow=<id>` / `?dashboard=<id>` — a row of the workspace-wide Workflow
+  // or Dashboard section landing here. The console keeps its tabs in state, so
+  // these are the tabs a URL can ask for; they stay in the address so a refresh
+  // reopens the same one. A schema draft has no such link: the diagram lives on
+  // its own page (`/schemas/:id`), not in a console tab.
   const [searchParams] = useSearchParams()
   const deepLink = searchParams.get('workflow')
   const dashboardLink = searchParams.get('dashboard')
-  const schemaLink = searchParams.get('schema')
   const { user, logout } = useAuth()
   const toast = useToast()
   const { connections, patchLocalConnection } = useConnections()
@@ -188,7 +182,6 @@ export default function Workspace() {
   const [focusedPane, setFocusedPane] = useState(0)
   const [splitDir, setSplitDir] = useState(null) // null (no split) | 'vertical' | 'horizontal'
   const [splitRatio, setSplitRatio] = useState(0.5) // pane 0's share of the editor area
-  const activeTab = activeByPane[focusedPane]
   const [creatingTable, setCreatingTable] = useState<any>(false)
   const [history, setHistory] = useState([])
   const [historyLoading, setHistoryLoading] = useState(false)
@@ -208,9 +201,7 @@ export default function Workspace() {
   const [analyzeFolder, setAnalyzeFolder] = useState(null) // { name, queries } being analyzed | null
   const [changes, setChanges] = useState([]) // staged (uncommitted) SQL mutations
   const [changesOpen, setChangesOpen] = useState(false)
-  const [schemaPending, setSchemaPending] = useState({}) // per schema-editor tab: key -> items[]
   const [queryState, setQueryState] = useState({}) // per query tab: key -> { sql, result, error, elapsedMs }
-  const [closingTab, setClosingTab] = useState(null) // tab key awaiting close confirmation
   const [pendingConn, setPendingConn] = useState(null) // connection id awaiting switch confirmation
   const [switcherOpen, setSwitcherOpen] = useState(false) // connection switcher modal
   const [tableAction, setTableAction] = useState(null) // { table, mode: 'empty' | 'delete' } awaiting confirmation
@@ -219,13 +210,12 @@ export default function Workspace() {
   const [sidebarOpen, setSidebarOpen] = useState(false) // mobile drawer
   const [openGroup, setOpenGroup] = useState('table') // accordion: the one expanded browser section
   const [tablesVisible, setTablesVisible] = useState(true) // left panel visible
-  const [panel, setPanel] = useState('browser') // 'browser' | 'queries' | 'workflows' | 'dashboards' | 'schema' | 'templates'
+  const [panel, setPanel] = useState('browser') // 'browser' | 'queries' | 'workflows' | 'dashboards' | 'templates'
   const [searchOpen, setSearchOpen] = useState(false) // table search toggle
   const [paletteOpen, setPaletteOpen] = useState(false) // ⌘K command palette
   const [tableSort, setTableSort] = useState('az') // 'az' | 'za'
   const [tableFolders, setTableFolders] = useState([]) // per-connection tableFolders (with grouped table names)
   const [creatingTableFolder, setCreatingTableFolder] = useState(null) // { parentId } while naming a new folder | null
-  const [folderPickerTable, setFolderPickerTable] = useState(null) // table whose folder picker is open (schema diagram) | null
   const [keyspaceVersion, setKeyspaceVersion] = useState(0) // bump to re-scan the Redis key tree
   const searchRef = useRef(null)
   const autoOpenedFor = useRef(null) // connection id we've already auto-opened a tab for
@@ -259,7 +249,6 @@ export default function Workspace() {
     setSplitDir(null)
     setChanges([])
     setQueryState({})
-    setSchemaPending({})
     autoOpenedFor.current = null
     navigate(`/connection/${cid}`)
     setSidebarOpen(false)
@@ -267,15 +256,25 @@ export default function Workspace() {
 
   // Rail selects a panel; clicking the active one again collapses it.
   const selectPanel = (p) => {
-    // The schema designer has nothing to show on a schemaless engine — the rail
-    // hides it, and this stops the keyboard shortcut from reaching it either.
-    if (p === 'schema' && isRedis) return
     if (panel === p && tablesVisible) {
       setTablesVisible(false)
     } else {
       setPanel(p)
       setTablesVisible(true)
     }
+  }
+
+  // The diagram is not a console tab: it lives on the Schema Editor page, which
+  // draws the same live schema from per-connection routes and owns the drafts.
+  // The rail entry therefore leaves the console rather than opening a panel —
+  // and goes to *this connection's* editor, not the workspace-wide list: the
+  // page resolves that address to the newest draft on this database, or an
+  // unsaved canvas over its live tables. On a schemaless engine (Redis) there
+  // is no diagram to leave for, so the rail hides the entry and this stops the
+  // keyboard shortcut reaching it either.
+  const openSchemaEditorPage = () => {
+    if (isRedis) return
+    navigate(`/schemas/connection/${id}`)
   }
 
   // Toggles the left sidebar — the desktop collapse and the mobile slide-over
@@ -366,26 +365,6 @@ export default function Workspace() {
     fetchSaved(id).then((list) => {
       if (!alive) return
       setSaved(list)
-      // Deep link from the workspace-wide Schema section.
-      if (deepLink || dashboardLink || autoOpenedFor.current === id) return
-      // `?schema=new` is the Schema section's "From a connection": there is no
-      // draft to find, just an empty designer on this database. Any other value
-      // is a draft id.
-      if (schemaLink === 'new') {
-        autoOpenedFor.current = id
-        setPanel('schema')
-        openSchemaEditor()
-        return
-      }
-      // Ordered last of the three for the same reason dashboards sit behind
-      // workflows: the requests race, so a URL carrying more than one resolves
-      // the same way every time.
-      const d = schemaLink && list.find((x) => x.id === schemaLink && x.kind === 'schema')
-      if (d) {
-        autoOpenedFor.current = id
-        setPanel('schema')
-        openSchemaDraft(d)
-      }
     })
     fetchFolders(id).then((list) => alive && setFolders(list))
     listWorkflows(id).then((list) => {
@@ -420,7 +399,7 @@ export default function Workspace() {
     return () => {
       alive = false
     }
-  }, [id, deepLink, dashboardLink, schemaLink])
+  }, [id, deepLink, dashboardLink])
 
   // Esc closes the mobile slide-over sidebar drawer while it's open.
   useEffect(() => {
@@ -501,9 +480,6 @@ export default function Workspace() {
   // Accordion: opening a section collapses the others; clicking the open one closes it.
   const toggleGroup = (type) => setOpenGroup((prev) => (prev === type ? null : type))
 
-  // Generic "Schema editor" scratch tab — focus it if already open.
-  const openSchemaEditor = () => openTab({ key: 'schema-editor', kind: 'schemaEditor', title: 'Schema Editor' })
-
   // Data deleted by DELETE FROM can't be reconstructed — not reversible.
   const emptyTable = (table) => {
     addChange({
@@ -582,14 +558,6 @@ export default function Workspace() {
         toast.error(`Couldn't record schema migration: ${e.message}`)
       }
     }
-
-    // A schema version (opened draft) whose staged changes all committed
-    // successfully is now deployed — delete it from the Schema Versions list.
-    const remainingDraftIds = new Set(remaining.map((c) => c.draftId).filter(Boolean))
-    const deployedDraftIds = [...new Set(succeeded.map((c) => c.draftId).filter(Boolean))].filter(
-      (did) => !remainingDraftIds.has(did) && saved.some((s) => s.id === did)
-    )
-    for (const did of deployedDraftIds) removeSaved(did)
 
     return { succeeded, remaining, failure, noop }
   }
@@ -1020,12 +988,6 @@ export default function Workspace() {
   }
 
   // Rollback SQL for one staged DDL statement, keyed by its schema-designer mode.
-  const rollbackFor = async (sql, table, mode) => {
-    if (mode === 'delete') return buildDropTableRollback(nsConn, table)
-    if (mode === 'edit') return { rollbackSql: rollbackForAddColumn(sql, table), reversible: true }
-    return { rollbackSql: rollbackForCreateTable(table), reversible: true }
-  }
-
   // Sidebar "Create table" stages directly into Changes.
   const stageTableChanges = (statements, tableName, mode) => {
     statements.forEach((sql) => {
@@ -1043,94 +1005,12 @@ export default function Workspace() {
     setCreatingTable(false)
   }
 
-  // Label + Changes-panel "kind" for a staged schema-editor item, by mode.
-  const schemaItemMeta = (mode, table) => {
-    switch (mode) {
-      case 'edit': return { kind: 'update', label: `Alter table ${table}` }
-      case 'delete': return { kind: 'delete', label: `Drop table ${table}` }
-      case 'fk-add': return { kind: 'update', label: `Add foreign key on ${table}` }
-      case 'fk-drop': return { kind: 'update', label: `Drop foreign key on ${table}` }
-      case 'fk-edit': return { kind: 'update', label: `Update foreign key on ${table}` }
-      default: return { kind: 'create', label: `Create table ${table}` }
-    }
-  }
-
-  // Schema editor "Stage commit" — push its collected pending items into Changes.
-  // FK-mode edits (fk-add/fk-drop/fk-edit) carry their own rollback SQL from
-  // SchemaEditor, since they're diagram-driven constraint statements the
-  // generic column-add/create-table rollback builders can't parse. `delete`
-  // (drop table from the canvas) needs a live column snapshot to build its
-  // rollback when one isn't already provided, so this staging step is async.
-  const stageSchemaItems = async (items) => {
-    // If these items came from an opened schema version (a saved draft, tab key
-    // `schema:<id>`), tag them so a fully successful commit can delete that
-    // version — once committed it's deployed and no longer a pending version.
-    const draftId =
-      activeTab?.startsWith('schema:') && saved.some((s) => s.id === activeTab.slice(7) && s.kind === 'schema')
-        ? activeTab.slice(7)
-        : undefined
-    for (const i of items) {
-      const { rollbackSql, reversible } =
-        i.rollbackSql !== undefined ? { rollbackSql: i.rollbackSql, reversible: i.rollbackSql != null } : await rollbackFor(i.sql, i.table, i.mode)
-      const { kind, label } = schemaItemMeta(i.mode, i.table)
-      addChange({ kind, label, sql: i.sql, table: i.table, ddl: true, reversible, rollbackSql, draftId })
-    }
-  }
-
-  // Schema editor "Save as draft" — store the SQL in Saved Queries (schema kind)
-  // together with the diagram's layout (table/group/note positions), so
-  // reopening the draft gets the arrangement back and not just the DDL.
-  const saveSchemaDraft = async (items, name, layout) => {
-    const tabKey = activeTab // the schema-editor tab that triggered the save
-    try {
-      const entry = await createSaved(id, { name, sql: items.map((i) => i.sql).join('\n'), kind: 'schema', layout })
-      setSaved((prev) => [entry, ...prev])
-      // Link the active schema-editor tab to the saved draft: re-key it so it
-      // dedupes with the draft, its title tracks the name, and it keeps its
-      // pending items as the draft's working state.
-      const newKey = `schema:${entry.id}`
-      setSchemaPending((p) => {
-        const n = { ...p, [newKey]: items }
-        if (tabKey && tabKey !== newKey) delete n[tabKey]
-        return n
-      })
-      setTabs((prev) => prev.map((t) => (t.key === tabKey ? { ...t, key: newKey, title: name } : t)))
-      setActiveByPane((cur) => cur.map((k) => (k === tabKey ? newKey : k)))
-      toast.success(`Saved draft “${name}”.`)
-    } catch (e) {
-      toast.error(`Save failed: ${e.message}`)
-    }
-  }
-
-  // Schema editor "Save" on a tab already linked to an existing draft — persist
-  // its current pending items back to that draft (no new draft created).
-  const updateSchemaDraft = async (draftId, items, layout) => {
-    const sql = items.map((i) => i.sql).join('\n')
-    setSaved((prev) => prev.map((s) => (s.id === draftId ? { ...s, sql, layout } : s)))
-    try {
-      await updateSaved(id, draftId, { sql, layout })
-      toast.success('Draft saved.')
-    } catch (e) {
-      toast.error(`Save failed: ${e.message}`)
-    }
-  }
-
-  // Open a saved schema draft in its own tab (focus if already open; keep its edits).
-  const openSchemaDraft = (q) => {
-    const key = `schema:${q.id}`
-    // Seed this tab's pending changes from the draft, once.
-    if (!tabs.some((t) => t.key === key)) setSchemaPending((p) => ({ ...p, [key]: draftToItems(q.sql) }))
-    openTab({ key, kind: 'schemaEditor', title: q.name })
-  }
-
   const renameSavedQuery = async (sid, name) => {
     const next = name?.trim()
     if (!next) return
     setSaved((prev) => prev.map((s) => (s.id === sid ? { ...s, name: next } : s)))
-    // Keep the matching open schema-editor / saved-query tab's title in sync.
-    setTabs((prev) =>
-      prev.map((t) => (t.key === `schema:${sid}` || t.key === `query:saved:${sid}` ? { ...t, title: next } : t))
-    )
+    // Keep the matching open saved-query tab's title in sync.
+    setTabs((prev) => prev.map((t) => (t.key === `query:saved:${sid}` ? { ...t, title: next } : t)))
     try {
       await renameSaved(id, sid, next)
       toast.success(`Renamed to “${next}”.`)
@@ -1161,20 +1041,15 @@ export default function Workspace() {
     }
   }
 
-  // Actually drop a tab (and its pending schema changes / query state).
+  // Actually drop a tab (and its query state).
   const dropTab = (key) => {
-    if (schemaPending[key]) setSchemaPending((p) => { const n = { ...p }; delete n[key]; return n })
     if (queryState[key]) setQueryState((p) => { const n = { ...p }; delete n[key]; return n })
     const next = tabs.filter((t) => t.key !== key)
     setTabs(next)
     settlePanes(next)
   }
 
-  const removeTab = (key) => {
-    // Confirm before closing a schema-editor tab that has unsaved changes.
-    if (schemaPending[key]?.length) setClosingTab(key)
-    else dropTab(key)
-  }
+  const removeTab = (key) => dropTab(key)
 
   const closeTab = (e, key) => {
     e.stopPropagation()
@@ -1308,15 +1183,7 @@ export default function Workspace() {
   // folder per table folder plus a trailing "Ungrouped" folder.
   const tableObjects = visibleObjects.filter((o) => o.type === 'table')
 
-  // Edit/delete a folder from the schema diagram (optimistic local update).
-  const updateFolderById = async (folderId, fields) => {
-    setTableFolders((prev) => prev.map((d) => (d.id === folderId ? { ...d, ...fields } : d)))
-    try {
-      await updateTableFolder(id, folderId, fields)
-    } catch (e) {
-      toast.error(`Couldn't update folder: ${e.message}`)
-    }
-  }
+  // Delete a table folder (optimistic local update).
   const removeTableFolder = async (folderId) => {
     // Mirror the server locally: subfolders and member tables move up one level
     // (to this folder's parent — the root, i.e. ungrouped, for a top-level one).
@@ -1443,7 +1310,7 @@ export default function Workspace() {
   useShortcut('workspace.panelQueries', () => selectPanel('queries'))
   useShortcut('workspace.panelWorkflows', () => selectPanel('workflows'))
   useShortcut('workspace.panelDashboards', () => selectPanel('dashboards'))
-  useShortcut('workspace.panelSchema', () => selectPanel('schema'))
+  useShortcut('workspace.panelSchema', openSchemaEditorPage)
   useShortcut('workspace.toggleSidebar', toggleSidebar)
   useShortcut('workspace.commitChanges', commitChanges)
   useShortcut('workspace.splitEditor', () => toggleSplit('vertical'))
@@ -1457,11 +1324,6 @@ export default function Workspace() {
     isRedis
       ? { id: 'new-query', group: 'Create', label: 'New Redis console', keywords: 'command redis cli tab', icon: <TerminalIcon width={15} height={15} />, hint: formatCombo(bindings['general.newTab']), run: () => openQuery() }
       : { id: 'new-query', group: 'Create', label: 'New SQL query', keywords: 'sql add query tab', icon: <CodeIcon width={15} height={15} />, hint: formatCombo(bindings['general.newTab']), run: () => openQuery() },
-    ...(isRedis
-      ? []
-      : [
-          { id: 'new-schema', group: 'Create', label: 'New schema diagram', keywords: 'erd designer table diagram', icon: <DiagramIcon width={15} height={15} />, run: openSchemaEditor },
-        ]),
     { id: 'new-workflow', group: 'Create', label: 'New workflow', keywords: 'automation flow', icon: <WorkflowIcon width={15} height={15} />, run: () => newWorkflow() },
     { id: 'new-dashboard', group: 'Create', label: 'New dashboard', keywords: 'charts widgets analytics', icon: <GridIcon width={15} height={15} />, run: () => newDashboard() },
     ...(isRedis
@@ -1475,7 +1337,7 @@ export default function Workspace() {
     { id: 'go-workflows', group: 'Navigate', label: 'Workflows', keywords: 'automation', icon: <WorkflowIcon width={15} height={15} />, hint: formatCombo(bindings['workspace.panelWorkflows']), run: () => selectPanel('workflows') },
     ...(isRedis
       ? []
-      : [{ id: 'go-schema', group: 'Navigate', label: 'Schema', keywords: 'designer diagram', icon: <DiagramIcon width={15} height={15} />, hint: formatCombo(bindings['workspace.panelSchema']), run: () => selectPanel('schema') }]),
+      : [{ id: 'go-schema', group: 'Navigate', label: 'Schema editor', keywords: 'designer diagram erd', icon: <DiagramIcon width={15} height={15} />, hint: formatCombo(bindings['workspace.panelSchema']), run: openSchemaEditorPage }]),
     { id: 'go-dashboards', group: 'Navigate', label: 'Dashboards', keywords: 'charts analytics', icon: <GridIcon width={15} height={15} />, hint: formatCombo(bindings['workspace.panelDashboards']), run: () => selectPanel('dashboards') },
     { id: 'go-templates', group: 'Navigate', label: 'Templates', keywords: 'presets starter gallery scaffold', icon: <WandIcon width={15} height={15} />, run: () => selectPanel('templates') },
     { id: 'switch-connection', group: 'Navigate', label: 'Switch connection…', keywords: 'database change connect', icon: <DatabaseIcon width={15} height={15} />, run: () => setSwitcherOpen(true) },
@@ -1559,31 +1421,6 @@ export default function Workspace() {
         return <SchemaView key={`${t.key}:${dataVersion}:${ns.database}:${ns.schema}`} conn={nsConn} table={t.table} />
       case 'function':
         return <FunctionView key={`${t.key}:${ns.database}:${ns.schema}`} conn={nsConn} name={t.name} />
-      case 'schemaEditor':
-        return (
-          <Suspense fallback={<div className="flex-1 p-8 text-center text-xs text-ink-faint">Loading schema…</div>}>
-            <SchemaEditor
-              key={`${t.key}:${dataVersion}:${ns.database}:${ns.schema}`}
-              conn={nsConn}
-              changes={changes}
-              folders={tableFolders}
-              onUpdateFolder={updateFolderById}
-              onDeleteFolder={removeTableFolder}
-              onSetFolder={setFolderPickerTable}
-              pending={schemaPending[t.key] || []}
-              onPendingChange={(items) => setSchemaPending((p) => ({ ...p, [t.key]: items }))}
-              onStageItems={stageSchemaItems}
-              onSaveDraft={saveSchemaDraft}
-              onUpdateDraft={updateSchemaDraft}
-              draftId={t.key.startsWith('schema:') ? t.key.slice(7) : undefined}
-              // The saved draft's diagram arrangement, seeded once per tab —
-              // a fresh (unsaved) schema tab has none, and dagre arranges it.
-              layout={t.key.startsWith('schema:') ? saved.find((q) => q.id === t.key.slice(7))?.layout : undefined}
-              onOpenTable={openTable}
-              onOpenSchema={openSchema}
-            />
-          </Suspense>
-        )
       case 'query':
         return (
           <Suspense fallback={<div className="flex-1 p-8 text-center text-xs text-ink-faint">Loading editor…</div>}>
@@ -1805,7 +1642,7 @@ export default function Workspace() {
           onQueries={() => selectPanel('queries')}
           onWorkflows={() => selectPanel('workflows')}
           onDashboards={() => selectPanel('dashboards')}
-          onSchema={() => selectPanel('schema')}
+          onSchema={openSchemaEditorPage}
           onTemplates={() => selectPanel('templates')}
           onHome={() => navigate('/')}
           onLogout={logout}
@@ -2007,20 +1844,6 @@ export default function Workspace() {
               fetchDashboardFolders(id).then(setDashboardFolders)
             }}
           />
-        ) : panel === 'schema' ? (
-          <SchemaPanel
-            conn={nsConn}
-            drafts={saved.filter((s) => s.kind === 'schema')}
-            migrations={schemaMigrations}
-            dialect={DIALECT[conn?.type]}
-            onOpenDraft={openSchemaDraft}
-            onNewSchema={openSchemaEditor}
-            onRenameDraft={renameSavedQuery}
-            onDeleteDraft={removeSaved}
-            onRefreshDrafts={() => fetchSaved(id).then(setSaved)}
-            onRefreshMigrations={loadSchemaHistory}
-            onRollback={setRollbackTarget}
-          />
         ) : panel === 'templates' ? (
           <TemplatesPanel
             dbType={conn?.type}
@@ -2092,11 +1915,6 @@ export default function Workspace() {
                 <MenuItem onClick={() => { newDashboard(); close() }}>
                   <GridIcon width={14} height={14} /> New dashboard
                 </MenuItem>
-                {!isRedis && (
-                  <MenuItem onClick={() => { openSchemaEditor(); close() }}>
-                    <DiagramIcon width={14} height={14} /> New schema diagram
-                  </MenuItem>
-                )}
               </div>
             )}
           </Popover>
@@ -2295,18 +2113,6 @@ export default function Workspace() {
         />
       )}
 
-      {/* Only the schema diagram's "Move to folder…" opens this — the Tables
-          sidebar assigns folders by drag and drop. */}
-      {folderPickerTable && (
-        <TableFolderPickerPanel
-          connectionId={id}
-          table={folderPickerTable}
-          folders={tableFolders}
-          onChange={setTableFolders}
-          onClose={() => setFolderPickerTable(null)}
-        />
-      )}
-
       {analyzeSql != null && conn && (
         <AnalyzePanel
           conn={nsConn}
@@ -2350,21 +2156,6 @@ export default function Workspace() {
           onCommit={commitChanges}
           onClear={() => setChanges([])}
           onClose={() => setChangesOpen(false)}
-        />
-      )}
-
-      {closingTab && (
-        <ConfirmDialog
-          title="Discard unsaved changes?"
-          message="This schema editor tab has unsaved changes that will be lost if you close it."
-          confirmLabel="Close tab"
-          cancelLabel="Keep editing"
-          danger
-          onConfirm={() => {
-            dropTab(closingTab)
-            setClosingTab(null)
-          }}
-          onCancel={() => setClosingTab(null)}
         />
       )}
 

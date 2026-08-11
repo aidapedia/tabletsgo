@@ -10,7 +10,16 @@ import type { LinkCandidate, ReleaseTarget, SchemaDraftDetail, SchemaLayout } fr
 // Deep import, not the `@/features/workspace` barrel: that barrel re-exports
 // the whole DB console (QueryEditor pulls CodeMirror in), and this page only
 // wants the saved-query write.
-import { createSaved, deleteSaved, updateSaved } from '@/features/workspace/lib/savedQueries'
+import { createSaved, deleteSaved, fetchSaved, updateSaved } from '@/features/workspace/lib/savedQueries'
+// The diagram draws one region per table folder, and its node menu edits them —
+// so the folders travel with the editor rather than staying in the console.
+import {
+  TableFolderPickerPanel,
+  fetchTableFolders,
+  updateTableFolder,
+  deleteTableFolder,
+  type TableFolder,
+} from '@/features/table-folders'
 import { draftToItems } from '@/shared/lib/schemaDraft'
 import { useToast } from '@/shared/ui/feedback/Toast'
 import LoadingState from '@/shared/ui/feedback/LoadingState'
@@ -23,18 +32,20 @@ import { ChevronLeft, ExternalLinkIcon, LinkIcon, UnlinkIcon } from '@/shared/ui
 const SchemaEditor = lazy(() => import('@/features/schema-designer/components/SchemaEditor'))
 
 /**
- * The schema editor page — where a draft from the Schema list opens, whichever
- * kind it is.
+ * The schema editor page — the diagram's only home, where a draft from the
+ * Schema list opens, whichever kind it is.
  *
- * A draft designed against a connection used to send you into that connection's
- * console. It doesn't need to: the diagram, the column types and the staged DDL
- * all come from per-connection routes that are guarded by connection access
- * alone, so this page can draw the live schema itself for anyone who may open
- * that database. It hides Submit — there is no Changes queue here to submit
- * into (see `onStageItems` in SchemaEditor) — and offers Release instead, which
- * runs the staged DDL against the draft's connection directly, after a
- * confirmation listing every statement. The "Open in console" link stays for
- * everything else the console does around a commit.
+ * A draft designed against a connection used to open in that connection's
+ * console. It doesn't need to, and no longer can: the diagram, the column
+ * types, the table folders and the staged DDL all come from per-connection
+ * routes that are guarded by connection access alone, so this page draws the
+ * live schema itself for anyone who may open that database — and the console's
+ * Schema rail icon navigates here rather than opening a tab. It hides Submit —
+ * there is no Changes queue here to submit into (see `onStageItems` in
+ * SchemaEditor) — and offers Release instead, which runs the staged DDL against
+ * the draft's connection directly, after a confirmation listing every
+ * statement. The console keeps the data grid, the query editor and the changes
+ * queue; what it no longer keeps is a canvas.
  *
  * A from-scratch draft has no database, so Release is disabled on it and the way
  * forward is "Link to connection": the design moves onto a connection of its own
@@ -46,22 +57,33 @@ const SchemaEditor = lazy(() => import('@/features/schema-designer/components/Sc
  * way out, because those tables are drawn by the connection and not stored in
  * the draft. Both directions move a row and touch no database.
  *
+ * It answers at two addresses. `/schemas/:id` is a draft by id, which is what
+ * the Schema list links to. `/schemas/connection/:connectionId` is "the schema
+ * editor for this connection" — what the console's rail icon means, where there
+ * is a database in hand but no draft id — and it resolves to the same thing:
+ * the connection's most recent draft if it has one, otherwise an unsaved
+ * canvas over its live tables where Save writes the first draft. Resuming
+ * rather than always starting blank is what keeps the icon from stranding
+ * staged work behind a list the user didn't ask for.
+ *
  * The page is full-screen — it is routed outside `HomeLayout`, so a diagram
  * gets the whole viewport the way the console does instead of a fixed-height
  * box inside the shell's padded scroller. The header strip below is the only
  * chrome, and it carries the way back to the Schema list.
  *
- * The two kinds differ only in `connectionId`, and it decides two things: the
+ * The two kinds differ only in `connectionId`, and it decides three things: the
  * `conn` handed to the editor (a real id draws the live tables, a null one
- * leaves the canvas empty and makes `connectionType` the whole dialect), and
- * where Save writes — the connection's saved query, or the workspace draft row.
+ * leaves the canvas empty and makes `connectionType` the whole dialect), where
+ * Save writes — the connection's saved query, or the workspace draft row — and
+ * whether there are table folders to draw regions from at all.
  */
 export default function SchemaDraftPage() {
-  const { id } = useParams()
+  // Exactly one of these is set — see the two addresses in the note above.
+  const { id, connectionId } = useParams()
   const navigate = useNavigate()
   const toast = useToast()
   const { current } = useWorkspaces()
-  const { connections, patchLocalConnection } = useConnections()
+  const { connections, loading: connectionsLoading, patchLocalConnection } = useConnections()
   const { queryTimeout } = useSettings()
 
   const [draft, setDraft] = useState<SchemaDraftDetail | null>(null)
@@ -79,6 +101,11 @@ export default function SchemaDraftPage() {
   // The editor's `currentLayout`, published for the one action that isn't the
   // editor's own — see `layoutRef` in SchemaEditor.
   const layoutRef = useRef<(() => SchemaLayout) | null>(null)
+  // The connection's table folders — the regions the canvas draws around its
+  // tables. A from-scratch draft has no connection and so no folders; the
+  // design's own groups stand in (see `designGroups` in SchemaEditor).
+  const [tableFolders, setTableFolders] = useState<TableFolder[]>([])
+  const [folderPickerTable, setFolderPickerTable] = useState<string | null>(null)
 
   useEffect(() => {
     if (!current?.id || !id) return
@@ -104,6 +131,96 @@ export default function SchemaDraftPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [current?.id, id])
 
+  /**
+   * The connection address: no draft id, just a database.
+   *
+   * Its drafts are that connection's saved queries, so one read answers both
+   * halves. With a draft, this *redirects* — replacing the history entry, so
+   * Back leaves the editor rather than bouncing through the resolver — and the
+   * page then loads it through the effect above like any other. Without one,
+   * there is nothing to load: the draft is synthesized in memory with no id,
+   * which is precisely what makes the editor show "Save" as "name it and create
+   * the first draft" (`draftId` decides that — see SchemaEditor).
+   *
+   * `connections` is what says the id is real and reachable, so this waits for
+   * that list rather than treating "not loaded yet" as "no such connection".
+   */
+  useEffect(() => {
+    if (!connectionId || connectionsLoading) return
+    const own = (connections || []).find((c: any) => c.id === connectionId)
+    if (!own) {
+      toast.error('That connection could not be opened')
+      navigate('/schemas', { replace: true })
+      return
+    }
+    let alive = true
+    setLoading(true)
+    fetchSaved(connectionId).then((list: any[]) => {
+      if (!alive) return
+      const newest = (list || [])
+        .filter((q) => q.kind === 'schema')
+        .sort((a, b) => (b.ts || 0) - (a.ts || 0))[0]
+      if (newest) return navigate(`/schemas/${newest.id}`, { replace: true })
+      setDraft({
+        id: '', // unsaved: there is no row behind this canvas yet
+        name: 'Untitled schema',
+        sql: '',
+        layout: null,
+        ts: Date.now(),
+        connectionId,
+        connectionName: own.name,
+        connectionType: own.type,
+      })
+      setPending([])
+      setLoading(false)
+    })
+    return () => {
+      alive = false
+    }
+    // `connections` is deliberately not a dep: the context hands back a fresh
+    // array identity on each render, and re-running this would re-read the
+    // saved queries every time. `connectionsLoading` flips exactly when the
+    // list arrives, which is the only change that matters here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connectionId, connectionsLoading])
+
+  // Table folders belong to the connection, so a from-scratch draft simply has
+  // none — and re-reads when a link or unlink changes which connection it is.
+  useEffect(() => {
+    const cid = draft?.connectionId
+    if (!cid) return setTableFolders([])
+    let alive = true
+    fetchTableFolders(cid).then((list: TableFolder[]) => alive && setTableFolders(list))
+    return () => {
+      alive = false
+    }
+  }, [draft?.connectionId])
+
+  // Edit/delete a folder from the diagram's region menu (optimistic locally,
+  // the same way the console's sidebar does it).
+  const updateFolderById = async (folderId: string, fields: Partial<TableFolder>) => {
+    if (!draft?.connectionId) return
+    setTableFolders((prev) => prev.map((f) => (f.id === folderId ? { ...f, ...fields } : f)))
+    try {
+      await updateTableFolder(draft.connectionId, folderId, fields)
+    } catch (error) {
+      toast.error(`Couldn't update folder: ${(error as Error)?.message}`)
+    }
+  }
+
+  // Deleting a folder never deletes tables: the server moves its subfolders and
+  // member tables up one level, so re-reading is simpler than mirroring it.
+  const removeFolder = async (folderId: string) => {
+    const cid = draft?.connectionId
+    if (!cid) return
+    try {
+      await deleteTableFolder(cid, folderId)
+      setTableFolders(await fetchTableFolders(cid))
+    } catch (error) {
+      toast.error(`Couldn't delete folder: ${(error as Error)?.message}`)
+    }
+  }
+
   // What the editor asks the backend with. A connection-linked draft passes the
   // real id, so the live tables are drawn and the column types come from that
   // engine; a from-scratch one passes null — "there is no database to ask" —
@@ -122,6 +239,10 @@ export default function SchemaDraftPage() {
   // identity changes, so a release that created tables draws them straight away.
   const persist = async (sql: string, layout: SchemaLayout) => {
     if (!current?.id || !draft) return
+    // The unsaved canvas (`/schemas/connection/:id` with no draft yet) has no
+    // row behind it. Setting the draft object anyway is not a no-op: `conn` is
+    // memoized on it, so this is what redraws the diagram after a release.
+    if (!draft.id) return setDraft({ ...draft, sql, layout })
     if (draft.connectionId) {
       // A connection draft is that connection's saved query; writing it
       // through the route the console uses keeps one owner for the row.
@@ -317,9 +438,9 @@ export default function SchemaDraftPage() {
     else toast.success(`Released ${ran.length} statement${ran.length === 1 ? '' : 's'} to ${target.name}.`)
   }
 
-  // "Save as" forks a *copy*, the same as it does in the console — a new draft
-  // of the same kind (the connection's saved query, or a workspace row keeping
-  // the dialect), then this page follows it to its own address.
+  // "Save as" forks a *copy* — a new draft of the same kind (the connection's
+  // saved query, or a workspace row keeping the dialect), then this page
+  // follows it to its own address.
   const saveAs = async (items: any[], name: string, layout: SchemaLayout) => {
     if (!current?.id || !draft) return
     const sql = items.map((i) => i.sql).join('\n')
@@ -361,6 +482,9 @@ export default function SchemaDraftPage() {
               <Badge tone="faint">From scratch</Badge>
             )}
             <span>{draft.connectionType}</span>
+            {/* No row behind the canvas yet — say so, because Save here means
+                "create the draft" rather than "update it". */}
+            {draft.id ? null : <Badge tone="faint">Not saved</Badge>}
             {saving ? <span>· saving…</span> : null}
             {releasing ? <span className="text-amber">· releasing…</span> : null}
           </p>
@@ -370,11 +494,13 @@ export default function SchemaDraftPage() {
             DDL from here and the console is still where the data, the query
             editor and the changes queue live. */}
         {draft.connectionId ? (
-          <>
+          // Unlinking *moves* a draft row between tables, so it needs one to
+          // move — an unsaved canvas is already on its connection and nowhere else.
+          draft.id ? (
             <Button variant="subtle" size="sm" icon={UnlinkIcon} onClick={openUnlink}>
               Unlink
             </Button>
-          </>
+          ) : null
         ) : (
           <Button variant="ghost" size="sm" icon={LinkIcon} onClick={() => setLinkOpen(true)}>
             Link to connection
@@ -394,7 +520,13 @@ export default function SchemaDraftPage() {
             conn={conn}
             pending={pending}
             onPendingChange={setPending}
-            draftId={draft.id}
+            folders={tableFolders}
+            onUpdateFolder={updateFolderById}
+            onDeleteFolder={removeFolder}
+            onSetFolder={setFolderPickerTable}
+            // Empty on the unsaved canvas, which is what turns Save into
+            // "name it and create the first draft" (see SchemaEditor).
+            draftId={draft.id || undefined}
             layout={draft.layout}
             layoutRef={layoutRef}
             onUpdateDraft={(_draftId: string, items: any[], layout: SchemaLayout) => save(items, layout)}
@@ -406,6 +538,18 @@ export default function SchemaDraftPage() {
           />
         </Suspense>
       </div>
+
+      {/* Only the diagram's "Move to folder…" opens this — the console's Tables
+          sidebar assigns folders by drag and drop. */}
+      {folderPickerTable && draft.connectionId && (
+        <TableFolderPickerPanel
+          connectionId={draft.connectionId}
+          table={folderPickerTable}
+          folders={tableFolders}
+          onChange={setTableFolders}
+          onClose={() => setFolderPickerTable(null)}
+        />
+      )}
 
       {unlinkOpen && (
         <UnlinkConnectionDialog

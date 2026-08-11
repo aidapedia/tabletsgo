@@ -141,7 +141,8 @@ src/
 │   │                             #   itself is plain, clicking it just expands/collapses the folder),
 │   │                             #   TableFolderPickerPanel + TableFolderEditPanel (right-side
 │   │                             #   slide-overs, now only reached from the schema diagram's node menu /
-│   │                             #   region label), FolderDot; lib/api (wraps shared/api/folders with the
+│   │                             #   region label — the diagram hosts them from SchemaDraftPage, not the
+│   │                             #   console), FolderDot; lib/api (wraps shared/api/folders with the
 │   │                             #   'table' type bound + set-table-folder), lib/assign, lib/tree
 │   │                             #   (path/tree order). Drives the sidebar folder view and the
 │   │                             #   schema-designer's draggable/editable folder regions.
@@ -155,7 +156,10 @@ src/
 │   │   │                         #   SchemaView, QueryEditor, FunctionView,
 │   │   │                         #   QueryHistoryView, InsertRowPanel, ChangesPanel, SavedQueriesPanel,
 │   │   │                         #   IconRail (its DB logo at the top opens the ConnectionSwitcherModal via
-│   │   │                         #     onBrowseConnections — no inline connection popover anymore),
+│   │   │                         #     onBrowseConnections — no inline connection popover anymore. Every
+│   │   │                         #     entry selects a sidebar panel except Schema, which *leaves* the
+│   │   │                         #     console for /schemas/connection/:id — the diagram is not a console
+│   │   │                         #     tab — and so has no active state; hidden on Redis),
 │   │   │                         #   TabBar (one open-tab strip per editor pane: drag a tab left/right to
 │   │   │                         #   reorder — insertion caret on drag-over, committed on drop — or onto the
 │   │   │                         #   other pane's strip to move it there (onAdopt); right-click closes this/
@@ -180,9 +184,14 @@ src/
 │   │   │                         #     engine only — and cut a draft loose from one, carrying its live
 │   │   │                         #     tables out as DDL)
 │   │   ├── components/           #   …plus WorkspaceSchemaList (the workspace-wide draft table behind
-│   │   │                         #     /schemas) and NewSchemaDialog (from a connection ⟶ the console,
-│   │   │                         #     or from scratch ⟶ pick a dialect). SchemaEditor stays out of the
-│   │   │                         #     barrel so React Flow never lands in the home chunk
+│   │   │                         #     /schemas) and NewSchemaDialog (name + either a connection ⟶ an empty
+│   │   │                         #     saved query of kind 'schema' on it, or from scratch ⟶ pick a dialect
+│   │   │                         #     ⟶ a workspace draft row; both then open at /schemas/:id).
+│   │   │                         #     SchemaEditor stays out of the barrel so React Flow never lands in
+│   │   │                         #     the home chunk. **The console hosts no diagram** — SchemaDraftPage is
+│   │   │                         #     the only host, so `changes` / `onStageItems` / `onOpenTable` /
+│   │   │                         #     `onOpenSchema` (the Changes-queue + data-grid half of the editor's
+│   │   │                         #     optional prop contract) currently go unpassed
 │   │   └── lib/                  #   rollback (best-effort rollback SQL for staged DDL),
 │   │                             #   api (workspace-wide list, one-draft-either-kind read,
 │   │                             #   from-scratch draft CRUD), design (the diagram's *design*:
@@ -289,17 +298,29 @@ src/
         │                         #   /connection/:id?workflow=<id>, which the console opens as a tab
         ├── SchemasPage           # /schemas → every schema draft in the workspace: the ones designed
         │                         #   against a connection and the from-scratch ones (schema-designer's
-        │                         #   WorkspaceSchemaList). "New schema" (NewSchemaDialog) either sends you
-        │                         #   to /connection/:id?schema=new for a live database, or creates a
-        │                         #   workspace-level draft. Every row opens at /schemas/:id
-        ├── SchemaDraftPage       # /schemas/:id → the schema editor page, hosting either kind of draft.
+        │                         #   WorkspaceSchemaList). "New schema" (NewSchemaDialog) creates either
+        │                         #   kind here — on a connection it is createSaved(kind:'schema') with
+        │                         #   empty SQL, from scratch a workspace draft row. Every row opens at
+        │                         #   /schemas/:id; the console's rail Schema icon goes to that connection's
+        │                         #   own editor address instead (see SchemaDraftPage below)
+        ├── SchemaDraftPage       # /schemas/:id → the schema editor page, hosting either kind of draft,
+        │                         #   and /schemas/connection/:connectionId → "the editor for this
+        │                         #   connection", which is what the console's rail Schema icon opens: it
+        │                         #   reads that connection's saved queries and redirects (replace) to the
+        │                         #   newest kind='schema' one, or — with none — synthesizes an id-less
+        │                         #   draft so the canvas draws the live tables and Save creates the first
+        │                         #   draft (a falsy `draftId` is what makes SchemaEditor's Save mean that).
+        │                         #   The static `connection` segment outranks `:id`, so the two coexist.
         │                         #   Full-screen: routed *outside* HomeLayout (own header strip + h-screen),
         │                         #   so the diagram gets the whole viewport the way the console does.
         │                         #   Loads it via GET /api/workspaces/:id/schemas/:draftId, which resolves
         │                         #   both tables and enforces connection access; a connection-linked draft
-        │                         #   draws that live database and saves back to its saved query (plus an
-        │                         #   "Open in console" link), a from-scratch one starts empty and saves to
-        │                         #   its draft row. Submit is hidden either way — there is no Changes queue
+        │                         #   draws that live database and saves back to its saved query, a
+        │                         #   from-scratch one starts empty and saves to its draft row. It also owns
+        │                         #   the connection's table folders (the diagram's regions): fetchTableFolders
+        │                         #   on the linked connection, edit/delete from the region menu, and
+        │                         #   TableFolderPickerPanel behind the node menu's "Move to folder…".
+        │                         #   Submit is hidden either way — there is no Changes queue
         │                         #   here — but **Release** runs the staged DDL against the draft's own
         │                         #   connection after a confirmation listing every statement (ReleaseDialog).
         │                         #   Statements that ran leave the draft, the arrangement stays, and what ran
