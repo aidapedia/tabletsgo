@@ -173,7 +173,12 @@ src/
 │   │   │                         #   table/group/note positions — saved with the draft)
 │   │   ├── components/           #   SchemaEditor, SchemaSidebar (accordion: Draft Schema / Table List /
 │   │   │                         #     References / Table Folders — click to focus/edit), CreateTablePanel,
-│   │   │                         #     TableEditPanel, columnFields, SchemaHistoryPanel (schema-version audit trail)
+│   │   │                         #     TableEditPanel, columnFields, SchemaHistoryPanel (schema-version audit
+│   │   │                         #     trail), ReleaseDialog (the confirmation in front of Release: every
+│   │   │                         #     statement, and the database receiving them), LinkConnectionDialog /
+│   │   │                         #     UnlinkConnectionDialog (give a from-scratch design a database — same
+│   │   │                         #     engine only — and cut a draft loose from one, carrying its live
+│   │   │                         #     tables out as DDL)
 │   │   ├── components/           #   …plus WorkspaceSchemaList (the workspace-wide draft table behind
 │   │   │                         #     /schemas) and NewSchemaDialog (from a connection ⟶ the console,
 │   │   │                         #     or from scratch ⟶ pick a dialect). SchemaEditor stays out of the
@@ -294,8 +299,22 @@ src/
         │                         #   both tables and enforces connection access; a connection-linked draft
         │                         #   draws that live database and saves back to its saved query (plus an
         │                         #   "Open in console" link), a from-scratch one starts empty and saves to
-        │                         #   its draft row. Submit is hidden either way — committing DDL is the
-        │                         #   console's Changes queue; Export is how the DDL leaves
+        │                         #   its draft row. Submit is hidden either way — there is no Changes queue
+        │                         #   here — but **Release** runs the staged DDL against the draft's own
+        │                         #   connection after a confirmation listing every statement (ReleaseDialog).
+        │                         #   Statements that ran leave the draft, the arrangement stays, and what ran
+        │                         #   is recorded as one migration on that connection, so it rolls back from
+        │                         #   its schema history. A from-scratch draft has no database: Release is
+        │                         #   disabled, and "Link to connection" (LinkConnectionDialog) *moves* the
+        │                         #   design onto a connection of the same engine — createSaved(kind:'schema')
+        │                         #   then deleteSchemaDraft, so its id changes and the page follows it —
+        │                         #   after which it releases like any other. "Unlink" (UnlinkConnectionDialog)
+        │                         #   moves it back the other way (createSchemaDraft then deleteSaved), and
+        │                         #   offers to carry the connection's live tables out as CREATE TABLE
+        │                         #   statements (buildCreateTableSql over getDiagram) — they are drawn by the
+        │                         #   connection, not stored in the draft, so without that the canvas would
+        │                         #   keep only what is staged. Neither direction touches a database.
+        │                         #   Export is the other way the DDL leaves
         ├── ResourceTreePage      # /resource-tree/:nodeId? → the hierarchy on the left, the selected
         │                         #   node's owner / grants / your-access on the right. The selection is
         │                         #   in the URL, so a refresh keeps it and a link lands on it

@@ -28,6 +28,7 @@ import { useToast } from '@/shared/ui/feedback/Toast'
 import TableEditPanel from '@/features/schema-designer/components/TableEditPanel'
 import CreateTablePanel from '@/features/schema-designer/components/CreateTablePanel'
 import SchemaSidebar from '@/features/schema-designer/components/SchemaSidebar'
+import ReleaseDialog from '@/features/schema-designer/components/ReleaseDialog'
 import SaveQueryPanel from '@/shared/ui/SaveQueryPanel'
 import ConfirmDialog from '@/shared/ui/feedback/ConfirmDialog'
 import { draftToItems, newItemId } from '@/shared/lib/schemaDraft'
@@ -52,7 +53,7 @@ import {
 import { TableFolderEditPanel } from '@/features/table-folders'
 import { columnTypeSql, FK_ACTIONS, fkEligible, normFkAction, parseColumnDefs, useColumnTypes } from '@/features/schema-designer/components/columnFields'
 import { useShortcut } from '@/features/keymap'
-import { ChevronRight, ColumnsIcon, DownloadIcon, EditIcon, FolderIcon, NoteIcon, PlusIcon, SaveIcon, TableIcon, TagIcon, TrashIcon, UploadIcon, WandIcon } from '@/shared/ui/icons'
+import { ChevronRight, ColumnsIcon, DownloadIcon, EditIcon, FolderIcon, NoteIcon, PlayIcon, PlusIcon, SaveIcon, TableIcon, TagIcon, TrashIcon, UploadIcon, WandIcon } from '@/shared/ui/icons'
 
 // Fixed metrics so per-column handles line up with their rows.
 const HEADER_H = 34
@@ -644,7 +645,7 @@ function pathWithJumps(points, verticals) {
 // render and `setNodes` with new objects each time — a loop React Flow can
 // never settle, because it loses every node's measured size on each pass. It
 // only bites a host that omits the prop (the console passes both).
-export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUpdateFolder, onDeleteFolder, onSetFolder, pending = NO_PENDING, onPendingChange, onStageItems, onSaveDraft, onUpdateDraft, draftId, layout, onOpenTable, onOpenSchema }: any) {
+export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUpdateFolder, onDeleteFolder, onSetFolder, pending = NO_PENDING, onPendingChange, onStageItems, onSaveDraft, onUpdateDraft, draftId, layout, onOpenTable, onOpenSchema, releaseTarget = null, releaseHint = '', onRelease, releasing = false, layoutRef }: any) {
   const dialect = conn.type === 'postgresql' ? 'postgresql' : 'sqlite'
   // Submit hands the staged DDL to a Changes queue, so it exists exactly when
   // the host has one — `onStageItems`. The console does; the standalone editor
@@ -652,6 +653,16 @@ export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUp
   // from-scratch one has nothing to execute against, and a connection-linked
   // one commits in that connection's console). Save and Export are the whole
   // story without a queue.
+  //
+  // Release is the other end of that: it runs the staged DDL *now*, against
+  // `releaseTarget` — so it exists exactly where a host can execute without a
+  // queue in front of it (the standalone page), and a host with a queue shows
+  // Submit instead. One target, never a choice: a design releases to the
+  // database it was designed against. A design with none yet (from scratch)
+  // passes a null target and `releaseHint` saying what to do about it — the
+  // button stays visible and disabled, because "you can't do this yet, here is
+  // why" is the answer, and a missing button isn't. Nothing runs before
+  // ReleaseDialog is confirmed.
   const types = useColumnTypes(conn)
   const toast = useToast()
 
@@ -687,6 +698,7 @@ export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUp
   const [selectedNote, setSelectedNote] = useState(null) // note id showing its resize handles
   const [noteMenu, setNoteMenu] = useState(null) // note right-click menu { x, y, id }
   const [importDoc, setImportDoc] = useState<SchemaDesignDoc | null>(null) // parsed design file awaiting confirmation
+  const [releaseOpen, setReleaseOpen] = useState(false) // release confirmation open
   const importRef = useRef<HTMLInputElement>(null)
   // Where each table was last seen, including ones currently hidden — the
   // arrangement outlives both a rebuild of the node list and a table being
@@ -1555,6 +1567,14 @@ export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUp
     }
   }, [folderGroups, allGroups, notes])
 
+  // A host that acts on the draft from *outside* the canvas — the page's "Link
+  // to connection", which moves the design to another row — still has to write
+  // the arrangement as it stands, not as it was last saved. Every other caller
+  // gets it handed to them (Save, Save as, Release); this one has to ask.
+  useEffect(() => {
+    if (layoutRef) layoutRef.current = currentLayout
+  }, [layoutRef, currentLayout])
+
   // ---- Design export / import ----
   // The image formats next door are a *picture* of the diagram; this is the
   // diagram: the staged DDL the draft holds plus the whole arrangement around
@@ -1709,6 +1729,24 @@ export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUp
             disabled={pending.length === 0}
           >
             Submit
+          </Button>
+        )}
+
+        {/* Release — run the staged DDL against the database now. Primary where
+            there is no Submit beside it (the standalone page): there, it is the
+            only way a design reaches a database. Disabled with nothing staged,
+            and with no database to release to — where `releaseHint` is the whole
+            explanation the button can give. */}
+        {onRelease && (
+          <Button
+            variant={onStageItems ? 'ghost' : 'primary'}
+            size="sm"
+            icon={PlayIcon}
+            onClick={() => setReleaseOpen(true)}
+            disabled={pending.length === 0 || releasing || !releaseTarget}
+            title={releaseTarget ? `Run the staged changes against ${releaseTarget.name}` : releaseHint}
+          >
+            {releasing ? 'Releasing…' : 'Release'}
           </Button>
         )}
 
@@ -2245,6 +2283,22 @@ export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUp
             <TrashIcon width={14} height={14} /> Delete note
           </MenuItem>
         </ContextMenu>
+      )}
+
+      {/* Every statement, the database it is about to run against, and the one
+          confirmation in front of it — see ReleaseDialog. */}
+      {releaseOpen && releaseTarget && (
+        <ReleaseDialog
+          statements={pending.map((p) => p.sql)}
+          target={releaseTarget}
+          onCancel={() => setReleaseOpen(false)}
+          onConfirm={() => {
+            setReleaseOpen(false)
+            // The layout travels with it: a host that clears the staged DDL once
+            // it has run still has to keep where those tables were placed.
+            onRelease?.(pending, currentLayout())
+          }}
+        />
       )}
 
       {/* Importing a design replaces everything the editor is holding, so it
