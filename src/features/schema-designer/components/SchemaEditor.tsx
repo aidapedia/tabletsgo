@@ -354,6 +354,9 @@ const nodeTypes = { table: TableNode, folderGroup: FolderGroupNode, note: NoteNo
 // A staged CREATE TABLE — the source of truth for a not-yet-committed table,
 // both to draw it and to reopen it in the create-table form for editing.
 const CREATE_TABLE_RE = /^\s*CREATE TABLE\s+"([^"]+)"\s*\(([\s\S]*)\)\s*;?\s*$/i
+// A staged CREATE INDEX, so reopening a staged table can hand its indexes back
+// to the form that wrote them.
+const CREATE_INDEX_RE = /^\s*CREATE\s+(?:UNIQUE\s+)?INDEX\s/i
 
 // Parse staged FK add/drop SQL (from drag-to-connect diagram edits, or the
 // "Foreign key" section of TableEditPanel) so they can be drawn on the
@@ -828,7 +831,15 @@ export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUp
     // is lossy (it reads columns, not table constraints), so the panel compares
     // the two to decide whether the form can faithfully represent this CREATE
     // — and opens on SQL when it can't.
-    setEditingDraft({ table, sql: item.sql, columns: parseColumnDefs(item.sql.match(CREATE_TABLE_RE)[2]) })
+    // The indexes staged alongside it come too: `replacePendingTable` swaps out
+    // every item filed under this table, so anything not handed to the form
+    // would be dropped on save rather than kept.
+    setEditingDraft({
+      table,
+      sql: item.sql,
+      columns: parseColumnDefs(item.sql.match(CREATE_TABLE_RE)[2]),
+      indexSql: pending.filter((p) => p.table === table && CREATE_INDEX_RE.test(p.sql || '')).map((p) => p.sql),
+    })
   }
 
   // Restage an edited draft: its old statements go, the rebuilt CREATE lands in
@@ -2123,6 +2134,7 @@ export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUp
           conn={conn}
           initialTable={editingDraft.table}
           draftColumns={editingDraft.columns}
+          draftIndexSql={editingDraft.indexSql}
           draftSql={editingDraft.sql}
           onClose={() => setEditingDraft(null)}
           onStage={(statements, tableName) => replacePendingTable(editingDraft.table, statements, tableName)}

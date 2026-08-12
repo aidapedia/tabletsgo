@@ -21,6 +21,12 @@ export type { SchemaDesignDoc, SchemaGroupLayout, SchemaLayout, SchemaNote, Sche
 // so a host that moves a design between databases has to build one (after a
 // release) and drop one (on link/unlink) — see SchemaSnapshot.
 export { emptyLayout, schemaSnapshot, withoutSchemaSnapshot } from './lib/design'
+// Reading a database into a design — the host's "Sync schema" button. Walked in
+// slices so the host can show how far along it is, which is what the dialog
+// beside it renders.
+export { readSchema } from './lib/sync'
+export type { SyncProgress, SyncedSchema } from './lib/sync'
+export { default as SyncProgressDialog } from './components/SyncProgressDialog'
 // Type only — ReleaseDialog itself stays behind the editor's lazy chunk, but a
 // host has to name the database it will let a design be released to.
 export type { ReleaseTarget } from './components/ReleaseDialog'

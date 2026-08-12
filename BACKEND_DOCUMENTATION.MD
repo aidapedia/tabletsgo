@@ -2755,15 +2755,28 @@ Column metadata for a table (used for PK detection, inserts, editing).
 - **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/columns/users`
 
 ### GET `/api/connections/:id/indexes/:table`
-Indexes on a table (shown in the schema tab's index grid).
+Indexes on a table (the schema tab's index grid, and the Indexes view of the
+create/edit table panels).
 
 - **200:**
   ```jsonc
   [
     { "name": "assets_pkey", "algorithm": "BTREE", "unique": true,
-      "columns": "id", "condition": "", "include": "", "comment": "" }
+      "columns": "id", "condition": "", "include": "", "comment": "",
+      "primary": true, "constraint": true },
+    { "name": "idx_assets_active", "algorithm": "BTREE", "unique": false,
+      "columns": "owner_id, name", "condition": "status = 'active'", "include": "", "comment": "",
+      "primary": false, "constraint": false }
   ]
   ```
+- **`columns`** is the index's columns in order, comma-separated.
+- **`condition`** is a partial index's predicate, without `WHERE` — the real
+  clause on both engines (SQLite reads it from `sqlite_master`; a predicate it
+  can't recover reads `(partial)`).
+- **`primary` / `constraint`** say the index was created *by* a constraint
+  (`PRIMARY KEY`, `UNIQUE`, PG `EXCLUDE`) rather than by a `CREATE INDEX`. Such
+  an index can't be dropped on its own, which is why the schema editor shows it
+  read-only. SQLite also reports its own `origin` (`'c' | 'u' | 'pk'`).
 - **Query:** optional `database`, `schema` (PG)
 - **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/indexes/users`
 
@@ -2794,12 +2807,14 @@ Column data types the schema editor offers for this connection's dialect.
 - **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/types`
 
 ### GET `/api/connections/:id/diagram`
-Tables with columns + foreign-key relationships (ER diagram).
+Tables with columns and indexes + foreign-key relationships (ER diagram). This is
+the whole schema in one answer — what the schema designer's **Sync** stores with
+a draft, so it can draw (and edit) without reading the database again.
 
 - **200:**
   ```jsonc
   {
-    "tables": [{ "name": "orders", "columns": [Column, ...] }],
+    "tables": [{ "name": "orders", "columns": [Column, ...], "indexes": [Index, ...] }],
     "foreignKeys": [
       // `constraint` (PG only) is the constraint name, used to drop/modify the FK.
       { "constraint": "orders_user_id_fkey", "table": "orders", "column": "user_id",
@@ -2807,8 +2822,15 @@ Tables with columns + foreign-key relationships (ER diagram).
     ]
   }
   ```
-- **Query:** optional `database`, `schema` (PG)
+- **`indexes`** is exactly what `/indexes/:table` returns for that table.
+- **Query:** optional `database`, `schema` (PG); optional **`tables`** — a
+  comma-separated list narrowing the read to those tables. Each such response is
+  a *complete* answer for the tables it names (their columns, their indexes, and
+  the foreign keys they declare), so a client can walk a large schema in slices
+  and report progress; the union of the slices equals the unfiltered read. Names
+  that no longer exist are simply absent rather than an error.
 - **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/diagram`
+- **Example (slice):** `GET http://localhost:3000/api/connections/demo-sqlite/diagram?tables=users,orders`
 
 ---
 
@@ -3185,7 +3207,7 @@ Liveness probe. Also reports boot readiness and the running identity.
 | GET    | `/api/connections/:id/schema`             | Table → columns map             |
 | GET    | `/api/connections/:id/namespaces`         | Databases + schemas             |
 | GET    | `/api/connections/:id/types`              | Column data types (per dialect) |
-| GET    | `/api/connections/:id/diagram`            | Tables + foreign keys           |
+| GET    | `/api/connections/:id/diagram`            | Tables, indexes + foreign keys  |
 | POST   | `/api/connections/:id/insert`             | Insert a row                    |
 | POST   | `/api/connections/:id/query`              | Execute SQL / a Redis command   |
 | POST   | `/api/connections/:id/analyze`            | Analyze query performance       |

@@ -20,6 +20,7 @@ import {
 import {
   buildDropTableRollback,
   rollbackForAddColumn,
+  rollbackForCreateIndex,
   rollbackForCreateTable,
 } from '@/features/schema-designer/lib/rollback'
 import {
@@ -993,14 +994,23 @@ export default function Workspace() {
   // Sidebar "Create table" stages directly into Changes.
   const stageTableChanges = (statements, tableName, mode) => {
     statements.forEach((sql) => {
-      const rollbackSql = mode === 'edit' ? rollbackForAddColumn(sql, tableName) : rollbackForCreateTable(tableName)
+      // The same form also writes index DDL, which reverses on its own terms: a
+      // CREATE is undone by a DROP, but rebuilding a *dropped* index needs the
+      // definition read from the live schema — which this queue stages too
+      // early to do — so that one is staged as non-reversible.
+      const isIndex = /^\s*(CREATE\s+(UNIQUE\s+)?|DROP\s+)INDEX\b/i.test(sql)
+      const rollbackSql = isIndex
+        ? rollbackForCreateIndex(sql)
+        : mode === 'edit'
+          ? rollbackForAddColumn(sql, tableName)
+          : rollbackForCreateTable(tableName)
       addChange({
         kind: mode === 'edit' ? 'update' : 'create',
-        label: mode === 'edit' ? `Alter table ${tableName}` : `Create table ${tableName}`,
+        label: isIndex ? `Index on ${tableName}` : mode === 'edit' ? `Alter table ${tableName}` : `Create table ${tableName}`,
         sql,
         table: tableName,
         ddl: true,
-        reversible: true,
+        reversible: !!rollbackSql,
         rollbackSql,
       })
     })

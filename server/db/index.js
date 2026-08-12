@@ -31,9 +31,13 @@
  *   listFunctions(conn, ctx, n)   → [{ name, args, definition }]
  *   getTableData(conn, ctx, { table, limit })  → { columns, rows, error? }
  *   getColumns(conn, ctx, table)  → [{ name, type, notnull, pk, default, autoIncrement, references }]
- *   getIndexes(conn, ctx, table)  → [{ name, algorithm, unique, columns, condition, … }]
+ *   getIndexes(conn, ctx, table)  → [{ name, algorithm, unique, columns, condition,
+ *                                     primary, constraint, … }]  (`constraint`: made by a
+ *                                     PK/UNIQUE constraint, so not droppable on its own)
  *   getSchemaMap(conn, ctx)       → { table: [column, …] } for editor autocomplete
- *   getDiagram(conn, ctx)         → { tables, foreignKeys }
+ *   getDiagram(conn, ctx, opts?)  → { tables: [{ name, columns, indexes }], foreignKeys }
+ *                                 (opts.tables narrows the read to those tables, so a
+ *                                  caller can walk a large schema in slices)
  *   insertRow(conn, ctx, { table, values })    → { ok, changes, … }
  *   runQuery(conn, ctx, sql)      → { type:'rows', columns, rows } | { type:'message', message } | { error }
  *                                 (a failed statement is `{ error }`, not a throw —

@@ -6,8 +6,8 @@ import { useConnections } from '@/features/connections'
 import { useSettings } from '@/features/settings'
 import { getDiagram, recordSchemaMigration, runQuery } from '@/shared/api/database'
 import { createSchemaDraft, deleteSchemaDraft, getWorkspaceSchema, updateSchemaDraft } from '@/features/schema-designer/lib/api'
-import { buildCreateTableSql, emptyLayout, LinkConnectionDialog, schemaSnapshot, UnlinkConnectionDialog, withoutSchemaSnapshot } from '@/features/schema-designer'
-import type { LinkCandidate, ReleaseTarget, SchemaDraftDetail, SchemaLayout } from '@/features/schema-designer'
+import { buildCreateTableSql, emptyLayout, LinkConnectionDialog, readSchema, schemaSnapshot, SyncProgressDialog, UnlinkConnectionDialog, withoutSchemaSnapshot } from '@/features/schema-designer'
+import type { LinkCandidate, ReleaseTarget, SchemaDraftDetail, SchemaLayout, SyncProgress } from '@/features/schema-designer'
 // Deep import, not the `@/features/workspace` barrel: that barrel re-exports
 // the whole DB console (QueryEditor pulls CodeMirror in), and this page only
 // wants the saved-query write.
@@ -120,6 +120,8 @@ export default function SchemaDraftPage() {
   const [unlinkOpen, setUnlinkOpen] = useState(false) // "unlink" dialog (connection drafts)
   const [unlinking, setUnlinking] = useState(false)
   const [syncing, setSyncing] = useState(false) // "sync schema" — re-read the linked database
+  // How far that read has got, table by table — null when nothing is syncing.
+  const [syncProgress, setSyncProgress] = useState<SyncProgress | null>(null)
   // The connection's live tables, read when the unlink dialog opens: they are
   // what the draft would stop drawing, and what it can take with it as DDL.
   const [liveTables, setLiveTables] = useState<any[] | null>(null)
@@ -317,22 +319,26 @@ export default function SchemaDraftPage() {
   const syncSchema = async () => {
     if (!draft || !conn?.id || syncing) return
     setSyncing(true)
+    setSyncProgress({ done: 0, total: 0, reading: [], indexes: 0 })
     try {
-      const fresh: any = await getDiagram(conn, { strict: true })
+      // Walked table by table (see readSchema) so the strip below the header can
+      // say where it is — a schema of any size is a long wait to spend spinning.
+      const fresh = await readSchema(conn, { onProgress: setSyncProgress })
       const base = layoutRef.current?.() ?? draft.layout ?? emptyLayout()
       await persist(pending.map((i) => i.sql).join('\n'), { ...base, schema: schemaSnapshot(fresh) })
-      const count = fresh?.tables?.length || 0
+      const count = fresh.tables.length
       // An unsaved canvas has no row to store it in yet — `persist` keeps it in
       // memory and Save is what writes it, so say so rather than imply it stuck.
       toast.success(
-        `Synced ${count} table${count === 1 ? '' : 's'} from ${draft.connectionName || 'the database'}${
-          draft.id ? '' : ' — save the design to keep it'
-        }.`
+        `Synced ${count} table${count === 1 ? '' : 's'} and ${fresh.indexCount} index${
+          fresh.indexCount === 1 ? '' : 'es'
+        } from ${draft.connectionName || 'the database'}${draft.id ? '' : ' — save the design to keep it'}.`
       )
     } catch (error) {
       toast.error(`Couldn't read the schema: ${(error as Error)?.message || 'the database did not answer'}`)
     } finally {
       setSyncing(false)
+      setSyncProgress(null)
     }
   }
 
@@ -742,6 +748,11 @@ export default function SchemaDraftPage() {
           onConfirm={linkToConnection}
         />
       )}
+
+      {/* A sync replaces the schema the canvas draws, so it holds the page
+          while it runs rather than letting someone edit a diagram that is about
+          to be redrawn. It closes itself — there is nothing to decide in it. */}
+      {syncProgress && <SyncProgressDialog progress={syncProgress} connectionName={draft.connectionName} />}
     </div>
   )
 }

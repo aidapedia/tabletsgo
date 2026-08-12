@@ -16,14 +16,20 @@ import { ColumnField, FK_ACTIONS, colDef, newColumn, normFkAction as normAction 
 import DragHandle from '@/shared/ui/DragHandle'
 import { useDragReorder } from '@/shared/hooks/useDragReorder'
 import { moveColumn } from '@/features/schema-designer/lib/design'
+import IndexEditor, { useIndexEditor } from '@/features/schema-designer/components/indexFields'
 
 // CodeMirror only loads when someone actually opens the SQL mode — this panel
 // is in the feature barrel, so a static import would drag the editor into every
 // chunk that merely lists schemas.
 const SqlEditor = lazy(() => import('@/shared/ui/SqlEditor'))
 
-const MODES = [
-  { value: 'fields', label: 'Fields' },
+// Columns, indexes and the raw DDL are three views of one edit, not three
+// pages of one form: a table with a dozen columns already fills the panel, and
+// stacking its indexes underneath would put them below the fold every time.
+// Save stages whatever every view has built, whichever one is open.
+const modes = (indexCount) => [
+  { value: 'fields', label: 'Columns' },
+  { value: 'indexes', label: indexCount ? `Indexes · ${indexCount}` : 'Indexes' },
   { value: 'sql', label: 'SQL' },
 ]
 
@@ -144,29 +150,46 @@ export default function TableEditPanel({ table, dialect, types, tableNames = [],
     return out
   }
 
-  const statements = buildStatements()
-
-  // ---- Fields / SQL ----
-  // Two ways to write the same ALTER batch. Fields is the source of truth: it
-  // regenerates the SQL every time SQL mode is opened, so what you see there is
-  // what the form built. SQL mode then lets that batch be edited by hand —
-  // useful for the statements the form can't express (a CHECK constraint, an
-  // index, a SQLite table rebuild) — and stages the text verbatim.
+  // The indexes this table should end up with — their own view, but the same
+  // save, so their DDL lands after the column ALTERs (an index on a column
+  // being added has to be created after it exists).
   //
-  // Nothing parses SQL back into fields; going back discards hand edits, which
-  // is why the switch asks first once the text has been touched.
+  // They come from the table the diagram drew, which is the design's *synced*
+  // schema — this panel reads no database, for the same reason opening the
+  // canvas doesn't: the diagram is what was there at the last Sync, and an
+  // index list fetched behind it would be the one thing on screen disagreeing
+  // with the picture (and blank whenever the database was unreachable).
+  const indexes = useIndexEditor({ table: table.name, dialect, live: table.indexes })
+  // Names an index can be built on: what the columns view will leave behind.
+  const indexableColumns = [
+    ...existing.filter((c) => !c.drop).map((c) => c.name.trim() || c.originalName),
+    ...added.map((c) => c.name.trim()),
+  ].filter(Boolean)
+
+  const statements = [...buildStatements(), ...indexes.statements]
+
+  // ---- Form / SQL ----
+  // Two ways to write the same ALTER batch. The form (Columns + Indexes) is the
+  // source of truth: it regenerates the SQL every time SQL mode is opened, so
+  // what you see there is what the form built. SQL mode then lets that batch be
+  // edited by hand — useful for the statements the form can't express (a CHECK
+  // constraint, a SQLite table rebuild) — and stages the text verbatim.
+  //
+  // Nothing parses SQL back into the form; leaving SQL discards hand edits,
+  // which is why the switch asks first once the text has been touched.
   const [mode, setMode] = useState('fields')
   const [sqlText, setSqlText] = useState('')
   const [sqlBase, setSqlBase] = useState('')
-  const [confirmDiscard, setConfirmDiscard] = useState(false)
+  // The view the discard question is waiting on — null while it isn't asked.
+  const [confirmDiscard, setConfirmDiscard] = useState(null)
   const sqlEdited = mode === 'sql' && sqlText.trim() !== sqlBase.trim()
   const sqlStatements = splitStatements(sqlText).map((s) => `${s};`)
 
-  const toFields = () => {
-    setConfirmDiscard(false)
+  const toView = (next) => {
+    setConfirmDiscard(null)
     setSqlText('')
     setSqlBase('')
-    setMode('fields')
+    setMode(next)
   }
 
   const switchMode = (next) => {
@@ -178,8 +201,9 @@ export default function TableEditPanel({ table, dialect, types, tableNames = [],
       setMode('sql')
       return
     }
-    if (sqlEdited) setConfirmDiscard(true)
-    else toFields()
+    // Leaving SQL drops what was typed there, whichever view comes next.
+    if (sqlEdited) setConfirmDiscard(next)
+    else toView(next)
   }
 
   const staged = mode === 'sql' ? sqlStatements : statements
@@ -201,7 +225,7 @@ export default function TableEditPanel({ table, dialect, types, tableNames = [],
       show={show}
       close={close}
       title={table.name}
-      subheader={<Segmented value={mode} onChange={switchMode} options={MODES} />}
+      subheader={<Segmented value={mode} onChange={switchMode} options={modes(indexes.count)} />}
       footer={
         <>
           <Button variant="subtle" size="sm" onClick={() => close()}>
@@ -235,10 +259,12 @@ export default function TableEditPanel({ table, dialect, types, tableNames = [],
               : 'Write the ALTER statements to stage. Nothing here runs until you release the changes.'}
           </p>
           <p className="mt-2 text-[11px] text-ink-faint">
-            Switching to <span className="text-ink-dim">Fields</span> rebuilds this from the form — edits made here are
+            Switching to <span className="text-ink-dim">Columns</span> rebuilds this from the form — edits made here are
             not read back.
           </p>
         </>
+      ) : mode === 'indexes' ? (
+        <IndexEditor editor={indexes} table={table.name} dialect={dialect} columns={indexableColumns} />
       ) : (
         <>
       <Label>Columns</Label>
@@ -454,11 +480,11 @@ export default function TableEditPanel({ table, dialect, types, tableNames = [],
       {confirmDiscard && (
         <ConfirmDialog
           title="Discard SQL edits?"
-          message="Switching back to Fields rebuilds the statements from the form. What you wrote by hand will be lost."
+          message="Leaving SQL rebuilds the statements from the form. What you wrote by hand will be lost."
           confirmLabel="Discard"
           danger
-          onConfirm={toFields}
-          onCancel={() => setConfirmDiscard(false)}
+          onConfirm={() => toView(confirmDiscard)}
+          onCancel={() => setConfirmDiscard(null)}
         />
       )}
     </SlideOverPanel>

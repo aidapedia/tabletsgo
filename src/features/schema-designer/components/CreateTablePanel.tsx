@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
-import { getColumns, getSchema } from '@/shared/api/database'
+import { getColumns, getIndexes, getSchema } from '@/shared/api/database'
 import Button from '@/shared/ui/buttons/Button'
 import TextButton from '@/shared/ui/buttons/TextButton'
 import DragHandle from '@/shared/ui/DragHandle'
@@ -14,14 +14,21 @@ import { PlusIcon } from '@/shared/ui/icons'
 import { Input } from '@/shared/ui/form/Input'
 import { FormField, Label } from '@/shared/ui/form/Form'
 import { ColumnField, colDef, tableDefLines, newColumn, useColumnTypes } from '@/features/schema-designer/components/columnFields'
+import IndexEditor, { useIndexEditor } from '@/features/schema-designer/components/indexFields'
+import { parseCreateIndex } from '@/features/schema-designer/lib/indexes'
 
 // CodeMirror only loads when someone opens the SQL view — this panel is in the
 // feature barrel, so a static import would drag the editor into every chunk
 // that merely lists schemas.
 const SqlEditor = lazy(() => import('@/shared/ui/SqlEditor'))
 
-const VIEWS = [
-  { value: 'fields', label: 'Fields' },
+// Columns, indexes and the raw DDL are three views of one form, not three
+// sections stacked down the panel: a table's columns already fill it, so its
+// indexes would sit below the fold every time. Submitting stages what every
+// view has built, whichever one is open.
+const views = (indexCount) => [
+  { value: 'fields', label: 'Columns' },
+  { value: 'indexes', label: indexCount ? `Indexes · ${indexCount}` : 'Indexes' },
   { value: 'sql', label: 'SQL' },
 ]
 
@@ -54,7 +61,7 @@ const tableNameIn = (statements) => {
  * Each of those is written either as Fields (the form) or as SQL (the DDL the
  * form builds, editable by hand) — see `view`.
  */
-export default function CreateTablePanel({ conn, initialTable, draftColumns, draftSql, onClose, onStage }: any) {
+export default function CreateTablePanel({ conn, initialTable, draftColumns, draftIndexSql = [], draftSql, onClose, onStage }: any) {
   const dialect = conn.type === 'postgresql' ? 'postgresql' : 'sqlite'
   const types = useColumnTypes(conn)
   const defaultType = dialect === 'postgresql' ? 'serial' : 'INTEGER'
@@ -67,12 +74,18 @@ export default function CreateTablePanel({ conn, initialTable, draftColumns, dra
     isDraft ? draftColumns : isEdit ? [] : [{ ...newColumn(defaultType), name: 'id', pk: true }]
   )
   const [schema, setSchema] = useState({})
+  // The table's current indexes. `null` while the read is in flight; `[]` for a
+  // table being created, which has none by definition. This panel has no synced
+  // diagram behind it (the console opens it straight from the table list), so
+  // unlike the designer's edit panel it reads them itself — the same read it
+  // already makes for the columns, in the same round.
+  const [liveIndexes, setLiveIndexes] = useState<any[] | null>(isEdit ? null : [])
 
   useEffect(() => {
     let alive = true
     getSchema(conn).then((s) => alive && setSchema(s || {}))
     if (isEdit) {
-      getColumns(conn, initialTable).then((cols) => {
+      Promise.all([getColumns(conn, initialTable), getIndexes(conn, initialTable)]).then(([cols, idx]) => {
         if (!alive) return
         setColumns(
           (cols || []).map((c) => ({
@@ -84,6 +97,7 @@ export default function CreateTablePanel({ conn, initialTable, draftColumns, dra
             existing: true,
           }))
         )
+        setLiveIndexes(idx || [])
       })
     }
     return () => {
@@ -115,7 +129,7 @@ export default function CreateTablePanel({ conn, initialTable, draftColumns, dra
   const canReorder = newColumns.length > 1
 
   // CREATE builds one statement; ALTER builds one ADD COLUMN per new column.
-  const statements = useMemo(() => {
+  const tableStatements = useMemo(() => {
     if (isEdit) {
       return newColumns
         .filter((c) => c.name.trim())
@@ -126,14 +140,32 @@ export default function CreateTablePanel({ conn, initialTable, draftColumns, dra
     return [createTableSql(name.trim(), named)]
   }, [columns, newColumns, name, isEdit, initialTable])
 
-  // ---- Fields / SQL ----
-  // The same DDL, written two ways. Fields is the source of truth: opening SQL
-  // regenerates it from the form, so what's there is what the form built. SQL
-  // then lets that be edited by hand — a CHECK constraint, a partial index, a
-  // column type the picker doesn't offer — and stages the text verbatim.
+  // ---- Indexes ----
+  // The table this form is about, as the index DDL names it — the typed name
+  // while creating, the committed one while editing. Only a committed table has
+  // indexes to read: a staged CREATE isn't in the database yet, so its indexes
+  // come from the statements staged beside it (`draftIndexSql`) instead.
+  const tableName = isEdit ? initialTable : name.trim()
+  const loadingIndexes = isEdit && liveIndexes === null
+  // Parsed once, from the batch this panel opened with — after that the form
+  // owns them, so re-parsing would undo whatever has been typed since.
+  const [stagedIndexes] = useState(() => draftIndexSql.map(parseCreateIndex).filter(Boolean))
+  const indexes = useIndexEditor({ table: tableName, dialect, live: liveIndexes, initial: stagedIndexes })
+  // A CREATE INDEX has to name a column the table will actually have.
+  const indexableColumns = columns.map((c) => c.name.trim()).filter(Boolean)
+
+  // Indexes are created after the table (or after the columns they cover).
+  const statements = useMemo(() => [...tableStatements, ...indexes.statements], [tableStatements, indexes.statements])
+
+  // ---- Form / SQL ----
+  // The same DDL, written two ways. The form (Columns + Indexes) is the source
+  // of truth: opening SQL regenerates it from the form, so what's there is what
+  // the form built. SQL then lets that be edited by hand — a CHECK constraint,
+  // an expression index, a column type the picker doesn't offer — and stages
+  // the text verbatim.
   //
-  // Nothing parses SQL back into the form, so going back to Fields discards
-  // hand edits; the switch asks first once the text has been touched.
+  // Nothing parses SQL back into the form, so leaving SQL discards hand edits;
+  // the switch asks first once the text has been touched.
   //
   // Reopening a staged CREATE (`isDraft`) is the one case that starts on SQL:
   // if the statement isn't what this form would have written, it came from a
@@ -141,18 +173,23 @@ export default function CreateTablePanel({ conn, initialTable, draftColumns, dra
   // — showing the form would quietly drop whatever the parser didn't
   // understand the moment it was saved.
   const handWritten = isDraft && !!draftSql && norm(draftSql) !== norm(createTableSql(initialTable, draftColumns))
+  // A hand-written draft opens on the whole batch it was staged as — the
+  // CREATE TABLE *and* the indexes beside it — because that batch is what
+  // submitting from here replaces.
+  const draftBatch = [draftSql, ...draftIndexSql].join('\n')
   const [view, setView] = useState(handWritten ? 'sql' : 'fields')
-  const [sqlText, setSqlText] = useState(handWritten ? draftSql : '')
-  const [sqlBase, setSqlBase] = useState(handWritten ? draftSql : '')
-  const [confirmDiscard, setConfirmDiscard] = useState(false)
+  const [sqlText, setSqlText] = useState(handWritten ? draftBatch : '')
+  const [sqlBase, setSqlBase] = useState(handWritten ? draftBatch : '')
+  // The view the discard question is waiting on — null while it isn't asked.
+  const [confirmDiscard, setConfirmDiscard] = useState(null)
   const sqlEdited = view === 'sql' && norm(sqlText) !== norm(sqlBase)
   const sqlStatements = useMemo(() => splitStatements(sqlText).map((x) => `${x};`), [sqlText])
 
-  const toFields = () => {
-    setConfirmDiscard(false)
+  const toView = (next) => {
+    setConfirmDiscard(null)
     setSqlText('')
     setSqlBase('')
-    setView('fields')
+    setView(next)
   }
 
   const switchView = (next) => {
@@ -164,8 +201,9 @@ export default function CreateTablePanel({ conn, initialTable, draftColumns, dra
       setView('sql')
       return
     }
-    if (sqlEdited) setConfirmDiscard(true)
-    else toFields()
+    // Leaving SQL drops what was typed there, whichever view comes next.
+    if (sqlEdited) setConfirmDiscard(next)
+    else toView(next)
   }
 
   // In SQL mode the name comes from the DDL — someone can rename the table by
@@ -196,7 +234,7 @@ export default function CreateTablePanel({ conn, initialTable, draftColumns, dra
       width={520}
       onSubmit={handleSubmit}
       title={title}
-      subheader={<Segmented value={view} onChange={switchView} options={VIEWS} />}
+      subheader={<Segmented value={view} onChange={switchView} options={views(indexes.count)} />}
       footer={
         <>
           <Button type="button" variant="subtle" onClick={() => close()}>
@@ -252,10 +290,18 @@ export default function CreateTablePanel({ conn, initialTable, draftColumns, dra
             </p>
           )}
           <p className="mt-2 text-[11px] text-ink-faint">
-            Switching to <span className="text-ink-dim">Fields</span> rebuilds this from the form — edits made here are
+            Switching to <span className="text-ink-dim">Columns</span> rebuilds this from the form — edits made here are
             not read back.
           </p>
         </>
+      ) : view === 'indexes' ? (
+        <IndexEditor
+          editor={indexes}
+          table={tableName}
+          dialect={dialect}
+          columns={indexableColumns}
+          loading={loadingIndexes}
+        />
       ) : (
         <>
       <FormField label="Table Name">
@@ -321,7 +367,8 @@ export default function CreateTablePanel({ conn, initialTable, draftColumns, dra
 
             {isEdit && (
               <p className="mt-3 text-[11px] text-ink-faint">
-                Editing supports adding new columns (existing columns can’t be altered here).
+                Editing supports adding new columns (existing columns can’t be altered here). Indexes are edited in the{' '}
+                <span className="text-ink-dim">Indexes</span> view.
               </p>
             )}
 
@@ -336,11 +383,11 @@ export default function CreateTablePanel({ conn, initialTable, draftColumns, dra
       {confirmDiscard && (
         <ConfirmDialog
           title="Discard SQL edits?"
-          message="Switching back to Fields rebuilds the statements from the form. What you wrote by hand will be lost."
+          message="Leaving SQL rebuilds the statements from the form. What you wrote by hand will be lost."
           confirmLabel="Discard"
           danger
-          onConfirm={toFields}
-          onCancel={() => setConfirmDiscard(false)}
+          onConfirm={() => toView(confirmDiscard)}
+          onCancel={() => setConfirmDiscard(null)}
         />
       )}
     </SlideOverPanel>
