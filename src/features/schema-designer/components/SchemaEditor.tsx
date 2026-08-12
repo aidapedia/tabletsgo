@@ -809,7 +809,11 @@ export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUp
       toast.error(`“${table}” is already in the Changes queue — undo it there to edit it.`)
       return
     }
-    setEditingDraft({ table, columns: parseColumnDefs(item.sql.match(CREATE_TABLE_RE)[2]) })
+    // The raw statement rides along with the parsed columns: `parseColumnDefs`
+    // is lossy (it reads columns, not table constraints), so the panel compares
+    // the two to decide whether the form can faithfully represent this CREATE
+    // — and opens on SQL when it can't.
+    setEditingDraft({ table, sql: item.sql, columns: parseColumnDefs(item.sql.match(CREATE_TABLE_RE)[2]) })
   }
 
   // Restage an edited draft: its old statements go, the rebuilt CREATE lands in
@@ -2103,6 +2107,7 @@ export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUp
           conn={conn}
           initialTable={editingDraft.table}
           draftColumns={editingDraft.columns}
+          draftSql={editingDraft.sql}
           onClose={() => setEditingDraft(null)}
           onStage={(statements, tableName) => replacePendingTable(editingDraft.table, statements, tableName)}
         />

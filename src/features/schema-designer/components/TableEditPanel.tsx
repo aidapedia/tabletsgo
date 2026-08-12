@@ -1,18 +1,31 @@
-import { useRef, useState } from 'react'
+import { lazy, Suspense, useRef, useState } from 'react'
 import Button from '@/shared/ui/buttons/Button'
 import TextButton from '@/shared/ui/buttons/TextButton'
 import Checkbox from '@/shared/ui/form/Checkbox'
+import Segmented from '@/shared/ui/form/Segmented'
 import Select from '@/shared/ui/form/Select'
+import ConfirmDialog from '@/shared/ui/feedback/ConfirmDialog'
 import Tooltip from '@/shared/ui/overlay/Tooltip'
 import SlideOverPanel from '@/shared/ui/overlay/SlideOverPanel'
 import { useSlideOver } from '@/shared/hooks/useSlideOver'
 import { PlusIcon, TrashIcon } from '@/shared/ui/icons'
 import { controlClass, Input } from '@/shared/ui/form/Input'
 import { Label } from '@/shared/ui/form/Form'
+import { splitStatements } from '@/shared/lib/schemaDraft'
 import { ColumnField, FK_ACTIONS, colDef, newColumn, normFkAction as normAction } from '@/features/schema-designer/components/columnFields'
 import DragHandle from '@/shared/ui/DragHandle'
 import { useDragReorder } from '@/shared/hooks/useDragReorder'
 import { moveColumn } from '@/features/schema-designer/lib/design'
+
+// CodeMirror only loads when someone actually opens the SQL mode — this panel
+// is in the feature barrel, so a static import would drag the editor into every
+// chunk that merely lists schemas.
+const SqlEditor = lazy(() => import('@/shared/ui/SqlEditor'))
+
+const MODES = [
+  { value: 'fields', label: 'Fields' },
+  { value: 'sql', label: 'SQL' },
+]
 
 export default function TableEditPanel({ table, dialect, types, tableNames = [], schema = {}, foreignKeys = [], onStage, onReorderColumns, onClose }) {
   const isPg = dialect === 'postgresql'
@@ -132,12 +145,50 @@ export default function TableEditPanel({ table, dialect, types, tableNames = [],
   }
 
   const statements = buildStatements()
+
+  // ---- Fields / SQL ----
+  // Two ways to write the same ALTER batch. Fields is the source of truth: it
+  // regenerates the SQL every time SQL mode is opened, so what you see there is
+  // what the form built. SQL mode then lets that batch be edited by hand —
+  // useful for the statements the form can't express (a CHECK constraint, an
+  // index, a SQLite table rebuild) — and stages the text verbatim.
+  //
+  // Nothing parses SQL back into fields; going back discards hand edits, which
+  // is why the switch asks first once the text has been touched.
+  const [mode, setMode] = useState('fields')
+  const [sqlText, setSqlText] = useState('')
+  const [sqlBase, setSqlBase] = useState('')
+  const [confirmDiscard, setConfirmDiscard] = useState(false)
+  const sqlEdited = mode === 'sql' && sqlText.trim() !== sqlBase.trim()
+  const sqlStatements = splitStatements(sqlText).map((s) => `${s};`)
+
+  const toFields = () => {
+    setConfirmDiscard(false)
+    setSqlText('')
+    setSqlBase('')
+    setMode('fields')
+  }
+
+  const switchMode = (next) => {
+    if (next === mode) return
+    if (next === 'sql') {
+      const text = statements.join('\n')
+      setSqlText(text)
+      setSqlBase(text)
+      setMode('sql')
+      return
+    }
+    if (sqlEdited) setConfirmDiscard(true)
+    else toFields()
+  }
+
+  const staged = mode === 'sql' ? sqlStatements : statements
   const save = () => {
-    if (!statements.length && !orderChanged) return
+    if (!staged.length && !orderChanged) return
     // Run the stage action AND close the panel — otherwise the invisible
     // slide-over overlay stays mounted and blocks clicks (e.g. the Changes button).
     close(() => {
-      if (statements.length) onStage(statements, table.name, 'edit')
+      if (staged.length) onStage(staged, table.name, 'edit')
       // Order is design, not DDL — it is saved with the diagram whether or not
       // this save also stages statements.
       if (orderChanged) onReorderColumns?.(drawnOrder())
@@ -150,17 +201,46 @@ export default function TableEditPanel({ table, dialect, types, tableNames = [],
       show={show}
       close={close}
       title={table.name}
+      subheader={<Segmented value={mode} onChange={switchMode} options={MODES} />}
       footer={
         <>
           <Button variant="subtle" size="sm" onClick={() => close()}>
             Cancel
           </Button>
-          <Button variant="primary" size="sm" disabled={!statements.length && !orderChanged} onClick={save}>
+          <Button variant="primary" size="sm" disabled={!staged.length && !orderChanged} onClick={save}>
             Save to changes
           </Button>
         </>
       }
     >
+      {mode === 'sql' ? (
+        <>
+          <Label>Statements</Label>
+          <div className="overflow-hidden rounded-soft border border-edge">
+            <Suspense fallback={<div className="p-8 text-center text-xs text-ink-faint">Loading editor…</div>}>
+              <SqlEditor
+                value={sqlText}
+                onChange={setSqlText}
+                dialect={dialect}
+                schema={schema}
+                minHeight="220px"
+                maxHeight="calc(100vh - 340px)"
+                placeholder="ALTER TABLE …"
+              />
+            </Suspense>
+          </div>
+          <p className="mt-3 text-[11px] text-ink-faint">
+            {sqlStatements.length
+              ? `${sqlStatements.length} statement${sqlStatements.length === 1 ? '' : 's'} will be staged in Changes, exactly as written.`
+              : 'Write the ALTER statements to stage. Nothing here runs until you release the changes.'}
+          </p>
+          <p className="mt-2 text-[11px] text-ink-faint">
+            Switching to <span className="text-ink-dim">Fields</span> rebuilds this from the form — edits made here are
+            not read back.
+          </p>
+        </>
+      ) : (
+        <>
       <Label>Columns</Label>
           <div className="flex flex-col gap-3" {...exDrag.listProps}>
             {existing.map((c, i) => (
@@ -368,6 +448,19 @@ export default function TableEditPanel({ table, dialect, types, tableNames = [],
         <span className="text-ink-dim">'active'</span>, <span className="text-ink-dim">now()</span>. Saving stages the ALTER
         statements in Changes.
       </p>
+        </>
+      )}
+
+      {confirmDiscard && (
+        <ConfirmDialog
+          title="Discard SQL edits?"
+          message="Switching back to Fields rebuilds the statements from the form. What you wrote by hand will be lost."
+          confirmLabel="Discard"
+          danger
+          onConfirm={toFields}
+          onCancel={() => setConfirmDiscard(false)}
+        />
+      )}
     </SlideOverPanel>
   )
 }

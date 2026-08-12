@@ -1,16 +1,46 @@
-import { useEffect, useMemo, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react'
 import { getColumns, getSchema } from '@/shared/api/database'
 import Button from '@/shared/ui/buttons/Button'
 import TextButton from '@/shared/ui/buttons/TextButton'
 import DragHandle from '@/shared/ui/DragHandle'
+import ConfirmDialog from '@/shared/ui/feedback/ConfirmDialog'
+import Segmented from '@/shared/ui/form/Segmented'
 import SlideOverPanel from '@/shared/ui/overlay/SlideOverPanel'
 import { useSlideOver } from '@/shared/hooks/useSlideOver'
 import { useDragReorder } from '@/shared/hooks/useDragReorder'
+import { splitStatements } from '@/shared/lib/schemaDraft'
 import { moveColumn } from '@/features/schema-designer/lib/design'
 import { PlusIcon } from '@/shared/ui/icons'
 import { Input } from '@/shared/ui/form/Input'
 import { FormField, Label } from '@/shared/ui/form/Form'
 import { ColumnField, colDef, tableDefLines, newColumn, useColumnTypes } from '@/features/schema-designer/components/columnFields'
+
+// CodeMirror only loads when someone opens the SQL view — this panel is in the
+// feature barrel, so a static import would drag the editor into every chunk
+// that merely lists schemas.
+const SqlEditor = lazy(() => import('@/shared/ui/SqlEditor'))
+
+const VIEWS = [
+  { value: 'fields', label: 'Fields' },
+  { value: 'sql', label: 'SQL' },
+]
+
+const createTableSql = (tableName, cols) =>
+  `CREATE TABLE "${tableName}" (\n  ${tableDefLines(cols).join(',\n  ')}\n);`
+
+// Whitespace-insensitive comparison — enough to tell "the form could have
+// written this" from "someone wrote this by hand".
+const norm = (sql) => (sql || '').replace(/\s+/g, ' ').trim()
+
+// Which table a hand-written batch is about, so the staged items file under the
+// right name on the diagram. First statement that names one wins.
+const tableNameIn = (statements) => {
+  for (const sql of statements) {
+    const m = sql.match(/^\s*(?:CREATE TABLE|ALTER TABLE|DROP TABLE)\s+(?:IF (?:NOT )?EXISTS\s+)?"([^"]+)"/i)
+    if (m) return m[1]
+  }
+  return ''
+}
 
 /**
  * Three modes, all sharing one form:
@@ -20,8 +50,11 @@ import { ColumnField, colDef, tableDefLines, newColumn, useColumnTypes } from '@
  * - draft (`draftColumns`): a table whose CREATE TABLE is still staged and
  *   uncommitted, so everything (name included) is still freely editable and
  *   submitting restages the whole CREATE.
+ *
+ * Each of those is written either as Fields (the form) or as SQL (the DDL the
+ * form builds, editable by hand) — see `view`.
  */
-export default function CreateTablePanel({ conn, initialTable, draftColumns, onClose, onStage }: any) {
+export default function CreateTablePanel({ conn, initialTable, draftColumns, draftSql, onClose, onStage }: any) {
   const dialect = conn.type === 'postgresql' ? 'postgresql' : 'sqlite'
   const types = useColumnTypes(conn)
   const defaultType = dialect === 'postgresql' ? 'serial' : 'INTEGER'
@@ -90,10 +123,58 @@ export default function CreateTablePanel({ conn, initialTable, draftColumns, onC
     }
     const named = columns.filter((c) => c.name.trim())
     if (!name.trim() || named.length === 0) return []
-    return [`CREATE TABLE "${name.trim()}" (\n  ${tableDefLines(named).join(',\n  ')}\n);`]
+    return [createTableSql(name.trim(), named)]
   }, [columns, newColumns, name, isEdit, initialTable])
 
-  const valid = isEdit ? statements.length > 0 : name.trim() && statements.length > 0
+  // ---- Fields / SQL ----
+  // The same DDL, written two ways. Fields is the source of truth: opening SQL
+  // regenerates it from the form, so what's there is what the form built. SQL
+  // then lets that be edited by hand — a CHECK constraint, a partial index, a
+  // column type the picker doesn't offer — and stages the text verbatim.
+  //
+  // Nothing parses SQL back into the form, so going back to Fields discards
+  // hand edits; the switch asks first once the text has been touched.
+  //
+  // Reopening a staged CREATE (`isDraft`) is the one case that starts on SQL:
+  // if the statement isn't what this form would have written, it came from a
+  // hand edit or an imported design, and `draftColumns` is a lossy parse of it
+  // — showing the form would quietly drop whatever the parser didn't
+  // understand the moment it was saved.
+  const handWritten = isDraft && !!draftSql && norm(draftSql) !== norm(createTableSql(initialTable, draftColumns))
+  const [view, setView] = useState(handWritten ? 'sql' : 'fields')
+  const [sqlText, setSqlText] = useState(handWritten ? draftSql : '')
+  const [sqlBase, setSqlBase] = useState(handWritten ? draftSql : '')
+  const [confirmDiscard, setConfirmDiscard] = useState(false)
+  const sqlEdited = view === 'sql' && norm(sqlText) !== norm(sqlBase)
+  const sqlStatements = useMemo(() => splitStatements(sqlText).map((x) => `${x};`), [sqlText])
+
+  const toFields = () => {
+    setConfirmDiscard(false)
+    setSqlText('')
+    setSqlBase('')
+    setView('fields')
+  }
+
+  const switchView = (next) => {
+    if (next === view) return
+    if (next === 'sql') {
+      const text = statements.join('\n')
+      setSqlText(text)
+      setSqlBase(text)
+      setView('sql')
+      return
+    }
+    if (sqlEdited) setConfirmDiscard(true)
+    else toFields()
+  }
+
+  // In SQL mode the name comes from the DDL — someone can rename the table by
+  // editing the statement, and the staged items have to file under what it
+  // actually creates. An existing table can't be renamed from here.
+  const staged = view === 'sql' ? sqlStatements : statements
+  const stagedName = isEdit ? initialTable : view === 'sql' ? tableNameIn(sqlStatements) || name.trim() : name.trim()
+
+  const valid = staged.length > 0 && (isEdit || !!stagedName)
 
   const handleSubmit = (e) => {
     e.preventDefault()
@@ -101,7 +182,7 @@ export default function CreateTablePanel({ conn, initialTable, draftColumns, onC
     // Run the stage action AND close — otherwise the invisible slide-over
     // overlay stays mounted and blocks all clicks.
     close(() => {
-      onStage(statements, name.trim(), isEdit ? 'edit' : 'new')
+      onStage(staged, stagedName, isEdit ? 'edit' : 'new')
       onClose()
     })
   }
@@ -115,6 +196,7 @@ export default function CreateTablePanel({ conn, initialTable, draftColumns, onC
       width={520}
       onSubmit={handleSubmit}
       title={title}
+      subheader={<Segmented value={view} onChange={switchView} options={VIEWS} />}
       footer={
         <>
           <Button type="button" variant="subtle" onClick={() => close()}>
@@ -126,6 +208,56 @@ export default function CreateTablePanel({ conn, initialTable, draftColumns, onC
         </>
       }
     >
+      {view === 'sql' ? (
+        <>
+          <Label>Statements</Label>
+          <div className="overflow-hidden rounded-soft border border-edge">
+            <Suspense fallback={<div className="p-8 text-center text-xs text-ink-faint">Loading editor…</div>}>
+              <SqlEditor
+                value={sqlText}
+                onChange={setSqlText}
+                dialect={dialect}
+                schema={schema}
+                minHeight="260px"
+                maxHeight="calc(100vh - 340px)"
+                placeholder={isEdit ? 'ALTER TABLE …' : 'CREATE TABLE …'}
+              />
+            </Suspense>
+          </div>
+          <p className="mt-3 text-[11px] text-ink-faint">
+            {staged.length ? (
+              <>
+                {staged.length} statement{staged.length === 1 ? '' : 's'} will be staged in Changes, exactly as written
+                {stagedName ? (
+                  <>
+                    , under <span className="text-ink-dim">{stagedName}</span>
+                  </>
+                ) : null}
+                .
+              </>
+            ) : (
+              'Write the DDL to stage. Nothing here runs until you release the changes.'
+            )}
+          </p>
+          {!isEdit && !stagedName && staged.length > 0 && (
+            <p className="mt-2 text-[11px] text-amber">
+              No table name found — name one with <span className="font-mono">CREATE TABLE "…"</span> so the diagram can
+              draw it.
+            </p>
+          )}
+          {!isEdit && (
+            <p className="mt-2 text-[11px] text-ink-faint">
+              The diagram draws a staged table by reading its <span className="text-ink-dim">CREATE TABLE</span>. A batch
+              it can't read still stages and still releases — it just won't appear on the canvas until it has run.
+            </p>
+          )}
+          <p className="mt-2 text-[11px] text-ink-faint">
+            Switching to <span className="text-ink-dim">Fields</span> rebuilds this from the form — edits made here are
+            not read back.
+          </p>
+        </>
+      ) : (
+        <>
       <FormField label="Table Name">
               <Input
                 type="text"
@@ -197,6 +329,19 @@ export default function CreateTablePanel({ conn, initialTable, draftColumns, onC
         <pre className="mt-5 overflow-x-auto rounded-soft border border-edge bg-bg px-3.5 py-3 font-mono text-[11px] leading-[1.6] text-ink-dim">
           {statements.join('\n')}
         </pre>
+      )}
+        </>
+      )}
+
+      {confirmDiscard && (
+        <ConfirmDialog
+          title="Discard SQL edits?"
+          message="Switching back to Fields rebuilds the statements from the form. What you wrote by hand will be lost."
+          confirmLabel="Discard"
+          danger
+          onConfirm={toFields}
+          onCancel={() => setConfirmDiscard(false)}
+        />
       )}
     </SlideOverPanel>
   )
