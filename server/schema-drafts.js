@@ -30,7 +30,14 @@ const row = (r) =>
     // editor reads and writes it whole; a draft that predates a save has none,
     // and null is what tells the editor to arrange the diagram itself.
     layout: r.layout ? safeJson(r.layout) : null,
+    // The audit trail. `ts` is the last write and `created_at` the first, so a
+    // draft says both when it was started and when it last moved.
     createdBy: r.created_by || null,
+    // A row written before the trail existed (or by the create itself) has no
+    // separate last-writer — the creator is the only person who ever touched
+    // it, so they are the honest answer rather than a blank.
+    updatedBy: r.updated_by || r.created_by || null,
+    createdAt: r.created_at || r.ts,
     ts: r.ts,
   }
 
@@ -63,10 +70,25 @@ export function getDraft(id) {
 }
 
 export function createDraft({ workspaceId, name, dbType, sql = '', layout = null, createdBy = null }) {
-  const entry = { id: randomUUID(), workspaceId, name, dbType, sql, layout: schemaLayout(layout), createdBy, ts: Date.now() }
+  const at = Date.now()
+  const entry = {
+    id: randomUUID(),
+    workspaceId,
+    name,
+    dbType,
+    sql,
+    layout: schemaLayout(layout),
+    createdBy,
+    // Creating is the first write, so the creator is also the last writer until
+    // someone else saves — storing it rather than inferring it keeps every read
+    // of "who last touched this" a plain column read.
+    updatedBy: createdBy,
+    createdAt: at,
+    ts: at,
+  }
   meta
     .prepare(
-      'INSERT INTO schema_drafts (id, workspace_id, name, db_type, sql, layout, created_by, ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO schema_drafts (id, workspace_id, name, db_type, sql, layout, created_by, updated_by, created_at, ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
     )
     .run(
       entry.id,
@@ -76,6 +98,8 @@ export function createDraft({ workspaceId, name, dbType, sql = '', layout = null
       entry.sql,
       entry.layout ? JSON.stringify(entry.layout) : null,
       entry.createdBy,
+      entry.updatedBy,
+      entry.createdAt,
       entry.ts
     )
   return entry
@@ -83,6 +107,11 @@ export function createDraft({ workspaceId, name, dbType, sql = '', layout = null
 
 // Partial update — only the fields present are written, so saving the diagram
 // doesn't have to resend the name (and renaming doesn't have to resend the DDL).
+//
+// `updatedBy` is not one of those fields: it is stamped alongside `ts` by any
+// write that changes something, and a call that changes nothing stamps neither.
+// That is what keeps "last updated" and "last updated by" the same event —
+// a name that moved without its timestamp would be a worse answer than none.
 export function updateDraft(id, fields = {}) {
   const sets = []
   const values = []
@@ -104,6 +133,10 @@ export function updateDraft(id, fields = {}) {
   if (!sets.length) return getDraft(id)
   sets.push('ts = ?')
   values.push(Date.now())
+  if (fields.updatedBy) {
+    sets.push('updated_by = ?')
+    values.push(fields.updatedBy)
+  }
   meta.prepare(`UPDATE schema_drafts SET ${sets.join(', ')} WHERE id = ?`).run(...values, id)
   return getDraft(id)
 }

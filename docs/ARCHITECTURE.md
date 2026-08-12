@@ -67,7 +67,9 @@ src/
 │   │                             #     connection" every connection inherits);
 │   │                             #   api (workspaces/members CRUD)
 │   ├── connections/              # stores/ConnectionsContext (scoped to current workspace); components:
-│   │                             #   ConnectionForm, ConnectionDetail (Data/Access/Backup tabs),
+│   │                             #   ConnectionForm, ConnectionDetail (Data/Access/Schema history/Backup
+│   │                             #     tabs — `detailTabs(type)` drops Schema history on a schemaless
+│   │                             #     engine; the tab itself is schema-designer's SchemaHistoryPanel),
 │   │                             #   ConnectionAccessPanel, DbTypePickerModal (owns DB_CATALOG/TYPE_LABEL),
 │   │                             #   ConnectionSwitcherModal (the console's "switch connection" overlay:
 │   │                             #     search + database-type filter chips + a collapsible folder tree —
@@ -174,7 +176,12 @@ src/
 │   ├── schema-designer/          # visual schema design (React Flow ERD + table/column editors; tables
 │   │   │                         #   sharing a folder are clustered into a draggable, editable region;
 │   │   │                         #   sticky notes pinned to the canvas, and the whole arrangement —
-│   │   │                         #   table/group/note positions — saved with the draft)
+│   │   │                         #   table/group/note positions — saved with the draft, together with
+│   │   │                         #   the *schema it draws*: a draft stores its database's tables and
+│   │   │                         #   FKs (SchemaSnapshot, inside `layout`). The canvas reads no
+│   │   │                         #   database at all — it draws that snapshot and follows a newer one
+│   │   │                         #   arriving in `layout`; the host is what syncs ("Sync schema" in
+│   │   │                         #   SchemaDraftPage's header, plus the write-back after a Release))
 │   │   ├── components/           #   SchemaEditor, SchemaSidebar (accordion: Draft Schema / Table List /
 │   │   │                         #     References / Table Folders — click to focus/edit), CreateTablePanel,
 │   │   │                         #     TableEditPanel, columnFields, SchemaHistoryPanel (schema-version audit
@@ -182,9 +189,19 @@ src/
 │   │   │                         #     statement, and the database receiving them), LinkConnectionDialog /
 │   │   │                         #     UnlinkConnectionDialog (give a from-scratch design a database — same
 │   │   │                         #     engine only — and cut a draft loose from one, carrying its live
-│   │   │                         #     tables out as DDL)
+│   │   │                         #     tables out as DDL), SchemaHistoryPanel (the connection's migration
+│   │   │                         #     trail as a *home* tab — /connections/:id/schema. Not
+│   │   │                         #     SchemaHistoryView: that one is the console's DataGrid with a
+│   │   │                         #     flex height; this is the shared DataTable. Both take
+│   │   │                         #     canRollbackTo/rollbackTitle/MigrationInspector from
+│   │   │                         #     MigrationInspector, so the rollback rule is written once)
 │   │   ├── components/           #   …plus WorkspaceSchemaList (the workspace-wide draft table behind
-│   │   │                         #     /schemas) and NewSchemaDialog (name + either a connection ⟶ an empty
+│   │   │                         #     /schemas, with the Created by column — who saved it *last* is the
+│   │   │                         #     editor header's line, not a second name per row. Its row actions:
+│   │   │                         #     open, schema version history, unlink, delete. Only delete happens
+│   │   │                         #     in the list (deleteWorkspaceSchema branches on connectionId, then
+│   │   │                         #     the row goes); the other two navigate, and both are disabled on a
+│   │   │                         #     from-scratch row) and NewSchemaDialog (name + either a connection ⟶ an empty
 │   │   │                         #     saved query of kind 'schema' on it, or from scratch ⟶ pick a dialect
 │   │   │                         #     ⟶ a workspace draft row; both then open at /schemas/:id).
 │   │   │                         #     SchemaEditor stays out of the barrel so React Flow never lands in
@@ -195,8 +212,10 @@ src/
 │   │   └── lib/                  #   rollback (best-effort rollback SQL for staged DDL),
 │   │                             #   api (workspace-wide list, one-draft-either-kind read,
 │   │                             #   from-scratch draft CRUD), design (the diagram's *design*:
-│   │                             #   layout + notes + groups, and the portable .design.json
-│   │                             #   export/import document)
+│   │                             #   layout + notes + groups + the schema snapshot the draft
+│   │                             #   draws — SchemaSnapshot/schemaSnapshot/withoutSchemaSnapshot —
+│   │                             #   and the portable .design.json export/import document, which
+│   │                             #   carries the design but never the snapshot)
 │   ├── workflow/                 # workflow automations (React Flow builder + server-side runner, incl.
 │   │   │                         #   real hourly/daily scheduling via the Schedule trigger node's Active toggle;
 │   │   │                         #   JSON export/import of a workflow's graph; folders — grouped via the generic
@@ -289,7 +308,10 @@ src/
         │                         #   over the connection list, rendered with shared/ui/table's DataTable
         │                         #   (sortable columns, 10/page, row click → detail)
         ├── ConnectionDetailPage  #   /connections/:id/:tab — one connection (features/connections'
-        │                         #   ConnectionDetail); the tab lives in the URL
+        │                         #   ConnectionDetail); the tab lives in the URL, and the tab *list*
+        │                         #   depends on the engine (detailTabs(conn?.type)) — an unresolved
+        │                         #   connection gets the full one so a cold /connections/:id/schema
+        │                         #   isn't bounced before the type that would justify it has arrived
         ├── ConnectionFormPage    #   /connections/new (engine in ?type=) and /connections/:id/edit/:tab —
         │                         #   both modes of features/connections' ConnectionForm
         ├── StoragePage           # /storage → S3 storage destinations (StorageList), top-level sidebar item
@@ -302,7 +324,11 @@ src/
         │                         #   kind here — on a connection it is createSaved(kind:'schema') with
         │                         #   empty SQL, from scratch a workspace draft row. Every row opens at
         │                         #   /schemas/:id; the console's rail Schema icon goes to that connection's
-        │                         #   own editor address instead (see SchemaDraftPage below)
+        │                         #   own editor address instead (see SchemaDraftPage below). The page also
+        │                         #   routes the two row actions that leave the list: unlink ⟶
+        │                         #   /schemas/:id?unlink=1 (the editor opens with the dialog up, because
+        │                         #   the move carries the canvas's tables out), schema version history ⟶
+        │                         #   /connections/:id/schema (the target connection's own history tab)
         ├── SchemaDraftPage       # /schemas/:id → the schema editor page, hosting either kind of draft,
         │                         #   and /schemas/connection/:connectionId → "the editor for this
         │                         #   connection", which is what the console's rail Schema icon opens: it
@@ -331,10 +357,16 @@ src/
         │                         #   then deleteSchemaDraft, so its id changes and the page follows it —
         │                         #   after which it releases like any other. "Unlink" (UnlinkConnectionDialog)
         │                         #   moves it back the other way (createSchemaDraft then deleteSaved), and
-        │                         #   offers to carry the connection's live tables out as CREATE TABLE
-        │                         #   statements (buildCreateTableSql over getDiagram) — they are drawn by the
-        │                         #   connection, not stored in the draft, so without that the canvas would
-        │                         #   keep only what is staged. Neither direction touches a database.
+        │                         #   offers to carry the tables it draws out as CREATE TABLE statements
+        │                         #   (buildCreateTableSql over the draft's snapshot, falling back to
+        │                         #   getDiagram) — without that the canvas would keep only what is staged.
+        │                         #   Both directions strip the snapshot (withoutSchemaSnapshot): it
+        │                         #   describes one database and must not follow the design to another.
+        │                         #   Neither direction touches a database. **Sync schema** (header, beside
+        │                         #   Unlink, linked designs only) is the one thing that re-reads it:
+        │                         #   getDiagram(strict) → schemaSnapshot → the same row write, which is
+        │                         #   how the canvas gets a schema at all. A release re-reads and stores
+        │                         #   it too, having just changed it.
         │                         #   Export is the other way the DDL leaves
         ├── ResourceTreePage      # /resource-tree/:nodeId? → the hierarchy on the left, the selected
         │                         #   node's owner / grants / your-access on the right. The selection is
@@ -411,7 +443,9 @@ server/
 ├── folders.js            # FOLDER_TYPES + the polymorphic folder tree (depth/height/ancestor checks)
 ├── schema-drafts.js      # from-scratch schema drafts (schema_drafts): a diagram the *workspace* owns
 │                         #   because it has no connection — the row carries the dialect its DDL targets.
-│                         #   Drafts designed against a connection stay saved queries (kind = 'schema')
+│                         #   Drafts designed against a connection stay saved queries (kind = 'schema').
+│                         #   Both tables carry the audit trail (created_by/updated_by/created_at + ts,
+│                         #   meta v20); server.js's withAudit is what resolves the ids to names
 ├── storage.js            # storage destinations (S3-compatible + built-in local disk) and object ops:
 │                         #   store/fetch/list/delete/prune. Every step branches on `dest.local`, not a caller
 ├── db/                   # ★ the engine-agnostic database layer — see the `db-engine` skill

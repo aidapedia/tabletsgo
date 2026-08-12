@@ -14,7 +14,6 @@ import ReactFlow, {
 import 'reactflow/dist/style.css'
 import dagre from '@dagrejs/dagre'
 import { toJpeg, toPng, toSvg } from 'html-to-image'
-import { getDiagram } from '@/shared/api/database'
 import Button from '@/shared/ui/buttons/Button'
 import IconButton from '@/shared/ui/buttons/IconButton'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
@@ -46,9 +45,12 @@ import {
   NOTE_MIN_W,
   normalizeLayout,
   parseDesignDoc,
+  schemaSnapshot,
+  withoutSchemaSnapshot,
   type SchemaDesignDoc,
   type SchemaLayout,
   type SchemaNote,
+  type SchemaSnapshot,
 } from '@/features/schema-designer/lib/design'
 import { TableFolderEditPanel } from '@/features/table-folders'
 import { columnTypeSql, FK_ACTIONS, fkEligible, normFkAction, parseColumnDefs, useColumnTypes } from '@/features/schema-designer/components/columnFields'
@@ -345,6 +347,12 @@ const CREATE_TABLE_RE = /^\s*CREATE TABLE\s+"([^"]+)"\s*\(([\s\S]*)\)\s*;?\s*$/i
 // Stable empty defaults — see the note on SchemaEditor's signature.
 const NO_FOLDERS = []
 const NO_PENDING = []
+// What the canvas draws when the draft carries no schema of its own. A stable
+// identity, for the same reason NO_PENDING is one: it is a dependency of the
+// memos that build the nodes.
+const NO_SCHEMA = { tables: [], foreignKeys: [] }
+const drawnFrom = (snapshot: SchemaSnapshot | null) =>
+  snapshot ? { tables: snapshot.tables, foreignKeys: snapshot.foreignKeys } : NO_SCHEMA
 
 function parsePendingForeignKeys(items) {
   const added = []
@@ -669,8 +677,18 @@ export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUp
   const types = useColumnTypes(conn)
   const toast = useToast()
 
-  const [diagram, setDiagram] = useState({ tables: [], foreignKeys: [] })
-  const [loading, setLoading] = useState(true)
+  // The saved design — read here rather than beside the notes below because it
+  // is what seeds the schema the canvas draws (see `diagram`).
+  const savedLayout = useMemo(() => (layout ? normalizeLayout(layout) : emptyLayout()), [layout])
+  // The schema drawn under the staged DDL: the draft's own snapshot of its
+  // database, never a live read. The canvas asks no database anything — the
+  // host syncs (page header) and the snapshot arrives here in `layout`.
+  const [diagram, setDiagram] = useState(() => drawnFrom(savedLayout.schema))
+  // When that snapshot was read, which doubles as its identity: a saved layout
+  // arriving with a different `syncedAt` is a newer read (a Sync, or the fresh
+  // schema a Release wrote back) and replaces what is on the canvas.
+  const [syncedAt, setSyncedAt] = useState<number>(() => savedLayout.schema?.syncedAt || 0)
+  const syncedAtRef = useRef(syncedAt)
   const [selected, setSelected] = useState(null) // table name being edited
   const [selectedEdge, setSelectedEdge] = useState(null) // clicked FK edge id
   const [hoveredEdge, setHoveredEdge] = useState(null) // FK edge under the cursor
@@ -689,9 +707,8 @@ export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUp
   // ---- The design: what the diagram looks like, beside what it *is* ----
   // The DDL says which tables exist; this says where they sit, what is written
   // on the canvas beside them and which regions are drawn around them. It is
-  // seeded from the draft's saved layout, updated as things are dragged, and
-  // handed back to the host on Save (see `currentLayout`).
-  const savedLayout = useMemo(() => (layout ? normalizeLayout(layout) : emptyLayout()), [layout])
+  // seeded from the draft's saved layout (`savedLayout`, read above), updated as
+  // things are dragged, and handed back to the host on Save (`currentLayout`).
   const [notes, setNotes] = useState<SchemaNote[]>(() => savedLayout.notes)
   // Groups the *design* carries, as opposed to the host's table folders. An
   // editor with a connection behind it has real folders and these stay empty;
@@ -800,17 +817,27 @@ export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUp
     setFkEdit(null)
   }
 
+  /**
+   * Where the drawn schema comes from — the draft, and only the draft.
+   *
+   * The canvas draws the snapshot saved with the design and never reads a
+   * database itself. Opening a diagram is not a reason to re-read a schema: it
+   * used to be, and that made the picture change under people who had only come
+   * to look at it (and left it blank whenever the database was unreachable).
+   * Re-reading is "Sync schema" in the page header — an action someone takes.
+   *
+   * `savedLayout` changes on every save, so the snapshot is followed by
+   * `syncedAt` rather than reapplied each time: a save must not rebuild every
+   * node, and a newer snapshot (a Sync, or the schema a Release wrote back)
+   * must land.
+   */
   useEffect(() => {
-    let alive = true
-    getDiagram(conn).then((d) => {
-      if (!alive) return
-      setDiagram(d)
-      setLoading(false)
-    })
-    return () => {
-      alive = false
-    }
-  }, [conn])
+    const stored = savedLayout.schema
+    if (!stored || stored.syncedAt === syncedAtRef.current) return
+    syncedAtRef.current = stored.syncedAt
+    setSyncedAt(stored.syncedAt)
+    setDiagram(drawnFrom(stored))
+  }, [savedLayout])
 
   // Committed foreign keys plus any staged FK add/drop (from drag-to-connect
   // diagram edits or TableEditPanel), so the diagram reflects uncommitted FK
@@ -1553,6 +1580,10 @@ export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUp
     return {
       version: LAYOUT_VERSION,
       tables,
+      // The draft keeps the schema it draws, so the next open draws the same
+      // diagram without asking the database. Only where there *is* a database:
+      // a from-scratch draft has nothing to snapshot and stays null.
+      schema: conn?.id ? schemaSnapshot(diagram, syncedAt || Date.now()) : null,
       notes,
       groups: allGroups.map((g) => {
         const r = rects[g.id] || g.rect || { x: 0, y: 0, w: 0, h: 0 }
@@ -1568,7 +1599,7 @@ export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUp
         }
       }),
     }
-  }, [folderGroups, allGroups, notes])
+  }, [folderGroups, allGroups, notes, conn?.id, diagram, syncedAt])
 
   // A host that acts on the draft from *outside* the canvas — the page's "Link
   // to connection", which moves the design to another row — still has to write
@@ -1588,7 +1619,9 @@ export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUp
       name: conn.name || 'schema',
       dialect: conn.type || dialect,
       statements: pending.map((p) => p.sql),
-      layout: currentLayout(),
+      // No snapshot in the file: a design is the diagram someone drew, not a
+      // copy of another database's tables — see withoutSchemaSnapshot.
+      layout: withoutSchemaSnapshot(currentLayout()),
     })
     const url = URL.createObjectURL(new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' }))
     const a = document.createElement('a')
@@ -1805,7 +1838,7 @@ export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUp
             </TextButton>
           </div>
 
-          <Button variant="subtle" size="sm" icon={UploadIcon} onClick={() => importRef.current?.click()} disabled={loading}>
+          <Button variant="subtle" size="sm" icon={UploadIcon} onClick={() => importRef.current?.click()}>
             Import
           </Button>
           {/* Reset on open so re-picking the same file still fires `change`. */}
@@ -1832,7 +1865,6 @@ export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUp
                 chevron
                 active={open}
                 onClick={toggle}
-                disabled={loading}
               >
                 Export
               </Button>
@@ -1869,128 +1901,122 @@ export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUp
             setMenu({ x: e.clientX, y: e.clientY, flow })
           }}
         >
-          {loading ? (
-            <div className="flex h-full items-center justify-center text-xs text-ink-faint">Loading schema…</div>
-          ) : (
-            <>
-              <ReactFlow
-                nodes={displayNodes}
-                edges={edgesWithPreview as any}
-                nodeTypes={nodeTypes}
-                edgeTypes={edgeTypes as any}
-                connectionLineComponent={FkConnectionLine as any}
-                connectionMode={ConnectionMode.Loose}
-                onNodesChange={handleNodesChange}
-                onInit={(inst) => (rf.current = inst)}
-                // Dragging shouldn't select a node (which would leave the active
-                // green outline stuck on it) — only an explicit click selects.
-                selectNodesOnDrag={false}
-                isValidConnection={isValidConnection}
-                onConnect={onConnect}
-                onConnectEnd={onConnectEnd}
-                onNodeClick={(e, node) => {
-                  const target = e.target as HTMLElement
-                  // Folders and tables are edited only via their hover edit icon
-                  // (`.folder-edit` / `.table-edit`); a plain click just leaves the
-                  // node draggable and never opens the editor.
-                  if (node.id.startsWith('folder:')) {
-                    if (target?.closest?.('.folder-edit')) {
-                      const d = folders.find((dm) => `folder:${dm.id}` === node.id)
-                      if (d) setEditingFolder(d)
-                    }
-                    return
+            <ReactFlow
+              nodes={displayNodes}
+              edges={edgesWithPreview as any}
+              nodeTypes={nodeTypes}
+              edgeTypes={edgeTypes as any}
+              connectionLineComponent={FkConnectionLine as any}
+              connectionMode={ConnectionMode.Loose}
+              onNodesChange={handleNodesChange}
+              onInit={(inst) => (rf.current = inst)}
+              // Dragging shouldn't select a node (which would leave the active
+              // green outline stuck on it) — only an explicit click selects.
+              selectNodesOnDrag={false}
+              isValidConnection={isValidConnection}
+              onConnect={onConnect}
+              onConnectEnd={onConnectEnd}
+              onNodeClick={(e, node) => {
+                const target = e.target as HTMLElement
+                // Folders and tables are edited only via their hover edit icon
+                // (`.folder-edit` / `.table-edit`); a plain click just leaves the
+                // node draggable and never opens the editor.
+                if (node.id.startsWith('folder:')) {
+                  if (target?.closest?.('.folder-edit')) {
+                    const d = folders.find((dm) => `folder:${dm.id}` === node.id)
+                    if (d) setEditingFolder(d)
                   }
-                  if (target?.closest?.('.table-edit')) openTableEditor(node.id, !!node.data?.pending)
-                }}
-                onNodeContextMenu={(e, node) => {
-                  e.preventDefault()
-                  // Stop the event bubbling to the canvas' onContextMenu, which
-                  // would otherwise also open the empty-space menu on top.
-                  e.stopPropagation()
-                  if (node.id.startsWith('folder:')) return
-                  if (node.id.startsWith('note:')) {
-                    setMenu(null)
-                    setNoteMenu({ x: e.clientX, y: e.clientY, id: node.id.slice(5) })
-                    return
-                  }
+                  return
+                }
+                if (target?.closest?.('.table-edit')) openTableEditor(node.id, !!node.data?.pending)
+              }}
+              onNodeContextMenu={(e, node) => {
+                e.preventDefault()
+                // Stop the event bubbling to the canvas' onContextMenu, which
+                // would otherwise also open the empty-space menu on top.
+                e.stopPropagation()
+                if (node.id.startsWith('folder:')) return
+                if (node.id.startsWith('note:')) {
                   setMenu(null)
-                  setNodeMenu({ x: e.clientX, y: e.clientY, table: node.id, pending: !!node.data?.pending })
-                }}
-                onEdgeClick={(e, edge) => {
-                  const fk = edge.data.fk
-                  setSelectedEdge(edge.id)
-                  setEdgePopup({ x: e.clientX, y: e.clientY, fk })
-                  // Only a committed, not-already-staged FK can have its
-                  // actions edited here (a staged add/drop is edited by
-                  // undoing it and redrawing/re-deleting instead).
-                  setFkEdit(
-                    canEditFk && fk.constraint && !fk.pendingFk && !fk.removed
-                      ? { onDelete: normFkAction(fk.onDelete), onUpdate: normFkAction(fk.onUpdate) }
-                      : null
-                  )
-                }}
-                onNodeDoubleClick={(_, node) => {
-                  // Notes are the only node you type into, and double-click is
-                  // how you get there (a single click just selects/drags).
-                  if (node.id.startsWith('note:')) setEditingNote(node.id.slice(5))
-                }}
-                onEdgeMouseEnter={(_, edge) => setHoveredEdge(edge.id)}
-                onEdgeMouseLeave={() => setHoveredEdge(null)}
-                onPaneClick={() => {
-                  setEditingNote(null)
-                  setSelectedNote(null)
-                  setSelectedEdge(null)
-                  setEdgePopup(null)
-                  setFkEdit(null)
-                  setFkConfirm(null)
-                }}
-                fitView
-                proOptions={{ hideAttribution: true }}
-              >
-                <Background color="var(--color-edge-strong)" gap={18} size={1.6} />
-                <MiniMap
-                  pannable
-                  zoomable
-                  style={{ width: 120, height: 84 }}
-                  maskColor="rgba(0,0,0,0.55)"
-                  nodeColor="#2a352a"
-                  nodeStrokeColor="#6fcf6a"
-                />
-              </ReactFlow>
+                  setNoteMenu({ x: e.clientX, y: e.clientY, id: node.id.slice(5) })
+                  return
+                }
+                setMenu(null)
+                setNodeMenu({ x: e.clientX, y: e.clientY, table: node.id, pending: !!node.data?.pending })
+              }}
+              onEdgeClick={(e, edge) => {
+                const fk = edge.data.fk
+                setSelectedEdge(edge.id)
+                setEdgePopup({ x: e.clientX, y: e.clientY, fk })
+                // Only a committed, not-already-staged FK can have its
+                // actions edited here (a staged add/drop is edited by
+                // undoing it and redrawing/re-deleting instead).
+                setFkEdit(
+                  canEditFk && fk.constraint && !fk.pendingFk && !fk.removed
+                    ? { onDelete: normFkAction(fk.onDelete), onUpdate: normFkAction(fk.onUpdate) }
+                    : null
+                )
+              }}
+              onNodeDoubleClick={(_, node) => {
+                // Notes are the only node you type into, and double-click is
+                // how you get there (a single click just selects/drags).
+                if (node.id.startsWith('note:')) setEditingNote(node.id.slice(5))
+              }}
+              onEdgeMouseEnter={(_, edge) => setHoveredEdge(edge.id)}
+              onEdgeMouseLeave={() => setHoveredEdge(null)}
+              onPaneClick={() => {
+                setEditingNote(null)
+                setSelectedNote(null)
+                setSelectedEdge(null)
+                setEdgePopup(null)
+                setFkEdit(null)
+                setFkConfirm(null)
+              }}
+              fitView
+              proOptions={{ hideAttribution: true }}
+            >
+              <Background color="var(--color-edge-strong)" gap={18} size={1.6} />
+              <MiniMap
+                pannable
+                zoomable
+                style={{ width: 120, height: 84 }}
+                maskColor="rgba(0,0,0,0.55)"
+                nodeColor="#2a352a"
+                nodeStrokeColor="#6fcf6a"
+              />
+            </ReactFlow>
 
-              {/* An empty schema still gets the canvas: the grid, the pan/zoom
-                  and the right-click menu are *how* the first table is made, so
-                  the hint sits over them instead of replacing them with a
-                  screen. `pointer-events-none` is the whole trick — the
-                  right-click lands on the canvas underneath. */}
-              {augmented.length === 0 && (
-                <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
-                  <span className="rounded-soft border border-dashed border-edge-strong bg-panel/80 px-3 py-2 text-xs text-ink-faint">
-                    No tables yet — right-click to create one.
-                  </span>
-                </div>
-              )}
-
-              {/* Zoom / fit controls — bottom-left of the canvas */}
-              <div className="absolute bottom-3 left-3 z-10 flex items-center gap-0.5 rounded-soft border border-edge bg-elevated p-1">
-                <IconButton onClick={() => rf.current?.zoomOut()} aria-label="Zoom out">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                    <path d="M5 12h14" />
-                  </svg>
-                </IconButton>
-                <IconButton onClick={() => rf.current?.zoomIn()} aria-label="Zoom in">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                    <path d="M12 5v14M5 12h14" />
-                  </svg>
-                </IconButton>
-                <IconButton onClick={() => rf.current?.fitView({ duration: 300, padding: 0.2 })} aria-label="Fit view">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M3 16v3a2 2 0 0 0 2 2h3" />
-                  </svg>
-                </IconButton>
+            {/* An empty schema still gets the canvas: the grid, the pan/zoom
+                and the right-click menu are *how* the first table is made, so
+                the hint sits over them instead of replacing them with a
+                screen. `pointer-events-none` is the whole trick — the
+                right-click lands on the canvas underneath. */}
+            {augmented.length === 0 && (
+              <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
+                <span className="rounded-soft border border-dashed border-edge-strong bg-panel/80 px-3 py-2 text-xs text-ink-faint">
+                  No tables yet — right-click to create one.
+                </span>
               </div>
-            </>
-          )}
+            )}
+
+            {/* Zoom / fit controls — bottom-left of the canvas */}
+            <div className="absolute bottom-3 left-3 z-10 flex items-center gap-0.5 rounded-soft border border-edge bg-elevated p-1">
+              <IconButton onClick={() => rf.current?.zoomOut()} aria-label="Zoom out">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                  <path d="M5 12h14" />
+                </svg>
+              </IconButton>
+              <IconButton onClick={() => rf.current?.zoomIn()} aria-label="Zoom in">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                  <path d="M12 5v14M5 12h14" />
+                </svg>
+              </IconButton>
+              <IconButton onClick={() => rf.current?.fitView({ duration: 300, padding: 0.2 })} aria-label="Fit view">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M3 16v3a2 2 0 0 0 2 2h3" />
+                </svg>
+              </IconButton>
+            </div>
         </div>
       </div>
 

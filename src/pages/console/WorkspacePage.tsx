@@ -148,8 +148,10 @@ export default function Workspace() {
   // `?workflow=<id>` / `?dashboard=<id>` — a row of the workspace-wide Workflow
   // or Dashboard section landing here. The console keeps its tabs in state, so
   // these are the tabs a URL can ask for; they stay in the address so a refresh
-  // reopens the same one. A schema draft has no such link: the diagram lives on
-  // its own page (`/schemas/:id`), not in a console tab.
+  // reopens the same one. Neither half of the Schema section links here: the
+  // diagram lives on its own page (`/schemas/:id`), and a connection's
+  // migration trail is a tab on the connection's detail page — a question about
+  // the database, answerable without a session on it.
   const [searchParams] = useSearchParams()
   const deepLink = searchParams.get('workflow')
   const dashboardLink = searchParams.get('dashboard')

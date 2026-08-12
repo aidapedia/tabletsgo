@@ -33,6 +33,21 @@ export default function SchemasPage() {
   // show the row, not the whole console.
   const open = (draft: WorkspaceSchemaDraft) => navigate(`/schemas/${draft.id}`)
 
+  // Unlinking carries the connection's live tables out as DDL, which needs the
+  // canvas that draws them — so the row doesn't do the move, it opens the
+  // editor with the unlink dialog already up. One implementation of the move,
+  // and the design is on screen behind the question.
+  const unlink = (draft: WorkspaceSchemaDraft) => navigate(`/schemas/${draft.id}?unlink=1`)
+
+  // Version history is the *connection's* migration trail, not the draft's:
+  // what has been released to that database, in order, and how far back it can
+  // be undone. So the row goes to the connection — its detail page's Schema
+  // history tab — rather than into the console: this is a question about the
+  // database, and answering it needs no session on it.
+  const showHistory = (draft: WorkspaceSchemaDraft) => {
+    if (draft.connectionId) navigate(`/connections/${draft.connectionId}/schema`)
+  }
+
   // "From a connection" is an empty draft *on* that connection: per-connection
   // drafts are that connection's saved queries (kind = 'schema'), so it is
   // written through the same route the editor page saves it back through. Both
@@ -73,7 +88,13 @@ export default function SchemasPage() {
 
       <div className="mt-6">
         {current ? (
-          <WorkspaceSchemaList key={reloadKey} workspaceId={current.id} onOpen={open} />
+          <WorkspaceSchemaList
+            key={reloadKey}
+            workspaceId={current.id}
+            onOpen={open}
+            onUnlink={unlink}
+            onShowHistory={showHistory}
+          />
         ) : (
           <LoadingState className="" />
         )}

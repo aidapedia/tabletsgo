@@ -3,6 +3,7 @@
 // uses — this is only the cross-connection read the console can't do.
 
 import { request, safeRequest } from '@/shared/api/request'
+import { deleteSaved } from '@/features/workspace/lib/savedQueries'
 import type { SchemaDraft, SchemaDraftDetail, SchemaEngine, WorkspaceSchemaDraft } from '../types'
 import type { SchemaLayout } from './design'
 
@@ -51,4 +52,24 @@ export async function updateSchemaDraft(
 
 export async function deleteSchemaDraft(workspaceId: string, id: string): Promise<void> {
   return request(`/workspaces/${workspaceId}/schema-drafts/${id}`, { method: 'DELETE' })
+}
+
+// Drop a draft, whichever kind it is.
+//
+// The two kinds live in different tables — a workspace row versus that
+// connection's saved query — so "delete this draft" is two routes, and the
+// caller shouldn't have to know which. Same branch `linkToConnection` makes in
+// the other direction; the connection, its tables and its schema history are
+// untouched either way, because a draft is staged DDL and nothing else.
+//
+// Deep import rather than the `@/features/workspace` barrel: that barrel
+// re-exports the whole DB console (QueryEditor pulls CodeMirror in), and the
+// schema list only wants the saved-query delete. Importing the function rather
+// than re-declaring its URL keeps one definition of where a saved query lives.
+export async function deleteWorkspaceSchema(
+  workspaceId: string,
+  draft: { id: string; connectionId: string | null }
+): Promise<void> {
+  if (draft.connectionId) return deleteSaved(draft.connectionId, draft.id)
+  return deleteSchemaDraft(workspaceId, draft.id)
 }

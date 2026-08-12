@@ -45,12 +45,35 @@ export type SchemaGroupLayout = {
   h: number
 }
 
+/**
+ * The database's schema as the draft last saw it — its own copy of the tables
+ * and foreign keys the canvas draws underneath the staged DDL.
+ *
+ * A linked draft used to read this from the live database every time it opened,
+ * which meant the diagram was never really the draft's: it changed under you
+ * when someone else ran DDL, and a draft that couldn't reach its database drew
+ * nothing at all. So the draft stores it, and re-reading is an action someone
+ * takes — "Sync schema" in the editor — rather than something that happens on
+ * every open. `syncedAt` is when that read happened, and it is also what tells
+ * the editor a *newer* snapshot has arrived (see SchemaEditor).
+ *
+ * The two lists are the `/diagram` response's, kept as the db layer hands them
+ * over: this is a copy of that answer, not a second shape for it.
+ */
+export type SchemaSnapshot = {
+  tables: any[]
+  foreignKeys: any[]
+  syncedAt: number
+}
+
 export type SchemaLayout = {
   version: number
   /** Table name -> canvas position. Names, not ids: a table *is* its name here. */
   tables: Record<string, { x: number; y: number }>
   notes: SchemaNote[]
   groups: SchemaGroupLayout[]
+  /** The synced schema, or null for a draft with no database behind it. */
+  schema: SchemaSnapshot | null
 }
 
 export const LAYOUT_VERSION = 1
@@ -76,7 +99,7 @@ export const NOTE_MIN_H = 80
 export const NOTE_DEFAULT_W = 220
 export const NOTE_DEFAULT_H = 120
 
-export const emptyLayout = (): SchemaLayout => ({ version: LAYOUT_VERSION, tables: {}, notes: [], groups: [] })
+export const emptyLayout = (): SchemaLayout => ({ version: LAYOUT_VERSION, tables: {}, notes: [], groups: [], schema: null })
 
 /** Nothing placed, nothing written — a draft that has never been arranged. */
 export const isEmptyLayout = (layout: SchemaLayout | null | undefined) =>
@@ -128,8 +151,42 @@ export function normalizeLayout(raw: any): SchemaLayout {
     tables,
     notes: (Array.isArray(raw.notes) ? raw.notes : []).map(normalizeNote).filter(Boolean) as SchemaNote[],
     groups: (Array.isArray(raw.groups) ? raw.groups : []).map(normalizeGroup).filter(Boolean) as SchemaGroupLayout[],
+    schema: normalizeSnapshot(raw.schema),
   }
 }
+
+/**
+ * Read a stored snapshot back, or answer null.
+ *
+ * Read as tolerantly as everything else here, with one rule that isn't
+ * tolerance: a snapshot with no tables *and* no foreign keys is null. The
+ * difference between "this draft has never been synced" and "it was synced and
+ * the database was empty" is not worth a stored shape — both mean the canvas
+ * has nothing of its own to draw, and null is what makes the editor go and
+ * read it.
+ */
+export function normalizeSnapshot(raw: any): SchemaSnapshot | null {
+  if (!raw || typeof raw !== 'object') return null
+  const tables = Array.isArray(raw.tables) ? raw.tables.filter((t: any) => t && typeof t === 'object' && t.name) : []
+  const foreignKeys = Array.isArray(raw.foreignKeys) ? raw.foreignKeys.filter((f: any) => f && typeof f === 'object') : []
+  if (!tables.length && !foreignKeys.length) return null
+  return { tables, foreignKeys, syncedAt: num(raw.syncedAt, Date.now()) }
+}
+
+/** Build a snapshot from a `/diagram` response. Empty in, null out. */
+export const schemaSnapshot = (diagram: any, syncedAt = Date.now()): SchemaSnapshot | null =>
+  normalizeSnapshot({ tables: diagram?.tables, foreignKeys: diagram?.foreignKeys, syncedAt })
+
+/**
+ * The same design, with no schema of its own.
+ *
+ * A snapshot describes *one* database, so it must not follow a design anywhere
+ * else: linking or unlinking a draft changes which database is behind it (or
+ * removes it entirely), and an exported design file is the diagram someone
+ * drew, not a copy of the tables it was drawn over. Each of those strips it,
+ * and the editor then reads the schema fresh where there is one to read.
+ */
+export const withoutSchemaSnapshot = (layout: SchemaLayout): SchemaLayout => ({ ...layout, schema: null })
 
 // ---- The portable design file ----
 

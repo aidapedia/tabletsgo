@@ -1164,6 +1164,37 @@ export const MIGRATIONS = [
       addColumn(db, 'schema_drafts', 'layout TEXT')
     },
   },
+  {
+    version: 20,
+    name: 'schema drafts carry an audit trail (who started one, who last changed it)',
+    up(db) {
+      // A design is workspace work several people touch, so the Schema list and
+      // the editor both have to answer "whose is this, and who moved it last".
+      // Neither table could: `created_by` existed on schema_drafts (v18) and
+      // nowhere on saved_queries, and neither row remembered *when* it was
+      // started — `ts` is the last write, so a draft that has been saved once
+      // has already forgotten its own beginning.
+      //
+      // Both kinds of draft get the same columns, because the two kinds are one
+      // list: a from-scratch draft is a schema_drafts row, one designed against
+      // a connection is a saved_queries row (kind = 'schema'), and the Schema
+      // section renders them side by side. saved_queries gains them for every
+      // kind rather than only 'schema' — a saved query is the same kind of
+      // shared object, and a column that only some rows may fill would be a
+      // second rule to remember at every write.
+      addColumn(db, 'schema_drafts', 'updated_by TEXT')
+      addColumn(db, 'schema_drafts', 'created_at INTEGER')
+      addColumn(db, 'saved_queries', 'created_by TEXT')
+      addColumn(db, 'saved_queries', 'updated_by TEXT')
+      addColumn(db, 'saved_queries', 'created_at INTEGER')
+      // Backfill only what is actually knowable. An existing row's one
+      // timestamp is its last write, which is the closest thing to a start date
+      // it has; *who* did it is lost, and stays NULL — an unattributed row must
+      // read as "unknown", never as a plausible wrong person.
+      db.exec('UPDATE schema_drafts SET created_at = ts WHERE created_at IS NULL')
+      db.exec('UPDATE saved_queries SET created_at = ts WHERE created_at IS NULL')
+    },
+  },
 ]
 
 // Tables kept only so an older image can still open a newer DB (rollback

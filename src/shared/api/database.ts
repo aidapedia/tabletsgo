@@ -150,11 +150,18 @@ export async function getNamespaces(conn, database?) {
   return safeRequest<any>(path, { databases: [], schemas: [] })
 }
 
-export async function getDiagram(conn) {
+// `strict` throws instead of degrading to an empty schema. A caller that only
+// *draws* the answer wants the quiet version — an empty canvas is a fine way to
+// say "couldn't read it". A caller that *stores* it does not: writing an empty
+// schema over a good one loses the diagram, so the schema editor's Sync asks
+// for the error and keeps what it had.
+export async function getDiagram(conn, { strict = false }: { strict?: boolean } = {}) {
   // Same as getTypes: no connection means no live schema to draw — the canvas
   // starts empty rather than asking for /connections/null/diagram.
   if (!conn?.id) return { tables: [], foreignKeys: [] }
-  return safeRequest(withNs(conn, `/connections/${conn.id}/diagram`), { tables: [], foreignKeys: [] })
+  const path = withNs(conn, `/connections/${conn.id}/diagram`)
+  if (strict) return request<any>(path)
+  return safeRequest(path, { tables: [], foreignKeys: [] })
 }
 
 export async function insertRow(conn, table, values) {

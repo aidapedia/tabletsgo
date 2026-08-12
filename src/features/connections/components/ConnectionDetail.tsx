@@ -2,6 +2,11 @@ import { useEffect, useState } from 'react'
 import ConnectionAccessPanel from './ConnectionAccessPanel'
 import { TYPE_LABEL } from './DbTypePickerModal'
 import { BackupPanel } from '@/features/backup'
+// Deep import, not the `@/features/schema-designer` barrel: that barrel's
+// WorkspaceSchemaList reads TYPE_LABEL back out of *this* feature, so going
+// through it would make the two barrels a cycle. The panel itself depends on
+// nothing here.
+import SchemaHistoryPanel from '@/features/schema-designer/components/SchemaHistoryPanel'
 import { listConnectionSessions, listTables, pingConnection } from '@/shared/api/database'
 import type { SessionStats } from '@/shared/api/database'
 import Button from '@/shared/ui/buttons/Button'
@@ -25,11 +30,27 @@ import {
   TrashIcon,
 } from '@/shared/ui/icons'
 
-export const DETAIL_TABS = [
-  { id: 'data', label: 'Data Connection' },
-  { id: 'access', label: 'Access' },
-  { id: 'backup', label: 'Backup' },
-]
+/**
+ * The detail page's tabs, for a connection of `type`.
+ *
+ * A function rather than a constant because one of them doesn't apply
+ * everywhere: a schemaless engine (Redis) has no DDL and so no version trail,
+ * and a tab that opens on "nothing has been committed" would be a promise the
+ * engine can't keep. The page needs the same list to validate the `:tab`
+ * segment against, which is why this is exported rather than built inline.
+ *
+ * A missing type means "still loading" — the full list, so a cold load of
+ * `/connections/:id/schema` isn't bounced to Data before the connection that
+ * would justify the tab has even arrived.
+ */
+export function detailTabs(type?: string) {
+  return [
+    { id: 'data', label: 'Data Connection' },
+    { id: 'access', label: 'Access' },
+    ...(type === 'redis' ? [] : [{ id: 'schema', label: 'Schema history' }]),
+    { id: 'backup', label: 'Backup' },
+  ]
+}
 
 // `bg-status-ok` (a fixed green), not `bg-green` — the latter follows the
 // workspace accent, and "Connected" has to read as green whatever that is.
@@ -166,7 +187,7 @@ export default function ConnectionDetail({ conn, onBack, onOpen, onEdit, onDelet
         }
       />
 
-      <PageTabs tabs={DETAIL_TABS} active={tab} onTab={onTab}>
+      <PageTabs tabs={detailTabs(conn.type)} active={tab} onTab={onTab}>
         {tab === 'data' ? (
           <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
             {/* Main */}
@@ -230,6 +251,11 @@ export default function ConnectionDetail({ conn, onBack, onOpen, onEdit, onDelet
           </div>
         ) : tab === 'access' ? (
           <ConnectionAccessPanel conn={conn} onChange={onRefresh} />
+        ) : tab === 'schema' ? (
+          // Rolling back moves the connection's schema version, which the
+          // Overview card on the Data tab shows — so the same reload the access
+          // editor triggers keeps the two halves of this page agreeing.
+          <SchemaHistoryPanel conn={conn} onChange={onRefresh} />
         ) : (
           <BackupPanel
             connectionId={conn.id}

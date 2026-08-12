@@ -1655,16 +1655,32 @@ Both open at the same address — `/schemas/:id`, which loads the draft through
 For a from-scratch draft `connectionName` is `null` and `connectionType` is the
 dialect the row stored rather than a connection's engine.
 
+**The target's schema version.** An attached draft also carries
+`connectionSchemaVersion` — the connection's `schema_version` counter, which
+every committed DDL migration bumps (see `POST /api/connections/:id/schema/migrations`).
+It is what the draft is staged *against*, so a caller can tell a draft drawn
+from the current schema from one drawn two migrations ago. It is `null` for a
+from-scratch draft: no database behind it, nothing committed to be a version of.
+
 Either way the DDL is summarised rather than returned — `statementCount` is all
 the list needs, and rendering a draft needs the editor. It counts the
 `;`-separated statements, the same split the editor uses to seed a tab.
+
+**The audit trail.** Every row carries who started the design and who last saved
+it, already resolved to names — `createdBy`/`updatedBy` are user ids,
+`createdByName`/`updatedByName` the display names, and `createdAt`/`ts` the two
+timestamps (first write, last write). One lookup answers the whole page, so the
+caller never resolves a user itself. A name is `null` when the account has been
+deleted or the row predates the trail (meta migration v20): the id may still be
+there, and an unknown writer is a real answer — never render it as nobody. Both
+kinds of draft answer this identically, whichever table they live in.
 
 Membership gates the workspace; each connection is then filtered by connection
 access, so this never shows an attached draft the per-connection route below
 would refuse. A workspace with no reachable connection is **not** an empty
 answer — its from-scratch drafts hang off the workspace and are still listed.
 
-- **200:** `[{ "id", "connectionId", "connectionName", "connectionType", "name", "ts", "statementCount" }]`
+- **200:** `[{ "id", "connectionId", "connectionName", "connectionType", "connectionSchemaVersion", "name", "ts", "createdAt", "createdBy", "createdByName", "updatedBy", "updatedByName", "statementCount" }]`
 - **403:** `{ "error": "Forbidden" }` — not a member of the workspace.
 - **Example:** `GET http://localhost:3000/api/workspaces/ws-1/schemas`
 
@@ -1675,8 +1691,14 @@ answer — its from-scratch drafts hang off the workspace and are still listed.
     "connectionId": "demo-sqlite",
     "connectionName": "Demo SQLite",
     "connectionType": "sqlite",
+    "connectionSchemaVersion": 3,
     "name": "orders ERD",
     "ts": 1754812800000,
+    "createdAt": 1754640000000,
+    "createdBy": "u-1",
+    "createdByName": "Dana Reyes",
+    "updatedBy": "u-2",
+    "updatedByName": "Sam Okoro",
     "statementCount": 4
   },
   {
@@ -1684,8 +1706,14 @@ answer — its from-scratch drafts hang off the workspace and are still listed.
     "connectionId": null,
     "connectionName": null,
     "connectionType": "postgresql",
+    "connectionSchemaVersion": null,
     "name": "Billing schema",
     "ts": 1754812000000,
+    "createdAt": 1754812000000,
+    "createdBy": "u-1",
+    "createdByName": "Dana Reyes",
+    "updatedBy": "u-1",
+    "updatedByName": "Dana Reyes",
     "statementCount": 2
   }
 ]
@@ -1714,7 +1742,7 @@ Saving is not here: a from-scratch draft writes back through
 `PUT /api/workspaces/:id/schema-drafts/:draftId`, a connection-linked one
 through `PUT /api/connections/:id/saved/:sid` — each row keeps its one owner.
 
-- **200:** `{ "id", "name", "sql", "layout", "ts", "connectionId", "connectionName", "connectionType" }`
+- **200:** `{ "id", "name", "sql", "layout", "ts", "createdAt", "createdBy", "createdByName", "updatedBy", "updatedByName", "connectionId", "connectionName", "connectionType" }` — the audit fields exactly as the list returns them; the editor's header names the last writer with them.
 - **403:** `{ "error": "Forbidden" }` — not a member of the workspace — or `{ "error": "You do not have access to this connection" }` — a member, but the draft targets a connection they cannot open.
 - **404:** `{ "error": "Schema draft not found" }` — no such draft, or it belongs to another workspace.
 - **Example:** `GET http://localhost:3000/api/workspaces/ws-1/schemas/sq-9`
@@ -1735,6 +1763,11 @@ through `PUT /api/connections/:id/saved/:sid` — each row keeps its one owner.
     ]
   },
   "ts": 1754812800000,
+  "createdAt": 1754640000000,
+  "createdBy": "u-1",
+  "createdByName": "Dana Reyes",
+  "updatedBy": "u-2",
+  "updatedByName": "Sam Okoro",
   "connectionId": "demo-sqlite",
   "connectionName": "Demo SQLite",
   "connectionType": "sqlite"
@@ -1777,7 +1810,7 @@ Membership is the whole gate: designing a schema is not a permission (using a
 database is per-connection access, and this draft has no database at all).
 
 - **Body:** `{ "name": "Billing schema", "dbType": "postgresql", "sql"?: "CREATE TABLE …;", "layout"?: { … } }`
-- **200:** `{ "id", "workspaceId", "name", "dbType", "sql", "layout", "createdBy", "ts" }`
+- **200:** `{ "id", "workspaceId", "name", "dbType", "sql", "layout", "createdBy", "updatedBy", "createdAt", "ts" }` — the caller is stamped as both creator and last writer; these routes return **ids only**, the workspace-wide reads above are what resolve them to names.
 - **400:** `{ "error": "A schema name is required" }` / `{ "error": "Pick a database type a schema can be designed for" }` — the latter for an unknown or schemaless `dbType`.
 - **403:** `{ "error": "Forbidden" }` — not a member of the workspace.
 - **Example:** `POST http://localhost:3000/api/workspaces/ws-1/schema-drafts`
@@ -1786,7 +1819,7 @@ database is per-connection access, and this draft has no database at all).
 One from-scratch draft **with its DDL and its design** — what the standalone
 editor loads. `layout` is the design document described above, or `null`.
 
-- **200:** `{ "id", "workspaceId", "name", "dbType", "sql", "layout", "createdBy", "ts" }`
+- **200:** `{ "id", "workspaceId", "name", "dbType", "sql", "layout", "createdBy", "updatedBy", "createdAt", "ts" }`
 - **404:** `{ "error": "Schema draft not found" }` — also when the draft belongs to another workspace.
 - **Example:** `GET http://localhost:3000/api/workspaces/ws-1/schema-drafts/dr-1`
 
@@ -1796,6 +1829,11 @@ combination; saving the editor sends `sql` **and** `layout` (the DDL and the
 arrangement are one save), a rename sends `name` alone. `sql` is the staged
 statements joined by `;`, the same shape a saved schema query has. `layout: null`
 forgets the arrangement.
+
+The write is stamped: `updated_by` becomes the caller and `ts` the moment, both
+only when something actually changed — a call that carries no writable field
+leaves the trail (and the timestamp) exactly where it was, so "last updated" and
+"last updated by" always describe the same save.
 
 - **Body:** `{ "name"?: "Billing schema v2", "sql"?: "CREATE TABLE \"invoices\" (id INTEGER);", "layout"?: { "version": 1, "tables": { … }, "notes": [ … ], "groups": [ … ] } }`
 - **200:** the updated draft
@@ -1825,8 +1863,12 @@ against this connection.
 optional for a schema **draft**: an empty draft is a real state (a diagram with
 nothing staged yet). A name is always required.
 
+The caller is recorded as the row's creator and its first writer
+(`created_by`/`updated_by`/`created_at`, meta migration v20) — that is what the
+workspace-wide schema list names for a connection-linked draft.
+
 - **Body:** `{ "name": "Active users", "sql": "SELECT ...", "kind": "query", "layout"?: { … } }` (`kind` optional, defaults `"query"`; `layout` only means anything for `kind: "schema"`)
-- **200:** `{ "id", "name", "sql", "kind", "layout", "ts" }`
+- **200:** `{ "id", "name", "sql", "kind", "layout", "createdBy", "updatedBy", "createdAt", "ts" }`
 - **400:** `{ "error": "A name and SQL are required" }`
 - **Example:** `POST http://localhost:3000/api/connections/demo-sqlite/saved`
 
@@ -1845,6 +1887,13 @@ Same split as the create above, decided by the stored row's `kind` rather than
 anything in the body: `"sql": ""` empties a **schema draft** (that is how the
 editor records removing the last staged statement) and is refused on a saved
 **query**.
+
+Every accepted update stamps `updated_by` with the caller and moves `ts` to now.
+`ts` used to be written once, at insert — which made a draft saved this morning
+report the age of its creation and left the workspace-wide list nothing to
+attribute a save to. Moving it also reorders `GET /api/connections/:id/saved`
+(newest first) by *last touched*, which is what `/schemas/connection/:id` means
+by the draft to resume.
 
 - **200:** `{ "ok": true }`
 - **400:** `{ "error": "Nothing to update" }` / `{ "error": "A name is required" }` / `{ "error": "SQL is required" }` — the last only for `kind = "query"`.

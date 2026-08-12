@@ -116,6 +116,7 @@ import {
   listUsers,
   setSystemRole,
   updateUser,
+  userSummaries,
   verifyPassword,
 } from './server/users.js'
 import {
@@ -1823,6 +1824,7 @@ app.post('/api/connections/:id/saved', (req, res) => {
   const { name, sql, kind, layout } = req.body || {}
   if (!name?.trim()) return res.status(400).json({ error: 'A name and SQL are required' })
   if ((kind || 'query') !== 'schema' && !sql?.trim()) return res.status(400).json({ error: 'A name and SQL are required' })
+  const at = Date.now()
   const entry = {
     id: randomUUID(),
     name: name.trim(),
@@ -1830,11 +1832,30 @@ app.post('/api/connections/:id/saved', (req, res) => {
     kind: kind || 'query',
     // Only a schema draft arranges a diagram; a query row has nothing to place.
     layout: schemaLayout(layout),
-    ts: Date.now(),
+    // The audit trail (migration v20): a schema draft is workspace work, and
+    // the Schema list names whoever started one. The creator is the last writer
+    // too until someone else saves over it.
+    createdBy: authUser(req).id,
+    updatedBy: authUser(req).id,
+    createdAt: at,
+    ts: at,
   }
   meta
-    .prepare('INSERT INTO saved_queries (id, connection_id, name, sql, kind, layout, ts) VALUES (?, ?, ?, ?, ?, ?, ?)')
-    .run(entry.id, req.params.id, entry.name, entry.sql, entry.kind, entry.layout ? JSON.stringify(entry.layout) : null, entry.ts)
+    .prepare(
+      'INSERT INTO saved_queries (id, connection_id, name, sql, kind, layout, created_by, updated_by, created_at, ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    )
+    .run(
+      entry.id,
+      req.params.id,
+      entry.name,
+      entry.sql,
+      entry.kind,
+      entry.layout ? JSON.stringify(entry.layout) : null,
+      entry.createdBy,
+      entry.updatedBy,
+      entry.createdAt,
+      entry.ts
+    )
   res.json(entry)
 })
 
@@ -1873,6 +1894,16 @@ app.put('/api/connections/:id/saved/:sid', (req, res) => {
     vals.push(layout ? JSON.stringify(layout) : null)
   }
   if (!sets.length) return res.status(400).json({ error: 'Nothing to update' })
+  // Stamp the write. `ts` used to be set once, at insert, which made the Schema
+  // list's "Updated 3 months ago" the *creation* date of a draft someone saved
+  // this morning — and left "last updated by" nothing to hang off. Both move
+  // together, so the name and the time always describe the same save. It also
+  // reorders the saved list by last touched, which is what `/schemas/connection/:id`
+  // means by "the draft to resume".
+  sets.push('ts = ?')
+  vals.push(Date.now())
+  sets.push('updated_by = ?')
+  vals.push(authUser(req).id)
   const r = meta
     .prepare(`UPDATE saved_queries SET ${sets.join(', ')} WHERE id = ? AND connection_id = ?`)
     .run(...vals, req.params.sid, req.params.id)
@@ -2155,6 +2186,29 @@ app.get('/api/workspaces/:id/dashboards', (req, res) => {
   )
 })
 
+/**
+ * Resolve a row's audit ids to names — the one place "created by / last updated
+ * by" turns into something renderable.
+ *
+ * Ids and names travel together (`createdBy` + `createdByName`) rather than as a
+ * nested person: the list renders the name, and the id is what stays stable if a
+ * display name changes. A name of `null` is a real answer — the account was
+ * deleted, or the row predates the trail — and the UI shows it as unknown
+ * rather than inventing an attribution.
+ *
+ * One query for the whole page, not one per row.
+ */
+const withAudit = (rows) => {
+  const people = userSummaries(rows.flatMap((r) => [r.createdBy, r.updatedBy]))
+  return rows.map((r) => ({
+    ...r,
+    createdByName: people.get(r.createdBy)?.name || null,
+    updatedByName: people.get(r.updatedBy)?.name || null,
+  }))
+}
+
+const withAuditOne = (row) => withAudit([row])[0]
+
 // Every schema draft in a workspace, in one list — what the home area's Schema
 // section shows. A draft is a saved_queries row with kind='schema': the staged,
 // uncommitted DDL of a schema-editor tab. Same gating as the workspace-wide
@@ -2174,7 +2228,7 @@ app.get('/api/workspaces/:id/schemas', (req, res) => {
   const rows = ids.length
     ? meta
         .prepare(
-          `SELECT id, connection_id, name, sql, ts FROM saved_queries
+          `SELECT id, connection_id, name, sql, created_by, updated_by, created_at, ts FROM saved_queries
             WHERE kind = 'schema' AND connection_id IN (${ids.map(() => '?').join(', ')})
             ORDER BY ts DESC`
         )
@@ -2190,8 +2244,19 @@ app.get('/api/workspaces/:id/schemas', (req, res) => {
       connectionId: r.connection_id,
       connectionName: conn.name,
       connectionType: conn.type,
+      // The schema version the draft is staged *against* — the connection's
+      // counter, bumped by every committed DDL migration. It answers "is this
+      // draft still against the schema it was drawn from?", which is a property
+      // of the database, not of the draft, so a from-scratch row has none.
+      connectionSchemaVersion: conn.schemaVersion ?? 1,
       name: r.name,
       ts: r.ts,
+      createdAt: r.created_at || r.ts,
+      createdBy: r.created_by || null,
+      // Same fallback the schema_drafts mapper makes: a row whose only writer
+      // was its creator (or one older than the trail) names them rather than
+      // going blank.
+      updatedBy: r.updated_by || r.created_by || null,
       statementCount: schemaStatementCount(r.sql),
     }
   })
@@ -2200,11 +2265,16 @@ app.get('/api/workspaces/:id/schemas', (req, res) => {
     connectionId: null,
     connectionName: null,
     connectionType: d.dbType,
+    // No database behind it, so no committed schema to be a version of.
+    connectionSchemaVersion: null,
     name: d.name,
     ts: d.ts,
+    createdAt: d.createdAt,
+    createdBy: d.createdBy,
+    updatedBy: d.updatedBy,
     statementCount: schemaStatementCount(d.sql),
   }))
-  res.json([...attached, ...scratch].sort((x, y) => (y.ts || 0) - (x.ts || 0)))
+  res.json(withAudit([...attached, ...scratch]).sort((x, y) => (y.ts || 0) - (x.ts || 0)))
 })
 
 // One draft by id, whichever kind it is — what the standalone schema editor
@@ -2222,35 +2292,47 @@ app.get('/api/workspaces/:id/schemas/:draftId', (req, res) => {
   if (!user) return
   const scratch = getSchemaDraft(req.params.draftId)
   if (scratch && scratch.workspaceId === req.params.id) {
-    return res.json({
-      id: scratch.id,
-      name: scratch.name,
-      sql: scratch.sql,
-      layout: scratch.layout,
-      ts: scratch.ts,
-      connectionId: null,
-      connectionName: null,
-      connectionType: scratch.dbType,
-    })
+    return res.json(
+      withAuditOne({
+        id: scratch.id,
+        name: scratch.name,
+        sql: scratch.sql,
+        layout: scratch.layout,
+        ts: scratch.ts,
+        createdAt: scratch.createdAt,
+        createdBy: scratch.createdBy,
+        updatedBy: scratch.updatedBy,
+        connectionId: null,
+        connectionName: null,
+        connectionType: scratch.dbType,
+      })
+    )
   }
   const row = meta
-    .prepare("SELECT id, connection_id, name, sql, layout, ts FROM saved_queries WHERE id = ? AND kind = 'schema'")
+    .prepare(
+      "SELECT id, connection_id, name, sql, layout, created_by, updated_by, created_at, ts FROM saved_queries WHERE id = ? AND kind = 'schema'"
+    )
     .get(req.params.draftId)
   if (!row) return res.status(404).json({ error: 'Schema draft not found' })
   const conn = getConnection(row.connection_id)
   if (!conn || conn.workspaceId !== req.params.id) return res.status(404).json({ error: 'Schema draft not found' })
   if (!userCanAccessConnection(conn, user.id))
     return res.status(403).json({ error: 'You do not have access to this connection' })
-  res.json({
-    id: row.id,
-    name: row.name,
-    sql: row.sql || '',
-    layout: row.layout ? safeJson(row.layout) : null,
-    ts: row.ts,
-    connectionId: conn.id,
-    connectionName: conn.name,
-    connectionType: conn.type,
-  })
+  res.json(
+    withAuditOne({
+      id: row.id,
+      name: row.name,
+      sql: row.sql || '',
+      layout: row.layout ? safeJson(row.layout) : null,
+      ts: row.ts,
+      createdAt: row.created_at || row.ts,
+      createdBy: row.created_by || null,
+      updatedBy: row.updated_by || row.created_by || null,
+      connectionId: conn.id,
+      connectionName: conn.name,
+      connectionType: conn.type,
+    })
+  )
 })
 
 // The engines a from-scratch schema can be designed for. Comes from the driver
@@ -2308,6 +2390,8 @@ app.put('/api/workspaces/:id/schema-drafts/:draftId', (req, res) => {
       ...(name !== undefined && { name: String(name).trim() }),
       ...(sql !== undefined && { sql: String(sql) }),
       ...('layout' in body && { layout: schemaLayout(body.layout) }),
+      // Stamped only if something above actually changes — see updateDraft.
+      updatedBy: user.id,
     })
   )
 })

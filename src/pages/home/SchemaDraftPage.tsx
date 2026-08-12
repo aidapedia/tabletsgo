@@ -1,11 +1,12 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { useAuth } from '@/features/auth'
 import { useWorkspaces } from '@/features/workspaces'
 import { useConnections } from '@/features/connections'
 import { useSettings } from '@/features/settings'
 import { getDiagram, recordSchemaMigration, runQuery } from '@/shared/api/database'
 import { createSchemaDraft, deleteSchemaDraft, getWorkspaceSchema, updateSchemaDraft } from '@/features/schema-designer/lib/api'
-import { buildCreateTableSql, LinkConnectionDialog, UnlinkConnectionDialog } from '@/features/schema-designer'
+import { buildCreateTableSql, emptyLayout, LinkConnectionDialog, schemaSnapshot, UnlinkConnectionDialog, withoutSchemaSnapshot } from '@/features/schema-designer'
 import type { LinkCandidate, ReleaseTarget, SchemaDraftDetail, SchemaLayout } from '@/features/schema-designer'
 // Deep import, not the `@/features/workspace` barrel: that barrel re-exports
 // the whole DB console (QueryEditor pulls CodeMirror in), and this page only
@@ -21,11 +22,13 @@ import {
   type TableFolder,
 } from '@/features/table-folders'
 import { draftToItems } from '@/shared/lib/schemaDraft'
+import { relativeTime } from '@/shared/lib/recents'
 import { useToast } from '@/shared/ui/feedback/Toast'
 import LoadingState from '@/shared/ui/feedback/LoadingState'
 import Button from '@/shared/ui/buttons/Button'
 import Badge from '@/shared/ui/Badge'
-import { ChevronLeft, ExternalLinkIcon, LinkIcon, UnlinkIcon } from '@/shared/ui/icons'
+import Tooltip from '@/shared/ui/overlay/Tooltip'
+import { ChevronLeft, ExternalLinkIcon, LinkIcon, SyncIcon, UnlinkIcon } from '@/shared/ui/icons'
 
 // Same lazy import the console uses — React Flow is heavy, and it should load
 // when a diagram is opened, not when the Schema section is.
@@ -77,12 +80,33 @@ const SchemaEditor = lazy(() => import('@/features/schema-designer/components/Sc
  * Save writes — the connection's saved query, or the workspace draft row — and
  * whether there are table folders to draw regions from at all.
  */
+// How long ago the schema on the canvas was read. Coarse buckets on purpose — a
+// design is not a live dashboard, and "3h ago" says everything "3h 12m ago"
+// would; past a day, the date is what someone actually wants to know.
+function syncedAgo(at: number, now: number) {
+  const mins = Math.max(0, Math.round((now - at) / 60_000))
+  if (mins < 1) return 'just now'
+  if (mins < 60) return `${mins}m ago`
+  const hours = Math.floor(mins / 60)
+  if (hours < 24) return `${hours}h ago`
+  return new Date(at).toLocaleDateString()
+}
+
 export default function SchemaDraftPage() {
   // Exactly one of these is set — see the two addresses in the note above.
   const { id, connectionId } = useParams()
+  // `?unlink=1` — the Schema list asking for the unlink dialog on arrival. The
+  // move needs the canvas that draws the tables it would carry out, so the row
+  // sends the question here rather than reimplementing the answer.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const unlinkRequested = searchParams.get('unlink') === '1'
   const navigate = useNavigate()
   const toast = useToast()
   const { current } = useWorkspaces()
+  // The signed-in person, for the audit trail: a save the page just made is
+  // theirs, and stamping it locally is what keeps the header honest without a
+  // refetch (the row on the server carries the same id — see `persist`).
+  const { user } = useAuth()
   const { connections, loading: connectionsLoading, patchLocalConnection } = useConnections()
   const { queryTimeout } = useSettings()
 
@@ -95,6 +119,7 @@ export default function SchemaDraftPage() {
   const [linking, setLinking] = useState(false)
   const [unlinkOpen, setUnlinkOpen] = useState(false) // "unlink" dialog (connection drafts)
   const [unlinking, setUnlinking] = useState(false)
+  const [syncing, setSyncing] = useState(false) // "sync schema" — re-read the linked database
   // The connection's live tables, read when the unlink dialog opens: they are
   // what the draft would stop drawing, and what it can take with it as DDL.
   const [liveTables, setLiveTables] = useState<any[] | null>(null)
@@ -167,6 +192,13 @@ export default function SchemaDraftPage() {
         sql: '',
         layout: null,
         ts: Date.now(),
+        // No row means no trail yet — but whoever is looking at this canvas is
+        // who Save will record, so the header says so rather than "Unknown".
+        createdAt: Date.now(),
+        createdBy: user?.id || null,
+        createdByName: user?.name || null,
+        updatedBy: user?.id || null,
+        updatedByName: user?.name || null,
         connectionId,
         connectionName: own.name,
         connectionType: own.type,
@@ -233,6 +265,17 @@ export default function SchemaDraftPage() {
     [draft]
   )
 
+  // When the schema the canvas draws was last read from the database — 0 until a
+  // design has been synced once, which the header says in as many words.
+  const syncedAt = draft?.layout?.schema?.syncedAt || 0
+  // Re-tick so "synced 5m ago" doesn't sit there saying "just now" an hour
+  // later. A minute is as fine-grained as the label gets, so it is the interval.
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 60_000)
+    return () => clearInterval(id)
+  }, [])
+
   // Write the draft back to wherever it lives. Throws — the callers below decide
   // what a failure reads as. Setting a *new* draft object is also what reloads
   // the diagram: `conn` is memoized on it, and the editor refetches when that
@@ -243,14 +286,53 @@ export default function SchemaDraftPage() {
     // row behind it. Setting the draft object anyway is not a no-op: `conn` is
     // memoized on it, so this is what redraws the diagram after a release.
     if (!draft.id) return setDraft({ ...draft, sql, layout })
+    // The server stamped this write with the caller and the time; mirroring it
+    // here is what moves the header's "updated by" without refetching the draft.
+    const stamp = { updatedBy: user?.id || null, updatedByName: user?.name || null }
     if (draft.connectionId) {
       // A connection draft is that connection's saved query; writing it
       // through the route the console uses keeps one owner for the row.
       await updateSaved(draft.connectionId, draft.id, { sql, layout })
-      setDraft({ ...draft, sql, layout })
+      setDraft({ ...draft, sql, layout, ts: Date.now(), ...stamp })
     } else {
       const updated = await updateSchemaDraft(current.id, draft.id, { sql, layout })
-      setDraft({ ...draft, sql: updated.sql, layout: updated.layout, ts: updated.ts })
+      setDraft({ ...draft, sql: updated.sql, layout: updated.layout, ts: updated.ts, ...stamp })
+    }
+  }
+
+  /**
+   * Read the linked database's tables into the draft — the only thing that
+   * changes the schema the canvas draws.
+   *
+   * The diagram is the draft's own, stored with it, so nothing re-reads a
+   * database on its own: opening a design shows what was there when you left,
+   * and this button is how it catches up. It is a save of the design's other
+   * half, so it goes through the same row write with whatever is staged.
+   *
+   * The read is `strict` — a failed one throws instead of degrading to an empty
+   * schema, because the result is *stored*, and writing nothing over a good
+   * diagram would lose it. A database that really has no tables still syncs to
+   * nothing, which is correct.
+   */
+  const syncSchema = async () => {
+    if (!draft || !conn?.id || syncing) return
+    setSyncing(true)
+    try {
+      const fresh: any = await getDiagram(conn, { strict: true })
+      const base = layoutRef.current?.() ?? draft.layout ?? emptyLayout()
+      await persist(pending.map((i) => i.sql).join('\n'), { ...base, schema: schemaSnapshot(fresh) })
+      const count = fresh?.tables?.length || 0
+      // An unsaved canvas has no row to store it in yet — `persist` keeps it in
+      // memory and Save is what writes it, so say so rather than imply it stuck.
+      toast.success(
+        `Synced ${count} table${count === 1 ? '' : 's'} from ${draft.connectionName || 'the database'}${
+          draft.id ? '' : ' — save the design to keep it'
+        }.`
+      )
+    } catch (error) {
+      toast.error(`Couldn't read the schema: ${(error as Error)?.message || 'the database did not answer'}`)
+    } finally {
+      setSyncing(false)
     }
   }
 
@@ -292,6 +374,11 @@ export default function SchemaDraftPage() {
     [draft, connections]
   )
 
+  // `layoutRef` gives the arrangement as it stands, falling back to what was
+  // stored; either can be null, and neither may carry the schema snapshot to a
+  // draft with a different database behind it (see withoutSchemaSnapshot).
+  const stripSnapshot = (l: SchemaLayout | null) => (l ? withoutSchemaSnapshot(l) : l)
+
   /**
    * Give a from-scratch design a database.
    *
@@ -304,13 +391,21 @@ export default function SchemaDraftPage() {
    *
    * The copy is written before the original is dropped, so a failure halfway
    * leaves the design where it was rather than nowhere.
+   *
+   * Link and unlink both write a *new row*, so its audit trail starts here: the
+   * design is recorded as created by whoever moved it, not by whoever first drew
+   * it. Carrying the original creator across would mean a client naming someone
+   * else as the author of a row it is creating, which is not something a route
+   * can take on trust — a server-side move is what would preserve it.
    */
   const linkToConnection = async (target: LinkCandidate) => {
     if (!current?.id || !draft || linking) return
     setLinking(true)
     try {
       const sql = pending.map((i) => i.sql).join('\n')
-      const layout = layoutRef.current?.() ?? draft.layout
+      // The design arrives with no schema of its own — it is about to have a
+      // different database behind it, and the new draft reads that one itself.
+      const layout = stripSnapshot(layoutRef.current?.() ?? draft.layout)
       const copy: any = await createSaved(target.id, { name: draft.name, sql, kind: 'schema', layout })
       await deleteSchemaDraft(current.id, draft.id)
       setLinkOpen(false)
@@ -331,9 +426,26 @@ export default function SchemaDraftPage() {
     if (!conn?.id) return
     setLiveTables(null)
     setUnlinkOpen(true)
+    // What the draft *draws* is its own synced schema, which is what the dialog
+    // is counting and what it would carry out as DDL — so that is what it asks
+    // for. Only a draft that has never synced still has to read the database.
+    const stored = layoutRef.current?.()?.schema
+    if (stored?.tables?.length) return setLiveTables(stored.tables)
     const diagram: any = await getDiagram(conn)
     setLiveTables(diagram?.tables || [])
   }
+
+  // Consume the `?unlink=1` arrival: open the dialog once the draft is loaded
+  // and turns out to have a connection to leave, then drop the parameter. It is
+  // an instruction, not a place — a dialog is transient state, so cancelling it
+  // and refreshing should not reopen it. A from-scratch draft ignores it: the
+  // list disables the action, and a hand-typed URL has nothing to unlink.
+  useEffect(() => {
+    if (!unlinkRequested || !draft?.id || !draft.connectionId || unlinkOpen) return
+    setSearchParams({}, { replace: true })
+    openUnlink()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [unlinkRequested, draft?.id, draft?.connectionId])
 
   /**
    * Cut the draft loose from its connection — the reverse move of
@@ -357,7 +469,10 @@ export default function SchemaDraftPage() {
     try {
       const carried = keepTables ? (liveTables || []).map((t: any) => buildCreateTableSql(t.name, t.columns || [])) : []
       const sql = [...carried, ...pending.map((i) => i.sql)].join('\n')
-      const layout = layoutRef.current?.() ?? draft.layout
+      // The tables it drew are carried as DDL above (or deliberately not); the
+      // snapshot itself must not travel — there is no database behind a
+      // from-scratch draft for it to be a snapshot *of*.
+      const layout = stripSnapshot(layoutRef.current?.() ?? draft.layout)
       const copy = await createSchemaDraft(current.id, { name: draft.name, dbType: draft.connectionType, sql, layout })
       await deleteSaved(draft.connectionId, draft.id)
       setUnlinkOpen(false)
@@ -422,8 +537,20 @@ export default function SchemaDraftPage() {
       }
 
       const remaining = statements.slice(ran.length)
+      // A release is the one thing that makes the draft's stored schema stale by
+      // its own hand — those tables exist now — so it re-reads and stores the
+      // result rather than waiting for someone to press Sync. A failed read is
+      // not an empty schema: keep the snapshot the draft had (`strict` throws).
+      let synced = layout
+      if (ran.length) {
+        try {
+          synced = { ...layout, schema: schemaSnapshot(await getDiagram(conn, { strict: true })) }
+        } catch {
+          // The DDL ran; the diagram is simply a Sync behind. Nothing to say.
+        }
+      }
       try {
-        await persist(remaining.map((i) => i.sql).join('\n'), layout)
+        await persist(remaining.map((i) => i.sql).join('\n'), synced)
         setPending(remaining)
       } catch (error) {
         // The database took the statements either way — say so rather than let a
@@ -482,9 +609,37 @@ export default function SchemaDraftPage() {
               <Badge tone="faint">From scratch</Badge>
             )}
             <span>{draft.connectionType}</span>
+            {/* How fresh the drawn schema is, next to what it is of. Nothing
+                re-reads the database on its own any more, so "when was this
+                last true" is part of reading the diagram — and a linked design
+                that has never synced draws nothing, which is worth saying
+                plainly rather than leaving as an empty canvas. */}
+            {draft.connectionId ? (
+              syncedAt ? (
+                <span>· synced {syncedAgo(syncedAt, now)}</span>
+              ) : (
+                <Badge tone="faint">Not synced</Badge>
+              )
+            ) : null}
             {/* No row behind the canvas yet — say so, because Save here means
                 "create the draft" rather than "update it". */}
             {draft.id ? null : <Badge tone="faint">Not saved</Badge>}
+            {/* The audit trail, where the design is: a schema is shared work, so
+                "who moved this last, and when" belongs beside the name rather
+                than only in the list you came from. Who *started* it changes
+                once and is the rarer question, so it rides in the tooltip with
+                the exact timestamps the relative times round off. */}
+            <Tooltip
+              placement="bottom"
+              multiline
+              label={`Created by ${draft.createdByName || 'an account that no longer exists'} on ${new Date(
+                draft.createdAt
+              ).toLocaleString()}\nLast saved ${new Date(draft.ts).toLocaleString()}`}
+            >
+              <span className="cursor-default">
+                · updated by {draft.updatedByName || 'someone unknown'} {relativeTime(draft.ts)}
+              </span>
+            </Tooltip>
             {saving ? <span>· saving…</span> : null}
             {releasing ? <span className="text-amber">· releasing…</span> : null}
           </p>
@@ -494,13 +649,27 @@ export default function SchemaDraftPage() {
             DDL from here and the console is still where the data, the query
             editor and the changes queue live. */}
         {draft.connectionId ? (
-          // Unlinking *moves* a draft row between tables, so it needs one to
-          // move — an unsaved canvas is already on its connection and nowhere else.
-          draft.id ? (
-            <Button variant="subtle" size="sm" icon={UnlinkIcon} onClick={openUnlink}>
-              Unlink
-            </Button>
-          ) : null
+          <>
+            {/* Only a linked design has a database to read, which is the whole
+                condition: the draft draws its own stored schema, so this is the
+                one thing that changes it. */}
+            <Tooltip placement="bottom" label={`Sync Schema`}>
+              <Button variant="subtle" size="sm" onClick={syncSchema} disabled={syncing} aria-label="Sync schema">
+                {/* The icon is the whole button, so it carries the state: it
+                    spins while the read is in flight, where a labelled button
+                    would have said "Syncing…". */}
+                <SyncIcon width={15} height={15} className={`shrink-0 ${syncing ? 'animate-spin' : ''}`} />
+              </Button>
+            </Tooltip>
+            {/* Unlinking *moves* a draft row between tables, so it needs one to
+                move — an unsaved canvas is already on its connection and nowhere
+                else. */}
+            {draft.id ? (
+              <Button variant="subtle" size="sm" icon={UnlinkIcon} onClick={openUnlink}>
+                Unlink
+              </Button>
+            ) : null}
+          </>
         ) : (
           <Button variant="ghost" size="sm" icon={LinkIcon} onClick={() => setLinkOpen(true)}>
             Link to connection

@@ -10,9 +10,27 @@ export type WorkspaceSchemaDraft = {
   connectionName: string | null
   /** The connection's engine, or (from scratch) the dialect the DDL targets. */
   connectionType: string
+  /**
+   * The connection's schema version — the counter every committed DDL migration
+   * bumps, so the row says which schema the draft is staged against. null for a
+   * from-scratch draft: no database behind it, nothing committed to be a
+   * version of.
+   */
+  connectionSchemaVersion: number | null
   id: string
   name: string
   ts: number
+  /**
+   * The audit trail. `ts` is the last save and `createdAt` the first; the ids
+   * are stable, the names are what the row renders. A null name is a real
+   * answer — a deleted account, or a draft older than the trail — and reads as
+   * unknown rather than as nobody having touched it.
+   */
+  createdAt: number
+  createdBy: string | null
+  createdByName: string | null
+  updatedBy: string | null
+  updatedByName: string | null
   statementCount: number
 }
 
@@ -28,6 +46,17 @@ export type SchemaDraftDetail = {
   /** The saved diagram arrangement (positions, notes, groups) — null until one is saved. */
   layout: SchemaLayout | null
   ts: number
+  /**
+   * The audit trail. `ts` is the last save and `createdAt` the first; the ids
+   * are stable, the names are what the row renders. A null name is a real
+   * answer — a deleted account, or a draft older than the trail — and reads as
+   * unknown rather than as nobody having touched it.
+   */
+  createdAt: number
+  createdBy: string | null
+  createdByName: string | null
+  updatedBy: string | null
+  updatedByName: string | null
   connectionId: string | null
   connectionName: string | null
   connectionType: string
@@ -42,7 +71,11 @@ export type SchemaDraft = {
   dbType: string
   sql: string
   layout: SchemaLayout | null
+  // Ids only: this is the row as its own routes write it, and only the
+  // workspace-wide reads resolve them to names.
   createdBy: string | null
+  updatedBy: string | null
+  createdAt: number
   ts: number
 }
 
