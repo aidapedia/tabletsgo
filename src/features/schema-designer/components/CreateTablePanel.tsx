@@ -2,8 +2,11 @@ import { useEffect, useMemo, useState } from 'react'
 import { getColumns, getSchema } from '@/shared/api/database'
 import Button from '@/shared/ui/buttons/Button'
 import TextButton from '@/shared/ui/buttons/TextButton'
+import DragHandle from '@/shared/ui/DragHandle'
 import SlideOverPanel from '@/shared/ui/overlay/SlideOverPanel'
 import { useSlideOver } from '@/shared/hooks/useSlideOver'
+import { useDragReorder } from '@/shared/hooks/useDragReorder'
+import { moveColumn } from '@/features/schema-designer/lib/design'
 import { PlusIcon } from '@/shared/ui/icons'
 import { Input } from '@/shared/ui/form/Input'
 import { FormField, Label } from '@/shared/ui/form/Form'
@@ -61,6 +64,22 @@ export default function CreateTablePanel({ conn, initialTable, draftColumns, onC
   const setCol = (id, patch) => setColumns((cols) => cols.map((c) => (c.id === id ? { ...c, ...patch } : c)))
   const addCol = () => setColumns((cols) => [...cols, newColumn(types[0])])
   const removeCol = (id) => setColumns((cols) => cols.filter((c) => c.id !== id))
+
+  // Column order is the CREATE TABLE's column order, so dragging a card here
+  // *is* the schema edit — the statement below the form rewrites as you drop.
+  // The indices are into `newColumns` (the cards), never into `columns`: in edit
+  // mode the existing columns are read-only rows above them, and ADD COLUMN
+  // can't move one anyway.
+  const reorderNew = (from, to) => {
+    const moved = moveColumn(newColumns, from, to)
+    if (moved === newColumns) return
+    // Put the reordered new columns back after the existing ones, which keep
+    // the order the live schema gave them.
+    setColumns([...columns.filter((c) => c.existing), ...moved])
+  }
+  const reorder = useDragReorder(newColumns.length, reorderNew)
+  // One card can't be dragged anywhere, so it shows no grip.
+  const canReorder = newColumns.length > 1
 
   // CREATE builds one statement; ALTER builds one ADD COLUMN per new column.
   const statements = useMemo(() => {
@@ -120,9 +139,13 @@ export default function CreateTablePanel({ conn, initialTable, draftColumns, onC
             </FormField>
 
             <Label>Columns</Label>
-            <div className="flex flex-col gap-3">
-              {columns.map((col) =>
-                col.existing ? (
+            <div className="flex flex-col gap-3" {...reorder.listProps}>
+              {/* Existing columns first (they always are — `columns` is loaded
+                  from the live schema, then new cards are appended), read-only
+                  and not draggable: ADD COLUMN can't move one. */}
+              {columns
+                .filter((col) => col.existing)
+                .map((col) => (
                   <div
                     key={col.id}
                     className="flex items-center gap-2 rounded-soft border border-edge bg-elevated/30 px-3 py-2 text-[11px]"
@@ -134,19 +157,30 @@ export default function CreateTablePanel({ conn, initialTable, draftColumns, onC
                     )}
                     <span className="rounded bg-edge px-1.5 py-0.5 text-[9px] text-ink-faint">existing</span>
                   </div>
-                ) : (
+                ))}
+              {newColumns.map((col, i) => (
+                <div key={col.id} className={`relative ${reorder.dragging(i) ? 'opacity-40' : ''}`} {...reorder.itemProps(i, col.id)}>
+                  {/* Where the dragged card would land — in the gap above or
+                      below this one, which is why it sits outside the card. */}
+                  {reorder.indicator(i) && (
+                    <div
+                      className={`pointer-events-none absolute inset-x-0 z-10 h-[2px] rounded-full bg-green-bright ${
+                        reorder.indicator(i) === 'top' ? '-top-1.5' : '-bottom-1.5'
+                      }`}
+                    />
+                  )}
                   <ColumnField
-                    key={col.id}
                     col={col}
                     types={types}
                     tableNames={tableNames}
                     schema={schema}
                     allowPk={!isEdit}
+                    dragHandle={canReorder ? <DragHandle {...reorder.handleProps(i)} title="Drag to reorder columns" /> : null}
                     onChange={(patch) => setCol(col.id, patch)}
                     onRemove={() => removeCol(col.id)}
                   />
-                )
-              )}
+                </div>
+              ))}
             </div>
 
             <TextButton tone="green" className="mt-3 !text-[11px] font-semibold" onClick={addCol}>

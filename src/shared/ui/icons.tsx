@@ -525,6 +525,19 @@ export const RestoreIcon = (props) => (
   </svg>
 )
 
+// The two-column grip on a draggable row (schema diagram column rows). Dots
+// rather than lines: it has to read as "grab me" at 10px wide.
+export const GripIcon = (props) => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="none" {...props}>
+    <circle cx="9" cy="6" r="1.6" />
+    <circle cx="15" cy="6" r="1.6" />
+    <circle cx="9" cy="12" r="1.6" />
+    <circle cx="15" cy="12" r="1.6" />
+    <circle cx="9" cy="18" r="1.6" />
+    <circle cx="15" cy="18" r="1.6" />
+  </svg>
+)
+
 export const ColumnsIcon = (props) => (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
     strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>

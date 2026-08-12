@@ -44,6 +44,7 @@ import {
   NOTE_MIN_H,
   NOTE_MIN_W,
   normalizeLayout,
+  orderColumns,
   parseDesignDoc,
   schemaSnapshot,
   withoutSchemaSnapshot,
@@ -715,6 +716,10 @@ export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUp
   // editor with a connection behind it has real folders and these stay empty;
   // a from-scratch draft (or an imported design) has only these.
   const [designGroups, setDesignGroups] = useState(() => savedLayout.groups)
+  // Table -> the order its columns are drawn in, for the tables whose order the
+  // DDL can't carry (see `doReorderColumn` and SchemaLayout.columns). Only the
+  // tables someone has actually reordered appear here.
+  const [columnOrder, setColumnOrder] = useState<Record<string, string[]>>(() => savedLayout.columns)
   const [editingNote, setEditingNote] = useState(null) // note id whose textarea is open
   const [selectedNote, setSelectedNote] = useState(null) // note id showing its resize handles
   const [noteMenu, setNoteMenu] = useState(null) // note right-click menu { x, y, id }
@@ -729,6 +734,23 @@ export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUp
   // arrangement outlives both a rebuild of the node list and a table being
   // toggled off, so neither loses a position the user placed by hand.
   const placedTables = useRef<Record<string, { x: number; y: number }>>({ ...savedLayout.tables })
+
+  /**
+   * The order the diagram draws `table`'s columns in.
+   *
+   * Only ever the *drawn* order, and only for a table that already exists: no
+   * engine can move a column of one with ALTER (not Postgres, not SQLite), so
+   * the arrangement is part of the design — saved with the layout and carried by
+   * the design file, the same standing as a table's position or a note. It is
+   * TableEditPanel that sends it, on save.
+   *
+   * A table still staged as a CREATE TABLE needs none of this: reordering its
+   * columns rewrites the statement (CreateTablePanel, reopened via
+   * `editPendingTable`), so the DDL itself says the order. Which is why this
+   * also clears any drawn override the table used to have.
+   */
+  const setDrawnColumnOrder = (table: string, names: string[]) =>
+    setColumnOrder((cur) => (names.length ? { ...cur, [table]: names } : (({ [table]: _drop, ...rest }) => rest)(cur)))
 
   // Pending changes are owned by the workspace (per tab) so they survive tab
   // switches; the panels hand their statements up via onPendingChange. Each
@@ -792,11 +814,17 @@ export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUp
 
   // Restage an edited draft: its old statements go, the rebuilt CREATE lands in
   // their place. Mirrors deleteTable's "a pending table is just its statements".
-  const replacePendingTable = (oldName, statements, newName) =>
+  // The rebuilt CREATE also *is* the column order, so any drawn override the
+  // table carried (from an imported design) would only fight it — see
+  // setDrawnColumnOrder.
+  const replacePendingTable = (oldName, statements, newName) => {
+    setDrawnColumnOrder(oldName, [])
+    if (newName !== oldName) setDrawnColumnOrder(newName, [])
     onPendingChange?.([
       ...pending.filter((p) => p.table !== oldName),
       ...statements.map((sql) => ({ id: newItemId(), sql, table: newName, mode: 'new' })),
     ])
+  }
 
   // Edit a table — a committed one via ALTER (TableEditPanel), a staged new one
   // by reopening its CREATE (CreateTablePanel).
@@ -919,7 +947,7 @@ export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUp
       }
       return {
         ...t,
-        columns,
+        columns: orderColumns(columns, columnOrder[t.name]),
         pending: false,
         pendingCols,
         changedCols,
@@ -933,13 +961,17 @@ export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUp
       // the diagram wants the SQL spelling back, like a committed column's.
       tables.push({
         name,
-        columns: cols.map((c) => ({ ...c, type: columnTypeSql(c) })),
+        // A staged table's order *is* its CREATE TABLE's, which is why dragging
+        // one rewrites the statement — the drawn order only applies to a table
+        // whose CREATE has already left for the Changes queue (unrewritable).
+        columns: orderColumns(cols.map((c) => ({ ...c, type: columnTypeSql(c) })), columnOrder[name]),
         pending: true,
         pendingCols: new Set(),
       })
     }
     return tables
-  }, [diagram, changes, pending])
+  }, [diagram, changes, pending, columnOrder])
+
 
   const [nodes, setNodes, onNodesChange] = useNodesState([])
   // Mirror live node positions for the connection-line component's cursor
@@ -1601,6 +1633,7 @@ export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUp
     return {
       version: LAYOUT_VERSION,
       tables,
+      columns: columnOrder,
       // The draft keeps the schema it draws, so the next open draws the same
       // diagram without asking the database. Only where there *is* a database:
       // a from-scratch draft has nothing to snapshot and stays null.
@@ -1620,7 +1653,7 @@ export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUp
         }
       }),
     }
-  }, [folderGroups, allGroups, notes, conn?.id, diagram, syncedAt])
+  }, [folderGroups, allGroups, notes, columnOrder, conn?.id, diagram, syncedAt])
 
   // A host that acts on the draft from *outside* the canvas — the page's "Link
   // to connection", which moves the design to another row — still has to write
@@ -1668,6 +1701,7 @@ export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUp
     placedTables.current = { ...imported.tables }
     setNotes(imported.notes)
     setDesignGroups(imported.groups)
+    setColumnOrder(imported.columns)
     // An imported table that happened to be hidden here would arrive invisible.
     setHiddenTables(new Set())
     onPendingChange?.(draftToItems(importDoc.statements.join('\n')))
@@ -2050,6 +2084,7 @@ export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUp
           schema={schemaMap}
           foreignKeys={selectedForeignKeys}
           onStage={addPending}
+          onReorderColumns={(names) => setDrawnColumnOrder(selectedTable.name, names)}
           onClose={() => {
             setSelected(null)
             // Clear ReactFlow's node selection so the active outline doesn't

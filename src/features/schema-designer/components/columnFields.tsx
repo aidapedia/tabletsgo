@@ -240,11 +240,16 @@ export const parseColumnDefs = (body) => {
 // One editable column "card" — name, type (+ custom VARCHAR length), primary
 // key, not null, default value and foreign key reference. Shared between the
 // create-table and edit-table forms so both expose the exact same fields.
-export function ColumnField({ col, types, tableNames = [], schema = {}, allowPk = true, onChange, onRemove }) {
+//
+// `dragHandle` is the grip a reorderable list passes in (see useDragReorder).
+// The card renders it but knows nothing about the gesture: column *order* is
+// the list's business, not the field's.
+export function ColumnField({ col, types, tableNames = [], schema = {}, allowPk = true, dragHandle = null, onChange, onRemove }) {
   const set = (patch) => onChange(patch)
   return (
     <div className="rounded-soft border border-edge bg-elevated/40 p-2.5">
       <div className="flex flex-wrap items-center gap-2">
+        {dragHandle}
         <Input
           className="!w-auto min-w-[120px] flex-1"
           type="text"
