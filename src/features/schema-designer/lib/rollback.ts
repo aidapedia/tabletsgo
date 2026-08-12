@@ -24,10 +24,84 @@ export function rollbackForAddColumn(sql: string, table: string) {
 export async function rollbackForDropColumn(conn: any, sql: string, table: string) {
   const match = sql.match(/DROP COLUMN\s+"([^"]+)"/i)
   if (!match) return null
-  const columns = await getColumns(conn, table)
-  const col = columns?.find((c: any) => c.name === match[1])
+  const col = await liveColumn(conn, table, match[1])
   if (!col) return null
   return `ALTER TABLE "${table}" ADD COLUMN ${columnDef(col)};`
+}
+
+// One column as the database currently has it — the only source for the
+// "before" side of a statement that overwrites a definition (a drop, a type
+// change, a default change). Reads nothing when there is no connection behind
+// the editor (a from-scratch design), so the caller marks it non-reversible.
+async function liveColumn(conn: any, table: string, name: string) {
+  if (!conn?.id) return null
+  const columns = await getColumns(conn, table)
+  return columns?.find((c: any) => c.name === name) || null
+}
+
+// The inverse of one ALTER TABLE the editor stages. Renames, NOT NULL flips and
+// constraint adds invert syntactically; a dropped column, a changed type and a
+// changed default need the live definition, so this only builds them *before*
+// the statement runs. Everything else (notably DROP CONSTRAINT, whose original
+// definition is gone once it executes) has no automatic inverse — the FK editor
+// stages its own `rollbackSql` for that case, which takes priority over this.
+export async function rollbackForAlter(conn: any, sql: string, table: string) {
+  const rename = sql.match(/RENAME COLUMN\s+"([^"]+)"\s+TO\s+"([^"]+)"/i)
+  if (rename) return `ALTER TABLE "${table}" RENAME COLUMN "${rename[2]}" TO "${rename[1]}";`
+  const addConstraint = sql.match(/ADD CONSTRAINT\s+"([^"]+)"/i)
+  if (addConstraint) return `ALTER TABLE "${table}" DROP CONSTRAINT "${addConstraint[1]}";`
+  const notNull = sql.match(/ALTER COLUMN\s+"([^"]+)"\s+(SET|DROP)\s+NOT NULL/i)
+  if (notNull) {
+    return `ALTER TABLE "${table}" ALTER COLUMN "${notNull[1]}" ${/set/i.test(notNull[2]) ? 'DROP' : 'SET'} NOT NULL;`
+  }
+  if (/DROP COLUMN/i.test(sql)) return rollbackForDropColumn(conn, sql, table)
+  if (/ADD COLUMN/i.test(sql)) return rollbackForAddColumn(sql, table)
+  const typeChange = sql.match(/ALTER COLUMN\s+"([^"]+)"\s+TYPE\b/i)
+  if (typeChange) {
+    const col = await liveColumn(conn, table, typeChange[1])
+    return col?.type ? `ALTER TABLE "${table}" ALTER COLUMN "${col.name}" TYPE ${col.type};` : null
+  }
+  const defaultChange = sql.match(/ALTER COLUMN\s+"([^"]+)"\s+(?:SET|DROP)\s+DEFAULT/i)
+  if (defaultChange) {
+    const col = await liveColumn(conn, table, defaultChange[1])
+    if (!col) return null
+    const had = col.default != null && String(col.default).trim()
+    return had
+      ? `ALTER TABLE "${table}" ALTER COLUMN "${col.name}" SET DEFAULT ${col.default};`
+      : `ALTER TABLE "${table}" ALTER COLUMN "${col.name}" DROP DEFAULT;`
+  }
+  return null
+}
+
+// The down SQL for one staged item, whichever panel staged it. An item that
+// already carries its own `rollbackSql` (the FK editor builds a matched pair)
+// keeps it; everything else is derived from the statement itself. Best-effort
+// by design: anything this can't reverse returns null and the migration records
+// itself as non-reversible rather than as a rollback that would fail.
+//
+// Reading the live schema can fail (a table someone else just dropped); that is
+// a statement without a down SQL, not a failed release, so it resolves to null.
+export async function rollbackForItem(conn: any, item: any): Promise<string | null> {
+  if (item?.rollbackSql) return item.rollbackSql
+  const sql = (item?.sql || '').trim()
+  const table = item?.table
+  if (!sql || !table) return null
+  try {
+    if (/^CREATE TABLE/i.test(sql)) return rollbackForCreateTable(table)
+    if (/^DROP TABLE/i.test(sql)) return (await buildDropTableRollback(conn, table)).rollbackSql
+    if (/^ALTER TABLE/i.test(sql)) return await rollbackForAlter(conn, sql, table)
+    return null
+  } catch {
+    return null
+  }
+}
+
+// Pair every staged item with the down SQL that would undo it. Run this before
+// the statements execute — the ones reconstructed from the live schema (DROP
+// TABLE, DROP COLUMN, a type or default change) can only be read while the old
+// definition is still there.
+export async function resolveRollbacks(conn: any, items: any[]) {
+  return Promise.all(items.map(async (i) => ({ ...i, rollbackSql: await rollbackForItem(conn, i) })))
 }
 
 // One column's definition string (same shape as getColumns()'s response),
@@ -73,15 +147,7 @@ export function buildCreateTableSql(table: string, columns: any[]) {
 export async function buildDraftMigration(conn: any, sql: string) {
   const items = draftToItems(sql)
   const forwardSql = items.map((i) => i.sql)
-  const rollbacks = await Promise.all(
-    items.map(async (i: any) => {
-      if (i.mode === 'delete') return (await buildDropTableRollback(conn, i.table)).rollbackSql
-      if (i.mode === 'new') return rollbackForCreateTable(i.table)
-      // edit — an ALTER TABLE that either adds or drops a column.
-      if (/DROP COLUMN/i.test(i.sql)) return rollbackForDropColumn(conn, i.sql, i.table)
-      return rollbackForAddColumn(i.sql, i.table)
-    }),
-  )
+  const rollbacks = await Promise.all(items.map((i: any) => rollbackForItem(conn, i)))
   const reversible = rollbacks.length > 0 && rollbacks.every(Boolean)
   const rollbackSql = items
     .map((i: any, idx: number) => rollbacks[idx] || `-- No automatic down SQL for: ${i.sql}`)
@@ -93,7 +159,7 @@ export async function buildDraftMigration(conn: any, sql: string) {
 // would restore it) before a DROP TABLE executes. Falls back to "not
 // reversible" if the columns can't be read.
 export async function buildDropTableRollback(conn, table: string) {
-  const columns = await getColumns(conn, table)
+  const columns = conn?.id ? await getColumns(conn, table) : null
   if (!columns?.length) return { rollbackSql: null, reversible: false }
   return { rollbackSql: buildCreateTableSql(table, columns), reversible: true }
 }

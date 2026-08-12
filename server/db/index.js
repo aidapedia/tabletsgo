@@ -168,6 +168,16 @@ export const closeAllConnections = () => {
 // Column types the schema editor offers. Schemaless engines report none.
 export const dataTypesFor = (conn) => drivers[conn?.type]?.dataTypes || []
 
+// The engines a schema can be *designed* for, without a connection to design it
+// against — identity plus the column types the editor offers. An engine that
+// reports no data types is schemaless (Redis), so there is no schema to draw:
+// the same fact that hides the designer for a connected Redis keeps it out of
+// this list, rather than a second place naming engines by hand.
+export const designableEngines = () =>
+  Object.values(drivers)
+    .filter((d) => d.dataTypes?.length)
+    .map((d) => ({ type: d.type, label: d.label, dataTypes: d.dataTypes }))
+
 // ---- Introspection ----
 export const ping = gatedOptional('ping', { ok: true })
 

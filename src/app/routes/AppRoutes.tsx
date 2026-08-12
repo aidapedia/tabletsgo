@@ -19,6 +19,8 @@ import StoragePage from '@/pages/home/StoragePage'
 import SettingsPage from '@/pages/home/SettingsPage'
 import ResourceTreePage from '@/pages/home/ResourceTreePage'
 import WorkflowsPage from '@/pages/home/WorkflowsPage'
+import SchemasPage from '@/pages/home/SchemasPage'
+import SchemaDraftPage from '@/pages/home/SchemaDraftPage'
 import WorkspacePage from '@/pages/console/WorkspacePage'
 import AdminWorkspacesPage from '@/pages/admin/AdminWorkspacesPage'
 import AdminUsersPage from '@/pages/admin/AdminUsersPage'
@@ -136,7 +138,42 @@ export function AppRoutes() {
         {/* Workflows live on connections; this is the workspace-wide list of
             them. A row opens the workflow in its connection's console. */}
         <Route path="/workflows" element={<WorkflowsPage />} />
+        {/* Same for schema drafts — the cross-connection list. */}
+        <Route path="/schemas" element={<SchemasPage />} />
       </Route>
+      {/* The schema editor page: it hosts the designer for either kind of
+          draft — one designed against a connection (drawn from that live
+          database, for anyone with access to it) or one from scratch, which
+          has no console to open in at all. The console has no diagram of its
+          own; this address is the diagram and its drafts.
+
+          Two ways in. `/schemas/connection/:connectionId` is the console's rail
+          icon: a database in hand but no draft id, which the page resolves to
+          that connection's newest draft (or an unsaved canvas over its live
+          tables). `/schemas/:id` is a draft by id, where the Schema list and
+          that redirect both land. The static `connection` segment outranks
+          `:id`, so the two never collide.
+
+          Both sit *outside* HomeLayout on purpose: a diagram is a canvas, so it
+          gets the whole viewport the way the console does, rather than a panel
+          inside the shell's padded scroller. Its own header carries the way
+          back. */}
+      <Route
+        path="/schemas/connection/:connectionId"
+        element={
+          <RequireWorkspaceUser>
+            <SchemaDraftPage />
+          </RequireWorkspaceUser>
+        }
+      />
+      <Route
+        path="/schemas/:id"
+        element={
+          <RequireWorkspaceUser>
+            <SchemaDraftPage />
+          </RequireWorkspaceUser>
+        }
+      />
       {/* Personal settings (theme, local data, updates) belong to the account,
           not to a workspace — so both halves of the app get them. */}
       <Route

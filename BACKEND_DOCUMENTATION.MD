@@ -353,6 +353,17 @@ CREATE TABLE saved_queries (
   sql TEXT NOT NULL,
   kind TEXT,                    -- "query" | "schema"
   folder_id TEXT,               -- nullable FK to saved_folders.id
+  layout TEXT,                  -- kind="schema" only: the diagram design (JSON: table/group/note positions)
+  ts INTEGER
+);
+CREATE TABLE schema_drafts (    -- a schema designed with no connection behind it
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  db_type TEXT NOT NULL,        -- the dialect its DDL targets (a connection would have answered this)
+  sql TEXT,
+  layout TEXT,                  -- the diagram design (JSON: table/group/note positions)
+  created_by TEXT,
   ts INTEGER
 );
 CREATE TABLE saved_folders (
@@ -1487,8 +1498,9 @@ Also closes any open pool/handle.
 ### Connection export / import
 Moves a whole connection — its settings **and** every artifact hanging off it — as
 one portable JSON document. Included: connection settings, folders (all four types,
-with their tree + colors), table→folder assignments, saved queries, workflows,
-dashboards and the backup schedule. Deliberately **excluded**: history/audit rows
+with their tree + colors), table→folder assignments, saved queries (a schema draft
+brings its diagram design — the table, group and note positions — with it),
+workflows, dashboards and the backup schedule. Deliberately **excluded**: history/audit rows
 (query history, workflow runs, backup runs, schema migrations) and connection access
 grants — they describe one instance, not the connection's configuration.
 
@@ -1518,7 +1530,10 @@ Build the export document for a connection.
   },
   "folders": [{ "id": "f1", "type": "table", "name": "Core", "color": "#6366f1", "parentId": null, "ts": 1785227173134 }],
   "tableFolders": [{ "tableName": "users", "folderId": "f1" }],
-  "savedQueries": [{ "id": "q1", "name": "All rows", "sql": "SELECT 1", "kind": "query", "folderId": null, "ts": 1785227173232 }],
+  "savedQueries": [
+    { "id": "q1", "name": "All rows", "sql": "SELECT 1", "kind": "query", "folderId": null, "layout": null, "ts": 1785227173232 },
+    { "id": "q2", "name": "orders ERD", "sql": "CREATE TABLE \"orders\" (…);", "kind": "schema", "folderId": null, "layout": { "version": 1, "tables": { "orders": { "x": 120, "y": 80 } }, "notes": [], "groups": [] }, "ts": 1785227173240 }
+  ],
   "workflows": [{ "id": "w1", "name": "Nightly", "graph": { "nodes": [], "edges": [] }, "folderId": null, "scheduleEnabled": true, "ts": 1785227173259 }],
   "dashboards": [{ "id": "d1", "name": "Overview", "config": { "variables": [], "widgets": [] }, "folderId": null, "ts": 1785227173300 }],
   "backupSchedule": { "frequency": "daily", "hourOfDay": 2, "destinationIds": ["local"], "retryLimit": 0, "retryDelaySec": 60, "retentionDays": 7, "encrypt": false, "enabled": true }
@@ -1623,31 +1638,265 @@ Send the full desired set.
 
 ## Saved queries (per connection)
 
+### GET `/api/workspaces/:id/schemas`
+Every **schema draft** in a workspace — what the home area's **Schema Editor**
+section lists (one request instead of one per connection). Newest first.
+
+Two kinds come back in the one list, told apart by `connectionId`:
+
+| `connectionId` | Kind | Where it lives | What the editor draws |
+| --- | --- | --- | --- |
+| an id | designed **against a connection** | a saved query with `kind = "schema"` | that database's live tables |
+| `null` | designed **from scratch** | `schema_drafts` (see below) | an empty canvas |
+
+Both open at the same address — `/schemas/:id`, which loads the draft through
+`GET /api/workspaces/:id/schemas/:draftId` below.
+
+For a from-scratch draft `connectionName` is `null` and `connectionType` is the
+dialect the row stored rather than a connection's engine.
+
+**The target's schema version.** An attached draft also carries
+`connectionSchemaVersion` — the connection's `schema_version` counter, which
+every committed DDL migration bumps (see `POST /api/connections/:id/schema/migrations`).
+It is what the draft is staged *against*, so a caller can tell a draft drawn
+from the current schema from one drawn two migrations ago. It is `null` for a
+from-scratch draft: no database behind it, nothing committed to be a version of.
+
+Either way the DDL is summarised rather than returned — `statementCount` is all
+the list needs, and rendering a draft needs the editor. It counts the
+`;`-separated statements, the same split the editor uses to seed a tab.
+
+**The audit trail.** Every row carries who started the design and who last saved
+it, already resolved to names — `createdBy`/`updatedBy` are user ids,
+`createdByName`/`updatedByName` the display names, and `createdAt`/`ts` the two
+timestamps (first write, last write). One lookup answers the whole page, so the
+caller never resolves a user itself. A name is `null` when the account has been
+deleted or the row predates the trail (meta migration v20): the id may still be
+there, and an unknown writer is a real answer — never render it as nobody. Both
+kinds of draft answer this identically, whichever table they live in.
+
+Membership gates the workspace; each connection is then filtered by connection
+access, so this never shows an attached draft the per-connection route below
+would refuse. A workspace with no reachable connection is **not** an empty
+answer — its from-scratch drafts hang off the workspace and are still listed.
+
+- **200:** `[{ "id", "connectionId", "connectionName", "connectionType", "connectionSchemaVersion", "name", "ts", "createdAt", "createdBy", "createdByName", "updatedBy", "updatedByName", "statementCount" }]`
+- **403:** `{ "error": "Forbidden" }` — not a member of the workspace.
+- **Example:** `GET http://localhost:3000/api/workspaces/ws-1/schemas`
+
+```json
+[
+  {
+    "id": "sq-9",
+    "connectionId": "demo-sqlite",
+    "connectionName": "Demo SQLite",
+    "connectionType": "sqlite",
+    "connectionSchemaVersion": 3,
+    "name": "orders ERD",
+    "ts": 1754812800000,
+    "createdAt": 1754640000000,
+    "createdBy": "u-1",
+    "createdByName": "Dana Reyes",
+    "updatedBy": "u-2",
+    "updatedByName": "Sam Okoro",
+    "statementCount": 4
+  },
+  {
+    "id": "0ec3a7a4-f43b-49f6-99e8-2404fbc2687c",
+    "connectionId": null,
+    "connectionName": null,
+    "connectionType": "postgresql",
+    "connectionSchemaVersion": null,
+    "name": "Billing schema",
+    "ts": 1754812000000,
+    "createdAt": 1754812000000,
+    "createdBy": "u-1",
+    "createdByName": "Dana Reyes",
+    "updatedBy": "u-1",
+    "updatedByName": "Dana Reyes",
+    "statementCount": 2
+  }
+]
+```
+
+### GET `/api/workspaces/:id/schemas/:draftId`
+One draft **with its DDL**, whichever kind it is — what the schema editor page
+(`/schemas/:id`) loads. The list above returns two kinds from two tables; this
+resolves both through the one address, so the caller never has to know which
+table the id came from. The shape is the list's row with `sql` in place of
+`statementCount`.
+
+Access is the list's rule enforced per draft rather than by filtering:
+membership to reach the workspace, then connection access for a draft that
+targets one. A member who cannot open that database gets **403** here, exactly
+as they would from that connection's own `/saved` route — which is what lets the
+editor page host a connection-linked draft without the console.
+
+`layout` comes back beside the DDL: the **design** — where every table, group
+region and note sits on the canvas. It is opaque to the server (stored as one
+JSON document, never queried into), and `null` on a draft that has never been
+saved from the editor, which is what tells the editor to arrange the diagram
+itself. See *The schema design document* below for its shape.
+
+Saving is not here: a from-scratch draft writes back through
+`PUT /api/workspaces/:id/schema-drafts/:draftId`, a connection-linked one
+through `PUT /api/connections/:id/saved/:sid` — each row keeps its one owner.
+
+- **200:** `{ "id", "name", "sql", "layout", "ts", "createdAt", "createdBy", "createdByName", "updatedBy", "updatedByName", "connectionId", "connectionName", "connectionType" }` — the audit fields exactly as the list returns them; the editor's header names the last writer with them.
+- **403:** `{ "error": "Forbidden" }` — not a member of the workspace — or `{ "error": "You do not have access to this connection" }` — a member, but the draft targets a connection they cannot open.
+- **404:** `{ "error": "Schema draft not found" }` — no such draft, or it belongs to another workspace.
+- **Example:** `GET http://localhost:3000/api/workspaces/ws-1/schemas/sq-9`
+
+```json
+{
+  "id": "sq-9",
+  "name": "orders ERD",
+  "sql": "CREATE TABLE \"orders\" (\n  \"id\" serial PRIMARY KEY\n);",
+  "layout": {
+    "version": 1,
+    "tables": { "orders": { "x": 120, "y": 80 }, "customers": { "x": 460, "y": 80 } },
+    "notes": [
+      { "id": "n1", "x": 120, "y": 300, "w": 220, "h": 120, "text": "Waiting on billing to confirm the FK.", "color": "#eab308" }
+    ],
+    "groups": [
+      { "id": "fld-3", "name": "Billing", "color": "#3b82f6", "tables": ["orders"], "x": 98, "y": 32, "w": 274, "h": 220 }
+    ]
+  },
+  "ts": 1754812800000,
+  "createdAt": 1754640000000,
+  "createdBy": "u-1",
+  "createdByName": "Dana Reyes",
+  "updatedBy": "u-2",
+  "updatedByName": "Sam Okoro",
+  "connectionId": "demo-sqlite",
+  "connectionName": "Demo SQLite",
+  "connectionType": "sqlite"
+}
+```
+
+#### The schema design document (`layout`)
+
+The same shape wherever a draft is stored, and the same shape the editor's
+**Export → Design (JSON)** file carries under its own `layout` key:
+
+| Field | Meaning |
+| --- | --- |
+| `version` | document version (currently `1`) |
+| `tables` | table name → `{ x, y }`; includes tables currently hidden from the diagram, so hiding one never loses its place |
+| `notes` | canvas sticky notes: `{ id, x, y, w, h, text, color }` |
+| `groups` | group regions: `{ id, name, color, tables[], x, y, w, h }`. On a connection the `id` is the table folder's — the folder row wins and the rectangle is the fallback for a group whose member tables are all hidden (or which arrived with an imported design, in a draft that has no folders of its own) |
+
+The server validates only that it is a JSON object, never its contents: this is
+the editor's document, and a draft written by a newer client must still open on
+an older server rather than 400. Send `null` to forget an arrangement.
+
+### GET `/api/schema-engines`
+The engines a from-scratch schema can be designed for — what fills the **New
+schema → From scratch** database-type picker. Read from the driver registry: an
+engine that reports no column types is schemaless (Redis), so there is no schema
+to draw and it is absent. Authentication only; the answer is the same for
+everyone.
+
+- **200:** `[{ "type": "postgresql", "label": "PostgreSQL", "dataTypes": ["serial", "integer", …] }]`
+- **401:** `{ "error": "Unauthorized" }`
+- **Example:** `GET http://localhost:3000/api/schema-engines`
+
+### POST `/api/workspaces/:id/schema-drafts`
+Start a schema with no database behind it. The workspace holds it and the row
+carries `dbType`, the dialect its DDL is written for — the one thing a
+connection would otherwise have answered.
+
+Membership is the whole gate: designing a schema is not a permission (using a
+database is per-connection access, and this draft has no database at all).
+
+- **Body:** `{ "name": "Billing schema", "dbType": "postgresql", "sql"?: "CREATE TABLE …;", "layout"?: { … } }`
+- **200:** `{ "id", "workspaceId", "name", "dbType", "sql", "layout", "createdBy", "updatedBy", "createdAt", "ts" }` — the caller is stamped as both creator and last writer; these routes return **ids only**, the workspace-wide reads above are what resolve them to names.
+- **400:** `{ "error": "A schema name is required" }` / `{ "error": "Pick a database type a schema can be designed for" }` — the latter for an unknown or schemaless `dbType`.
+- **403:** `{ "error": "Forbidden" }` — not a member of the workspace.
+- **Example:** `POST http://localhost:3000/api/workspaces/ws-1/schema-drafts`
+
+### GET `/api/workspaces/:id/schema-drafts/:draftId`
+One from-scratch draft **with its DDL and its design** — what the standalone
+editor loads. `layout` is the design document described above, or `null`.
+
+- **200:** `{ "id", "workspaceId", "name", "dbType", "sql", "layout", "createdBy", "updatedBy", "createdAt", "ts" }`
+- **404:** `{ "error": "Schema draft not found" }` — also when the draft belongs to another workspace.
+- **Example:** `GET http://localhost:3000/api/workspaces/ws-1/schema-drafts/dr-1`
+
+### PUT `/api/workspaces/:id/schema-drafts/:draftId`
+Update a from-scratch draft. Partial — send `name`, `sql`, `layout`, or any
+combination; saving the editor sends `sql` **and** `layout` (the DDL and the
+arrangement are one save), a rename sends `name` alone. `sql` is the staged
+statements joined by `;`, the same shape a saved schema query has. `layout: null`
+forgets the arrangement.
+
+The write is stamped: `updated_by` becomes the caller and `ts` the moment, both
+only when something actually changed — a call that carries no writable field
+leaves the trail (and the timestamp) exactly where it was, so "last updated" and
+"last updated by" always describe the same save.
+
+- **Body:** `{ "name"?: "Billing schema v2", "sql"?: "CREATE TABLE \"invoices\" (id INTEGER);", "layout"?: { "version": 1, "tables": { … }, "notes": [ … ], "groups": [ … ] } }`
+- **200:** the updated draft
+- **400:** `{ "error": "A schema name is required" }` — `name` sent but blank.
+- **404:** `{ "error": "Schema draft not found" }`
+- **Example:** `PUT http://localhost:3000/api/workspaces/ws-1/schema-drafts/dr-1`
+
+### DELETE `/api/workspaces/:id/schema-drafts/:draftId`
+Delete a from-scratch draft. Nothing points at these rows, so there is no
+cascade; every draft in a workspace also dies with the workspace.
+
+- **200:** `{ "ok": true }`
+- **404:** `{ "error": "Schema draft not found" }`
+- **Example:** `DELETE http://localhost:3000/api/workspaces/ws-1/schema-drafts/dr-1`
+
 ### GET `/api/connections/:id/saved`
 List saved queries for a connection (newest first).
 
-- **200:** `SavedQuery[]` — each includes `folderId` (null = root) and `kind`
+- **200:** `SavedQuery[]` — each includes `folderId` (null = root), `kind`, and `layout` (the schema **design** document; `null` on anything but a saved schema draft)
 - **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/saved`
 
 ### POST `/api/connections/:id/saved`
-Create a saved query.
+Create a saved query — or, with `kind: "schema"`, a schema draft designed
+against this connection.
 
-- **Body:** `{ "name": "Active users", "sql": "SELECT ...", "kind": "query" }` (`kind` optional, defaults `"query"`)
-- **200:** `{ "id", "name", "sql", "kind", "ts" }`
+`sql` is required for a saved **query**, which is nothing without it, and
+optional for a schema **draft**: an empty draft is a real state (a diagram with
+nothing staged yet). A name is always required.
+
+The caller is recorded as the row's creator and its first writer
+(`created_by`/`updated_by`/`created_at`, meta migration v20) — that is what the
+workspace-wide schema list names for a connection-linked draft.
+
+- **Body:** `{ "name": "Active users", "sql": "SELECT ...", "kind": "query", "layout"?: { … } }` (`kind` optional, defaults `"query"`; `layout` only means anything for `kind: "schema"`)
+- **200:** `{ "id", "name", "sql", "kind", "layout", "createdBy", "updatedBy", "createdAt", "ts" }`
 - **400:** `{ "error": "A name and SQL are required" }`
 - **Example:** `POST http://localhost:3000/api/connections/demo-sqlite/saved`
 
 ### PUT `/api/connections/:id/saved/:sid`
-Update fields of a saved query. Any subset of `name`, `sql`, `folderId`.
-`folderId: null` moves the query back to the root.
+Update fields of a saved query. Any subset of `name`, `sql`, `folderId`,
+`layout`. `folderId: null` moves the query back to the root; `layout: null`
+forgets a schema draft's arrangement.
 
 - **Body examples:**
   - Rename: `{ "name": "New name" }`
   - Update SQL: `{ "sql": "SELECT 1" }`
+  - Save a schema draft: `{ "sql": "CREATE TABLE …;", "layout": { "version": 1, "tables": { … }, "notes": [ … ], "groups": [ … ] } }`
   - Move to folder: `{ "folderId": "folder-uuid" }`
   - Move to root: `{ "folderId": null }`
+Same split as the create above, decided by the stored row's `kind` rather than
+anything in the body: `"sql": ""` empties a **schema draft** (that is how the
+editor records removing the last staged statement) and is refused on a saved
+**query**.
+
+Every accepted update stamps `updated_by` with the caller and moves `ts` to now.
+`ts` used to be written once, at insert — which made a draft saved this morning
+report the age of its creation and left the workspace-wide list nothing to
+attribute a save to. Moving it also reorders `GET /api/connections/:id/saved`
+(newest first) by *last touched*, which is what `/schemas/connection/:id` means
+by the draft to resume.
+
 - **200:** `{ "ok": true }`
-- **400:** `{ "error": "Nothing to update" }` (or name/SQL validation messages)
+- **400:** `{ "error": "Nothing to update" }` / `{ "error": "A name is required" }` / `{ "error": "SQL is required" }` — the last only for `kind = "query"`.
 - **404:** `{ "error": "Not found" }`
 - **Example:** `PUT http://localhost:3000/api/connections/demo-sqlite/saved/abc-123`
 

@@ -7,13 +7,13 @@ import ReactFlow, {
   getTransformForBounds,
   Handle,
   MiniMap,
+  NodeResizer,
   Position,
   useNodesState,
 } from 'reactflow'
 import 'reactflow/dist/style.css'
 import dagre from '@dagrejs/dagre'
 import { toJpeg, toPng, toSvg } from 'html-to-image'
-import { getDiagram } from '@/shared/api/database'
 import Button from '@/shared/ui/buttons/Button'
 import IconButton from '@/shared/ui/buttons/IconButton'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
@@ -27,12 +27,36 @@ import { useToast } from '@/shared/ui/feedback/Toast'
 import TableEditPanel from '@/features/schema-designer/components/TableEditPanel'
 import CreateTablePanel from '@/features/schema-designer/components/CreateTablePanel'
 import SchemaSidebar from '@/features/schema-designer/components/SchemaSidebar'
+import ReleaseDialog from '@/features/schema-designer/components/ReleaseDialog'
 import SaveQueryPanel from '@/shared/ui/SaveQueryPanel'
-import { newItemId } from '@/shared/lib/schemaDraft'
+import ConfirmDialog from '@/shared/ui/feedback/ConfirmDialog'
+import { draftToItems, newItemId } from '@/shared/lib/schemaDraft'
+import {
+  buildDesignDoc,
+  designFileName,
+  emptyLayout,
+  LAYOUT_VERSION,
+  newNoteId,
+  NOTE_COLORS,
+  NOTE_DEFAULT_COLOR,
+  NOTE_DEFAULT_H,
+  NOTE_DEFAULT_W,
+  NOTE_MIN_H,
+  NOTE_MIN_W,
+  normalizeLayout,
+  parseDesignDoc,
+  schemaSnapshot,
+  withoutSchemaSnapshot,
+  type SchemaDesignDoc,
+  type SchemaLayout,
+  type SchemaNote,
+  type SchemaSnapshot,
+} from '@/features/schema-designer/lib/design'
+import { resolveRollbacks } from '@/features/schema-designer/lib/rollback'
 import { TableFolderEditPanel } from '@/features/table-folders'
 import { columnTypeSql, FK_ACTIONS, fkEligible, normFkAction, parseColumnDefs, useColumnTypes } from '@/features/schema-designer/components/columnFields'
 import { useShortcut } from '@/features/keymap'
-import { ChevronRight, ColumnsIcon, DownloadIcon, EditIcon, FolderIcon, PlusIcon, SaveIcon, TableIcon, TagIcon, TrashIcon, WandIcon } from '@/shared/ui/icons'
+import { ChevronRight, ColumnsIcon, DownloadIcon, EditIcon, FolderIcon, NoteIcon, PlayIcon, PlusIcon, SaveIcon, TableIcon, TagIcon, TrashIcon, UploadIcon, WandIcon } from '@/shared/ui/icons'
 
 // Fixed metrics so per-column handles line up with their rows.
 const HEADER_H = 34
@@ -234,23 +258,81 @@ function FolderGroupNode({ data }) {
           {data.name}
         </span>
         {/* Edit affordance — revealed on hover, matching the table cards; click
-            opens the folder editor (detected via `.folder-edit` in onNodeClick). */}
-        <button
-          type="button"
-          className={`folder-edit flex h-[18px] w-[18px] shrink-0 cursor-pointer items-center justify-center rounded transition-opacity hover:bg-black/10 ${
-            hover ? 'opacity-100' : 'opacity-0'
-          }`}
-          style={{ color }}
-          title="Edit folder"
-        >
-          <EditIcon width={12} height={12} />
-        </button>
+            opens the folder editor (detected via `.folder-edit` in onNodeClick).
+            Only a *host* folder has an editor: a group carried by the design
+            (an imported one, in an editor with no folders of its own) is drawn
+            and dragged here but lives in the layout, not in a folders table. */}
+        {data.editable && (
+          <button
+            type="button"
+            className={`folder-edit flex h-[18px] w-[18px] shrink-0 cursor-pointer items-center justify-center rounded transition-opacity hover:bg-black/10 ${
+              hover ? 'opacity-100' : 'opacity-0'
+            }`}
+            style={{ color }}
+            title="Edit folder"
+          >
+            <EditIcon width={12} height={12} />
+          </button>
+        )}
       </div>
     </div>
   )
 }
 
-const nodeTypes = { table: TableNode, folderGroup: FolderGroupNode }
+// ---- Custom node: a sticky note ----
+// Free text pinned to the canvas — the "why" a diagram can't show: what a table
+// is for, what still has to be decided, who to ask. It is part of the design
+// (position, size, colour and text are all saved with the draft and travel in
+// the design export), and part of nothing else: a note never becomes DDL.
+//
+// Double-clicking opens the textarea (`nodrag`/`nowheel` so typing and
+// scrolling inside it aren't a canvas gesture); right-clicking recolours or
+// deletes it; selecting it reveals React Flow's resize handles.
+function NoteNode({ data, selected }) {
+  const color = data.color || NOTE_DEFAULT_COLOR
+  return (
+    <div
+      className="relative flex h-full w-full flex-col overflow-hidden rounded-soft border-2 transition-colors"
+      style={{ borderColor: color, backgroundColor: `${color}1f` }}
+    >
+      {/* Resize handles only once the note is selected, so an unselected note
+          is a plain card and the canvas stays quiet. */}
+      <NodeResizer
+        color={color}
+        isVisible={selected}
+        minWidth={NOTE_MIN_W}
+        minHeight={NOTE_MIN_H}
+        lineClassName="!border-transparent"
+      />
+      <div className="flex h-[22px] shrink-0 items-center gap-1.5 px-2" style={{ backgroundColor: `${color}30` }}>
+        <NoteIcon width={11} height={11} style={{ color }} />
+        <span className="flex-1 truncate text-[10px] font-bold uppercase tracking-wide" style={{ color }}>
+          Note
+        </span>
+      </div>
+      <div className="min-h-0 flex-1 px-2 py-1.5">
+        {data.editing ? (
+          <textarea
+            // `nodrag` keeps a text selection from panning the note, `nowheel`
+            // keeps scrolling the text from zooming the canvas.
+            className="nodrag nowheel h-full w-full resize-none border-0 bg-transparent p-0 text-[11px] leading-relaxed text-ink outline-none"
+            value={data.text}
+            autoFocus
+            placeholder="Write a note…"
+            onChange={(e) => data.onChangeText(e.target.value)}
+            onBlur={data.onEditDone}
+          />
+        ) : (
+          <p className={`h-full overflow-hidden whitespace-pre-wrap break-words text-[11px] leading-relaxed ${data.text ? 'text-ink' : 'text-ink-faint'}`}>
+            {data.text || 'Double-click to write…'}
+          </p>
+        )}
+      </div>
+    </div>
+  )
+}
+
+const nodeTypes = { table: TableNode, folderGroup: FolderGroupNode, note: NoteNode }
 
 // ---- Parse staged change SQL into pending tables / columns ----
 // A staged CREATE TABLE — the source of truth for a not-yet-committed table,
@@ -263,6 +345,16 @@ const CREATE_TABLE_RE = /^\s*CREATE TABLE\s+"([^"]+)"\s*\(([\s\S]*)\)\s*;?\s*$/i
 // name -> item id
 // map of constraints being dropped (only the local `pending` id is trackable
 // for undo — items already pushed to the Changes panel are display-only).
+// Stable empty defaults — see the note on SchemaEditor's signature.
+const NO_FOLDERS = []
+const NO_PENDING = []
+// What the canvas draws when the draft carries no schema of its own. A stable
+// identity, for the same reason NO_PENDING is one: it is a dependency of the
+// memos that build the nodes.
+const NO_SCHEMA = { tables: [], foreignKeys: [] }
+const drawnFrom = (snapshot: SchemaSnapshot | null) =>
+  snapshot ? { tables: snapshot.tables, foreignKeys: snapshot.foreignKeys } : NO_SCHEMA
+
 function parsePendingForeignKeys(items) {
   const added = []
   const dropped = new Map() // constraint name -> pending item id (or null once in Changes)
@@ -331,6 +423,12 @@ function parsePending(changes) {
 function ExportItems({ onExport }) {
   return (
     <>
+      {/* The design file first: it is the only export that can be imported
+          back — the three below are pictures. */}
+      <MenuItem onClick={() => onExport('design')}>
+        <DownloadIcon width={14} height={14} /> Design (JSON)
+      </MenuItem>
+      <div className="my-1 h-px bg-edge" />
       <MenuItem onClick={() => onExport('png')}>
         <DownloadIcon width={14} height={14} /> PNG image
       </MenuItem>
@@ -545,13 +643,53 @@ function pathWithJumps(points, verticals) {
   return d
 }
 
-export default function SchemaEditor({ conn, changes, folders = [], onUpdateFolder, onDeleteFolder, onSetFolder, pending = [], onPendingChange, onStageItems, onSaveDraft, onUpdateDraft, draftId, onOpenTable, onOpenSchema }) {
+// Every callback here is optional (each is invoked with `?.`, and `changes` is
+// read as `changes || []`), so a host wires up only what it can answer for. The
+// draft page is now the only host: it passes the connection's table folders,
+// and Release rather than Submit. `changes` / `onStageItems` / `onOpenTable` /
+// `onOpenSchema` are the console's half of the contract — a diagram hosted
+// beside a Changes queue and a data grid — and stay optional for a host that
+// has one again. Annotated `any` so the signature says all of that.
+//
+// The array defaults are module constants, never `= []` inline: `folders` and
+// `pending` are dependencies of `layoutNodes`, which the node-building effect
+// depends on in turn. A fresh `[]` each render makes that effect fire on every
+// render and `setNodes` with new objects each time — a loop React Flow can
+// never settle, because it loses every node's measured size on each pass. It
+// only bites a host that omits the prop.
+export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUpdateFolder, onDeleteFolder, onSetFolder, pending = NO_PENDING, onPendingChange, onStageItems, onSaveDraft, onUpdateDraft, draftId, layout, onOpenTable, onOpenSchema, releaseTarget = null, releaseHint = '', onRelease, releasing = false, layoutRef }: any) {
   const dialect = conn.type === 'postgresql' ? 'postgresql' : 'sqlite'
+  // Submit hands the staged DDL to a Changes queue, so it exists exactly when
+  // the host has one — `onStageItems`. The console does; the standalone editor
+  // page does not, whether or not there is a database behind the draft (a
+  // from-scratch one has nothing to execute against, and a connection-linked
+  // one commits in that connection's console). Save and Export are the whole
+  // story without a queue.
+  //
+  // Release is the other end of that: it runs the staged DDL *now*, against
+  // `releaseTarget` — so it exists exactly where a host can execute without a
+  // queue in front of it (the standalone page), and a host with a queue shows
+  // Submit instead. One target, never a choice: a design releases to the
+  // database it was designed against. A design with none yet (from scratch)
+  // passes a null target and `releaseHint` saying what to do about it — the
+  // button stays visible and disabled, because "you can't do this yet, here is
+  // why" is the answer, and a missing button isn't. Nothing runs before
+  // ReleaseDialog is confirmed.
   const types = useColumnTypes(conn)
   const toast = useToast()
 
-  const [diagram, setDiagram] = useState({ tables: [], foreignKeys: [] })
-  const [loading, setLoading] = useState(true)
+  // The saved design — read here rather than beside the notes below because it
+  // is what seeds the schema the canvas draws (see `diagram`).
+  const savedLayout = useMemo(() => (layout ? normalizeLayout(layout) : emptyLayout()), [layout])
+  // The schema drawn under the staged DDL: the draft's own snapshot of its
+  // database, never a live read. The canvas asks no database anything — the
+  // host syncs (page header) and the snapshot arrives here in `layout`.
+  const [diagram, setDiagram] = useState(() => drawnFrom(savedLayout.schema))
+  // When that snapshot was read, which doubles as its identity: a saved layout
+  // arriving with a different `syncedAt` is a newer read (a Sync, or the fresh
+  // schema a Release wrote back) and replaces what is on the canvas.
+  const [syncedAt, setSyncedAt] = useState<number>(() => savedLayout.schema?.syncedAt || 0)
+  const syncedAtRef = useRef(syncedAt)
   const [selected, setSelected] = useState(null) // table name being edited
   const [selectedEdge, setSelectedEdge] = useState(null) // clicked FK edge id
   const [hoveredEdge, setHoveredEdge] = useState(null) // FK edge under the cursor
@@ -559,13 +697,38 @@ export default function SchemaEditor({ conn, changes, folders = [], onUpdateFold
   const [fkEdit, setFkEdit] = useState(null) // { onDelete, onUpdate } — editing a committed FK's actions
   const [fkConfirm, setFkConfirm] = useState(null) // { x, y, fkTable, fkCol, pkTable, pkCol, name, onDelete, onUpdate } — new drag-to-connect FK, pending confirmation
   const [hiddenTables, setHiddenTables] = useState(() => new Set()) // tables hidden from the diagram
-  const [menu, setMenu] = useState(null) // canvas context menu { x, y }
+  const [menu, setMenu] = useState(null) // canvas context menu { x, y (screen), flow (canvas coords) }
   const [nodeMenu, setNodeMenu] = useState(null) // table right-click menu { x, y, table, pending }
   const [editingFolder, setEditingFolder] = useState(null) // folder being edited from the canvas | null
   const [creating, setCreating] = useState(false) // create-table panel open
   const [editingDraft, setEditingDraft] = useState(null) // staged new table being re-edited { table, columns }
   const [naming, setNaming] = useState(false) // "save as draft" name prompt open
   const canEditFk = dialect === 'postgresql' // drag-to-connect FK editing (SQLite can't alter FKs)
+
+  // ---- The design: what the diagram looks like, beside what it *is* ----
+  // The DDL says which tables exist; this says where they sit, what is written
+  // on the canvas beside them and which regions are drawn around them. It is
+  // seeded from the draft's saved layout (`savedLayout`, read above), updated as
+  // things are dragged, and handed back to the host on Save (`currentLayout`).
+  const [notes, setNotes] = useState<SchemaNote[]>(() => savedLayout.notes)
+  // Groups the *design* carries, as opposed to the host's table folders. An
+  // editor with a connection behind it has real folders and these stay empty;
+  // a from-scratch draft (or an imported design) has only these.
+  const [designGroups, setDesignGroups] = useState(() => savedLayout.groups)
+  const [editingNote, setEditingNote] = useState(null) // note id whose textarea is open
+  const [selectedNote, setSelectedNote] = useState(null) // note id showing its resize handles
+  const [noteMenu, setNoteMenu] = useState(null) // note right-click menu { x, y, id }
+  const [importDoc, setImportDoc] = useState<SchemaDesignDoc | null>(null) // parsed design file awaiting confirmation
+  // The staged items with their down SQL resolved, once Release has been pressed
+  // and before anything runs — null while the dialog is closed. Resolving is a
+  // read of the live schema, so it can't be done in render.
+  const [releasePlan, setReleasePlan] = useState<any[] | null>(null)
+  const [preparingRelease, setPreparingRelease] = useState(false)
+  const importRef = useRef<HTMLInputElement>(null)
+  // Where each table was last seen, including ones currently hidden — the
+  // arrangement outlives both a rebuild of the node list and a table being
+  // toggled off, so neither loses a position the user placed by hand.
+  const placedTables = useRef<Record<string, { x: number; y: number }>>({ ...savedLayout.tables })
 
   // Pending changes are owned by the workspace (per tab) so they survive tab
   // switches; the panels hand their statements up via onPendingChange. Each
@@ -583,6 +746,22 @@ export default function SchemaEditor({ conn, changes, folders = [], onUpdateFold
     ])
   const clearPending = () => onPendingChange?.([])
   const removePendingItem = (itemId) => onPendingChange?.(pending.filter((p) => p.id !== itemId))
+
+  // Release asks before it runs, and the question includes how each statement
+  // would be undone — so the down SQL is resolved here, between the button and
+  // the dialog. It has to happen before anything executes: the inverse of a drop
+  // (or of a type/default change) is read from the definition that statement is
+  // about to overwrite. The resolved items are also what gets released, so the
+  // migration records exactly the down SQL the dialog showed.
+  const openRelease = async () => {
+    if (!pending.length || !releaseTarget) return
+    setPreparingRelease(true)
+    try {
+      setReleasePlan(await resolveRollbacks(conn, pending))
+    } finally {
+      setPreparingRelease(false)
+    }
+  }
 
   // Delete a table: a pending (uncommitted) table just drops its staged
   // statements; an existing table stages a DROP TABLE for the next commit.
@@ -659,17 +838,27 @@ export default function SchemaEditor({ conn, changes, folders = [], onUpdateFold
     setFkEdit(null)
   }
 
+  /**
+   * Where the drawn schema comes from — the draft, and only the draft.
+   *
+   * The canvas draws the snapshot saved with the design and never reads a
+   * database itself. Opening a diagram is not a reason to re-read a schema: it
+   * used to be, and that made the picture change under people who had only come
+   * to look at it (and left it blank whenever the database was unreachable).
+   * Re-reading is "Sync schema" in the page header — an action someone takes.
+   *
+   * `savedLayout` changes on every save, so the snapshot is followed by
+   * `syncedAt` rather than reapplied each time: a save must not rebuild every
+   * node, and a newer snapshot (a Sync, or the schema a Release wrote back)
+   * must land.
+   */
   useEffect(() => {
-    let alive = true
-    getDiagram(conn).then((d) => {
-      if (!alive) return
-      setDiagram(d)
-      setLoading(false)
-    })
-    return () => {
-      alive = false
-    }
-  }, [conn])
+    const stored = savedLayout.schema
+    if (!stored || stored.syncedAt === syncedAtRef.current) return
+    syncedAtRef.current = stored.syncedAt
+    setSyncedAt(stored.syncedAt)
+    setDiagram(drawnFrom(stored))
+  }, [savedLayout])
 
   // Committed foreign keys plus any staged FK add/drop (from drag-to-connect
   // diagram edits or TableEditPanel), so the diagram reflects uncommitted FK
@@ -757,6 +946,10 @@ export default function SchemaEditor({ conn, changes, folders = [], onUpdateFold
   // hit-testing (columnAt). onNodesChange updates positions during node drags
   // too, so keep it in sync on every nodes change.
   liveNodes.current = nodes
+  // …and remember them, so a table keeps its place across a node-list rebuild
+  // (staging a change) and across being hidden and shown again. This is also
+  // what Save writes out for a table that is currently hidden.
+  for (const n of nodes) placedTables.current[n.id] = n.position
   const rf = useRef(null)
   const canvasWrapRef = useRef(null) // canvas container — for positioning the FK edit popup from the sidebar
   // Set by onConnect right before onConnectEnd fires for the same gesture —
@@ -886,15 +1079,22 @@ export default function SchemaEditor({ conn, changes, folders = [], onUpdateFold
 
   // (Re)build nodes whenever the diagram or staged changes update, but keep the
   // position of every table already on the canvas — once a table is placed
-  // (by the initial layout or by the user dragging it) nothing reshuffles it.
-  // Only tables new to the canvas take the position dagre computed for them.
-  // Re-arranging the whole diagram is an explicit action: right-click the
-  // canvas → Auto arrange (or the schema.autoLayout shortcut).
+  // (by the initial layout, by the saved design, or by the user dragging it)
+  // nothing reshuffles it. Re-arranging the whole diagram is an explicit
+  // action: right-click the canvas → Auto arrange (or the schema.autoLayout
+  // shortcut), which is also the one thing that discards saved positions.
+  //
+  // Three sources, in order: the position a node already has on the canvas, the
+  // one remembered for it (hidden, restored from the draft's saved design, or
+  // imported), and — only for a table genuinely new here — dagre's.
   useEffect(() => {
     setNodes((prev) => {
       const placed = {}
       for (const n of prev) placed[n.id] = n.position
-      return layoutNodes().map((n) => (placed[n.id] ? { ...n, position: placed[n.id] } : n))
+      return layoutNodes().map((n) => {
+        const at = placed[n.id] || placedTables.current[n.id]
+        return at ? { ...n, position: at } : n
+      })
     })
   }, [layoutNodes, setNodes])
 
@@ -1039,20 +1239,64 @@ export default function SchemaEditor({ conn, changes, folders = [], onUpdateFold
   // Inject each table's connection endpoints into node data (without re-running
   // dagre), so a connected column can paint a solid dot on the exact edge its
   // line lands on. Kept off `layoutNodes` so it never reshuffles the diagram.
+  // Every region the canvas draws, from both sources: the host's table folders
+  // (real rows — those keep their editor) and the groups the design itself
+  // carries (an imported one, or a draft with no connection and so no folders
+  // at all). Same shape either way, so the region code below has one list.
+  const allGroups = useMemo(() => {
+    const host = folders.map((f) => ({
+      id: f.id,
+      name: f.name,
+      color: f.color,
+      tables: f.tables || [],
+      editable: true,
+      rect: null,
+    }))
+    const hostIds = new Set(host.map((g) => g.id))
+    // A design group whose folder exists here is that folder — the row wins, so
+    // re-importing a design into its own connection doesn't double the region.
+    const carried = designGroups
+      .filter((g) => !hostIds.has(g.id))
+      .map((g) => ({ id: g.id, name: g.name, color: g.color, tables: g.tables, editable: false, rect: { x: g.x, y: g.y, w: g.w, h: g.h } }))
+    return [...host, ...carried]
+  }, [folders, designGroups])
+
   // Folder regions: one translucent region per folder, sized to the bounding
   // box of its visible member tables (using live node positions, so the region
   // tracks member drags). Painted behind the tables and the FK lines (see the
   // zIndex note below). Grabbing anywhere on the region drags the whole group
   // (see handleNodesChange); its header's edit button opens the folder editor.
   const folderGroups = useMemo(() => {
-    if (!folders.length || !nodes.length) return []
+    if (!allGroups.length) return []
     const byTable = {}
     for (const n of nodes) byTable[n.id] = n
     const heightOf = (n) => HEADER_H + PAD_T * 2 + (n.data.columns?.length || 0) * ROW_H
-    return folders
+    return allGroups
       .map((d) => {
         const members = (d.tables || []).map((t) => byTable[t]).filter(Boolean)
-        if (!members.length) return null
+        // With no member on the canvas there is no bounding box to derive — a
+        // group the design carries falls back to the rectangle it was saved
+        // with, so an imported diagram keeps its regions even where the tables
+        // inside them are hidden. A host folder with nothing visible in it
+        // draws nothing, exactly as before.
+        if (!members.length) {
+          if (!d.rect || d.rect.w <= 0 || d.rect.h <= 0) return null
+          return {
+            id: `folder:${d.id}`,
+            type: 'folderGroup',
+            position: { x: d.rect.x, y: d.rect.y },
+            width: d.rect.w,
+            height: d.rect.h,
+            style: { width: d.rect.w, height: d.rect.h },
+            data: { name: d.name, color: d.color, editable: d.editable },
+            draggable: true,
+            selectable: false,
+            connectable: false,
+            deletable: false,
+            focusable: false,
+            zIndex: -1,
+          }
+        }
         let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
         for (const n of members) {
           const w = n.style?.width || NODE_W
@@ -1074,7 +1318,7 @@ export default function SchemaEditor({ conn, changes, folders = [], onUpdateFold
           width: w,
           height: h,
           style: { width: w, height: h },
-          data: { name: d.name, color: d.color },
+          data: { name: d.name, color: d.color, editable: d.editable },
           draggable: true,
           selectable: false,
           connectable: false,
@@ -1090,14 +1334,75 @@ export default function SchemaEditor({ conn, changes, folders = [], onUpdateFold
         }
       })
       .filter(Boolean)
-  }, [folders, nodes])
+  }, [allGroups, nodes])
+
+  // ---- Notes ----
+  // Notes are not tables, so they never go through `nodes` (which is rebuilt
+  // from the schema): they live in their own state and are merged in for
+  // rendering, the same way folder regions are. Their drags and resizes come
+  // back through handleNodesChange below.
+  const updateNote = useCallback(
+    (id, fields) => setNotes((list) => list.map((n) => (n.id === id ? { ...n, ...fields } : n))),
+    []
+  )
+  const addNote = (at) => {
+    const note: SchemaNote = {
+      id: newNoteId(),
+      x: at.x,
+      y: at.y,
+      w: NOTE_DEFAULT_W,
+      h: NOTE_DEFAULT_H,
+      text: '',
+      color: NOTE_DEFAULT_COLOR,
+    }
+    setNotes((list) => [...list, note])
+    // A new note is empty, so open it for typing straight away.
+    setEditingNote(note.id)
+    setSelectedNote(note.id)
+  }
+  const deleteNote = (id) => {
+    setNotes((list) => list.filter((n) => n.id !== id))
+    setEditingNote((cur) => (cur === id ? null : cur))
+    setSelectedNote((cur) => (cur === id ? null : cur))
+  }
+
+  const noteNodes = useMemo(
+    () =>
+      notes.map((n) => ({
+        id: `note:${n.id}`,
+        type: 'note',
+        position: { x: n.x, y: n.y },
+        // Explicit dimensions for the same reason the folder regions state
+        // theirs: React Flow must never have to measure a node it is resizing.
+        width: n.w,
+        height: n.h,
+        style: { width: n.w, height: n.h },
+        selected: selectedNote === n.id,
+        data: {
+          text: n.text,
+          color: n.color,
+          editing: editingNote === n.id,
+          onChangeText: (text) => updateNote(n.id, { text }),
+          onEditDone: () => setEditingNote((cur) => (cur === n.id ? null : cur)),
+        },
+        draggable: true,
+        selectable: true,
+        connectable: false,
+        deletable: false,
+        // Above the folder regions (−1), below the tables (1): a note annotates
+        // the diagram, it never hides a table behind it.
+        zIndex: 0,
+      })),
+    [notes, editingNote, selectedNote, updateNote]
+  )
 
   const displayNodes = useMemo(
     () => [
       ...folderGroups,
+      ...noteNodes,
       ...nodes.map((n) => (n.data.fkSides === fkEndpoints[n.id] ? n : { ...n, data: { ...n.data, fkSides: fkEndpoints[n.id] } })),
     ],
-    [folderGroups, nodes, fkEndpoints]
+    [folderGroups, noteNodes, nodes, fkEndpoints]
   )
 
   // Folder regions aren't stored in node state (they're derived from members),
@@ -1109,6 +1414,19 @@ export default function SchemaEditor({ conn, changes, folders = [], onUpdateFold
       const passthrough = []
       const extra = []
       for (const ch of changes) {
+        // Notes own their geometry, so a drag or a resize is written straight
+        // into the note rather than into table state.
+        if (ch.id?.startsWith?.('note:')) {
+          const noteId = ch.id.slice(5)
+          if (ch.type === 'position' && ch.position) updateNote(noteId, { x: ch.position.x, y: ch.position.y })
+          else if (ch.type === 'dimensions' && ch.dimensions)
+            updateNote(noteId, {
+              w: Math.max(NOTE_MIN_W, Math.round(ch.dimensions.width)),
+              h: Math.max(NOTE_MIN_H, Math.round(ch.dimensions.height)),
+            })
+          else if (ch.type === 'select') setSelectedNote((cur) => (ch.selected ? noteId : cur === noteId ? null : cur))
+          continue
+        }
         if (ch.id?.startsWith?.('folder:')) {
           if (ch.type === 'position' && ch.position) {
             const grp = folderGroups.find((g) => g.id === ch.id)
@@ -1116,10 +1434,16 @@ export default function SchemaEditor({ conn, changes, folders = [], onUpdateFold
               const dx = ch.position.x - grp.position.x
               const dy = ch.position.y - grp.position.y
               if (dx || dy) {
-                const dom = folders.find((d) => `folder:${d.id}` === ch.id)
-                for (const tn of dom?.tables || []) {
-                  const node = liveNodes.current.find((n) => n.id === tn)
-                  if (node) extra.push({ id: tn, type: 'position', position: { x: node.position.x + dx, y: node.position.y + dy }, dragging: ch.dragging })
+                const dom = allGroups.find((d) => `folder:${d.id}` === ch.id)
+                const members = (dom?.tables || []).map((tn) => liveNodes.current.find((n) => n.id === tn)).filter(Boolean)
+                if (members.length) {
+                  for (const node of members)
+                    extra.push({ id: node.id, type: 'position', position: { x: node.position.x + dx, y: node.position.y + dy }, dragging: ch.dragging })
+                } else if (dom && !dom.editable) {
+                  // A design group with nothing visible inside it is its own
+                  // rectangle — there are no members to push around, so the
+                  // drag moves the stored rect itself.
+                  setDesignGroups((list) => list.map((g) => (g.id === dom.id ? { ...g, x: ch.position.x, y: ch.position.y } : g)))
                 }
               }
             }
@@ -1130,7 +1454,7 @@ export default function SchemaEditor({ conn, changes, folders = [], onUpdateFold
       }
       onNodesChange([...passthrough, ...extra])
     },
-    [onNodesChange, folderGroups, folders]
+    [onNodesChange, folderGroups, allGroups, updateNote]
   )
 
   // ---- Sidebar focus / edit actions ----
@@ -1264,7 +1588,104 @@ export default function SchemaEditor({ conn, changes, folders = [], onUpdateFold
     setFkConfirm(null)
   }
 
+  // ---- The design, as it stands right now ----
+  // What Save persists and what the design file carries: every table position
+  // (including the ones currently hidden — see placedTables), the notes, and
+  // each region's rectangle. Group rects are read off the rendered regions, so
+  // a folder region that follows its tables is written out where it actually is.
+  const currentLayout = useCallback((): SchemaLayout => {
+    const rects = {}
+    for (const g of folderGroups) rects[g.id.slice(7)] = { x: g.position.x, y: g.position.y, w: g.width, h: g.height }
+    const tables = {}
+    for (const [name, pos] of Object.entries(placedTables.current)) tables[name] = { x: Math.round(pos.x), y: Math.round(pos.y) }
+    return {
+      version: LAYOUT_VERSION,
+      tables,
+      // The draft keeps the schema it draws, so the next open draws the same
+      // diagram without asking the database. Only where there *is* a database:
+      // a from-scratch draft has nothing to snapshot and stays null.
+      schema: conn?.id ? schemaSnapshot(diagram, syncedAt || Date.now()) : null,
+      notes,
+      groups: allGroups.map((g) => {
+        const r = rects[g.id] || g.rect || { x: 0, y: 0, w: 0, h: 0 }
+        return {
+          id: g.id,
+          name: g.name,
+          color: g.color ?? null,
+          tables: g.tables || [],
+          x: Math.round(r.x),
+          y: Math.round(r.y),
+          w: Math.round(r.w),
+          h: Math.round(r.h),
+        }
+      }),
+    }
+  }, [folderGroups, allGroups, notes, conn?.id, diagram, syncedAt])
+
+  // A host that acts on the draft from *outside* the canvas — the page's "Link
+  // to connection", which moves the design to another row — still has to write
+  // the arrangement as it stands, not as it was last saved. Every other caller
+  // gets it handed to them (Save, Save as, Release); this one has to ask.
+  useEffect(() => {
+    if (layoutRef) layoutRef.current = currentLayout
+  }, [layoutRef, currentLayout])
+
+  // ---- Design export / import ----
+  // The image formats next door are a *picture* of the diagram; this is the
+  // diagram: the staged DDL the draft holds plus the whole arrangement around
+  // it. Importing one rebuilds both, which is what makes a design portable
+  // between drafts (and between instances).
+  const exportDesign = () => {
+    const doc = buildDesignDoc({
+      name: conn.name || 'schema',
+      dialect: conn.type || dialect,
+      statements: pending.map((p) => p.sql),
+      // No snapshot in the file: a design is the diagram someone drew, not a
+      // copy of another database's tables — see withoutSchemaSnapshot.
+      layout: withoutSchemaSnapshot(currentLayout()),
+    })
+    const url = URL.createObjectURL(new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' }))
+    const a = document.createElement('a')
+    a.href = url
+    a.download = designFileName(conn.name || 'schema')
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const readImportFile = async (file) => {
+    try {
+      setImportDoc(parseDesignDoc(await file.text()))
+    } catch (e: any) {
+      toast.error(`Import failed: ${e.message}`)
+    }
+  }
+
+  // Applying an import replaces the working state wholesale — the staged DDL,
+  // the notes, the groups and every position — which is why it asks first.
+  const applyImport = () => {
+    if (!importDoc) return
+    const imported = importDoc.layout
+    placedTables.current = { ...imported.tables }
+    setNotes(imported.notes)
+    setDesignGroups(imported.groups)
+    // An imported table that happened to be hidden here would arrive invisible.
+    setHiddenTables(new Set())
+    onPendingChange?.(draftToItems(importDoc.statements.join('\n')))
+    // Tables already on the canvas move now; ones the imported DDL creates are
+    // placed by the rebuild effect, which reads the same placedTables.
+    setNodes((prev) => prev.map((n) => (imported.tables[n.id] ? { ...n, position: imported.tables[n.id] } : n)))
+    setImportDoc(null)
+    toast.success('Design imported.')
+    setTimeout(() => rf.current?.fitView({ duration: 300, padding: 0.2 }), 80)
+  }
+
+  // The export menu's one handler: the design file, or one of the pictures.
+  const runExport = (fmt) => (fmt === 'design' ? exportDesign() : exportImage(fmt))
+
   const autoLayout = () => {
+    // Auto arrange is the one action that throws the saved arrangement away —
+    // otherwise the next rebuild would put every table back where it was.
+    placedTables.current = {}
     setNodes(layoutNodes())
     setTimeout(() => rf.current?.fitView({ duration: 300, padding: 0.2 }), 0)
   }
@@ -1275,9 +1696,11 @@ export default function SchemaEditor({ conn, changes, folders = [], onUpdateFold
   // Export the whole diagram (all nodes) as a PNG/JPG image.
   const exportImage = async (fmt) => {
     const viewport = document.querySelector('.react-flow__viewport') as HTMLElement
-    if (!viewport || !nodes.length) return
+    if (!viewport || !displayNodes.length) return
     const pad = 48
-    const bounds = getRectOfNodes(nodes)
+    // Every node, not just the tables: a note or a group region sitting outside
+    // the tables' bounding box is part of the picture and used to be cropped.
+    const bounds = getRectOfNodes(displayNodes as any)
     const w = Math.ceil(bounds.width) + pad * 2
     const h = Math.ceil(bounds.height) + pad * 2
     const [x, y, zoom] = getTransformForBounds(bounds, w, h, 1, 1)
@@ -1349,26 +1772,53 @@ export default function SchemaEditor({ conn, changes, folders = [], onUpdateFold
       {/* Toolbar / action list — Save sits on the left; Export on the right.
           Save is always shown but disabled until there are pending changes. */}
       <div className="flex items-center gap-2 border-b border-edge px-3 py-2">
-        {/* Submit — move the pending changes into the Changes queue, ready to
-            execute. Save — persist as a draft: update the linked draft when this
-            tab was opened from one, otherwise create the first draft. Save as
-            draft — only meaningful once linked, forks a *copy* into a new draft
-            (Save / Save As), so it's hidden on a fresh editor. */}
-        <Button
-          variant="primary"
-          size="sm"
-          icon={SaveIcon}
-          onClick={() => { onStageItems?.(pending); clearPending() }}
-          disabled={pending.length === 0}
-        >
-          Submit
-        </Button>
+        {/* Submit — move the pending changes into a host's Changes queue, ready
+            to execute; shown only for a host that has one. Save — persist as a
+            draft: update the linked draft when this editor was opened from one,
+            otherwise create the first draft. Save as draft — only meaningful
+            once linked, forks a *copy* into a new draft (Save / Save As), so
+            it's hidden on a fresh editor. */}
+        {onStageItems && (
+          <Button
+            variant="primary"
+            size="sm"
+            icon={SaveIcon}
+            onClick={() => { onStageItems(pending); clearPending() }}
+            disabled={pending.length === 0}
+          >
+            Submit
+          </Button>
+        )}
 
+        {/* Release — run the staged DDL against the database now. Primary where
+            there is no Submit beside it (the standalone page): there, it is the
+            only way a design reaches a database. Disabled with nothing staged,
+            and with no database to release to — where `releaseHint` is the whole
+            explanation the button can give. */}
+        {onRelease && (
+          <Button
+            variant={onStageItems ? 'ghost' : 'primary'}
+            size="sm"
+            icon={PlayIcon}
+            onClick={openRelease}
+            disabled={pending.length === 0 || releasing || preparingRelease || !releaseTarget}
+            title={releaseTarget ? `Run the staged changes against ${releaseTarget.name}` : releaseHint}
+          >
+            {releasing ? 'Releasing…' : preparingRelease ? 'Preparing…' : 'Release'}
+          </Button>
+        )}
+
+        {/* Enabled with nothing staged *once there is a draft to write to*:
+            emptying the changes is itself an edit — you removed the last staged
+            statement and want the draft to record that — and with Save disabled
+            at zero there was no way to persist it, so the draft kept the
+            statement you had just deleted. Only creating the first draft still
+            needs something in it; an unnamed, empty new draft is nothing. */}
         <Button
           variant="ghost"
           size="sm"
-          onClick={() => (draftId ? onUpdateDraft?.(draftId, pending) : setNaming(true))}
-          disabled={pending.length === 0}
+          onClick={() => (draftId ? onUpdateDraft?.(draftId, pending, currentLayout()) : setNaming(true))}
+          disabled={pending.length === 0 && !draftId}
         >
           Save
         </Button>
@@ -1378,7 +1828,6 @@ export default function SchemaEditor({ conn, changes, folders = [], onUpdateFold
             variant="ghost"
             size="sm"
             onClick={() => setNaming(true)}
-            disabled={pending.length === 0}
           >
             Save as
           </Button>
@@ -1410,9 +1859,25 @@ export default function SchemaEditor({ conn, changes, folders = [], onUpdateFold
             </TextButton>
           </div>
 
+          <Button variant="subtle" size="sm" icon={UploadIcon} onClick={() => importRef.current?.click()}>
+            Import
+          </Button>
+          {/* Reset on open so re-picking the same file still fires `change`. */}
+          <input
+            ref={importRef}
+            type="file"
+            accept="application/json,.json"
+            className="hidden"
+            onClick={(e) => ((e.target as HTMLInputElement).value = '')}
+            onChange={(e) => {
+              const f = e.target.files?.[0]
+              if (f) readImportFile(f)
+            }}
+          />
+
           <Popover
             align="right"
-            width={150}
+            width={170}
             trigger={({ open, toggle }) => (
               <Button
                 variant="subtle"
@@ -1421,13 +1886,12 @@ export default function SchemaEditor({ conn, changes, folders = [], onUpdateFold
                 chevron
                 active={open}
                 onClick={toggle}
-                disabled={loading || !augmented.length}
               >
                 Export
               </Button>
             )}
           >
-            {({ close }) => <ExportOptions onExport={(f) => { exportImage(f); close() }} />}
+            {({ close }) => <ExportOptions onExport={(f) => { runExport(f); close() }} />}
           </Popover>
         </div>
       </div>
@@ -1450,110 +1914,130 @@ export default function SchemaEditor({ conn, changes, folders = [], onUpdateFold
           className="relative min-w-0 flex-1"
           onContextMenu={(e) => {
             e.preventDefault()
-            setMenu({ x: e.clientX, y: e.clientY })
+            // Two coordinate systems: the menu is positioned in screen space,
+            // but "Add note" places a node in flow space — so capture both at
+            // the click, while the cursor is still where the user pointed.
+            const rect = canvasWrapRef.current?.getBoundingClientRect()
+            const flow = rf.current?.project?.({ x: e.clientX - (rect?.left || 0), y: e.clientY - (rect?.top || 0) }) || { x: 0, y: 0 }
+            setMenu({ x: e.clientX, y: e.clientY, flow })
           }}
         >
-          {loading ? (
-            <div className="flex h-full items-center justify-center text-xs text-ink-faint">Loading schema…</div>
-          ) : augmented.length === 0 ? (
-            <div className="flex h-full items-center justify-center text-xs text-ink-faint">
-              No tables yet — right-click to create one.
-            </div>
-          ) : (
-            <>
-              <ReactFlow
-                nodes={displayNodes}
-                edges={edgesWithPreview as any}
-                nodeTypes={nodeTypes}
-                edgeTypes={edgeTypes as any}
-                connectionLineComponent={FkConnectionLine as any}
-                connectionMode={ConnectionMode.Loose}
-                onNodesChange={handleNodesChange}
-                onInit={(inst) => (rf.current = inst)}
-                // Dragging shouldn't select a node (which would leave the active
-                // green outline stuck on it) — only an explicit click selects.
-                selectNodesOnDrag={false}
-                isValidConnection={isValidConnection}
-                onConnect={onConnect}
-                onConnectEnd={onConnectEnd}
-                onNodeClick={(e, node) => {
-                  const target = e.target as HTMLElement
-                  // Folders and tables are edited only via their hover edit icon
-                  // (`.folder-edit` / `.table-edit`); a plain click just leaves the
-                  // node draggable and never opens the editor.
-                  if (node.id.startsWith('folder:')) {
-                    if (target?.closest?.('.folder-edit')) {
-                      const d = folders.find((dm) => `folder:${dm.id}` === node.id)
-                      if (d) setEditingFolder(d)
-                    }
-                    return
+            <ReactFlow
+              nodes={displayNodes}
+              edges={edgesWithPreview as any}
+              nodeTypes={nodeTypes}
+              edgeTypes={edgeTypes as any}
+              connectionLineComponent={FkConnectionLine as any}
+              connectionMode={ConnectionMode.Loose}
+              onNodesChange={handleNodesChange}
+              onInit={(inst) => (rf.current = inst)}
+              // Dragging shouldn't select a node (which would leave the active
+              // green outline stuck on it) — only an explicit click selects.
+              selectNodesOnDrag={false}
+              isValidConnection={isValidConnection}
+              onConnect={onConnect}
+              onConnectEnd={onConnectEnd}
+              onNodeClick={(e, node) => {
+                const target = e.target as HTMLElement
+                // Folders and tables are edited only via their hover edit icon
+                // (`.folder-edit` / `.table-edit`); a plain click just leaves the
+                // node draggable and never opens the editor.
+                if (node.id.startsWith('folder:')) {
+                  if (target?.closest?.('.folder-edit')) {
+                    const d = folders.find((dm) => `folder:${dm.id}` === node.id)
+                    if (d) setEditingFolder(d)
                   }
-                  if (target?.closest?.('.table-edit')) openTableEditor(node.id, !!node.data?.pending)
-                }}
-                onNodeContextMenu={(e, node) => {
-                  e.preventDefault()
-                  // Stop the event bubbling to the canvas' onContextMenu, which
-                  // would otherwise also open the empty-space menu on top.
-                  e.stopPropagation()
-                  if (node.id.startsWith('folder:')) return
+                  return
+                }
+                if (target?.closest?.('.table-edit')) openTableEditor(node.id, !!node.data?.pending)
+              }}
+              onNodeContextMenu={(e, node) => {
+                e.preventDefault()
+                // Stop the event bubbling to the canvas' onContextMenu, which
+                // would otherwise also open the empty-space menu on top.
+                e.stopPropagation()
+                if (node.id.startsWith('folder:')) return
+                if (node.id.startsWith('note:')) {
                   setMenu(null)
-                  setNodeMenu({ x: e.clientX, y: e.clientY, table: node.id, pending: !!node.data?.pending })
-                }}
-                onEdgeClick={(e, edge) => {
-                  const fk = edge.data.fk
-                  setSelectedEdge(edge.id)
-                  setEdgePopup({ x: e.clientX, y: e.clientY, fk })
-                  // Only a committed, not-already-staged FK can have its
-                  // actions edited here (a staged add/drop is edited by
-                  // undoing it and redrawing/re-deleting instead).
-                  setFkEdit(
-                    canEditFk && fk.constraint && !fk.pendingFk && !fk.removed
-                      ? { onDelete: normFkAction(fk.onDelete), onUpdate: normFkAction(fk.onUpdate) }
-                      : null
-                  )
-                }}
-                onEdgeMouseEnter={(_, edge) => setHoveredEdge(edge.id)}
-                onEdgeMouseLeave={() => setHoveredEdge(null)}
-                onPaneClick={() => {
-                  setSelectedEdge(null)
-                  setEdgePopup(null)
-                  setFkEdit(null)
-                  setFkConfirm(null)
-                }}
-                fitView
-                proOptions={{ hideAttribution: true }}
-              >
-                <Background color="var(--color-edge-strong)" gap={18} size={1.6} />
-                <MiniMap
-                  pannable
-                  zoomable
-                  style={{ width: 120, height: 84 }}
-                  maskColor="rgba(0,0,0,0.55)"
-                  nodeColor="#2a352a"
-                  nodeStrokeColor="#6fcf6a"
-                />
-              </ReactFlow>
+                  setNoteMenu({ x: e.clientX, y: e.clientY, id: node.id.slice(5) })
+                  return
+                }
+                setMenu(null)
+                setNodeMenu({ x: e.clientX, y: e.clientY, table: node.id, pending: !!node.data?.pending })
+              }}
+              onEdgeClick={(e, edge) => {
+                const fk = edge.data.fk
+                setSelectedEdge(edge.id)
+                setEdgePopup({ x: e.clientX, y: e.clientY, fk })
+                // Only a committed, not-already-staged FK can have its
+                // actions edited here (a staged add/drop is edited by
+                // undoing it and redrawing/re-deleting instead).
+                setFkEdit(
+                  canEditFk && fk.constraint && !fk.pendingFk && !fk.removed
+                    ? { onDelete: normFkAction(fk.onDelete), onUpdate: normFkAction(fk.onUpdate) }
+                    : null
+                )
+              }}
+              onNodeDoubleClick={(_, node) => {
+                // Notes are the only node you type into, and double-click is
+                // how you get there (a single click just selects/drags).
+                if (node.id.startsWith('note:')) setEditingNote(node.id.slice(5))
+              }}
+              onEdgeMouseEnter={(_, edge) => setHoveredEdge(edge.id)}
+              onEdgeMouseLeave={() => setHoveredEdge(null)}
+              onPaneClick={() => {
+                setEditingNote(null)
+                setSelectedNote(null)
+                setSelectedEdge(null)
+                setEdgePopup(null)
+                setFkEdit(null)
+                setFkConfirm(null)
+              }}
+              fitView
+              proOptions={{ hideAttribution: true }}
+            >
+              <Background color="var(--color-edge-strong)" gap={18} size={1.6} />
+              <MiniMap
+                pannable
+                zoomable
+                style={{ width: 120, height: 84 }}
+                maskColor="rgba(0,0,0,0.55)"
+                nodeColor="#2a352a"
+                nodeStrokeColor="#6fcf6a"
+              />
+            </ReactFlow>
 
-              {/* Zoom / fit controls — bottom-left of the canvas */}
-              <div className="absolute bottom-3 left-3 z-10 flex items-center gap-0.5 rounded-soft border border-edge bg-elevated p-1">
-                <IconButton onClick={() => rf.current?.zoomOut()} aria-label="Zoom out">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                    <path d="M5 12h14" />
-                  </svg>
-                </IconButton>
-                <IconButton onClick={() => rf.current?.zoomIn()} aria-label="Zoom in">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                    <path d="M12 5v14M5 12h14" />
-                  </svg>
-                </IconButton>
-                <IconButton onClick={() => rf.current?.fitView({ duration: 300, padding: 0.2 })} aria-label="Fit view">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M3 16v3a2 2 0 0 0 2 2h3" />
-                  </svg>
-                </IconButton>
+            {/* An empty schema still gets the canvas: the grid, the pan/zoom
+                and the right-click menu are *how* the first table is made, so
+                the hint sits over them instead of replacing them with a
+                screen. `pointer-events-none` is the whole trick — the
+                right-click lands on the canvas underneath. */}
+            {augmented.length === 0 && (
+              <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
+                <span className="rounded-soft border border-dashed border-edge-strong bg-panel/80 px-3 py-2 text-xs text-ink-faint">
+                  No tables yet — right-click to create one.
+                </span>
               </div>
-            </>
-          )}
+            )}
+
+            {/* Zoom / fit controls — bottom-left of the canvas */}
+            <div className="absolute bottom-3 left-3 z-10 flex items-center gap-0.5 rounded-soft border border-edge bg-elevated p-1">
+              <IconButton onClick={() => rf.current?.zoomOut()} aria-label="Zoom out">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                  <path d="M5 12h14" />
+                </svg>
+              </IconButton>
+              <IconButton onClick={() => rf.current?.zoomIn()} aria-label="Zoom in">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                  <path d="M12 5v14M5 12h14" />
+                </svg>
+              </IconButton>
+              <IconButton onClick={() => rf.current?.fitView({ duration: 300, padding: 0.2 })} aria-label="Fit view">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M3 16v3a2 2 0 0 0 2 2h3" />
+                </svg>
+              </IconButton>
+            </div>
         </div>
       </div>
 
@@ -1607,7 +2091,7 @@ export default function SchemaEditor({ conn, changes, folders = [], onUpdateFold
           onSave={(name) => {
             // Keep the pending changes — saving links this tab to the draft and
             // its items become the draft's working state (handled in Workspace).
-            onSaveDraft?.(pending, name)
+            onSaveDraft?.(pending, name, currentLayout())
             setNaming(false)
           }}
         />
@@ -1802,17 +2286,93 @@ export default function SchemaEditor({ conn, changes, folders = [], onUpdateFold
 
       {/* Canvas right-click menu */}
       {menu && (
-        <ContextMenu x={menu.x} y={menu.y} width={180} onClose={() => setMenu(null)}>
+        <ContextMenu x={menu.x} y={menu.y} width={190} onClose={() => setMenu(null)}>
           <MenuItem onClick={() => { setCreating(true); setMenu(null) }}>
             <PlusIcon width={14} height={14} /> Create new Table
           </MenuItem>
-          <ContextMenuSub label="Export" icon={DownloadIcon} width={150}>
-            <ExportItems onExport={(f) => { exportImage(f); setMenu(null) }} />
+          <MenuItem onClick={() => { addNote(menu.flow); setMenu(null) }}>
+            <NoteIcon width={14} height={14} /> Add note
+          </MenuItem>
+          <div className="my-1 h-px bg-edge" />
+          <ContextMenuSub label="Export" icon={DownloadIcon} width={170}>
+            <ExportItems onExport={(f) => { runExport(f); setMenu(null) }} />
           </ContextMenuSub>
+          <MenuItem onClick={() => { importRef.current?.click(); setMenu(null) }}>
+            <UploadIcon width={14} height={14} /> Import design…
+          </MenuItem>
           <MenuItem onClick={() => { autoLayout(); setMenu(null) }}>
             <WandIcon width={14} height={14} /> Auto arrange
           </MenuItem>
         </ContextMenu>
+      )}
+
+      {/* Note right-click menu — colour, edit, delete. A note has no panel of
+          its own: everything about it is either typed into the note or picked
+          here. */}
+      {noteMenu && (
+        <ContextMenu x={noteMenu.x} y={noteMenu.y} width={188} onClose={() => setNoteMenu(null)}>
+          <div className="px-2.5 pb-1.5 pt-1 text-[11px] font-semibold text-ink-dim">Note</div>
+          <div className="flex flex-wrap gap-1.5 px-2.5 pb-2">
+            {NOTE_COLORS.map((c) => (
+              <button
+                key={c}
+                type="button"
+                aria-label={`Colour ${c}`}
+                className={`h-4 w-4 rounded-full border transition-transform hover:scale-110 ${
+                  notes.find((n) => n.id === noteMenu.id)?.color === c ? 'border-ink' : 'border-transparent'
+                }`}
+                style={{ backgroundColor: c }}
+                onClick={() => { updateNote(noteMenu.id, { color: c }); setNoteMenu(null) }}
+              />
+            ))}
+          </div>
+          <MenuItem onClick={() => { setEditingNote(noteMenu.id); setNoteMenu(null) }}>
+            <EditIcon width={14} height={14} /> Edit text
+          </MenuItem>
+          <div className="my-1 h-px bg-edge" />
+          <MenuItem danger className="!text-red" onClick={() => { deleteNote(noteMenu.id); setNoteMenu(null) }}>
+            <TrashIcon width={14} height={14} /> Delete note
+          </MenuItem>
+        </ContextMenu>
+      )}
+
+      {/* Every statement with the down SQL that would undo it, the database it is
+          about to run against, and the one confirmation in front of it — see
+          ReleaseDialog. */}
+      {releasePlan && releaseTarget && (
+        <ReleaseDialog
+          statements={releasePlan}
+          target={releaseTarget}
+          dialect={dialect}
+          onCancel={() => setReleasePlan(null)}
+          onConfirm={() => {
+            setReleasePlan(null)
+            // The plan, not `pending`: it is the same items carrying the down SQL
+            // resolved a moment ago, which is what the migration records. The
+            // layout travels with it too — a host that clears the staged DDL once
+            // it has run still has to keep where those tables were placed.
+            onRelease?.(releasePlan, currentLayout())
+          }}
+        />
+      )}
+
+      {/* Importing a design replaces everything the editor is holding, so it
+          asks first — and says so when the file was written for another engine,
+          which is a warning rather than a refusal (the DDL may still be fine). */}
+      {importDoc && (
+        <ConfirmDialog
+          title={`Import “${importDoc.name}”?`}
+          message={`This replaces the staged changes, the notes, the groups and every position in this diagram with the ones in the file (${importDoc.statements.length} statement${
+            importDoc.statements.length === 1 ? '' : 's'
+          }, ${importDoc.layout.notes.length} note${importDoc.layout.notes.length === 1 ? '' : 's'}).${
+            importDoc.dialect && conn.type && importDoc.dialect !== conn.type
+              ? ` It was designed for ${importDoc.dialect}, and this diagram targets ${conn.type}.`
+              : ''
+          }`}
+          confirmLabel="Import"
+          onCancel={() => setImportDoc(null)}
+          onConfirm={applyImport}
+        />
       )}
     </div>
   )

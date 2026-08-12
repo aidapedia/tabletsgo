@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import {
   useConnections,
   ConnectionDetail,
-  DETAIL_TABS,
+  detailTabs,
   ConnectionExportModal,
   ConnectHandshakeDialog,
   useConnectHandshake,
@@ -36,7 +36,11 @@ export default function ConnectionDetailPage() {
   const [exporting, setExporting] = useState<any>(null)
 
   const conn = connections.find((c) => String(c.id) === String(id))
-  const { active, onTab } = useTabRoute(`/connections/${id}`, DETAIL_TABS, tab)
+  // The tab list depends on the engine — Redis has no schema history — and this
+  // runs before the connection is known to exist, so an unresolved connection
+  // gets the full list and `useTabRoute` only redirects once there is a type
+  // saying the segment doesn't belong here.
+  const { active, onTab } = useTabRoute(`/connections/${id}`, detailTabs(conn?.type), tab)
 
   if (loading || workspaceLoading) return <LoadingState className="py-20 text-center" />
   if (!conn) {

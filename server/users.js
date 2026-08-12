@@ -56,6 +56,25 @@ export const getUser = (id) => {
   return u ? toPublic(u) : null
 }
 
+/**
+ * Just enough of a person to attribute a row to them — an id → { id, name,
+ * email } map for the ids handed in.
+ *
+ * An audit trail ("created by", "last updated by") needs a name beside an id
+ * and nothing else, so this deliberately skips the per-user workspace
+ * resolution `listUsers` does. An id with no user behind it (a deleted account)
+ * is simply absent from the map, which is what lets the caller render it as
+ * unattributed rather than leaking a stray id into the UI.
+ */
+export const userSummaries = (ids = []) => {
+  const unique = [...new Set(ids.filter(Boolean))]
+  if (!unique.length) return new Map()
+  const rows = meta
+    .prepare(`SELECT id, username, name FROM users WHERE id IN (${unique.map(() => '?').join(', ')})`)
+    .all(...unique)
+  return new Map(rows.map((u) => [u.id, { id: u.id, name: u.name || u.username, email: u.username }]))
+}
+
 export const countAdmins = () => meta.prepare("SELECT COUNT(*) c FROM users WHERE role = 'admin'").get().c
 
 /**

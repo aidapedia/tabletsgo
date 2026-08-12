@@ -1,4 +1,5 @@
 import Popover from '@/shared/ui/overlay/Popover'
+import Tooltip from '@/shared/ui/overlay/Tooltip'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
 import { CheckIcon, ChevronDown } from '@/shared/ui/icons'
 import { useEffect, useState } from 'react'
@@ -7,7 +8,10 @@ import { useWorkspaces, listRoles, type Role } from '@/features/workspaces'
 // Current-workspace picker: only the workspaces the user is a member of.
 // Creating a workspace lives in the admin area, settings in the sidebar's
 // Workspace section — neither belongs in a switcher.
-export default function WorkspaceSwitcher() {
+//
+// `collapsed` is the icon-rail form: the initial bubble alone, which is all a
+// 64px rail has room for. The list it opens is unchanged.
+export default function WorkspaceSwitcher({ collapsed = false }) {
   const { workspaces, current, switchWorkspace } = useWorkspaces()
   const [roles, setRoles] = useState<Role[]>([])
   useEffect(() => {
@@ -18,25 +22,44 @@ export default function WorkspaceSwitcher() {
   return (
     <Popover
       width={248}
-      trigger={({ open, toggle }) => (
-        <button
-          onClick={toggle}
-          className={`flex w-full items-center gap-2.5 rounded-soft border border-edge bg-elevated px-2.5 py-2 text-left transition-colors hover:border-edge-strong ${
-            open ? 'border-edge-strong' : ''
-          }`}
-        >
-          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] bg-green text-[12px] font-bold text-white">
-            {current?.name?.[0]?.toUpperCase() || 'W'}
-          </span>
-          <span className="min-w-0 flex-1">
-            <span className="block truncate text-[12px] font-semibold text-ink">{current?.name || 'Workspace'}</span>
-            {/* The role's display name, resolved from the instance catalog —
-                a custom role should read as itself, not as "Member". */}
-            <span className="block text-[10px] text-ink-faint">{roleName}</span>
-          </span>
-          <ChevronDown width={14} height={14} className="shrink-0 text-ink-faint" />
-        </button>
-      )}
+      trigger={({ open, toggle }) =>
+        // Collapsed it drops the border-box entirely and becomes a 40px target
+        // holding a 36px bubble — the console IconRail's proportions, so the two
+        // rails in the app read as the same object.
+        collapsed ? (
+          <Tooltip label={current?.name || 'Workspace'} placement="right">
+            <button
+              onClick={toggle}
+              aria-label="Switch workspace"
+              className={`flex h-10 w-10 items-center justify-center rounded-soft transition-colors hover:bg-card-hover ${
+                open ? 'bg-card-hover' : ''
+              }`}
+            >
+              <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[11px] bg-green text-[13px] font-bold text-white">
+                {current?.name?.[0]?.toUpperCase() || 'W'}
+              </span>
+            </button>
+          </Tooltip>
+        ) : (
+          <button
+            onClick={toggle}
+            className={`flex w-full items-center gap-2.5 rounded-soft border border-edge bg-elevated px-2.5 py-2 text-left transition-colors hover:border-edge-strong ${
+              open ? 'border-edge-strong' : ''
+            }`}
+          >
+            <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] bg-green text-[12px] font-bold text-white">
+              {current?.name?.[0]?.toUpperCase() || 'W'}
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-[12px] font-semibold text-ink">{current?.name || 'Workspace'}</span>
+              {/* The role's display name, resolved from the instance catalog —
+                  a custom role should read as itself, not as "Member". */}
+              <span className="block text-[10px] text-ink-faint">{roleName}</span>
+            </span>
+            <ChevronDown width={14} height={14} className="shrink-0 text-ink-faint" />
+          </button>
+        )
+      }
     >
       {({ close }) => (
         <div className="p-1.5">

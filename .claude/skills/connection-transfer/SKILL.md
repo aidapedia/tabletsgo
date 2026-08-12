@@ -19,7 +19,9 @@ versioned by `CONNECTION_EXPORT_VERSION` in `server/connection-transfer.js`).
 
 Connection settings (as an opaque, dialect-agnostic `connection.settings` object),
 folders of all four types with their tree + colors, table→folder assignments, saved
-queries, workflows, dashboards, backup schedule.
+queries (with `layout` — a schema draft's diagram design: table/group/note
+positions; see `features/schema-designer/lib/design.ts`), workflows, dashboards,
+backup schedule.
 
 ## What's deliberately not
 

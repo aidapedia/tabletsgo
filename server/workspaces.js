@@ -258,6 +258,9 @@ export const deleteWorkspaceCascade = (workspaceId) => {
       }
     }
     meta.prepare('DELETE FROM storage_destinations WHERE workspace_id = ?').run(workspaceId)
+    // Standalone schema drafts hang off the workspace, not a connection, so the
+    // per-connection loop above never reaches them.
+    meta.prepare('DELETE FROM schema_drafts WHERE workspace_id = ?').run(workspaceId)
     meta.prepare('DELETE FROM workspaces WHERE id = ?').run(workspaceId)
     // One call takes the workspace's whole subtree — group, connection, dashboard
     // and workflow nodes — with every grant on any of them, every roster

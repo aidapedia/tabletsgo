@@ -3,7 +3,6 @@ import {
   CloseIcon,
   CodeIcon,
   ColumnsIcon,
-  DiagramIcon,
   GridIcon,
   HistoryIcon,
   KeyIcon,
@@ -17,7 +16,6 @@ import IconButton from '@/shared/ui/buttons/IconButton'
 const KIND_ICON = {
   query: CodeIcon,
   schema: ColumnsIcon,
-  schemaEditor: DiagramIcon,
   history: HistoryIcon,
   schemaHistory: HistoryIcon,
   function: CodeIcon,

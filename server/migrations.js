@@ -114,6 +114,21 @@ function ensureBaseSchema(db) {
       -- like dashboards.folder_id, it is intentionally NOT inlined here so v4's
       -- plain ALTER doesn't collide on fresh installs (which also run v4).
     );
+    -- A schema drafted from scratch: a diagram that belongs to a workspace
+    -- rather than to a connection, so there is no database behind it and
+    -- nothing to commit -- db_type is the dialect its DDL is written for.
+    -- Drafts designed *against* a connection stay in saved_queries (kind =
+    -- 'schema'); this table is only the connection-less kind.
+    CREATE TABLE IF NOT EXISTS schema_drafts (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      db_type TEXT NOT NULL,       -- 'sqlite' | 'postgresql' | … (a connection type)
+      sql TEXT,                    -- staged DDL, statements joined by ';'
+      created_by TEXT,             -- users.id of whoever started it
+      ts INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_schema_drafts_workspace ON schema_drafts (workspace_id);
     CREATE TABLE IF NOT EXISTS dashboards (
       id TEXT PRIMARY KEY,
       connection_id TEXT NOT NULL,
@@ -1101,6 +1116,83 @@ export const MIGRATIONS = [
         if (!row) continue
         for (const permission of role.permissions) ins.run(row.id, permission)
       }
+    },
+  },
+  {
+    version: 18,
+    name: 'schema drafts that belong to a workspace instead of a connection',
+    up(db) {
+      // "New schema → from scratch": a diagram designed before there is a
+      // database to design it against. saved_queries can't hold one — its
+      // connection_id is NOT NULL, and widening that would mean every reader of
+      // a saved query having to handle a row with no connection. So the
+      // connection-less kind gets its own table, and the dialect it targets
+      // (which a connection would otherwise have answered) is stored on the row.
+      // IF NOT EXISTS because a fresh install runs *both* halves: step v1 calls
+      // ensureBaseSchema (which creates this table) and then every later step,
+      // this one included. Same reason every table-adding step above is written
+      // this way.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS schema_drafts (
+          id TEXT PRIMARY KEY,
+          workspace_id TEXT NOT NULL,
+          name TEXT NOT NULL,
+          db_type TEXT NOT NULL,
+          sql TEXT,
+          created_by TEXT,
+          ts INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_schema_drafts_workspace ON schema_drafts (workspace_id);
+      `)
+    },
+  },
+  {
+    version: 19,
+    name: 'schema drafts remember their diagram layout (positions, notes, groups)',
+    up(db) {
+      // A schema draft used to be its DDL and nothing else, so opening one
+      // re-ran dagre and scattered the diagram the designer had arranged. The
+      // layout is that arrangement — where each table, group region and note
+      // sits — held as one JSON document beside the SQL rather than as columns,
+      // because it is read and written whole by the editor and never queried.
+      //
+      // Both kinds of draft get it: a draft designed against a connection is a
+      // saved_queries row (kind = 'schema'), a from-scratch one is a
+      // schema_drafts row. Nullable, so every existing draft keeps opening —
+      // a draft with no stored layout is simply one dagre still arranges.
+      addColumn(db, 'saved_queries', 'layout TEXT')
+      addColumn(db, 'schema_drafts', 'layout TEXT')
+    },
+  },
+  {
+    version: 20,
+    name: 'schema drafts carry an audit trail (who started one, who last changed it)',
+    up(db) {
+      // A design is workspace work several people touch, so the Schema list and
+      // the editor both have to answer "whose is this, and who moved it last".
+      // Neither table could: `created_by` existed on schema_drafts (v18) and
+      // nowhere on saved_queries, and neither row remembered *when* it was
+      // started — `ts` is the last write, so a draft that has been saved once
+      // has already forgotten its own beginning.
+      //
+      // Both kinds of draft get the same columns, because the two kinds are one
+      // list: a from-scratch draft is a schema_drafts row, one designed against
+      // a connection is a saved_queries row (kind = 'schema'), and the Schema
+      // section renders them side by side. saved_queries gains them for every
+      // kind rather than only 'schema' — a saved query is the same kind of
+      // shared object, and a column that only some rows may fill would be a
+      // second rule to remember at every write.
+      addColumn(db, 'schema_drafts', 'updated_by TEXT')
+      addColumn(db, 'schema_drafts', 'created_at INTEGER')
+      addColumn(db, 'saved_queries', 'created_by TEXT')
+      addColumn(db, 'saved_queries', 'updated_by TEXT')
+      addColumn(db, 'saved_queries', 'created_at INTEGER')
+      // Backfill only what is actually knowable. An existing row's one
+      // timestamp is its last write, which is the closest thing to a start date
+      // it has; *who* did it is lost, and stays NULL — an unattributed row must
+      // read as "unknown", never as a plausible wrong person.
+      db.exec('UPDATE schema_drafts SET created_at = ts WHERE created_at IS NULL')
+      db.exec('UPDATE saved_queries SET created_at = ts WHERE created_at IS NULL')
     },
   },
 ]

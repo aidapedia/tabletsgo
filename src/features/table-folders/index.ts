@@ -5,8 +5,9 @@
 // (Replaced the old "domains" feature — meta migration v5 folded every domain
 // into the folders tree, keeping its id, name and color.)
 export { default as TableFolderList } from './components/TableFolderList'
-// Slide-overs kept for the schema diagram only — the Tables sidebar assigns
-// folders by drag and drop and edits them inline.
+// Slide-overs kept for the schema diagram only (it hosts them from the editor
+// page) — the console's Tables sidebar assigns folders by drag and drop and
+// edits them inline.
 export { default as TableFolderPickerPanel } from './components/TableFolderPickerPanel'
 export { default as TableFolderEditPanel } from './components/TableFolderEditPanel'
 export { default as FolderDot } from './components/FolderDot'

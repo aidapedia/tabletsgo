@@ -2,7 +2,7 @@
 export { ConnectionsProvider, useConnections } from './stores/ConnectionsContext'
 export { default as ConnectionForm } from './components/ConnectionForm'
 export { default as ConnectionAccessPanel } from './components/ConnectionAccessPanel'
-export { default as ConnectionDetail, DETAIL_TABS, StatusBadge, connectionUrl } from './components/ConnectionDetail'
+export { default as ConnectionDetail, detailTabs, StatusBadge, connectionUrl } from './components/ConnectionDetail'
 export { default as DbTypePickerModal, TYPE_LABEL } from './components/DbTypePickerModal'
 export { default as ConnectionSwitcherModal } from './components/ConnectionSwitcherModal'
 export { default as EnvBadge, ENV_TONE } from './components/EnvBadge'

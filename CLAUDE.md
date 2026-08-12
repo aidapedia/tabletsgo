@@ -100,6 +100,7 @@ server/
 ├── users.js  workspaces.js  app-settings.js  mail.js                          → skill auth-sessions
 ├── connections.js       # connection records (encrypted credentials blob)
 ├── folders.js           # the polymorphic folder tree (4 types, depth caps)
+├── schema-drafts.js     # from-scratch schema drafts: a diagram a *workspace* owns, no connection
 ├── storage.js           # storage destinations (S3 + local disk) and object ops
 ├── db/                  # ★ the engine-agnostic database layer                → skill db-engine
 ├── workflow.js          # the node-graph executor + scheduler
@@ -117,7 +118,8 @@ server/
 - **Anything a user can be looking at has an address.** A detail view, a create/edit form and a tab are routes (`/connections/:id/:tab`, `/connections/:id/edit/:tab`), not `useState` on the list page — so a refresh keeps you there and a link lands there. Use `useTabRoute` to bind a tab bar to its segment. Transient dialogs (confirm, export, picker) stay local state.
 - All backend calls go through `shared/api/request.ts`: use `request()` for mutations (throws on failure — caller `try/catch`es and toasts) and `safeRequest(path, fallback)` for reads that should degrade quietly. Don't call `fetch` directly or re-declare `API_URL`.
 - UI styling lives in `shared/ui` components — `Button`, `IconButton`, `Input`/`Textarea`, `Form`/`FormField`/`Label`. Use those instead of shared class-string helpers (the old `shared/lib/styles.ts` is gone). `controlClass` (exported from `shared/ui/form/Input`) is **only** for non-`<input>` controls that need the field look (e.g. `Select`) — never put it on a raw `<input>`/`<textarea>`; use `Input`/`Textarea`.
-- Reuse the shared micro-components instead of re-styling inline: `Avatar` (initial bubble), `Badge` (uppercase pill), `PersonRow` (avatar+name+email), `CheckboxRow` (bordered selectable row), `SearchInput` (input with search icon), `LoadingState`/`EmptyState` (faint placeholders), `ConfirmDialog` (never `window.confirm`), `toggleId` (selection-list toggle).
+- Reuse the shared micro-components instead of re-styling inline: `Avatar` (initial bubble), `Badge` (uppercase pill), `PersonRow` (avatar+name+email), `CheckboxRow` (bordered selectable row), `SearchInput` (input with search icon), `LoadingState`/`EmptyState` (faint placeholders), `ConfirmDialog` (never `window.confirm`), `toggleId` (selection-list toggle), `AccountTile` (the signed-in person's gradient mark; `presence` notches the online dot into it — pass the `surface` it sits on), `AccountMenu` (name/email/sign-out popover), `RailItem`/`RailDivider` (a row of a 56px icon rail).
+- **There is one icon rail, used twice** — the console's `IconRail` and the home sidebar collapsed. Both are built from `RailItem`, so size, tooltip and active look are defined once; don't restyle either in place.
 - Heavy editors stay out of feature barrels so they code-split: `WorkflowEditor`, `DashboardView`, `RedisConsole`/`RedisEditor` (they pull in CodeMirror / React Flow).
 
 ### Backend
