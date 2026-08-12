@@ -57,7 +57,7 @@ import { resolveRollbacks } from '@/features/schema-designer/lib/rollback'
 import { TableFolderEditPanel } from '@/features/table-folders'
 import { columnTypeSql, FK_ACTIONS, fkEligible, normFkAction, parseColumnDefs, useColumnTypes } from '@/features/schema-designer/components/columnFields'
 import { useShortcut } from '@/features/keymap'
-import { ChevronRight, ColumnsIcon, DownloadIcon, EditIcon, FolderIcon, NoteIcon, PlayIcon, PlusIcon, SaveIcon, TableIcon, TagIcon, TrashIcon, UploadIcon, WandIcon } from '@/shared/ui/icons'
+import { ChevronRight, DownloadIcon, EditIcon, FocusIcon, FolderIcon, NoteIcon, PlayIcon, PlusIcon, SaveIcon, TagIcon, TrashIcon, UploadIcon, WandIcon } from '@/shared/ui/icons'
 
 // Fixed metrics so per-column handles line up with their rows.
 const HEADER_H = 34
@@ -66,6 +66,10 @@ const PAD_T = 4
 const rowCenter = (i) => HEADER_H + PAD_T + i * ROW_H + ROW_H / 2
 
 // ---- Custom node: a table with per-column FK handles ----
+// The hover-revealed icon buttons in a table node's header (focus, edit).
+const actionClass =
+  'flex h-[18px] w-[18px] shrink-0 cursor-pointer items-center justify-center rounded text-ink-faint opacity-0 transition-opacity hover:bg-black/10 hover:text-ink group-hover:opacity-100'
+
 function TableNode({ data, selected }) {
   // Staged-but-uncommitted state is colour-coded to mirror the Changes panel
   // (add = green, alter = amber, drop = red): a newly-created table is green
@@ -92,14 +96,25 @@ function TableNode({ data, selected }) {
         >
           <span className={`min-w-0 flex-1 truncate ${data.dropped ? 'line-through' : ''}`}>{data.name}</span>
           {data.dropped ? <Badge tone="red" dense>dropped</Badge> : data.pending && <Badge tone="green" dense>new</Badge>}
-          {/* Edit affordance — revealed on hover; click opens the table editor
-              (detected via `.table-edit` in onNodeClick). A staged new table
-              reopens its CREATE instead; a table staged for DROP is going away,
-              so it isn't editable at all. */}
+          {/* Hover affordances, both routed by class in onNodeClick rather than
+              their own handlers — the node is draggable, so a click that starts
+              on the header has to reach React Flow either way. */}
+          {/* Zoom the canvas to this table. A view action, so it's offered on
+              every node — including one staged for DROP, which is still drawn. */}
+          <button
+            type="button"
+            className={`${actionClass} table-focus`}
+            title="Focus table"
+          >
+            <FocusIcon width={12} height={12} />
+          </button>
+          {/* Click opens the table editor. A staged new table reopens its
+              CREATE instead; a table staged for DROP is going away, so it
+              isn't editable at all. */}
           {!data.dropped && (
             <button
               type="button"
-              className="table-edit flex h-[18px] w-[18px] shrink-0 cursor-pointer items-center justify-center rounded text-ink-faint opacity-0 transition-opacity hover:bg-black/10 hover:text-ink group-hover:opacity-100"
+              className={`${actionClass} table-edit`}
               title="Edit table"
             >
               <EditIcon width={12} height={12} />
@@ -647,10 +662,10 @@ function pathWithJumps(points, verticals) {
 // Every callback here is optional (each is invoked with `?.`, and `changes` is
 // read as `changes || []`), so a host wires up only what it can answer for. The
 // draft page is now the only host: it passes the connection's table folders,
-// and Release rather than Submit. `changes` / `onStageItems` / `onOpenTable` /
-// `onOpenSchema` are the console's half of the contract — a diagram hosted
-// beside a Changes queue and a data grid — and stay optional for a host that
-// has one again. Annotated `any` so the signature says all of that.
+// and Release rather than Submit. `changes` / `onStageItems` are the console's
+// half of the contract — a diagram hosted beside a Changes queue — and stay
+// optional for a host that has one again. Annotated `any` so the signature
+// says all of that.
 //
 // The array defaults are module constants, never `= []` inline: `folders` and
 // `pending` are dependencies of `layoutNodes`, which the node-building effect
@@ -658,7 +673,7 @@ function pathWithJumps(points, verticals) {
 // render and `setNodes` with new objects each time — a loop React Flow can
 // never settle, because it loses every node's measured size on each pass. It
 // only bites a host that omits the prop.
-export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUpdateFolder, onDeleteFolder, onSetFolder, pending = NO_PENDING, onPendingChange, onStageItems, onSaveDraft, onUpdateDraft, draftId, layout, onOpenTable, onOpenSchema, releaseTarget = null, releaseHint = '', onRelease, releasing = false, layoutRef }: any) {
+export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUpdateFolder, onDeleteFolder, onSetFolder, pending = NO_PENDING, onPendingChange, onStageItems, onSaveDraft, onUpdateDraft, draftId, layout, releaseTarget = null, releaseHint = '', onRelease, releasing = false, layoutRef }: any) {
   const dialect = conn.type === 'postgresql' ? 'postgresql' : 'sqlite'
   // Submit hands the staged DDL to a Changes queue, so it exists exactly when
   // the host has one — `onStageItems`. The console does; the standalone editor
@@ -1987,7 +2002,8 @@ export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUp
                   }
                   return
                 }
-                if (target?.closest?.('.table-edit')) openTableEditor(node.id, !!node.data?.pending)
+                if (target?.closest?.('.table-focus')) focusTable(node.id)
+                else if (target?.closest?.('.table-edit')) openTableEditor(node.id, !!node.data?.pending)
               }}
               onNodeContextMenu={(e, node) => {
                 e.preventDefault()
@@ -2305,12 +2321,6 @@ export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUp
       {nodeMenu && (
         <ContextMenu x={nodeMenu.x} y={nodeMenu.y} width={180} onClose={() => setNodeMenu(null)}>
           <div className="truncate px-2.5 pb-1.5 pt-1 text-[11px] font-semibold text-ink-dim">{nodeMenu.table}</div>
-          <MenuItem disabled={nodeMenu.pending} onClick={() => { onOpenTable?.(nodeMenu.table); setNodeMenu(null) }}>
-            <TableIcon width={14} height={14} /> Open in new tab
-          </MenuItem>
-          <MenuItem disabled={nodeMenu.pending} onClick={() => { onOpenSchema?.(nodeMenu.table); setNodeMenu(null) }}>
-            <ColumnsIcon width={14} height={14} /> View table schema
-          </MenuItem>
           <MenuItem onClick={() => { openTableEditor(nodeMenu.table, nodeMenu.pending); setNodeMenu(null) }}>
             <EditIcon width={14} height={14} /> Edit table
           </MenuItem>

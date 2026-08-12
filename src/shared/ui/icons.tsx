@@ -204,6 +204,16 @@ export const SaveIcon = (props) => (
   </svg>
 )
 
+// Crosshair — "bring this into view", used by the schema diagram's per-table
+// focus button (zoom the canvas to that node).
+export const FocusIcon = (props) => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+    <circle cx="12" cy="12" r="6" />
+    <path d="M12 2v3M12 19v3M2 12h3M19 12h3" />
+  </svg>
+)
+
 export const EyeIcon = (props) => (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
     strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
