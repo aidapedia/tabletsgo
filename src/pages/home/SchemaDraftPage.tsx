@@ -521,9 +521,10 @@ export default function SchemaDraftPage() {
         ran.push(item)
       }
 
-      // One migration row for the batch that actually ran. Items carry a
-      // rollbackSql only where the editor could build one, so a release is
-      // reversible exactly when every statement in it was.
+      // One migration row for the batch that actually ran. Items arrive with the
+      // down SQL the editor resolved before it ran them (and showed in the
+      // release confirmation), null where nothing could be reconstructed — so a
+      // release is reversible exactly when every statement in it was.
       if (ran.length) {
         try {
           const { version } = await recordSchemaMigration(

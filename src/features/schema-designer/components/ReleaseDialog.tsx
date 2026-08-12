@@ -1,8 +1,12 @@
 import Button from '@/shared/ui/buttons/Button'
 import Badge from '@/shared/ui/Badge'
+import SqlEditor from '@/shared/ui/SqlEditor'
 
 /** The database a design releases to — as little of a connection as this needs. */
 export type ReleaseTarget = { id: string; name: string; type: string }
+
+/** One staged statement and the statement that would undo it, if there is one. */
+export type ReleaseStatement = { sql: string; rollbackSql?: string | null }
 
 /**
  * The confirmation in front of Release: running a design's staged DDL against a
@@ -11,7 +15,11 @@ export type ReleaseTarget = { id: string; name: string; type: string }
  * It asks rather than just running because this is the one action in the editor
  * that leaves the diagram and changes a real database — and unlike the console's
  * Changes queue there is no second look at the statements before they execute.
- * So they are all shown here, in the order they will run.
+ * So the whole migration is shown here as the schema history will record it: Up
+ * SQL in the order it runs, Down SQL in the order a rollback would undo it
+ * (reversed — last applied, first undone), which is what makes an irreversible
+ * statement visible *before* it runs rather than as a greyed-out Rollback button
+ * afterwards.
  *
  * There is no picker: a design releases to the connection it was designed
  * against, and nowhere else. A from-scratch design is linked to a connection
@@ -22,21 +30,37 @@ export type ReleaseTarget = { id: string; name: string; type: string }
 export default function ReleaseDialog({
   statements,
   target,
+  dialect,
   onCancel,
   onConfirm,
 }: {
-  statements: string[]
+  statements: ReleaseStatement[]
   target: ReleaseTarget
+  dialect?: string
   onCancel: () => void
   onConfirm: () => void
 }) {
+  const upSql = statements.map((s) => s.sql.trim()).join('\n')
+  const reversible = statements.filter((s) => s.rollbackSql).length
+  // Statements with no inverse still get a line, so the Down block is the whole
+  // migration rather than a silently shorter one — the same inline note the
+  // draft inspector uses.
+  const downSql = statements
+    .map((s) => (s.rollbackSql ? s.rollbackSql.trim() : `-- No automatic down SQL for: ${s.sql.trim()}`))
+    .reverse()
+    .join('\n')
+
+  const label = (text: string) => (
+    <div className="mb-1.5 text-[11px] font-semibold tracking-wide text-ink-faint">{text}</div>
+  )
+
   return (
     <div
       className="fixed inset-0 z-[60] flex animate-fade items-center justify-center bg-black/60 p-6 backdrop-blur-[3px]"
       onMouseDown={onCancel}
     >
       <div
-        className="flex max-h-full w-full max-w-[520px] animate-pop flex-col rounded-[16px] border border-edge-strong bg-panel p-5"
+        className="flex max-h-full w-full max-w-[560px] animate-pop flex-col rounded-[16px] border border-edge-strong bg-panel p-5"
         onMouseDown={(e) => e.stopPropagation()}
       >
         <h3 className="text-sm font-bold text-ink">Release this schema?</h3>
@@ -55,15 +79,35 @@ export default function ReleaseDialog({
           </span>
         </div>
 
-        <div className="mt-3 min-h-0 flex-1 overflow-auto rounded-soft border border-edge bg-elevated p-2.5">
-          <ol className="flex flex-col gap-1.5">
-            {statements.map((sql, i) => (
-              <li key={i} className="flex gap-2 font-mono text-[11px] leading-relaxed text-ink-dim">
-                <span className="shrink-0 text-ink-faint">{i + 1}.</span>
-                <span className="min-w-0 break-words">{sql}</span>
-              </li>
-            ))}
-          </ol>
+        <div className="mt-4 min-h-0 flex-1 overflow-auto">
+          <div className="mb-4">
+            {label('Up SQL')}
+            <SqlEditor value={upSql} onChange={() => {}} dialect={dialect} editable={false} maxHeight="200px" />
+          </div>
+
+          <div>
+            {label('Down SQL')}
+            {/* Reversibility is all-or-nothing on the recorded migration: one
+                statement without an inverse is what makes the whole release
+                unrollbackable, so say it here, where it can still be cancelled. */}
+            {reversible === 0 ? (
+              <div className="rounded-soft border border-edge bg-bg px-3 py-2 text-[11px] text-ink-faint">
+                Not reversible — nothing staged here can be undone automatically, so the recorded migration will have no
+                down SQL.
+              </div>
+            ) : (
+              <>
+                {reversible < statements.length && (
+                  <div className="mb-1.5 text-[11px] text-amber">
+                    Partial — {statements.length - reversible} statement
+                    {statements.length - reversible === 1 ? ' has' : 's have'} no automatic down SQL, so the recorded
+                    migration will not be rollback-able.
+                  </div>
+                )}
+                <SqlEditor value={downSql} onChange={() => {}} dialect={dialect} editable={false} maxHeight="200px" />
+              </>
+            )}
+          </div>
         </div>
 
         <div className="mt-5 flex shrink-0 justify-end gap-2">

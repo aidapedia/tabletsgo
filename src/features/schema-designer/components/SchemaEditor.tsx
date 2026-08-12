@@ -52,6 +52,7 @@ import {
   type SchemaNote,
   type SchemaSnapshot,
 } from '@/features/schema-designer/lib/design'
+import { resolveRollbacks } from '@/features/schema-designer/lib/rollback'
 import { TableFolderEditPanel } from '@/features/table-folders'
 import { columnTypeSql, FK_ACTIONS, fkEligible, normFkAction, parseColumnDefs, useColumnTypes } from '@/features/schema-designer/components/columnFields'
 import { useShortcut } from '@/features/keymap'
@@ -718,7 +719,11 @@ export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUp
   const [selectedNote, setSelectedNote] = useState(null) // note id showing its resize handles
   const [noteMenu, setNoteMenu] = useState(null) // note right-click menu { x, y, id }
   const [importDoc, setImportDoc] = useState<SchemaDesignDoc | null>(null) // parsed design file awaiting confirmation
-  const [releaseOpen, setReleaseOpen] = useState(false) // release confirmation open
+  // The staged items with their down SQL resolved, once Release has been pressed
+  // and before anything runs — null while the dialog is closed. Resolving is a
+  // read of the live schema, so it can't be done in render.
+  const [releasePlan, setReleasePlan] = useState<any[] | null>(null)
+  const [preparingRelease, setPreparingRelease] = useState(false)
   const importRef = useRef<HTMLInputElement>(null)
   // Where each table was last seen, including ones currently hidden — the
   // arrangement outlives both a rebuild of the node list and a table being
@@ -741,6 +746,22 @@ export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUp
     ])
   const clearPending = () => onPendingChange?.([])
   const removePendingItem = (itemId) => onPendingChange?.(pending.filter((p) => p.id !== itemId))
+
+  // Release asks before it runs, and the question includes how each statement
+  // would be undone — so the down SQL is resolved here, between the button and
+  // the dialog. It has to happen before anything executes: the inverse of a drop
+  // (or of a type/default change) is read from the definition that statement is
+  // about to overwrite. The resolved items are also what gets released, so the
+  // migration records exactly the down SQL the dialog showed.
+  const openRelease = async () => {
+    if (!pending.length || !releaseTarget) return
+    setPreparingRelease(true)
+    try {
+      setReleasePlan(await resolveRollbacks(conn, pending))
+    } finally {
+      setPreparingRelease(false)
+    }
+  }
 
   // Delete a table: a pending (uncommitted) table just drops its staged
   // statements; an existing table stages a DROP TABLE for the next commit.
@@ -1779,11 +1800,11 @@ export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUp
             variant={onStageItems ? 'ghost' : 'primary'}
             size="sm"
             icon={PlayIcon}
-            onClick={() => setReleaseOpen(true)}
-            disabled={pending.length === 0 || releasing || !releaseTarget}
+            onClick={openRelease}
+            disabled={pending.length === 0 || releasing || preparingRelease || !releaseTarget}
             title={releaseTarget ? `Run the staged changes against ${releaseTarget.name}` : releaseHint}
           >
-            {releasing ? 'Releasing…' : 'Release'}
+            {releasing ? 'Releasing…' : preparingRelease ? 'Preparing…' : 'Release'}
           </Button>
         )}
 
@@ -2315,18 +2336,22 @@ export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUp
         </ContextMenu>
       )}
 
-      {/* Every statement, the database it is about to run against, and the one
-          confirmation in front of it — see ReleaseDialog. */}
-      {releaseOpen && releaseTarget && (
+      {/* Every statement with the down SQL that would undo it, the database it is
+          about to run against, and the one confirmation in front of it — see
+          ReleaseDialog. */}
+      {releasePlan && releaseTarget && (
         <ReleaseDialog
-          statements={pending.map((p) => p.sql)}
+          statements={releasePlan}
           target={releaseTarget}
-          onCancel={() => setReleaseOpen(false)}
+          dialect={dialect}
+          onCancel={() => setReleasePlan(null)}
           onConfirm={() => {
-            setReleaseOpen(false)
-            // The layout travels with it: a host that clears the staged DDL once
+            setReleasePlan(null)
+            // The plan, not `pending`: it is the same items carrying the down SQL
+            // resolved a moment ago, which is what the migration records. The
+            // layout travels with it too — a host that clears the staged DDL once
             // it has run still has to keep where those tables were placed.
-            onRelease?.(pending, currentLayout())
+            onRelease?.(releasePlan, currentLayout())
           }}
         />
       )}
