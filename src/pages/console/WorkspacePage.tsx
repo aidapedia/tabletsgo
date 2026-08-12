@@ -1644,11 +1644,9 @@ export default function Workspace() {
           onQueries={() => selectPanel('queries')}
           onWorkflows={() => selectPanel('workflows')}
           onDashboards={() => selectPanel('dashboards')}
-          onSchema={openSchemaEditorPage}
           onTemplates={() => selectPanel('templates')}
           onHome={() => navigate('/')}
           onLogout={logout}
-          showSchema={!isRedis}
           browserIcon={isRedis ? KeyIcon : undefined}
           browserLabel={isRedis ? 'Keyspace' : undefined}
         />
@@ -1961,8 +1959,18 @@ export default function Workspace() {
                   <HistoryIcon width={16} height={16} />
                 </IconButton>
               </Tooltip>
+              {/* Leaves the console for the Schema Editor page, so unlike the
+                  panel buttons there is no active state to mark. Schemaless
+                  engines (Redis) have no diagram to draw, so it hides. */}
+              {!isRedis && (
+                <Tooltip label="Schema editor" placement="bottom">
+                  <IconButton size="toolbar" onClick={openSchemaEditorPage} aria-label="Schema editor">
+                    <DiagramIcon width={16} height={16} />
+                  </IconButton>
+                </Tooltip>
+              )}
             </div>
-            {/* Mobile overflow: the history/version entries hidden above. */}
+            {/* Mobile overflow: the history/schema entries hidden above. */}
             <div className="hidden max-[720px]:block">
               <Popover
                 align="right"
@@ -1978,6 +1986,11 @@ export default function Workspace() {
                     <MenuItem onClick={() => { openHistory(); close() }}>
                       <HistoryIcon width={14} height={14} /> Query history
                     </MenuItem>
+                    {!isRedis && (
+                      <MenuItem onClick={() => { openSchemaEditorPage(); close() }}>
+                        <DiagramIcon width={14} height={14} /> Schema editor
+                      </MenuItem>
+                    )}
                     <MenuItem onClick={() => { openSchemaHistory(); close() }}>
                       <TagIcon width={14} height={14} /> Schema history (v{conn.schemaVersion ?? 1})
                     </MenuItem>

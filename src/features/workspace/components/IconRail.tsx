@@ -67,14 +67,9 @@ export default function IconRail({
                   open ? 'bg-card-hover' : ''
                 }`}
               >
-                {/* The dot is positioned against the tile, not the 40px
-                    target — anchored to the button it would float off into the
-                    padding once the tile got smaller. The console is the only
-                    place presence means anything, so it stays on this rail. */}
-                <span className="relative flex">
-                  <AccountTile label={user?.name} size={30} />
-                  <span className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-bg bg-green" />
-                </span>
+                {/* The rail sits on `bg`, so that is the surface the dot's
+                    ring is punched out of. */}
+                <AccountTile label={user?.name} size={30} presence surface="bg" />
               </button>
             </Tooltip>
           )}

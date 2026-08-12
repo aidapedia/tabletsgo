@@ -236,7 +236,11 @@ function Sidebar({ pathname, onNavigate, user, onLogout, open, onClose, isAdmin,
 
         {/* Account: the settings row, then the person. Both states are the same
             two things — collapsed just drops to icons and moves the name, email
-            and sign-out into the tile's menu, since none of them fit at 64px. */}
+            and sign-out into the tile's menu, since none of them fit at 64px.
+            The tile carries the presence dot in both, the same one the console
+            rail shows: you are looking at your own account, so "online" is the
+            one thing it can always state, and it should not blink out of
+            existence when you leave the console for the home shell. */}
         <div className={`flex flex-col gap-1 border-t border-edge py-3 ${collapsed ? 'px-2' : 'px-3'}`}>
           {rows(accountGroup?.items ?? [])}
 
@@ -254,7 +258,7 @@ function Sidebar({ pathname, onNavigate, user, onLogout, open, onClose, isAdmin,
                       menuOpen ? 'bg-card-hover' : ''
                     }`}
                   >
-                    <AccountTile label={user?.name} size={30} />
+                    <AccountTile label={user?.name} size={30} presence surface="panel" />
                   </button>
                 </Tooltip>
               ) : (
@@ -267,7 +271,7 @@ function Sidebar({ pathname, onNavigate, user, onLogout, open, onClose, isAdmin,
                     menuOpen ? 'bg-card-hover' : ''
                   }`}
                 >
-                  <AccountTile label={user?.name} size={30} />
+                  <AccountTile label={user?.name} size={30} presence surface="panel" />
                   <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-ink">{user?.name || 'Account'}</span>
                   <MoreHorizontalIcon width={16} height={16} className="shrink-0 text-ink-faint" />
                 </button>
