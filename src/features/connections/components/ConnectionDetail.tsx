@@ -140,7 +140,7 @@ export default function ConnectionDetail({ conn, onBack, onOpen, onEdit, onDelet
   return (
     <div className="w-full">
       <PageHeader
-        back={{ label: 'All connections', onClick: onBack }}
+        crumbs={[{ label: 'Connections', onClick: onBack }, { label: conn.name }]}
         media={<DbLogo type={conn.type} className="h-12 w-12 rounded-[12px]" />}
         title={conn.name}
         meta={<StatusBadge status={status} />}

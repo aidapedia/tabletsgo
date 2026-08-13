@@ -46,8 +46,9 @@ const SchemaEditor = lazy(() => import('@/features/schema-designer/components/Sc
  * Schema rail icon navigates here rather than opening a tab. It hides Submit —
  * there is no Changes queue here to submit into (see `onStageItems` in
  * SchemaEditor) — and offers Release instead, which runs the staged DDL against
- * the draft's connection directly, after a confirmation listing every
- * statement. The console keeps the data grid, the query editor and the changes
+ * the draft's connection directly — after re-reading that database and a
+ * confirmation listing every statement, plus whatever that read found the
+ * design disagreeing with. The console keeps the data grid, the query editor and the changes
  * queue; what it no longer keeps is a canvas.
  *
  * A from-scratch draft has no database, so Release is disabled on it and the way
@@ -315,30 +316,49 @@ export default function SchemaDraftPage() {
    * schema, because the result is *stored*, and writing nothing over a good
    * diagram would lose it. A database that really has no tables still syncs to
    * nothing, which is correct.
+   *
+   * Release comes through here too, before it asks (`onSyncSchema`): its
+   * confirmation is only true of the schema that is there now, so it waits on a
+   * read, and `ok: false` is what stops it — releasing against a database nobody
+   * could read is the guess this step exists to avoid.
+   *
+   * Which is what `onProgress` decides, and why there is no second flag beside
+   * it: whoever passes a progress sink is drawing the read themselves and owns
+   * the whole account of it, so this page neither raises its own modal over
+   * theirs nor toasts an outcome their dialog is already showing. Called
+   * without one — the header button — the modal and both toasts are this page's.
    */
-  const syncSchema = async () => {
-    if (!draft || !conn?.id || syncing) return
+  const syncSchema = async ({
+    onProgress,
+  }: { onProgress?: (p: SyncProgress) => void } = {}): Promise<{ ok: boolean; error?: string }> => {
+    if (!draft || !conn?.id || syncing) return { ok: false, error: 'A schema read is already running.' }
+    const owned = !onProgress // nobody else is drawing this one
+    const report = onProgress || setSyncProgress
     setSyncing(true)
-    setSyncProgress({ done: 0, total: 0, reading: [], indexes: 0 })
+    report({ done: 0, total: 0, reading: [], indexes: 0 })
     try {
       // Walked table by table (see readSchema) so the strip below the header can
       // say where it is — a schema of any size is a long wait to spend spinning.
-      const fresh = await readSchema(conn, { onProgress: setSyncProgress })
+      const fresh = await readSchema(conn, { onProgress: report })
       const base = layoutRef.current?.() ?? draft.layout ?? emptyLayout()
       await persist(pending.map((i) => i.sql).join('\n'), { ...base, schema: schemaSnapshot(fresh) })
       const count = fresh.tables.length
       // An unsaved canvas has no row to store it in yet — `persist` keeps it in
       // memory and Save is what writes it, so say so rather than imply it stuck.
-      toast.success(
-        `Synced ${count} table${count === 1 ? '' : 's'} and ${fresh.indexCount} index${
-          fresh.indexCount === 1 ? '' : 'es'
-        } from ${draft.connectionName || 'the database'}${draft.id ? '' : ' — save the design to keep it'}.`
-      )
+      if (owned)
+        toast.success(
+          `Synced ${count} table${count === 1 ? '' : 's'} and ${fresh.indexCount} index${
+            fresh.indexCount === 1 ? '' : 'es'
+          } from ${draft.connectionName || 'the database'}${draft.id ? '' : ' — save the design to keep it'}.`
+        )
+      return { ok: true }
     } catch (error) {
-      toast.error(`Couldn't read the schema: ${(error as Error)?.message || 'the database did not answer'}`)
+      const message = (error as Error)?.message || 'the database did not answer'
+      if (owned) toast.error(`Couldn't read the schema: ${message}`)
+      return { ok: false, error: message }
     } finally {
       setSyncing(false)
-      setSyncProgress(null)
+      if (owned) setSyncProgress(null)
     }
   }
 
@@ -661,7 +681,7 @@ export default function SchemaDraftPage() {
                 condition: the draft draws its own stored schema, so this is the
                 one thing that changes it. */}
             <Tooltip placement="bottom" label={`Sync Schema`}>
-              <Button variant="subtle" size="sm" onClick={syncSchema} disabled={syncing} aria-label="Sync schema">
+              <Button variant="subtle" size="sm" onClick={() => syncSchema()} disabled={syncing} aria-label="Sync schema">
                 {/* The icon is the whole button, so it carries the state: it
                     spins while the read is in flight, where a labelled button
                     would have said "Syncing…". */}
@@ -711,6 +731,10 @@ export default function SchemaDraftPage() {
             releaseHint="Link this design to a connection first — Release runs its statements against a database"
             releasing={releasing}
             onRelease={release}
+            // Release reads the database before it asks — the same sync as the
+            // header button, drawn inside the release dialog instead of under a
+            // modal of this page's. See openRelease in SchemaEditor.
+            onSyncSchema={syncSchema}
           />
         </Suspense>
       </div>

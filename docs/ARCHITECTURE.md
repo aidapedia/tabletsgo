@@ -25,7 +25,7 @@ src/
 │   │   ├── buttons/              #   Button, IconButton, TextButton
 │   │   ├── form/                 #   Form/FormField/Label, Input/Textarea, PasswordInput, Select, Checkbox,
 │   │   │                         #     CheckboxRow, SearchInput, Toggle, NumberStepper, Segmented
-│   │   ├── navigation/           #   NavItem, Tab, MenuItem
+│   │   ├── navigation/           #   NavItem, Tab, MenuItem, Breadcrumb, RailItem
 │   │   ├── page/                 #   the page shell every full-page view shares: PageHeader (back link +
 │   │   │                         #     media/title/meta + actions), PageTabs (the tab bar AND the active
 │   │   │                         #     tab's body, so spacing can't drift), Narrow (a capped content

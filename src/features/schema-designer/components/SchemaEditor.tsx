@@ -27,7 +27,8 @@ import { useToast } from '@/shared/ui/feedback/Toast'
 import TableEditPanel from '@/features/schema-designer/components/TableEditPanel'
 import CreateTablePanel from '@/features/schema-designer/components/CreateTablePanel'
 import SchemaSidebar from '@/features/schema-designer/components/SchemaSidebar'
-import ReleaseDialog from '@/features/schema-designer/components/ReleaseDialog'
+import ReleaseDialog, { type ReleasePhase } from '@/features/schema-designer/components/ReleaseDialog'
+import type { SyncProgress } from '@/features/schema-designer/lib/sync'
 import SaveQueryPanel from '@/shared/ui/SaveQueryPanel'
 import ConfirmDialog from '@/shared/ui/feedback/ConfirmDialog'
 import { draftToItems, newItemId } from '@/shared/lib/schemaDraft'
@@ -371,6 +372,8 @@ const NO_PENDING = []
 // identity, for the same reason NO_PENDING is one: it is a dependency of the
 // memos that build the nodes.
 const NO_SCHEMA = { tables: [], foreignKeys: [] }
+// Same reason: a stable identity for "nothing disagrees" (see releaseDrift).
+const NO_DRIFT: string[] = []
 const drawnFrom = (snapshot: SchemaSnapshot | null) =>
   snapshot ? { tables: snapshot.tables, foreignKeys: snapshot.foreignKeys } : NO_SCHEMA
 
@@ -435,6 +438,53 @@ function parsePending(changes) {
     if (m) (newCols[m[1]] ||= {})[m[2]] = m[3]
   }
   return { newTables, newCols, droppedTables, droppedCols, retypedCols }
+}
+
+/**
+ * What the staged DDL assumes that the database no longer agrees with.
+ *
+ * Read *after* a sync, against the schema that read returned, and only ever
+ * reported: a release runs the statements someone wrote, and "this table
+ * already exists" is a decision for them (rename it, drop the staged CREATE,
+ * release anyway and read the error) rather than something to repair here.
+ *
+ * Deliberately only the four contradictions that are certain from names alone —
+ * a table or column that is already there, and one that has gone. Anything
+ * subtler (a type that changed underneath, a constraint added elsewhere) needs
+ * the definition rather than the name, and a warning that might be wrong is
+ * worse than none in front of a button that runs DDL.
+ */
+function driftAgainst(statements, diagram) {
+  const { newTables, newCols, droppedTables, droppedCols } = parsePending(statements)
+  const live = new Map<string, Set<string>>(
+    (diagram?.tables || []).map((t: any) => [t.name, new Set((t.columns || []).map((c: any) => c.name))])
+  )
+  const out: string[] = []
+  for (const name of Object.keys(newTables))
+    if (live.has(name)) out.push(`“${name}” already exists — its CREATE TABLE will fail.`)
+  for (const name of droppedTables as Set<string>)
+    if (!live.has(name)) out.push(`“${name}” is already gone — its DROP TABLE will fail.`)
+  for (const [table, cols] of Object.entries(newCols)) {
+    const columns = live.get(table)
+    if (!columns) continue
+    for (const col of Object.keys(cols as object))
+      if (columns.has(col)) out.push(`“${table}.${col}” already exists — its ADD COLUMN will fail.`)
+  }
+  for (const [table, cols] of Object.entries(droppedCols)) {
+    const columns = live.get(table)
+    if (!columns) continue
+    for (const col of cols as Set<string>)
+      if (!columns.has(col)) out.push(`“${table}.${col}” is already gone — its DROP COLUMN will fail.`)
+  }
+  // Everything else staged against a table that isn't there any more — an ALTER
+  // of any shape, said once for the table rather than once per statement. A
+  // table this release *creates* is not missing, it is not there yet.
+  for (const item of statements || []) {
+    const table = item?.table
+    if (!table || live.has(table) || newTables[table] || droppedTables.has(table)) continue
+    out.push(`“${table}” is no longer in the database — everything staged against it will fail.`)
+  }
+  return [...new Set(out)]
 }
 
 
@@ -676,7 +726,7 @@ function pathWithJumps(points, verticals) {
 // render and `setNodes` with new objects each time — a loop React Flow can
 // never settle, because it loses every node's measured size on each pass. It
 // only bites a host that omits the prop.
-export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUpdateFolder, onDeleteFolder, onSetFolder, pending = NO_PENDING, onPendingChange, onStageItems, onSaveDraft, onUpdateDraft, draftId, layout, releaseTarget = null, releaseHint = '', onRelease, releasing = false, layoutRef }: any) {
+export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUpdateFolder, onDeleteFolder, onSetFolder, pending = NO_PENDING, onPendingChange, onStageItems, onSaveDraft, onUpdateDraft, draftId, layout, releaseTarget = null, releaseHint = '', onRelease, onSyncSchema, releasing = false, layoutRef }: any) {
   const dialect = conn.type === 'postgresql' ? 'postgresql' : 'sqlite'
   // Submit hands the staged DDL to a Changes queue, so it exists exactly when
   // the host has one — `onStageItems`. The console does; the standalone editor
@@ -693,7 +743,12 @@ export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUp
   // passes a null target and `releaseHint` saying what to do about it — the
   // button stays visible and disabled, because "you can't do this yet, here is
   // why" is the answer, and a missing button isn't. Nothing runs before
-  // ReleaseDialog is confirmed.
+  // ReleaseDialog is confirmed — and nothing is *asked* before the database has
+  // been read: `onSyncSchema({ onProgress })` is the host's schema read, and the
+  // dialog opens on it, its Release button disabled until it lands, so the
+  // confirmation describes the schema as it is rather than as the design last
+  // saw it. It answers `{ ok, error }` rather than toasting, because the dialog
+  // that asked for the read is the one showing how it went.
   const types = useColumnTypes(conn)
   const toast = useToast()
 
@@ -742,11 +797,17 @@ export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUp
   const [selectedNote, setSelectedNote] = useState(null) // note id showing its resize handles
   const [noteMenu, setNoteMenu] = useState(null) // note right-click menu { x, y, id }
   const [importDoc, setImportDoc] = useState<SchemaDesignDoc | null>(null) // parsed design file awaiting confirmation
-  // The staged items with their down SQL resolved, once Release has been pressed
-  // and before anything runs — null while the dialog is closed. Resolving is a
-  // read of the live schema, so it can't be done in render.
-  const [releasePlan, setReleasePlan] = useState<any[] | null>(null)
-  const [preparingRelease, setPreparingRelease] = useState(false)
+  // The release wizard: null while it is closed, otherwise which of its two
+  // steps is in hand — reading the database, or the confirmation that read
+  // makes true (see ReleasePhase). One value rather than a flag per step, so a
+  // step can never half-change: the plan and the dialog it is shown in arrive
+  // together or not at all.
+  const [releasePhase, setReleasePhase] = useState<ReleasePhase | null>(null)
+  // Which run of the wizard is in hand. Cancelling during the read leaves that
+  // read finishing in the host — the schema still lands, that is a sync — and
+  // its result must not reopen a dialog someone has closed, or land inside a
+  // second one they have opened since.
+  const releaseRun = useRef(0)
   const importRef = useRef<HTMLInputElement>(null)
   // Where each table was last seen, including ones currently hidden — the
   // arrangement outlives both a rebuild of the node list and a table being
@@ -793,15 +854,57 @@ export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUp
   // (or of a type/default change) is read from the definition that statement is
   // about to overwrite. The resolved items are also what gets released, so the
   // migration records exactly the down SQL the dialog showed.
+  //
+  // The database is read first, in the same step. The canvas draws the design's
+  // stored snapshot and never re-reads on its own (see `diagram`), so a design
+  // opened today can be staging DDL against a schema someone changed last week —
+  // and both halves of the confirmation are only true of the schema that is
+  // there *now*: the down SQL is resolved from live definitions, and the drift
+  // note below is the difference the read found. The host owns that read (it is
+  // what stores the result), so it is asked for one; a failed read cancels the
+  // release rather than asking about a database nobody could see. The host says
+  // why — it is the one holding the toast.
   const openRelease = async () => {
-    if (!pending.length || !releaseTarget) return
-    setPreparingRelease(true)
+    if (!pending.length || !releaseTarget || releasing) return
+    const run = ++releaseRun.current
+    const current = () => releaseRun.current === run
+    setReleasePhase({ step: 'sync', progress: null })
+    // The read is watched inside the dialog rather than under a modal of the
+    // host's, which is what `onProgress` says: whoever draws the progress owns
+    // showing the whole read, success and failure alike.
+    if (onSyncSchema) {
+      const { ok, error } = await onSyncSchema({
+        onProgress: (progress: SyncProgress) => {
+          if (current()) setReleasePhase({ step: 'sync', progress })
+        },
+      })
+      if (!current()) return
+      if (!ok) return setReleasePhase({ step: 'failed', error: error || 'The database did not answer.' })
+    }
     try {
-      setReleasePlan(await resolveRollbacks(conn, pending))
-    } finally {
-      setPreparingRelease(false)
+      const statements = await resolveRollbacks(conn, pending)
+      if (current()) setReleasePhase({ step: 'review', statements })
+    } catch (error) {
+      // Resolving reads the live schema too, so it fails the same way and for
+      // the same reasons — one failed step, one way out of it.
+      if (current()) setReleasePhase({ step: 'failed', error: (error as Error)?.message || 'The database did not answer.' })
     }
   }
+
+  // Closing abandons whatever run was in flight (see `releaseRun`).
+  const closeRelease = () => {
+    releaseRun.current += 1
+    setReleasePhase(null)
+  }
+
+  // What the sync above found the staged DDL disagreeing with. Derived rather
+  // than computed in `openRelease`: the freshly read schema arrives as a new
+  // `layout` and lands in `diagram` a render later, so a memo on both is what
+  // guarantees the dialog is comparing against the read it just waited for.
+  const releaseDrift = useMemo(
+    () => (releasePhase?.step === 'review' ? driftAgainst(releasePhase.statements, diagram) : NO_DRIFT),
+    [releasePhase, diagram]
+  )
 
   // Delete a table: a pending (uncommitted) table just drops its staged
   // statements; an existing table stages a DROP TABLE for the next commit.
@@ -1865,10 +1968,10 @@ export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUp
             size="sm"
             icon={PlayIcon}
             onClick={openRelease}
-            disabled={pending.length === 0 || releasing || preparingRelease || !releaseTarget}
+            disabled={pending.length === 0 || releasing || !!releasePhase || !releaseTarget}
             title={releaseTarget ? `Run the staged changes against ${releaseTarget.name}` : releaseHint}
           >
-            {releasing ? 'Releasing…' : preparingRelease ? 'Preparing…' : 'Release'}
+            {releasing ? 'Releasing…' : 'Release'}
           </Button>
         )}
 
@@ -2398,22 +2501,27 @@ export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUp
         </ContextMenu>
       )}
 
-      {/* Every statement with the down SQL that would undo it, the database it is
-          about to run against, and the one confirmation in front of it — see
-          ReleaseDialog. */}
-      {releasePlan && releaseTarget && (
+      {/* The read of the database, then every statement with the down SQL that
+          would undo it — two steps of one dialog, and the only confirmation in
+          front of a release. See ReleaseDialog. */}
+      {releasePhase && releaseTarget && (
         <ReleaseDialog
-          statements={releasePlan}
+          phase={releasePhase}
           target={releaseTarget}
           dialect={dialect}
-          onCancel={() => setReleasePlan(null)}
+          syncedAt={syncedAt}
+          drift={releaseDrift}
+          onRetry={openRelease}
+          onCancel={closeRelease}
           onConfirm={() => {
-            setReleasePlan(null)
+            if (releasePhase.step !== 'review') return
             // The plan, not `pending`: it is the same items carrying the down SQL
             // resolved a moment ago, which is what the migration records. The
             // layout travels with it too — a host that clears the staged DDL once
             // it has run still has to keep where those tables were placed.
-            onRelease?.(releasePlan, currentLayout())
+            const { statements } = releasePhase
+            closeRelease()
+            onRelease?.(statements, currentLayout())
           }}
         />
       )}
