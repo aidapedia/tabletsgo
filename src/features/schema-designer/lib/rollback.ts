@@ -1,13 +1,39 @@
-import { getColumns } from '@/shared/api/database'
+import { getColumns, getIndexes } from '@/shared/api/database'
 import { draftToItems } from '@/shared/lib/schemaDraft'
+import { indexDropSql, indexNameIn, liveIndexSql } from '@/features/schema-designer/lib/indexes'
 
 // Best-effort rollback SQL for the DDL this feature can stage: CREATE TABLE,
-// ALTER TABLE ADD COLUMN, and DROP TABLE. Row-level data changes (INSERT/
+// ALTER TABLE ADD COLUMN, DROP TABLE, and CREATE / DROP INDEX. Row-level data changes (INSERT/
 // UPDATE/DELETE) and DELETE FROM (empty table) never go through here — the
 // former isn't schema DDL, the latter isn't reconstructable without a data
 // snapshot, so it's marked non-reversible instead.
 
 export const rollbackForCreateTable = (table: string) => `DROP TABLE "${table}";`
+
+// A created index is undone by dropping it — the one index statement whose
+// inverse is pure syntax, so the console's Changes queue can build it without
+// reading anything (see rollbackForDropIndex for the other direction).
+export function rollbackForCreateIndex(sql: string) {
+  // Deliberately narrow: `indexNameIn` reads a DROP INDEX too, and answering
+  // that with another DROP would record a rollback that repeats the change.
+  if (!/^\s*CREATE\s+(UNIQUE\s+)?INDEX/i.test(sql || '')) return null
+  const name = indexNameIn(sql)
+  return name ? indexDropSql(name) : null
+}
+
+// The inverse of a drop is the CREATE that would rebuild the index, which only
+// the *live* definition knows — so, like a dropped column, this reads it before
+// the statement runs. Null when it can't be rebuilt faithfully (a constraint's
+// own index, or one this client can't express), so the caller marks it
+// non-reversible rather than recording a rollback that would lie.
+export async function rollbackForDropIndex(conn: any, sql: string, table: string) {
+  const name = indexNameIn(sql)
+  if (!name || !conn?.id) return null
+  const rows = await getIndexes(conn, table)
+  const row = rows?.find((r: any) => r.name === name)
+  if (!row) return null
+  return liveIndexSql(table, row, conn.type === 'postgresql' ? 'postgresql' : 'sqlite')
+}
 
 // colDef() (columnFields.tsx) always quotes the column name in
 // `ADD COLUMN "name" ...`, so a straight regex extraction is reliable.
@@ -90,6 +116,8 @@ export async function rollbackForItem(conn: any, item: any): Promise<string | nu
     if (/^CREATE TABLE/i.test(sql)) return rollbackForCreateTable(table)
     if (/^DROP TABLE/i.test(sql)) return (await buildDropTableRollback(conn, table)).rollbackSql
     if (/^ALTER TABLE/i.test(sql)) return await rollbackForAlter(conn, sql, table)
+    if (/^CREATE\s+(UNIQUE\s+)?INDEX/i.test(sql)) return rollbackForCreateIndex(sql)
+    if (/^DROP\s+INDEX/i.test(sql)) return await rollbackForDropIndex(conn, sql, table)
     return null
   } catch {
     return null

@@ -25,7 +25,7 @@ src/
 │   │   ├── buttons/              #   Button, IconButton, TextButton
 │   │   ├── form/                 #   Form/FormField/Label, Input/Textarea, PasswordInput, Select, Checkbox,
 │   │   │                         #     CheckboxRow, SearchInput, Toggle, NumberStepper, Segmented
-│   │   ├── navigation/           #   NavItem, Tab, MenuItem
+│   │   ├── navigation/           #   NavItem, Tab, MenuItem, Breadcrumb, RailItem
 │   │   ├── page/                 #   the page shell every full-page view shares: PageHeader (back link +
 │   │   │                         #     media/title/meta + actions), PageTabs (the tab bar AND the active
 │   │   │                         #     tab's body, so spacing can't drift), Narrow (a capped content
@@ -38,9 +38,15 @@ src/
 │   │   │                         #     props yourself for server-side paging), RowActions/RowAction/RowMenu
 │   │   │                         #     (the action cell — every table's row buttons come from here so they
 │   │   │                         #     share one look; the strip stops the click reaching the row)
-│   │   └── (root)                #   Avatar, Badge, PersonRow, RowLabel, SaveQueryPanel, SqlEditor,
-│   │                             #     JsonEditor, icons — no group yet
-│   ├── hooks/                    # generic hooks (useSlideOver)
+│   │   └── (root)                #   Avatar, Badge, PersonRow, RowLabel, DragHandle (the grip a
+│   │                             #     reorderable list grabs by — pair with useDragReorder),
+│   │                             #     SaveQueryPanel, SqlEditor, JsonEditor, icons — no group yet
+│   ├── hooks/                    # generic hooks (useSlideOver, useDragReorder — drag-to-reorder a
+│   │                             #   vertical list of cards: the grip starts it, the whole card is a
+│   │                             #   drop target, and the cards animate into their new places (FLIP:
+│   │                             #   measure on drop, play the delta with transforms). Native HTML5
+│   │                             #   drag, so keep it out of a React Flow canvas, whose own d3-drag
+│   │                             #   suppresses native drag events)
 │   ├── lib/                      # helpers: recents, schemaDraft, toggleId
 │   ├── api/                      # backend client: request.ts (fetch wrapper) + database.ts
 │   ├── config/                   # runtime config / env (API_URL from VITE_API_URL)
@@ -176,7 +182,11 @@ src/
 │   ├── schema-designer/          # visual schema design (React Flow ERD + table/column editors; tables
 │   │   │                         #   sharing a folder are clustered into a draggable, editable region;
 │   │   │                         #   sticky notes pinned to the canvas, and the whole arrangement —
-│   │   │                         #   table/group/note positions — saved with the draft, together with
+│   │   │                         #   table/group/note positions, plus each table's column order (dragged
+│   │   │                         #   in the create/edit table panels, never on the canvas: in the create
+│   │   │                         #   panel it rewrites the CREATE TABLE, in the edit panel it is the
+│   │   │                         #   *drawn* order, since no engine can move a column of an existing
+│   │   │                         #   table with ALTER) — saved with the draft, together with
 │   │   │                         #   the *schema it draws*: a draft stores its database's tables and
 │   │   │                         #   FKs (SchemaSnapshot, inside `layout`). The canvas reads no
 │   │   │                         #   database at all — it draws that snapshot and follows a newer one
@@ -184,7 +194,9 @@ src/
 │   │   │                         #   SchemaDraftPage's header, plus the write-back after a Release))
 │   │   ├── components/           #   SchemaEditor, SchemaSidebar (accordion: Draft Schema / Table List /
 │   │   │                         #     References / Table Folders — click to focus/edit), CreateTablePanel,
-│   │   │                         #     TableEditPanel, columnFields, SchemaHistoryPanel (schema-version audit
+│   │   │                         #     TableEditPanel (also the one writer of the drawn column order —
+│   │   │                         #     onReorderColumns, saved even when it stages no SQL), columnFields
+│   │   │                         #     (ColumnField takes the `dragHandle` its list passes in), SchemaHistoryPanel (schema-version audit
 │   │   │                         #     trail), ReleaseDialog (the confirmation in front of Release: every
 │   │   │                         #     statement, and the database receiving them), LinkConnectionDialog /
 │   │   │                         #     UnlinkConnectionDialog (give a from-scratch design a database — same

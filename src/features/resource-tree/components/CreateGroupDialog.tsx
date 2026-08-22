@@ -7,6 +7,7 @@ import Modal from '@/shared/ui/overlay/Modal'
 import { createGroup } from '../api'
 import { TYPE_LABEL } from '../lib/tree'
 import type { ResourceNode } from '../types'
+import Breadcrumb from '@/shared/ui/navigation/Breadcrumb'
 import NodeIcon from './NodeIcon'
 
 /**
@@ -87,22 +88,17 @@ export default function CreateGroupDialog({
         </FormField>
 
         <FormField label="Where it will live">
-          <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 rounded-[10px] border border-edge bg-elevated px-2.5 py-2 text-xs">
-            {trail.map((n) => (
-              <span key={n.id} className="flex items-center gap-1.5 text-ink-faint">
-                <NodeIcon type={n.type} size={13} />
-                <span className="truncate">{n.name}</span>
-                <span>/</span>
-              </span>
-            ))}
-            <span className="flex items-center gap-1.5 text-ink">
-              <NodeIcon type="group" size={13} />
-              {/* Placeholder rather than an empty gap: the last segment is the
-                  point of the preview, so it has to read as a segment even
-                  before there's a name to put in it. */}
-              <span className={`truncate ${trimmed ? '' : 'italic text-ink-faint'}`}>{trimmed || 'new group'}</span>
-            </span>
-          </div>
+          <Breadcrumb
+            className="rounded-[10px] border border-edge bg-elevated px-2.5 py-2"
+            size="sm"
+            items={[
+              ...trail.map((n) => ({ id: n.id, label: n.name, icon: <NodeIcon type={n.type} size={13} /> })),
+              // Placeholder rather than an empty gap: the last segment is the
+              // point of the preview, so it has to read as a segment even
+              // before there's a name to put in it.
+              { id: 'new', label: trimmed || 'new group', icon: <NodeIcon type="group" size={13} />, placeholder: !trimmed },
+            ]}
+          />
         </FormField>
 
         <p className="text-[11px] leading-relaxed text-ink-faint">

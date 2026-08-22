@@ -70,6 +70,18 @@ export type SchemaLayout = {
   version: number
   /** Table name -> canvas position. Names, not ids: a table *is* its name here. */
   tables: Record<string, { x: number; y: number }>
+  /**
+   * Table name -> the order its columns are drawn in.
+   *
+   * Only the *drawn* order, and only where the DDL can't say it: a staged
+   * CREATE TABLE is rewritten when its columns are dragged (the order becomes
+   * the statement's), but neither Postgres nor SQLite can move a column of a
+   * table that already exists — so for a committed table the arrangement is
+   * the design's, like a position or a note. A name the map doesn't mention is
+   * a column added since it was written and keeps its natural place at the end
+   * (see `orderColumns`).
+   */
+  columns: Record<string, string[]>
   notes: SchemaNote[]
   groups: SchemaGroupLayout[]
   /** The synced schema, or null for a draft with no database behind it. */
@@ -99,7 +111,7 @@ export const NOTE_MIN_H = 80
 export const NOTE_DEFAULT_W = 220
 export const NOTE_DEFAULT_H = 120
 
-export const emptyLayout = (): SchemaLayout => ({ version: LAYOUT_VERSION, tables: {}, notes: [], groups: [], schema: null })
+export const emptyLayout = (): SchemaLayout => ({ version: LAYOUT_VERSION, tables: {}, columns: {}, notes: [], groups: [], schema: null })
 
 /** Nothing placed, nothing written — a draft that has never been arranged. */
 export const isEmptyLayout = (layout: SchemaLayout | null | undefined) =>
@@ -146,9 +158,16 @@ export function normalizeLayout(raw: any): SchemaLayout {
     if (!name || !pos || typeof pos !== 'object') continue
     tables[name] = { x: num(pos.x), y: num(pos.y) }
   }
+  const columns: SchemaLayout['columns'] = {}
+  for (const [name, order] of Object.entries<any>(raw.columns || {})) {
+    if (!name || !Array.isArray(order)) continue
+    const names = order.filter((c: any) => typeof c === 'string' && c)
+    if (names.length) columns[name] = names
+  }
   return {
     version: num(raw.version, LAYOUT_VERSION),
     tables,
+    columns,
     notes: (Array.isArray(raw.notes) ? raw.notes : []).map(normalizeNote).filter(Boolean) as SchemaNote[],
     groups: (Array.isArray(raw.groups) ? raw.groups : []).map(normalizeGroup).filter(Boolean) as SchemaGroupLayout[],
     schema: normalizeSnapshot(raw.schema),
@@ -176,6 +195,33 @@ export function normalizeSnapshot(raw: any): SchemaSnapshot | null {
 /** Build a snapshot from a `/diagram` response. Empty in, null out. */
 export const schemaSnapshot = (diagram: any, syncedAt = Date.now()): SchemaSnapshot | null =>
   normalizeSnapshot({ tables: diagram?.tables, foreignKeys: diagram?.foreignKeys, syncedAt })
+
+/**
+ * Draw a table's columns in the order the design remembers.
+ *
+ * Tolerant in both directions, because the two lists drift apart on their own:
+ * a column the order doesn't mention was added after the arrangement was made
+ * (staged, or synced from the database) and keeps its natural place at the end,
+ * and a name in the order that no longer exists is simply ignored. Returns the
+ * given array unchanged when there is nothing to apply, so it stays a stable
+ * dependency of whatever memo built it.
+ */
+export function orderColumns<T extends { name: string }>(columns: T[], order?: string[] | null): T[] {
+  if (!order || order.length === 0 || columns.length < 2) return columns
+  const rank = new Map(order.map((name, i) => [name, i]))
+  return columns
+    .map((c, i) => ({ c, key: rank.has(c.name) ? (rank.get(c.name) as number) : order.length + i }))
+    .sort((a, b) => a.key - b.key)
+    .map((x) => x.c)
+}
+
+/** The same list with the item at `from` lifted out and dropped in at `to`. */
+export function moveColumn<T>(items: T[], from: number, to: number): T[] {
+  if (from === to || from < 0 || to < 0 || from >= items.length || to >= items.length) return items
+  const next = items.slice()
+  next.splice(to, 0, next.splice(from, 1)[0])
+  return next
+}
 
 /**
  * The same design, with no schema of its own.

@@ -165,12 +165,16 @@ export const sqliteDriver = {
     return schema
   },
 
-  getDiagram(conn) {
+  // `only` (optional) narrows the read to those tables, so a caller syncing a
+  // large schema can walk it in slices and report progress. Each slice is a
+  // complete answer for the tables it names.
+  getDiagram(conn, ctx, { tables: only = null } = {}) {
     const db = dbFor(conn)
     const tables = []
     const foreignKeys = []
     for (const t of listTables(db)) {
-      tables.push({ name: t, columns: getColumns(db, t) })
+      if (only && !only.includes(t)) continue
+      tables.push({ name: t, columns: getColumns(db, t), indexes: getIndexes(db, t) })
       for (const fk of db.prepare(`PRAGMA foreign_key_list("${t}")`).all()) {
         foreignKeys.push({ table: t, column: fk.from, refTable: fk.table, refColumn: fk.to, onDelete: fk.on_delete, onUpdate: fk.on_update })
       }
@@ -254,19 +258,35 @@ function getColumns(db, table) {
 }
 
 function getIndexes(db, table) {
+  // PRAGMA index_list knows a partial index is partial but not what its
+  // predicate is — only the stored CREATE INDEX carries that, and the schema
+  // editor needs the real clause to recreate the index it lets you edit.
+  const defs = new Map(
+    db
+      .prepare(`SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = ?`)
+      .all(table)
+      .map((r) => [r.name, r.sql || ''])
+  )
   return db
     .prepare(`PRAGMA index_list("${table}")`)
     .all()
     .map((idx) => {
       const cols = db.prepare(`PRAGMA index_info("${idx.name}")`).all().map((c) => c.name)
+      const where = defs.get(idx.name)?.match(/\sWHERE\s+([\s\S]+?)\s*;?\s*$/i)
       return {
         name: idx.name,
         algorithm: 'BTREE',
         unique: !!idx.unique,
         columns: cols.join(', '),
-        condition: idx.partial ? '(partial)' : '',
+        condition: idx.partial ? (where ? where[1].trim() : '(partial)') : '',
         include: '',
         comment: '',
+        // `origin` is SQLite's own word for where the index came from: 'c' is a
+        // CREATE INDEX, 'u'/'pk' are the ones a UNIQUE / PRIMARY KEY constraint
+        // made — those can't be dropped on their own, so they show read-only.
+        origin: idx.origin,
+        primary: idx.origin === 'pk',
+        constraint: idx.origin !== 'c',
       }
     })
 }

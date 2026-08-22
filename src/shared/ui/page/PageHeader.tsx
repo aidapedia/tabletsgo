@@ -1,5 +1,7 @@
 import type { ReactNode } from 'react'
 import TextButton from '../buttons/TextButton'
+import Breadcrumb from '../navigation/Breadcrumb'
+import type { Crumb } from '../navigation/Breadcrumb'
 import { ChevronLeft } from '../icons'
 
 /**
@@ -9,9 +11,13 @@ import { ChevronLeft } from '../icons'
  * container, so this header always spans it. Anything that reads badly at full
  * width wraps itself in `<Narrow>` instead.
  *
- * Props: `back` (a breadcrumb-style link out of a detail/form view), `media`
- * (a logo/avatar left of the title), `meta` (a status badge beside it) and
+ * Props: `crumbs` (the trail this page sits at the end of), `back` (the plain
+ * "out of here" link, for a view with no trail worth drawing), `media` (a
+ * logo/avatar left of the title), `meta` (a status badge beside it) and
  * `action` (the primary buttons, right-aligned).
+ *
+ * `crumbs` wins when both are given: a trail already says where back goes, and
+ * two ways out stacked above one title is noise.
  */
 export type PageBack = { label: string; onClick: () => void }
 
@@ -20,14 +26,18 @@ type PageHeaderProps = {
   desc?: ReactNode
   action?: ReactNode
   back?: PageBack
+  crumbs?: Crumb[]
   media?: ReactNode
   meta?: ReactNode
 }
 
-export default function PageHeader({ title, desc, action, back, media, meta }: PageHeaderProps) {
+export default function PageHeader({ title, desc, action, back, crumbs, media, meta }: PageHeaderProps) {
+  const trail = crumbs && crumbs.length > 0 ? crumbs : null
   return (
     <div>
-      {back && (
+      {trail && <Breadcrumb items={trail} size="sm" className="mb-3" />}
+
+      {!trail && back && (
         <TextButton onClick={back.onClick} className="mb-4">
           <ChevronLeft width={16} height={16} /> {back.label}
         </TextButton>

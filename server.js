@@ -3107,12 +3107,18 @@ app.get('/api/connections/:id/types', (req, res) => {
   res.json({ types: db.dataTypesFor(conn) })
 })
 
-// Schema diagram: every table's columns + foreign-key relationships.
+// Schema diagram: every table's columns and indexes + foreign-key relationships.
+// `?tables=a,b,c` answers for just those tables, which is how the schema editor's
+// Sync walks a large schema in slices and reports progress as it goes.
 app.get('/api/connections/:id/diagram', async (req, res) => {
   const conn = connOr404(req, res)
   if (!conn) return
+  const only = String(req.query.tables || '')
+    .split(',')
+    .map((t) => t.trim())
+    .filter(Boolean)
   try {
-    res.json(await db.getDiagram(conn, queryCtx(req)))
+    res.json(await db.getDiagram(conn, queryCtx(req), { tables: only.length ? only : null }))
   } catch (error) {
     fail(res, error)
   }

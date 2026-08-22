@@ -119,7 +119,11 @@ function parseUri(uri, type) {
 // once the connection exists). General holds everything that identifies and
 // reaches the database, SSL/TLS included. Its own route, like the detail view:
 // the page owns the tab so `/connections/:id/edit/backup` is a real address.
-export default function ConnectionForm({ initial, initialType, tab = 'general', onTab, onClose, onSave }) {
+//
+// `onClose` is where cancelling lands (the record being edited, or the list for
+// a new one); `onList` is the list itself, which the breadcrumb needs as its
+// root even when it isn't where cancelling goes.
+export default function ConnectionForm({ initial, initialType, tab = 'general', onTab, onClose, onList, onSave }) {
   const { testConnection } = useConnections()
   const toast = useToast()
   const isEdit = !!initial
@@ -456,7 +460,13 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
   return (
     <div className="w-full">
       <PageHeader
-        back={{ label: 'All connections', onClick: onClose }}
+        crumbs={[
+          { label: 'Connections', onClick: onList || onClose },
+          // Editing sits under the connection it edits; a new one has no record
+          // to sit under yet, so the trail is one level shorter.
+          ...(isEdit ? [{ label: initial.name, onClick: onClose }] : []),
+          { label: isEdit ? 'Edit' : 'New connection' },
+        ]}
         title={isEdit ? 'Edit connection' : 'New connection'}
         desc={
           isEdit

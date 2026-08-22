@@ -280,12 +280,17 @@ export const postgresDriver = {
     return schema
   },
 
-  async getDiagram(conn, ctx) {
+  // `only` (optional) narrows the read to those tables, so a caller syncing a
+  // large schema can walk it in slices and report progress. Everything else is
+  // unchanged by it: each slice is a complete answer for the tables it names.
+  async getDiagram(conn, ctx, { tables: only = null } = {}) {
     const pool = poolFor(conn, ctx)
     const schema = schemaOf(ctx)
+    const names = (await listTables(pool, schema)).filter((t) => !only || only.includes(t))
+    const indexes = await indexesBySchema(pool, schema, names)
     const tables = []
-    for (const t of await listTables(pool, schema)) {
-      tables.push({ name: t, columns: await getColumns(pool, t, schema) })
+    for (const t of names) {
+      tables.push({ name: t, columns: await getColumns(pool, t, schema), indexes: indexes[t] || [] })
     }
     const fkRes = await pool.query(
       `SELECT tc.constraint_name AS constraint, tc.table_name AS table, kcu.column_name AS column,
@@ -298,8 +303,9 @@ export const postgresDriver = {
         ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema
       JOIN information_schema.referential_constraints rc
         ON rc.constraint_name = tc.constraint_name AND rc.constraint_schema = tc.table_schema
-      WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_schema = $1`,
-      [schema]
+      WHERE tc.constraint_type = 'FOREIGN KEY' AND tc.table_schema = $1
+        AND ($2::text[] IS NULL OR tc.table_name = ANY($2))`,
+      [schema, only]
     )
     const foreignKeys = fkRes.rows.map((r) => ({
       constraint: r.constraint,
@@ -452,9 +458,17 @@ async function getColumns(pool, table, schema = 'public') {
   }))
 }
 
-async function getIndexes(pool, table, schema = 'public') {
+/**
+ * Every index in `schema`, grouped by table — one query for a whole schema, or
+ * for the tables named in `only`.
+ *
+ * Grouped rather than per-table because the diagram wants them all: asking once
+ * per table is a round trip per table, on top of the columns one.
+ */
+async function indexesBySchema(pool, schema = 'public', only = null) {
   const r = await pool.query(
-    `SELECT i.relname AS name, am.amname AS algorithm, ix.indisunique AS unique,
+    `SELECT t.relname AS table, i.relname AS name, am.amname AS algorithm, ix.indisunique AS unique,
+            ix.indisprimary AS "primary", (con.conname IS NOT NULL) AS "constraint",
             (SELECT string_agg(a.attname, ', ' ORDER BY k.ord)
              FROM unnest(ix.indkey) WITH ORDINALITY AS k(attnum, ord)
              JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = k.attnum) AS columns,
@@ -465,19 +479,33 @@ async function getIndexes(pool, table, schema = 'public') {
      JOIN pg_class t ON t.oid = ix.indrelid
      JOIN pg_am am ON am.oid = i.relam
      JOIN pg_namespace n ON n.oid = t.relnamespace
-     WHERE t.relname = $1 AND n.nspname = $2
-     ORDER BY i.relname`,
-    [table, schema]
+     LEFT JOIN pg_constraint con ON con.conindid = i.oid AND con.contype IN ('p', 'u', 'x')
+     WHERE n.nspname = $1 AND ($2::text[] IS NULL OR t.relname = ANY($2))
+     ORDER BY t.relname, i.relname`,
+    [schema, only]
   )
-  return r.rows.map((row) => ({
-    name: row.name,
-    algorithm: (row.algorithm || '').toUpperCase(),
-    unique: row.unique,
-    columns: row.columns || '',
-    condition: row.condition || '',
-    include: '',
-    comment: row.comment || '',
-  }))
+  const byTable = {}
+  for (const row of r.rows) {
+    ;(byTable[row.table] ||= []).push({
+      name: row.name,
+      algorithm: (row.algorithm || '').toUpperCase(),
+      unique: row.unique,
+      columns: row.columns || '',
+      condition: row.condition || '',
+      include: '',
+      comment: row.comment || '',
+      // An index Postgres created for a PRIMARY KEY / UNIQUE / EXCLUDE constraint
+      // is owned by that constraint: DROP INDEX refuses it (ALTER TABLE DROP
+      // CONSTRAINT is the only way), so the schema editor shows it read-only.
+      primary: !!row.primary,
+      constraint: !!row.constraint,
+    })
+  }
+  return byTable
+}
+
+async function getIndexes(pool, table, schema = 'public') {
+  return (await indexesBySchema(pool, schema, [table]))[table] || []
 }
 
 async function runQuery(pool, sql, schema) {

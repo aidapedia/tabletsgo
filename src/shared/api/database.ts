@@ -25,8 +25,12 @@ export async function getDb(conn) {
   return conn
 }
 
-export async function listTables(conn) {
-  return safeRequest(withNs(conn, `/connections/${conn.id}/tables`), [])
+// `strict` throws instead of degrading to an empty list — see getDiagram for
+// why a caller that *stores* the answer must not accept a quiet empty one.
+export async function listTables(conn, { strict = false }: { strict?: boolean } = {}) {
+  const path = withNs(conn, `/connections/${conn.id}/tables`)
+  if (strict) return request<any>(path)
+  return safeRequest(path, [])
 }
 
 // Connectivity check → { ok: boolean, error?: string }.
@@ -155,11 +159,17 @@ export async function getNamespaces(conn, database?) {
 // say "couldn't read it". A caller that *stores* it does not: writing an empty
 // schema over a good one loses the diagram, so the schema editor's Sync asks
 // for the error and keeps what it had.
-export async function getDiagram(conn, { strict = false }: { strict?: boolean } = {}) {
+export async function getDiagram(
+  conn,
+  { strict = false, tables }: { strict?: boolean; tables?: string[] } = {}
+) {
   // Same as getTypes: no connection means no live schema to draw — the canvas
   // starts empty rather than asking for /connections/null/diagram.
   if (!conn?.id) return { tables: [], foreignKeys: [] }
-  const path = withNs(conn, `/connections/${conn.id}/diagram`)
+  let path = withNs(conn, `/connections/${conn.id}/diagram`)
+  // A slice of the schema: the tables named, answered in full. Omitted means
+  // the whole thing.
+  if (tables?.length) path += `${path.includes('?') ? '&' : '?'}tables=${encodeURIComponent(tables.join(','))}`
   if (strict) return request<any>(path)
   return safeRequest(path, { tables: [], foreignKeys: [] })
 }

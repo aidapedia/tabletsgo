@@ -8,6 +8,7 @@ import EmptyState from '@/shared/ui/feedback/EmptyState'
 import LoadingState from '@/shared/ui/feedback/LoadingState'
 import { useToast } from '@/shared/ui/feedback/Toast'
 import { CloseIcon, EditIcon, FolderPlusIcon, MoveIcon, TrashIcon } from '@/shared/ui/icons'
+import Breadcrumb from '@/shared/ui/navigation/Breadcrumb'
 import { useAuth } from '@/features/auth'
 import { CreateWorkspaceDialog } from '@/features/admin'
 import { createGroup, deleteNode, renameNode } from '../api'
@@ -232,17 +233,12 @@ export default function NodeDetail({
         <div className="space-y-5">
           {/* Where it sits — the chain a grant would cascade down. */}
           {ancestors.length > 0 && (
-            <div className="flex flex-wrap items-center gap-1 text-[11px] text-ink-faint">
-              {ancestors.map((a) => (
-                <span key={a.id} className="flex items-center gap-1">
-                  <button type="button" onClick={() => onSelect(a.id)} className="hover:text-ink-dim hover:underline">
-                    {a.name}
-                  </button>
-                  <span className="opacity-50">/</span>
-                </span>
-              ))}
-              <span className="text-ink-dim">{node.name}</span>
-            </div>
+            <Breadcrumb
+              items={[
+                ...ancestors.map((a) => ({ id: a.id, label: a.name, onClick: () => onSelect(a.id) })),
+                { id: node.id, label: node.name },
+              ]}
+            />
           )}
 
           {/* Scaffolding: the caller holds nothing here, so the server sends no

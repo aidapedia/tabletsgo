@@ -204,6 +204,16 @@ export const SaveIcon = (props) => (
   </svg>
 )
 
+// Crosshair — "bring this into view", used by the schema diagram's per-table
+// focus button (zoom the canvas to that node).
+export const FocusIcon = (props) => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+    <circle cx="12" cy="12" r="6" />
+    <path d="M12 2v3M12 19v3M2 12h3M19 12h3" />
+  </svg>
+)
+
 export const EyeIcon = (props) => (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
     strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
@@ -522,6 +532,19 @@ export const RestoreIcon = (props) => (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
     strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
     <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 8l5-5 5 5M12 3v12" />
+  </svg>
+)
+
+// The two-column grip on a draggable row (schema diagram column rows). Dots
+// rather than lines: it has to read as "grab me" at 10px wide.
+export const GripIcon = (props) => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="none" {...props}>
+    <circle cx="9" cy="6" r="1.6" />
+    <circle cx="15" cy="6" r="1.6" />
+    <circle cx="9" cy="12" r="1.6" />
+    <circle cx="15" cy="12" r="1.6" />
+    <circle cx="9" cy="18" r="1.6" />
+    <circle cx="15" cy="18" r="1.6" />
   </svg>
 )
 
