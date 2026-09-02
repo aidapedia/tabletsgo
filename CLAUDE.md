@@ -51,7 +51,7 @@ feature via that barrel, not its internal files.
 
 ```
 src/
-├── app/         # wiring only: main.tsx, App.tsx, providers/, routes/ (route table + guards)
+├── app/         # wiring only: main.tsx, App.tsx, providers/, layouts/ (route shells), routes/ (table + guards)
 ├── shared/      # ui/ (buttons, form, navigation, overlay, feedback, table + root micro-components),
 │                #   hooks/, lib/, api/ (request.ts + database.ts), config/, types/
 ├── features/    # self-contained business features (see table below)
@@ -114,7 +114,9 @@ server/
 - A feature folder gets `components/`, `stores/`, `lib/`, `hooks/`, `types.ts` only as needed — don't create empty buckets.
 - Cross-feature use goes through the barrel (`@/features/x`); intra-feature files import each other directly to avoid barrel import cycles.
 - Name folders/files for what they do (e.g. `schema-designer`, not `erd-viewer`; `database.ts`, not `sqlite.ts`).
-- **A page never sets its own width.** `HomeLayout` owns the one content container (max-width, centered); build pages with `shared/ui/page`'s `PageHeader` + `PageTabs`, and wrap only the content that reads badly wide in `<Narrow>`. A page-level `max-w-*` is what made every section a different shape before.
+- **A page never sets its own width.** `HomeLayout` (in `app/layouts/`) owns the one content container (max-width, centered); build pages with `shared/ui/page`'s `PageHeader` + `PageTabs`, and wrap only the content that reads badly wide in `<Narrow>`. A page-level `max-w-*` is what made every section a different shape before.
+- **A route shell lives in `app/layouts/`, never under the section that uses it first.** `HomeLayout` is the shell for the home, admin *and* account routes; filing it under `pages/home/` said it belonged to one of them.
+- **A page is composition, not logic.** If a route file grows state engines and panel wiring, that belongs in its feature — `pages/console/WorkspacePage.tsx` reads the `:id` and renders `features/workspace`'s `DatabaseConsole`, which is where the console's hooks and components live.
 - **Anything a user can be looking at has an address.** A detail view, a create/edit form and a tab are routes (`/connections/:id/:tab`, `/connections/:id/edit/:tab`), not `useState` on the list page — so a refresh keeps you there and a link lands there. Use `useTabRoute` to bind a tab bar to its segment. Transient dialogs (confirm, export, picker) stay local state.
 - All backend calls go through `shared/api/request.ts`: use `request()` for mutations (throws on failure — caller `try/catch`es and toasts) and `safeRequest(path, fallback)` for reads that should degrade quietly. Don't call `fetch` directly or re-declare `API_URL`.
 - UI styling lives in `shared/ui` components — `Button`, `IconButton`, `Input`/`Textarea`, `Form`/`FormField`/`Label`. Use those instead of shared class-string helpers (the old `shared/lib/styles.ts` is gone). `controlClass` (exported from `shared/ui/form/Input`) is **only** for non-`<input>` controls that need the field look (e.g. `Select`) — never put it on a raw `<input>`/`<textarea>`; use `Input`/`Textarea`.

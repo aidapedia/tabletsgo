@@ -18,6 +18,13 @@ src/
 │   ├── main.tsx                  # entry: mounts <AppProviders><App/>
 │   ├── App.tsx                   # renders <AppRoutes/>
 │   ├── providers/                # ThemeContext + AppProviders (composes every provider)
+│   ├── layouts/                  # route shells rendered around an <Outlet/>: HomeLayout (the
+│   │                             #   authenticated shell — grouped sidebar nav, rows are real <a> so
+│   │                             #   they can be opened in a new tab, wrapping THE content container:
+│   │                             #   one max-width, centered, shared by every page, so a page never
+│   │                             #   sets its own width). A layout lives here rather than under the
+│   │                             #   section that happens to use it first — HomeLayout is the shell for
+│   │                             #   the home, admin and account halves alike
 │   └── routes/                   # AppRoutes (route table + RequireAuth guard)
 │
 ├── shared/                       # reusable, feature-agnostic code
@@ -178,7 +185,33 @@ src/
 │   │   │                         #   connection name, environment pill, current database/schema, and the
 │   │   │                         #   schema version on the right — clicking it opens the schema history tab.
 │   │   │                         #   Env + version live here only; the top toolbar no longer shows them)
-│   │   └── lib/                  #   savedQueries, queryHistory (backend calls)
+│   │   │                         #   DatabaseConsole (the shell itself — rail + sidebar + panes + status
+│   │   │                         #     bar, and nothing else: it wires the hooks below to the components
+│   │   │                         #     around it), ConsoleSidebar (the aside + namespace breadcrumb, with
+│   │   │                         #     the selected panel as children), ObjectBrowser (tables/views/
+│   │   │                         #     functions accordion + table folders — owns its own filter, sort and
+│   │   │                         #     folders, none of which leave it), ConsoleToolbar, EditorPanes (both
+│   │   │                         #     panes + the drag divider; takes a renderContent render prop),
+│   │   │                         #     TabContent (one tab's body — the kind switch, and where the lazy
+│   │   │                         #     QueryEditor / WorkflowEditor / DashboardView / RedisConsole are
+│   │   │                         #     imported), EmptyWorkspace, TabContextMenu, ConnectionLostModal
+│   │   ├── hooks/                #   the console's state engines, each independently readable:
+│   │   │                         #   useConsoleTabs (the flat tab list + panes + split + per-tab editor
+│   │   │                         #     state: openTab focuses where a tab already lives else the focused
+│   │   │                         #     pane; settlePanes re-points each pane's active tab after any change
+│   │   │                         #     and folds the split away once pane 1 empties),
+│   │   │                         #   useConnectionBrowser (namespace, objects, ping + heartbeat, nsConn),
+│   │   │                         #   useStagedChanges (the Changes queue, direct-execute, commit batches,
+│   │   │                         #     one schema-version bump per batch),
+│   │   │                         #   useQueryHistory, useSchemaHistory (trail + rollback),
+│   │   │                         #   useFolderTree (the folder CRUD all three panels share),
+│   │   │                         #   useResourceLibrary (a foldered per-connection resource you open in a
+│   │   │                         #     tab — workflows and dashboards are the same object to the console,
+│   │   │                         #     so they are one hook parameterized, not two copies),
+│   │   │                         #   useSavedQueries (not a library: a saved query seeds a tab rather than
+│   │   │                         #     being edited in place, and saving from its tab updates it)
+│   │   └── lib/                  #   savedQueries, queryHistory (backend calls), dialect, consoleCommands
+│   │                             #     (the ⌘K entries — engine-aware, hints mirror the live keymap)
 │   ├── schema-designer/          # visual schema design (React Flow ERD + table/column editors; tables
 │   │   │                         #   sharing a folder are clustered into a draggable, editable region;
 │   │   │                         #   sticky notes pinned to the canvas, and the whole arrangement —
@@ -297,17 +330,12 @@ src/
     │                             #   SMTP config) — no tabs, the sidebar switches. Only reachable
     │                             #   with the system role 'admin'; AppRoutes' RequireSystemAdmin /
     │                             #   RequireWorkspaceUser send each audience to the other's home
-    ├── console/                  # WorkspacePage — the per-connection DB console (route /connection/:id).
-    │                             #   Tabs are one flat list; each carries the editor pane (0 | 1) it shows
-    │                             #   in, so a split is just "some tabs live in pane 1". Every open-X helper
-    │                             #   funnels through openTab (focus where it already lives, else the focused
-    │                             #   pane); settlePanes re-points each pane's active tab after any change and
-    │                             #   folds the split away once pane 1 empties. Both panes render through the
-    │                             #   same renderTabContent, so a split mounts two tabs at once
-    └── home/                     # the authenticated home shell — one file per sidebar section
-        ├── HomeLayout            #   sidebar (grouped nav, rows are real <a> so they can be opened in a
-        │                         #   new tab) + <Outlet/> inside THE content container: one max-width,
-        │                         #   centered, shared by every page — a page never sets its own width
+    ├── console/                  # WorkspacePage — the route /connection/:id. Thin: it reads the :id and
+    │                             #   renders <DatabaseConsole/>, which owns the shell (see
+    │                             #   features/workspace/components). Routed outside HomeLayout because the
+    │                             #   console brings its own rail, sidebar and status bar
+    └── home/                     # the authenticated home shell's pages — one file per sidebar section
+        │                         #   (the shell itself is app/layouts/HomeLayout)
         ├── ui                    #   page composition: Section, TabbedSection, SubHead, ComingSoon, plus
         │                         #   re-exports of shared/ui/page's PageHeader / PageTabs / Narrow
         ├── useTabRoute           #   binds a tab bar to a path segment; the bare section path redirects
@@ -394,10 +422,15 @@ invites); `features/workspace` (singular) is the per-connection DB console. Don'
 conflate them.
 
 ### Future decomposition candidates
-Out of scope so far: `pages/console/WorkspacePage.tsx` (~2200 lines),
-`schema-designer/SchemaEditor.tsx` (~1800), `workspace/TableView.tsx` (~900), and
-`server.js` (~2900 — the remaining step is moving route handlers into
-`server/routes/*.js` express routers).
+Out of scope so far: `schema-designer/SchemaEditor.tsx` (~2500),
+`workspace/TableView.tsx` (~900), and `server.js` (~2900 — the remaining step is
+moving route handlers into `server/routes/*.js` express routers).
+
+The console was the other one. It is now `workspace/components/DatabaseConsole.tsx`
+(~600 lines of wiring) over `workspace/hooks/*`; `pages/console/WorkspacePage.tsx`
+is a dozen lines. Same shape to copy for SchemaEditor: pull the state engines out
+as hooks, the regions out as components, and leave the top file saying only how
+they talk to each other.
 
 ## Backend (`server.js` + `server/`)
 
