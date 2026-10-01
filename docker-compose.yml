@@ -16,6 +16,8 @@ services:
       - NODE_ENV=production
       - PORT=3000
       - META_DB=/app/data/app.db
+      - META_DB_TYPE=${META_DB_TYPE:-sqlite}
+      - META_DATABASE_URL=${META_DATABASE_URL:-}
       # Required — encrypts connection credentials at rest. The server refuses
       # to start without it. Generate one with:
       #   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
@@ -76,5 +78,22 @@ services:
       # - /var/run/docker.sock:/var/run/docker.sock
     restart: unless-stopped
 
+  metadata-postgres:
+    image: postgres:17-alpine
+    profiles: [postgresql]
+    environment:
+      - POSTGRES_DB=tabletsgo
+      - POSTGRES_USER=tabletsgo
+      - POSTGRES_PASSWORD=${META_POSTGRES_PASSWORD:-}
+    volumes:
+      - tabletsgo-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U tabletsgo -d tabletsgo']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
 volumes:
   tabletsgo-data:
+  tabletsgo-postgres:

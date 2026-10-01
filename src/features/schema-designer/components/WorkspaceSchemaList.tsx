@@ -17,7 +17,7 @@ import {
   TrashIcon,
   UnlinkIcon,
 } from '@/shared/ui/icons'
-import { TYPE_LABEL } from '@/features/connections'
+import { TYPE_LABEL } from '@/shared/config/databaseTypes'
 import { relativeTime } from '@/shared/lib/recents'
 import { deleteWorkspaceSchema, listWorkspaceSchemas } from '../lib/api'
 import type { WorkspaceSchemaDraft } from '../types'

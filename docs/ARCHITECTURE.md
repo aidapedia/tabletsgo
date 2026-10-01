@@ -39,7 +39,8 @@ src/
 │   │   │                         #     column — pages never cap themselves, HomeLayout owns the width)
 │   │   ├── overlay/              #   Popover, Tooltip, ContextMenu
 │   │   ├── feedback/             #   Toast, ConfirmDialog, TypeToConfirmDialog, LoadingState, EmptyState, Wizard
-│   │   ├── table/                #   DataTable (the shared list-as-table: sortable columns, row click,
+│   │   ├── table/                #   DataGrid (editable console grid shared with Redis), DataTable
+│   │   │                         #   (the shared list-as-table: sortable columns, row click,
 │   │   │                         #     pagination footer), Pagination, useDataTable (client-side
 │   │   │                         #     sort/paging state — spread its result into DataTable; pass the
 │   │   │                         #     props yourself for server-side paging), RowActions/RowAction/RowMenu
@@ -56,7 +57,7 @@ src/
 │   │                             #   suppresses native drag events)
 │   ├── lib/                      # helpers: recents, schemaDraft, toggleId
 │   ├── api/                      # backend client: request.ts (fetch wrapper) + database.ts
-│   ├── config/                   # runtime config / env (API_URL from VITE_API_URL)
+│   ├── config/                   # runtime API_URL and shared database type catalog/labels
 │   └── types/                    # ambient/shared TS types (globals.d.ts)
 │
 ├── features/                     # self-contained business features (each has index.ts barrel)
@@ -83,7 +84,7 @@ src/
 │   │                             #   ConnectionForm, ConnectionDetail (Data/Access/Schema history/Backup
 │   │                             #     tabs — `detailTabs(type)` drops Schema history on a schemaless
 │   │                             #     engine; the tab itself is schema-designer's SchemaHistoryPanel),
-│   │                             #   ConnectionAccessPanel, DbTypePickerModal (owns DB_CATALOG/TYPE_LABEL),
+│   │                             #   ConnectionAccessPanel, DbTypePickerModal (uses shared/config/databaseTypes),
 │   │                             #   ConnectionSwitcherModal (the console's "switch connection" overlay:
 │   │                             #     search + database-type filter chips + a collapsible folder tree —
 │   │                             #     a connection's `folder` string nests on "/"; ↑/↓/Enter/Esc),
@@ -162,8 +163,9 @@ src/
 │   │                             #   (path/tree order). Drives the sidebar folder view and the
 │   │                             #   schema-designer's draggable/editable folder regions.
 │   ├── keymap/                   # stores/KeymapContext (useKeymap/useShortcut) + KeymapSetting
+│   ├── saved-queries/            # saved-query API shared by the console and schema designer
 │   ├── workspace/                # the DB console (one connection): data browsing + querying
-│   │   ├── components/           #   DataGrid (drag / Shift+click selects a rectangular cell range —
+│   │   ├── components/           #   TableView uses shared/ui/table/DataGrid (drag / Shift+click selects a rectangular cell range —
 │   │   │                         #     ⌘/Ctrl+C copies it as TSV, Esc clears; the range rides along in
 │   │   │                         #     onCellContextMenu's payload as `selection`), TableView (its cell
 │   │   │                         #     context menu acts on that selection: copy as TSV/CSV/JSON, set
@@ -236,7 +238,7 @@ src/
 │   │   │                         #     engine only — and cut a draft loose from one, carrying its live
 │   │   │                         #     tables out as DDL), SchemaHistoryPanel (the connection's migration
 │   │   │                         #     trail as a *home* tab — /connections/:id/schema. Not
-│   │   │                         #     SchemaHistoryView: that one is the console's DataGrid with a
+│   │   │                         #     workspace/components/SchemaHistoryView: that one is the console's DataGrid with a
 │   │   │                         #     flex height; this is the shared DataTable. Both take
 │   │   │                         #     canRollbackTo/rollbackTitle/MigrationInspector from
 │   │   │                         #     MigrationInspector, so the rollback rule is written once)
@@ -369,7 +371,8 @@ src/
         │                         #   /schemas/:id?unlink=1 (the editor opens with the dialog up, because
         │                         #   the move carries the canvas's tables out), schema version history ⟶
         │                         #   /connections/:id/schema (the target connection's own history tab)
-        ├── SchemaDraftPage       # /schemas/:id → the schema editor page, hosting either kind of draft,
+        ├── SchemaDraftPage       # thin route wrapper for schema-designer's controller hook and view;
+        │                         # /schemas/:id hosts either kind of draft,
         │                         #   and /schemas/connection/:connectionId → "the editor for this
         │                         #   connection", which is what the console's rail Schema icon opens: it
         │                         #   reads that connection's saved queries and redirects (replace) to the
@@ -444,8 +447,13 @@ server/
 ├── util.js               # safeJson, jsonPreview, describeError, sleep, sanitizeForKey, computeNextRun
 ├── crypto.js             # AES-256-GCM: encryptSecret/decryptSecret + streamed file encryption.
 │                         #   One scrypt-derived key per namespace (connections | storage | backup files)
-├── meta.js               # the app's own SQLite handle, initMetaDb(), snapshotMetaSync()
+├── meta.js               # selects SQLite or PostgreSQL for app metadata, initMetaDb(), snapshotMetaSync()
+├── postgres-meta.js      # synchronous PostgreSQL adapter, bootstrap and metadata version check
+├── postgres-sql.js       # metadata placeholder and conflict syntax translation
+├── postgres-metadata-schema.sql # PostgreSQL baseline matching SQLite migration v20
 ├── migrations.js         # versioned, append-only meta-schema steps (see the `meta-schema` skill)
+├── dashboards.js         # dashboard metadata CRUD and workspace summaries
+├── workflow-store.js     # workflow metadata CRUD and run-history reads
 ├── auth.js               # the guards — requireAuth, requireSystemAdmin (system role),
 │                         #   requirePermission/requireMember (workspace role) — plus the
 │                         #   connection-access rules. `sessionMiddleware` resolves the bearer
@@ -508,6 +516,7 @@ server/
 │   ├── index.js          #   barrel — what the routes import
 │   ├── schedule.js       #   the backup_schedules row store, clamps and validation
 │   ├── runner.js         #   export → store, retries, run history, failure notification
+│   ├── history.js        #   backup run calendar, listing and upload status
 │   └── restore.js        #   fetch artifact → decrypt → hand to the driver
 └── system-update.js      # GitHub release checking (cached) + Docker-socket self-update
 ```

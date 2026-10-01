@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { cellText, editorKind } from '@/features/workspace/components/DataGrid'
+import { cellText, editorKind } from '@/shared/ui/table/DataGrid'
 import { formatCombo, useKeymap, useShortcut } from '@/features/keymap'
 import Button from '@/shared/ui/buttons/Button'
 import Segmented from '@/shared/ui/form/Segmented'

@@ -1,0 +1,5 @@
+allowBuilds:
+  better-sqlite3: true
+  libpq: true
+minimumReleaseAgeExclude:
+  - pg-native@3.9.1

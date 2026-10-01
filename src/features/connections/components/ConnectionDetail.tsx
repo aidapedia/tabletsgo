@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useConnections } from '../stores/ConnectionsContext'
 import ConnectionAccessPanel from './ConnectionAccessPanel'
 import { TYPE_LABEL } from './DbTypePickerModal'
 import { BackupPanel } from '@/features/backup'
@@ -100,6 +101,7 @@ function DetailRow({ label, value }: { label: string; value?: string }) {
 // (it lives in the URL as `/connections/:id/:tab`), so a tab is linkable.
 export default function ConnectionDetail({ conn, onBack, onOpen, onEdit, onDelete, onExport, onRefresh, connecting, tab = 'data', onTab }: any) {
   const toast = useToast()
+  const { connections } = useConnections()
   const [status, setStatus] = useState<'checking' | 'connected' | 'offline'>('checking')
   const [tableCount, setTableCount] = useState<number | null>(null)
   const [sessions, setSessions] = useState<SessionStats | null>(null)
@@ -260,7 +262,9 @@ export default function ConnectionDetail({ conn, onBack, onOpen, onEdit, onDelet
           <BackupPanel
             connectionId={conn.id}
             connectionType={conn.type}
+            connectionName={conn.name}
             workspaceId={conn.workspaceId}
+            connections={connections}
             onConfigure={() => onEdit(conn, 'backup')}
           />
         )}

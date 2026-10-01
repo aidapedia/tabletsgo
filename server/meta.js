@@ -1,5 +1,5 @@
 /**
- * Metadata store — a local SQLite DB that persists app data: users, workspaces,
+ * Metadata store — SQLite or PostgreSQL persists app data: users, workspaces,
  * saved connections, queries, workflows, dashboards and run history. Separate
  * from the databases the user connects to (those live behind server/db/).
  */
@@ -8,18 +8,29 @@ import fs from 'fs'
 import path from 'path'
 import { randomUUID } from 'crypto'
 import Database from 'better-sqlite3'
-import { BACKUPS_DIR, META_DB_PATH } from './config.js'
+import { BACKUPS_DIR, META_DATABASE_URL, META_DB_PATH, META_DB_TYPE } from './config.js'
 import { APP_SETTINGS_KEY, encryptSecret, sha256 } from './crypto.js'
 import { migrate } from './migrations.js'
 
-export const meta = new Database(META_DB_PATH)
-meta.pragma('journal_mode = WAL')
+let postgres = null
+if (META_DB_TYPE === 'postgresql') {
+  try {
+    postgres = await import('./postgres-meta.js')
+  } catch (error) {
+    if (error.code === 'ERR_MODULE_NOT_FOUND' || error.code === 'MODULE_NOT_FOUND') {
+      throw new Error('PostgreSQL metadata requires pg-native and libpq. Install PostgreSQL client development libraries, then reinstall dependencies.', { cause: error })
+    }
+    throw error
+  }
+}
+export const meta = postgres ? new postgres.PostgresMeta(META_DATABASE_URL) : new Database(META_DB_PATH)
+if (!postgres) meta.pragma('journal_mode = WAL')
 
-// A safe synchronous snapshot of the meta DB: checkpoint the WAL so the main
-// file is complete, then copy it. Safe at boot (no concurrent writers) and
-// reused by the update wizard's backup endpoint.
+// Synchronous metadata snapshot. SQLite checkpoints its WAL before copying;
+// PostgreSQL uses pg_dump's custom archive format.
 export function snapshotMetaSync(destPath) {
   fs.mkdirSync(path.dirname(destPath), { recursive: true })
+  if (postgres) return meta.backup(destPath)
   try {
     meta.pragma('wal_checkpoint(TRUNCATE)')
   } catch {
@@ -30,12 +41,11 @@ export function snapshotMetaSync(destPath) {
 }
 
 export function initMetaDb() {
-  // Versioned, stepped migrations (see server/migrations.js): each pending step
-  // runs in its own transaction and stamps PRAGMA user_version. The snapshot
-  // hook copies the meta DB to data/backups/ before the first pending step
-  // touches an existing install, so a bad upgrade can be rolled back by
-  // restoring the file.
-  migrate(meta, {
+  // SQLite keeps its shipped, append-only migration steps and snapshots an
+  // existing file before upgrading. PostgreSQL bootstraps the equivalent v20
+  // schema in a transaction and records its own version.
+  if (postgres) postgres.migratePostgres(meta)
+  else migrate(meta, {
     encryptSecret,
     // Secrets moving into app_settings are sealed under that namespace's key
     // (v10 promotes a workspace's plaintext SMTP password to the global config).

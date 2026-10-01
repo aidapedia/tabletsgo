@@ -48,12 +48,16 @@ function nextRunLabel(s: BackupSchedule | null) {
 export default function BackupPanel({
   connectionId,
   connectionType,
+  connectionName,
   workspaceId,
+  connections,
   onConfigure,
 }: {
   connectionId: string
   connectionType: string
+  connectionName: string
   workspaceId: string
+  connections: { id: string; name: string; type: string }[]
   onConfigure?: () => void
 }) {
   const toast = useToast()
@@ -166,6 +170,7 @@ export default function BackupPanel({
         <BackupVersionList
           connectionId={connectionId}
           connectionType={connectionType}
+          connections={connections}
           workspaceId={workspaceId}
           dateFilter={dateFilter}
           onClearDateFilter={() => setDateFilter(null)}
@@ -183,7 +188,7 @@ export default function BackupPanel({
           onRunNow={runNow}
           onConfigure={onConfigure}
         />
-        <RestorePanel connectionId={connectionId} workspaceId={workspaceId} />
+        <RestorePanel connectionId={connectionId} connectionName={connectionName} workspaceId={workspaceId} />
       </aside>
     </div>
   )

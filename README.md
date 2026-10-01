@@ -10,7 +10,7 @@ Browse data, write queries, design schemas visually, automate workflows, and bac
 [![Version](https://img.shields.io/badge/version-0.22.0-6FCF6A)](package.json)
 [![Docker](https://img.shields.io/badge/deploy-Docker-2496ED?logo=docker&logoColor=white)](#-installation)
 [![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=white)](https://react.dev)
-[![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org)
+[![TypeScript](https://img.shields.io/badge/TypeScript-checked-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 
 </div>
 
@@ -121,7 +121,7 @@ Redis is a key‑value store, not a relational database, so the console adapts: 
 
 ## Try it in 60 seconds
 
-The fastest way to kick the tires — one command, no external database required. Tabletsgo ships as a single Docker image with a built‑in SQLite metadata store, so there's nothing else to install.
+The fastest way to kick the tires — one command, no external database required. SQLite is the default metadata store; PostgreSQL is available for deployments that prefer a database server.
 
 ```bash
 git clone https://github.com/aidapedia/tabletsgo.git
@@ -139,6 +139,24 @@ Open **http://localhost:3000** and complete the quick **first‑run setup wizard
 
 > The wizard runs until the instance *has* an administrator, not just until it has users — so an older install that ended up with no admin can still set one up. In that case the wizard asks for the credentials of an **existing** account and promotes it, rather than letting anyone create an admin from nothing.
 
+### PostgreSQL for app metadata
+
+To store accounts, workspaces, saved connections, and login sessions in PostgreSQL, set these in `.env` and start the optional database service:
+
+```dotenv
+META_DB_TYPE=postgresql
+META_POSTGRES_PASSWORD=choose-a-strong-password
+META_DATABASE_URL=postgresql://tabletsgo:choose-a-strong-password@metadata-postgres:5432/tabletsgo
+```
+
+```bash
+docker compose --profile postgresql up -d
+```
+
+For an external PostgreSQL server, set `META_DATABASE_URL` to its connection URL and run `docker compose up -d` without the profile. Use a dedicated, empty database or schema for a new PostgreSQL deployment. Switching `META_DB_TYPE` selects a different store; it does **not** copy data from an existing SQLite file. Keep the same `ENCRYPTION_KEY` if you move encrypted connection records between installations. Metadata snapshots from PostgreSQL are `pg_dump` custom-format `.dump` files in the app's backup directory. Source installations using PostgreSQL need `libpq` development files (`pg_config`) when installing packages and `pg_dump` on `PATH`; the Docker image includes both.
+
+Run one Tabletsgo app instance for either metadata store. The permission cache and workflow scheduler are process-local, and PostgreSQL metadata queries use a synchronous client to preserve the existing authorization contract. Keep PostgreSQL close to the app to avoid adding network latency to requests.
+
 ---
 
 ## Configuration
@@ -150,6 +168,9 @@ All configuration is via environment variables (see [`.env.example`](.env.exampl
 | `ENCRYPTION_KEY` | ✅ | AES‑256‑GCM key encrypting connection credentials at rest. The server won't start without it. **Changing/losing it makes existing credentials unreadable.** |
 | `PORT` | | Host port to expose (container listens on `3000`). |
 | `META_DB` | | Path to the metadata SQLite DB (default `/app/data/app.db`). |
+| `META_DB_TYPE` | | Metadata store: `sqlite` (default) or `postgresql`. This is separate from the databases users connect to. |
+| `META_DATABASE_URL` | PostgreSQL only | PostgreSQL connection URL for app metadata. Use a dedicated, empty database or schema on first boot. |
+| `META_POSTGRES_PASSWORD` | Bundled PostgreSQL only | Password for the optional `metadata-postgres` Compose service. |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | | Optional **instance admin** pre‑seed — the admin account only, no workspace. Leave unset to use the in‑browser setup wizard. The seeded account administers the instance and holds no workspace access, so create the first workspace (naming its owner) from Administration → Workspaces before anyone can add connections. |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` / `SMTP_SECURE` | | Optional SMTP for invite/reset emails, and the **fallback** under the mail server an admin sets in Administration → Email (which wins, and changes without a redeploy). Invites always return a copyable link even without SMTP. |
 | `VITE_API_URL` | | Frontend API base, **baked at build time** (default `/api`). Set to an absolute URL only for a split frontend/backend deploy. |

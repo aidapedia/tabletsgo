@@ -2,7 +2,7 @@
 // ('query' groups saved queries, 'dashboard' groups dashboards, 'workflow'
 // groups workflows, 'table' groups the connected database's tables). Backed by
 // the single `folders` table on the server; features wrap these with their own
-// type bound (see workspace/lib/savedQueries.ts, dashboard/lib/api.ts,
+// type bound (see saved-queries/api.ts, dashboard/lib/api.ts,
 // workflow/lib/api.ts and table-folders/lib/api.ts).
 // Reads degrade quietly; mutations throw (caller try/catches + toasts).
 

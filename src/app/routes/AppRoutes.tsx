@@ -1,30 +1,36 @@
-import { useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { useAuth, getSetupStatus } from '@/features/auth'
-import LoginPage from '@/pages/auth/LoginPage'
-import SetupPage from '@/pages/auth/SetupPage'
-import AcceptInvitePage from '@/pages/auth/AcceptInvitePage'
-import ForgotPasswordPage from '@/pages/auth/ForgotPasswordPage'
-import ResetPasswordPage from '@/pages/auth/ResetPasswordPage'
-import HomeLayout from '@/app/layouts/HomeLayout'
-import HomePage from '@/pages/home/HomePage'
-import DashboardsPage from '@/pages/home/DashboardsPage'
-import ConnectionsPage from '@/pages/home/ConnectionsPage'
-import ConnectionDetailPage from '@/pages/home/ConnectionDetailPage'
-import ConnectionFormPage from '@/pages/home/ConnectionFormPage'
-import WorkspaceSettingsPage from '@/pages/home/WorkspaceSettingsPage'
-import MembersPage from '@/pages/home/MembersPage'
-import NotificationsPage from '@/pages/home/NotificationsPage'
-import StoragePage from '@/pages/home/StoragePage'
-import SettingsPage from '@/pages/home/SettingsPage'
-import ResourceTreePage from '@/pages/home/ResourceTreePage'
-import WorkflowsPage from '@/pages/home/WorkflowsPage'
-import SchemasPage from '@/pages/home/SchemasPage'
-import SchemaDraftPage from '@/pages/home/SchemaDraftPage'
-import WorkspacePage from '@/pages/console/WorkspacePage'
-import AdminWorkspacesPage from '@/pages/admin/AdminWorkspacesPage'
-import AdminUsersPage from '@/pages/admin/AdminUsersPage'
-import AdminEmailPage from '@/pages/admin/AdminEmailPage'
+
+// Each address loads its page only when visited. The console and schema editor
+// have large editor dependencies; importing every page here made them part of
+// the initial download even for someone opening the login screen.
+const LoginPage = lazy(() => import('@/pages/auth/LoginPage'))
+const SetupPage = lazy(() => import('@/pages/auth/SetupPage'))
+const AcceptInvitePage = lazy(() => import('@/pages/auth/AcceptInvitePage'))
+const ForgotPasswordPage = lazy(() => import('@/pages/auth/ForgotPasswordPage'))
+const ResetPasswordPage = lazy(() => import('@/pages/auth/ResetPasswordPage'))
+const HomeLayout = lazy(() => import('@/app/layouts/HomeLayout'))
+const HomePage = lazy(() => import('@/pages/home/HomePage'))
+const DashboardsPage = lazy(() => import('@/pages/home/DashboardsPage'))
+const ConnectionsPage = lazy(() => import('@/pages/home/ConnectionsPage'))
+const ConnectionDetailPage = lazy(() => import('@/pages/home/ConnectionDetailPage'))
+const ConnectionFormPage = lazy(() => import('@/pages/home/ConnectionFormPage'))
+const WorkspaceSettingsPage = lazy(() => import('@/pages/home/WorkspaceSettingsPage'))
+const MembersPage = lazy(() => import('@/pages/home/MembersPage'))
+const NotificationsPage = lazy(() => import('@/pages/home/NotificationsPage'))
+const StoragePage = lazy(() => import('@/pages/home/StoragePage'))
+const SettingsPage = lazy(() => import('@/pages/home/SettingsPage'))
+const ResourceTreePage = lazy(() => import('@/pages/home/ResourceTreePage'))
+const WorkflowsPage = lazy(() => import('@/pages/home/WorkflowsPage'))
+const SchemasPage = lazy(() => import('@/pages/home/SchemasPage'))
+const SchemaDraftPage = lazy(() => import('@/pages/home/SchemaDraftPage'))
+const WorkspacePage = lazy(() => import('@/pages/console/WorkspacePage'))
+const AdminWorkspacesPage = lazy(() => import('@/pages/admin/AdminWorkspacesPage'))
+const AdminUsersPage = lazy(() => import('@/pages/admin/AdminUsersPage'))
+const AdminEmailPage = lazy(() => import('@/pages/admin/AdminEmailPage'))
+
+const routeFallback = <div role="status" className="p-8 text-center text-sm text-ink-dim">Loading…</div>
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { user } = useAuth()
@@ -70,15 +76,15 @@ export function AppRoutes() {
   // /setup and the login page points at it.
   if (setup.needsSetup && !setup.hasUsers && !user) {
     return (
-      <Routes>
+      <Suspense fallback={routeFallback}><Routes>
         <Route path="/setup" element={<SetupPage onComplete={setupDone} />} />
         <Route path="*" element={<Navigate to="/setup" replace />} />
-      </Routes>
+      </Routes></Suspense>
     )
   }
 
   return (
-    <Routes>
+    <Suspense fallback={routeFallback}><Routes>
       <Route
         path="/setup"
         element={setup.needsSetup ? <SetupPage hasUsers onComplete={setupDone} /> : <Navigate to="/" replace />}
@@ -199,6 +205,6 @@ export function AppRoutes() {
         }
       />
       <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+    </Routes></Suspense>
   )
 }

@@ -93,14 +93,40 @@ export const saveConnection = (conn) => {
       // `max_sessions` is left out on purpose: the column stays (migrations are
       // additive-only) but nothing reads it any more, so it falls back to
       // its DEFAULT 0.
-      `INSERT OR REPLACE INTO connections
+      `INSERT INTO connections
        (id, type, name, workspace_id, environment, folder, tags, credentials, schema_version, owner_id, data, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', COALESCE((SELECT created_at FROM connections WHERE id = ?), ?), ?)`
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         type = excluded.type, name = excluded.name, workspace_id = excluded.workspace_id,
+         environment = excluded.environment, folder = excluded.folder, tags = excluded.tags,
+         credentials = excluded.credentials, schema_version = excluded.schema_version,
+         owner_id = excluded.owner_id, data = excluded.data, updated_at = excluded.updated_at`
     )
-    .run(row.id, row.type, row.name, row.workspace_id, row.environment, row.folder, row.tags, row.credentials, row.schema_version, row.owner_id, row.id, now, now)
+    .run(row.id, row.type, row.name, row.workspace_id, row.environment, row.folder, row.tags, row.credentials, row.schema_version, row.owner_id, now, now)
 }
 
-export const deleteConnectionRow = (id) => meta.prepare('DELETE FROM connections WHERE id = ?').run(id)
+// One metadata cascade for both connection deletion and workspace deletion.
+// History and backup rows are instance-specific (so they are not exported), but
+// they still belong to the connection and must be removed with it. The caller
+// removes the mirrored resource node in the same outer transaction.
+export const deleteConnectionMetadata = (id, database = meta) => database.transaction(() => {
+  for (const table of [
+    'saved_queries',
+    'connection_tables',
+    'workflows',
+    'workflow_runs',
+    'dashboards',
+    'folders',
+    'query_history',
+    'connection_access',
+    'schema_migrations',
+    'backup_schedules',
+    'backup_runs',
+  ]) {
+    database.prepare(`DELETE FROM ${table} WHERE connection_id = ?`).run(id)
+  }
+  database.prepare('DELETE FROM connections WHERE id = ?').run(id)
+})()
 
 // Bump a connection's schema version after a successful DDL commit. Direct
 // column update — avoids round-tripping (and re-encrypting) the full row.

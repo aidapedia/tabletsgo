@@ -10,7 +10,7 @@ import {
   renameFolder,
   deleteFolder,
   moveFolder,
-} from '../lib/savedQueries'
+} from '@/features/saved-queries'
 import useFolderTree from './useFolderTree'
 
 type Options = {

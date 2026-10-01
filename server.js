@@ -6,7 +6,7 @@
  * module under server/:
  *
  *   db/           the engine-agnostic database layer (sqlite | postgres | redis)
- *   meta.js       the app's own SQLite store; migrations.js evolves its schema
+ *   meta.js       the app's own SQLite/PostgreSQL store; migrations.js evolves SQLite
  *   auth.js       sessions, guards, workspace/connection access rules
  *   connections.js  connection records (credentials encrypted at rest)
  *   folders.js    the polymorphic folder tree
@@ -39,6 +39,7 @@ import {
   GIT_SHA,
   MAX_SESSIONS_PER_CONNECTION,
   META_DB_PATH,
+  META_DB_TYPE,
   PORT,
   SCHEDULER_ENABLED,
 } from './server/config.js'
@@ -142,7 +143,7 @@ import {
 import { clearGlobalSmtp, publicGlobalSmtp, saveGlobalSmtp } from './server/app-settings.js'
 import {
   bumpSchemaVersion,
-  deleteConnectionRow,
+  deleteConnectionMetadata,
   getConnection,
   listConnections,
   saveConnection,
@@ -169,7 +170,25 @@ import {
   testStorage,
   updateStorage,
 } from './server/storage.js'
-import { executeAndRecord, listWorkflowsForConnections, nextRunForGraph, runDueWorkflows } from './server/workflow.js'
+import { executeAndRecord, listWorkflowsForConnections, runDueWorkflows } from './server/workflow.js'
+import {
+  createWorkflow,
+  deleteWorkflow,
+  getWebhookWorkflow,
+  getWorkflow,
+  getWorkflowRun,
+  listConnectionWorkflows,
+  listWorkflowRuns,
+  updateWorkflow,
+} from './server/workflow-store.js'
+import {
+  createDashboard,
+  deleteDashboard,
+  getDashboard,
+  listDashboards,
+  listDashboardsForConnections,
+  updateDashboard,
+} from './server/dashboards.js'
 import {
   canRestore,
   createSchedule,
@@ -184,6 +203,7 @@ import {
   updateSchedule,
   validateScheduleBody,
 } from './server/backup/index.js'
+import { backupCalendar, findRunUpload, listBackupRuns, markRunUploadDeleted } from './server/backup/history.js'
 import { buildConnectionExport, importConnectionDoc } from './server/connection-transfer.js'
 import {
   createDraft as createSchemaDraft,
@@ -1595,18 +1615,12 @@ app.delete('/api/connections/:id', async (req, res) => {
   db.releaseConnection(conn)
   await endAllConnectionSessions(req.params.id)
 
-  deleteConnectionRow(req.params.id)
-  meta.prepare('DELETE FROM saved_queries WHERE connection_id = ?').run(req.params.id)
-  meta.prepare('DELETE FROM folders WHERE connection_id = ?').run(req.params.id)
-  meta.prepare('DELETE FROM connection_tables WHERE connection_id = ?').run(req.params.id)
-  meta.prepare('DELETE FROM workflows WHERE connection_id = ?').run(req.params.id)
-  meta.prepare('DELETE FROM workflow_runs WHERE connection_id = ?').run(req.params.id)
-  meta.prepare('DELETE FROM dashboards WHERE connection_id = ?').run(req.params.id)
-  meta.prepare('DELETE FROM query_history WHERE connection_id = ?').run(req.params.id)
-  meta.prepare('DELETE FROM connection_access WHERE connection_id = ?').run(req.params.id)
-  // Takes the connection's node and everything filed under it (its dashboard and
-  // workflow nodes), plus every grant made on any of them.
-  deleteResourceNode('connection', req.params.id)
+  meta.transaction(() => {
+    deleteConnectionMetadata(req.params.id)
+    // Takes the connection's node and everything filed under it (its dashboard
+    // and workflow nodes), plus every grant made on any of them.
+    deleteResourceNode('connection', req.params.id)
+  })()
   res.json({ ok: true })
 })
 
@@ -1941,96 +1955,36 @@ app.get('/api/workspaces/:id/workflows', (req, res) => {
 })
 
 app.get('/api/connections/:id/workflows', (req, res) => {
-  const rows = meta
-    .prepare('SELECT id, name, ts, protected, schedule_enabled, folder_id FROM workflows WHERE connection_id = ? ORDER BY ts DESC')
-    .all(req.params.id)
-  res.json(
-    rows.map((r) => ({
-      id: r.id,
-      name: r.name,
-      ts: r.ts,
-      protected: !!r.protected,
-      scheduleEnabled: !!r.schedule_enabled,
-      folderId: r.folder_id || null,
-    }))
-  )
+  res.json(listConnectionWorkflows(req.params.id))
 })
 
 app.post('/api/connections/:id/workflows', (req, res) => {
-  const { name, graph, folderId } = req.body || {}
-  if (!name?.trim()) return res.status(400).json({ error: 'A workflow name is required' })
-  const entry = {
-    id: randomUUID(),
-    name: name.trim(),
-    graph: graph && typeof graph === 'object' ? graph : { nodes: [], edges: [] },
-    folderId: folderId || null,
-    ts: Date.now(),
+  try {
+    res.json(createWorkflow(req.params.id, req.body))
+  } catch (error) {
+    fail(res, error)
   }
-  meta
-    .prepare('INSERT INTO workflows (id, connection_id, name, graph, folder_id, ts) VALUES (?, ?, ?, ?, ?, ?)')
-    .run(entry.id, req.params.id, entry.name, JSON.stringify(entry.graph), entry.folderId, entry.ts)
-  res.json({ ...entry, protected: false, scheduleEnabled: false })
 })
 
 app.get('/api/connections/:id/workflows/:wid', (req, res) => {
-  const row = meta
-    .prepare('SELECT id, name, graph, protected, schedule_enabled FROM workflows WHERE id = ? AND connection_id = ?')
-    .get(req.params.wid, req.params.id)
-  if (!row) return res.status(404).json({ error: 'Not found' })
-  res.json({
-    id: row.id,
-    name: row.name,
-    graph: safeJson(row.graph),
-    protected: !!row.protected,
-    scheduleEnabled: !!row.schedule_enabled,
-  })
+  const workflow = getWorkflow(req.params.id, req.params.wid)
+  if (!workflow) return res.status(404).json({ error: 'Not found' })
+  res.json(workflow)
 })
 
 app.put('/api/connections/:id/workflows/:wid', (req, res) => {
-  const body = req.body || {}
-  const existing = meta.prepare('SELECT graph, schedule_enabled FROM workflows WHERE id = ? AND connection_id = ?').get(req.params.wid, req.params.id)
-  if (!existing) return res.status(404).json({ error: 'Not found' })
-  const sets = []
-  const vals = []
-  if (body.name != null) {
-    if (!body.name.trim()) return res.status(400).json({ error: 'A name is required' })
-    sets.push('name = ?')
-    vals.push(body.name.trim())
+  try {
+    if (!updateWorkflow(req.params.id, req.params.wid, req.body)) return res.status(404).json({ error: 'Not found' })
+    res.json({ ok: true })
+  } catch (error) {
+    fail(res, error)
   }
-  if (body.graph != null) {
-    sets.push('graph = ?')
-    vals.push(JSON.stringify(body.graph))
-  }
-  if (body.scheduleEnabled != null) {
-    sets.push('schedule_enabled = ?')
-    vals.push(body.scheduleEnabled ? 1 : 0)
-  }
-  // folderId is explicitly settable (null moves the workflow back to the root).
-  if ('folderId' in body) {
-    sets.push('folder_id = ?')
-    vals.push(body.folderId || null)
-  }
-  if (!sets.length) return res.status(400).json({ error: 'Nothing to update' })
-  // Recompute next_run_at whenever the graph or the enabled flag changes —
-  // whichever the request just posted wins over what's already stored.
-  if (body.graph != null || body.scheduleEnabled != null) {
-    const graph = body.graph != null ? body.graph : safeJson(existing.graph)
-    const enabled = body.scheduleEnabled != null ? !!body.scheduleEnabled : !!existing.schedule_enabled
-    sets.push('next_run_at = ?')
-    vals.push(nextRunForGraph(graph, enabled))
-  }
-  const r = meta
-    .prepare(`UPDATE workflows SET ${sets.join(', ')} WHERE id = ? AND connection_id = ?`)
-    .run(...vals, req.params.wid, req.params.id)
-  if (!r.changes) return res.status(404).json({ error: 'Not found' })
-  res.json({ ok: true })
 })
 
 app.delete('/api/connections/:id/workflows/:wid', (req, res) => {
-  const row = meta.prepare('SELECT protected FROM workflows WHERE id = ? AND connection_id = ?').get(req.params.wid, req.params.id)
-  if (!row) return res.status(404).json({ error: 'Not found' })
-  if (row.protected) return res.status(409).json({ error: 'This workflow is protected and cannot be deleted.' })
-  meta.prepare('DELETE FROM workflows WHERE id = ? AND connection_id = ?').run(req.params.wid, req.params.id)
+  const result = deleteWorkflow(req.params.id, req.params.wid)
+  if (result === 'missing') return res.status(404).json({ error: 'Not found' })
+  if (result === 'protected') return res.status(409).json({ error: 'This workflow is protected and cannot be deleted.' })
   res.json({ ok: true })
 })
 
@@ -2041,9 +1995,9 @@ app.post('/api/connections/:id/workflows/:wid/run', async (req, res) => {
   if (!conn) return res.status(404).json({ error: 'Connection not found' })
   let graph = req.body?.graph
   if (!graph) {
-    const row = meta.prepare('SELECT graph FROM workflows WHERE id = ? AND connection_id = ?').get(req.params.wid, req.params.id)
-    if (!row) return res.status(404).json({ error: 'Not found' })
-    graph = safeJson(row.graph)
+    const workflow = getWorkflow(req.params.id, req.params.wid)
+    if (!workflow) return res.status(404).json({ error: 'Not found' })
+    graph = workflow.graph
   }
   // `trigger` distinguishes dashboard row-action runs in the workflow_runs
   // audit trail; anything unrecognized falls back to 'manual'.
@@ -2057,48 +2011,17 @@ app.post('/api/connections/:id/workflows/:wid/run', async (req, res) => {
 // by executeAndRecord; these expose that trail. The list omits the (potentially
 // large) per-node log; fetch a single run to drill into it.
 app.get('/api/connections/:id/workflows/:wid/runs', (req, res) => {
-  const wf = meta.prepare('SELECT id FROM workflows WHERE id = ? AND connection_id = ?').get(req.params.wid, req.params.id)
-  if (!wf) return res.status(404).json({ error: 'Not found' })
   const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 200)
   const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0)
-  const rows = meta
-    .prepare(
-      `SELECT id, trigger_kind, status, error, started_at, finished_at
-       FROM workflow_runs WHERE workflow_id = ? ORDER BY started_at DESC LIMIT ? OFFSET ?`
-    )
-    .all(req.params.wid, limit, offset)
-  res.json(
-    rows.map((r) => ({
-      id: r.id,
-      triggerKind: r.trigger_kind,
-      status: r.status,
-      error: r.error || null,
-      startedAt: r.started_at,
-      finishedAt: r.finished_at,
-      ms: r.finished_at && r.started_at ? r.finished_at - r.started_at : null,
-    }))
-  )
+  const runs = listWorkflowRuns(req.params.id, req.params.wid, { limit, offset })
+  if (!runs) return res.status(404).json({ error: 'Not found' })
+  res.json(runs)
 })
 
 app.get('/api/connections/:id/workflows/:wid/runs/:runId', (req, res) => {
-  const row = meta
-    .prepare(
-      `SELECT id, trigger_kind, status, log, error, started_at, finished_at
-       FROM workflow_runs WHERE id = ? AND workflow_id = ? AND connection_id = ?`
-    )
-    .get(req.params.runId, req.params.wid, req.params.id)
-  if (!row) return res.status(404).json({ error: 'Not found' })
-  res.json({
-    id: row.id,
-    triggerKind: row.trigger_kind,
-    status: row.status,
-    ok: row.status === 'success',
-    log: safeJson(row.log) || [],
-    error: row.error || null,
-    startedAt: row.started_at,
-    finishedAt: row.finished_at,
-    ms: row.finished_at && row.started_at ? row.finished_at - row.started_at : null,
-  })
+  const run = getWorkflowRun(req.params.id, req.params.wid, req.params.runId)
+  if (!run) return res.status(404).json({ error: 'Not found' })
+  res.json(run)
 })
 
 // ---- Public webhook trigger (unauthenticated, token-guarded) ----
@@ -2110,9 +2033,9 @@ app.get('/api/connections/:id/workflows/:wid/runs/:runId', (req, res) => {
 // applies: the run executes with the same trust as any member-authored workflow.
 app.all('/api/hooks/wf/:wid/:token', async (req, res) => {
   if (req.method !== 'POST' && req.method !== 'GET') return res.status(405).json({ error: 'Use GET or POST' })
-  const row = meta.prepare('SELECT id, connection_id, graph FROM workflows WHERE id = ?').get(req.params.wid)
-  if (!row) return res.status(404).json({ error: 'Not found' })
-  const graph = safeJson(row.graph)
+  const workflow = getWebhookWorkflow(req.params.wid)
+  if (!workflow) return res.status(404).json({ error: 'Not found' })
+  const graph = workflow.graph
   const hook = (graph?.nodes || []).find((n) => n.type === 'webhook')
   if (!hook) return res.status(404).json({ error: 'This workflow has no webhook trigger' })
   const expected = String(hook.data?.token || '')
@@ -2122,12 +2045,12 @@ app.all('/api/hooks/wf/:wid/:token', async (req, res) => {
     expected.length === provided.length &&
     timingSafeEqual(Buffer.from(expected), Buffer.from(provided))
   if (!ok) return res.status(401).json({ error: 'Invalid webhook token' })
-  const conn = getConnection(row.connection_id)
+  const conn = getConnection(workflow.connectionId)
   if (!conn) return res.status(404).json({ error: 'Connection not found' })
   // The request body seeds the trigger; query params are exposed too so simple
   // GET pings can pass data without a body.
   const input = { body: req.body ?? null, query: req.query || {}, headers: req.headers, method: req.method }
-  const result = await executeAndRecord(row.id, row.connection_id, conn, graph, 'webhook', input)
+  const result = await executeAndRecord(workflow.id, workflow.connectionId, conn, graph, 'webhook', input)
   res.status(result.ok ? 200 : 500).json({ ok: result.ok, output: result.output, error: result.error || null })
 })
 
@@ -2152,38 +2075,7 @@ app.get('/api/workspaces/:id/dashboards', (req, res) => {
   const user = requireMember(req, res, req.params.id)
   if (!user) return
   const conns = listConnections().filter((c) => c.workspaceId === req.params.id && userCanAccessConnection(c, user.id))
-  if (!conns.length) return res.json([])
-  const byId = new Map(conns.map((c) => [c.id, c]))
-  const ids = [...byId.keys()]
-  const rows = meta
-    .prepare(
-      `SELECT id, connection_id, name, config, folder_id, ts FROM dashboards
-        WHERE connection_id IN (${ids.map(() => '?').join(', ')})
-        ORDER BY ts DESC`
-    )
-    .all(...ids)
-  res.json(
-    rows.map((r) => {
-      const conn = byId.get(r.connection_id)
-      // A config that won't parse is a dashboard that still exists — report it
-      // with zero widgets rather than failing the whole list.
-      let config = {}
-      try {
-        config = JSON.parse(r.config || '{}')
-      } catch {}
-      return {
-        id: r.id,
-        connectionId: r.connection_id,
-        connectionName: conn.name,
-        connectionType: conn.type,
-        name: r.name,
-        ts: r.ts,
-        folderId: r.folder_id || null,
-        widgetCount: Array.isArray(config.widgets) ? config.widgets.length : 0,
-        variableCount: Array.isArray(config.variables) ? config.variables.length : 0,
-      }
-    })
-  )
+  res.json(listDashboardsForConnections(conns))
 })
 
 /**
@@ -2406,79 +2298,34 @@ app.delete('/api/workspaces/:id/schema-drafts/:draftId', (req, res) => {
 })
 
 app.get('/api/connections/:id/dashboards', (req, res) => {
-  const rows = meta
-    .prepare('SELECT id, name, folder_id, ts FROM dashboards WHERE connection_id = ? ORDER BY ts DESC')
-    .all(req.params.id)
-  res.json(rows.map((r) => ({ id: r.id, name: r.name, folderId: r.folder_id || null, ts: r.ts })))
+  res.json(listDashboards(req.params.id))
 })
 
 app.post('/api/connections/:id/dashboards', (req, res) => {
-  const { name, config, folderId } = req.body || {}
-  if (!name?.trim()) return res.status(400).json({ error: 'A dashboard name is required' })
-  if (folderId) {
-    const parent = meta
-      .prepare("SELECT id FROM folders WHERE id = ? AND connection_id = ? AND type = 'dashboard'")
-      .get(folderId, req.params.id)
-    if (!parent) return res.status(400).json({ error: 'Folder not found' })
+  try {
+    res.json(createDashboard(req.params.id, req.body))
+  } catch (error) {
+    fail(res, error)
   }
-  const entry = {
-    id: randomUUID(),
-    name: name.trim(),
-    config: config && typeof config === 'object' ? config : { variables: [], widgets: [] },
-    folderId: folderId || null,
-    ts: Date.now(),
-  }
-  meta
-    .prepare('INSERT INTO dashboards (id, connection_id, name, config, folder_id, ts) VALUES (?, ?, ?, ?, ?, ?)')
-    .run(entry.id, req.params.id, entry.name, JSON.stringify(entry.config), entry.folderId, entry.ts)
-  res.json(entry)
 })
 
 app.get('/api/connections/:id/dashboards/:did', (req, res) => {
-  const row = meta
-    .prepare('SELECT id, name, config, ts FROM dashboards WHERE id = ? AND connection_id = ?')
-    .get(req.params.did, req.params.id)
-  if (!row) return res.status(404).json({ error: 'Not found' })
-  res.json({ id: row.id, name: row.name, ts: row.ts, config: safeJson(row.config) || { variables: [], widgets: [] } })
+  const dashboard = getDashboard(req.params.id, req.params.did)
+  if (!dashboard) return res.status(404).json({ error: 'Not found' })
+  res.json(dashboard)
 })
 
 app.put('/api/connections/:id/dashboards/:did', (req, res) => {
-  const body = req.body || {}
-  const sets = []
-  const vals = []
-  if (body.name != null) {
-    if (!body.name.trim()) return res.status(400).json({ error: 'A name is required' })
-    sets.push('name = ?')
-    vals.push(body.name.trim())
+  try {
+    if (!updateDashboard(req.params.id, req.params.did, req.body)) return res.status(404).json({ error: 'Not found' })
+    res.json({ ok: true })
+  } catch (error) {
+    fail(res, error)
   }
-  if (body.config != null) {
-    if (typeof body.config !== 'object') return res.status(400).json({ error: 'config must be an object' })
-    sets.push('config = ?')
-    vals.push(JSON.stringify(body.config))
-  }
-  // folderId is explicitly settable (null moves the dashboard back to the root).
-  if ('folderId' in body) {
-    const folderId = body.folderId || null
-    if (folderId) {
-      const parent = meta
-        .prepare("SELECT id FROM folders WHERE id = ? AND connection_id = ? AND type = 'dashboard'")
-        .get(folderId, req.params.id)
-      if (!parent) return res.status(400).json({ error: 'Folder not found' })
-    }
-    sets.push('folder_id = ?')
-    vals.push(folderId)
-  }
-  if (!sets.length) return res.status(400).json({ error: 'Nothing to update' })
-  const r = meta
-    .prepare(`UPDATE dashboards SET ${sets.join(', ')} WHERE id = ? AND connection_id = ?`)
-    .run(...vals, req.params.did, req.params.id)
-  if (!r.changes) return res.status(404).json({ error: 'Not found' })
-  res.json({ ok: true })
 })
 
 app.delete('/api/connections/:id/dashboards/:did', (req, res) => {
-  const r = meta.prepare('DELETE FROM dashboards WHERE id = ? AND connection_id = ?').run(req.params.did, req.params.id)
-  if (!r.changes) return res.status(404).json({ error: 'Not found' })
+  if (!deleteDashboard(req.params.id, req.params.did)) return res.status(404).json({ error: 'Not found' })
   res.json({ ok: true })
 })
 
@@ -2535,55 +2382,21 @@ app.post('/api/connections/:id/backup/run', async (req, res) => {
 
 // Per-day run counts — feeds the GitHub-style calendar.
 app.get('/api/connections/:id/backup/calendar', (req, res) => {
-  const days = Math.min(parseInt(req.query.days) || 365, 366)
-  const from = Date.now() - days * 86400000
-  const rows = meta
-    .prepare(
-      `SELECT date(started_at / 1000, 'unixepoch') AS day, COUNT(*) AS runs,
-              SUM(status = 'success') AS success, SUM(status = 'failed') AS failed
-       FROM backup_runs WHERE connection_id = ? AND started_at >= ? GROUP BY day ORDER BY day`
-    )
-    .all(req.params.id, from)
-  res.json({ days: rows })
+  const days = Math.min(Math.max(parseInt(req.query.days, 10) || 365, 1), 366)
+  res.json({ days: backupCalendar(req.params.id, days) })
 })
 
 // Paginated backup runs, with the uploaded-artifact info the version list
 // needs. Optional `date=YYYY-MM-DD` filters to one day (heatmap click).
 app.get('/api/connections/:id/backup/runs', (req, res) => {
-  const limit = Math.min(parseInt(req.query.limit) || 20, 200)
-  const offset = Math.max(0, parseInt(req.query.offset) || 0)
-  let where = 'connection_id = ?'
-  const params = [req.params.id]
-  if (req.query.date) {
-    where += ` AND date(started_at / 1000, 'unixepoch') = ?`
-    params.push(req.query.date)
+  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 200)
+  const offset = Math.max(0, parseInt(req.query.offset, 10) || 0)
+  try {
+    res.json(listBackupRuns(req.params.id, { limit, offset, date: req.query.date && String(req.query.date) }))
+  } catch (error) {
+    fail(res, error)
   }
-  const total = meta.prepare(`SELECT COUNT(*) AS c FROM backup_runs WHERE ${where}`).get(...params).c
-  const rows = meta
-    .prepare(`SELECT id, trigger_kind, status, error, started_at, finished_at, uploads FROM backup_runs WHERE ${where} ORDER BY started_at DESC LIMIT ? OFFSET ?`)
-    .all(...params, limit, offset)
-  res.json({
-    total,
-    runs: rows.map((r) => ({
-      id: r.id,
-      trigger: r.trigger_kind,
-      status: r.status,
-      error: r.error,
-      startedAt: r.started_at,
-      finishedAt: r.finished_at,
-      uploads: safeJson(r.uploads) || [],
-    })),
-  })
 })
-
-// One recorded run plus the upload entry for a destination — the shared lookup
-// behind download / delete / restore.
-const findRunUpload = (connectionId, runId, destinationId) => {
-  const run = meta.prepare('SELECT * FROM backup_runs WHERE id = ? AND connection_id = ?').get(runId, connectionId)
-  if (!run) return { run: null, uploads: [], upload: null }
-  const uploads = safeJson(run.uploads) || []
-  return { run, uploads, upload: uploads.find((u) => u.destinationId === destinationId && u.ok && !u.deleted) || null }
-}
 
 // Delete a specific uploaded backup artifact from storage. Irreversible —
 // marks it `deleted` in the run's history rather than removing the row, so
@@ -2601,8 +2414,7 @@ app.delete('/api/connections/:id/backup/runs/:runId/uploads/:destinationId', asy
   } catch (err) {
     return res.status(500).json({ error: describeError(err) })
   }
-  const next = uploads.map((u) => (u.destinationId === req.params.destinationId ? { ...u, deleted: true } : u))
-  meta.prepare('UPDATE backup_runs SET uploads = ? WHERE id = ?').run(JSON.stringify(next), run.id)
+  markRunUploadDeleted(run, uploads, req.params.destinationId)
   res.json({ ok: true })
 })
 
@@ -3297,7 +3109,7 @@ app.post('/api/system/backup', async (req, res) => {
   if (!requireSystemAdmin(req, res)) return
   try {
     fs.mkdirSync(BACKUPS_DIR, { recursive: true })
-    const file = `app-${APP_VERSION}-${Date.now()}.db`
+    const file = `app-${APP_VERSION}-${Date.now()}.${META_DB_TYPE === 'postgresql' ? 'dump' : 'db'}`
     const dest = path.join(BACKUPS_DIR, file)
     await meta.backup(dest)
     res.json({ ok: true, file, sizeBytes: fs.statSync(dest).size, createdAt: Date.now() })
@@ -3323,7 +3135,7 @@ app.get('/api/system/preflight', (req, res) => {
   const checks = []
 
   try {
-    const r = meta.pragma('integrity_check', { simple: true })
+    const r = META_DB_TYPE === 'postgresql' ? (meta.prepare('SELECT 1 AS ok').get()?.ok === 1 ? 'ok' : 'failed') : meta.pragma('integrity_check', { simple: true })
     checks.push({ id: 'integrity', label: 'Metadata database integrity', status: r === 'ok' ? 'pass' : 'fail', detail: r === 'ok' ? 'No corruption detected' : String(r) })
   } catch (e) {
     checks.push({ id: 'integrity', label: 'Metadata database integrity', status: 'fail', detail: e.message })
@@ -3331,11 +3143,16 @@ app.get('/api/system/preflight', (req, res) => {
 
   try {
     fs.mkdirSync(BACKUPS_DIR, { recursive: true })
-    const st = fs.statfsSync(BACKUPS_DIR)
-    const freeBytes = st.bavail * st.bsize
-    const metaSize = fs.existsSync(META_DB_PATH) ? fs.statSync(META_DB_PATH).size : 0
-    const ok = freeBytes > metaSize * 3 + 50e6
-    checks.push({ id: 'disk', label: 'Free disk for snapshot', status: ok ? 'pass' : 'warn', detail: `${Math.round(freeBytes / 1e6)} MB free` })
+    if (META_DB_TYPE === 'postgresql') {
+      const size = meta.prepare('SELECT pg_database_size(current_database()) AS bytes').get().bytes
+      checks.push({ id: 'disk', label: 'Metadata snapshot', status: 'pass', detail: `PostgreSQL database: ${Math.round(size / 1e6)} MB; snapshot writes to local backup directory` })
+    } else {
+      const st = fs.statfsSync(BACKUPS_DIR)
+      const freeBytes = st.bavail * st.bsize
+      const metaSize = fs.existsSync(META_DB_PATH) ? fs.statSync(META_DB_PATH).size : 0
+      const ok = freeBytes > metaSize * 3 + 50e6
+      checks.push({ id: 'disk', label: 'Free disk for snapshot', status: ok ? 'pass' : 'warn', detail: `${Math.round(freeBytes / 1e6)} MB free` })
+    }
   } catch {
     checks.push({ id: 'disk', label: 'Free disk for snapshot', status: 'warn', detail: 'Could not determine free space' })
   }
@@ -3425,7 +3242,7 @@ cron.schedule('* * * * *', () => {
 app.listen(PORT, () => {
   console.log(`✅ Server running on http://localhost:${PORT}`)
   console.log(`📊 API available at http://localhost:${PORT}/api`)
-  console.log(`🔑 Sessions: logins in ${META_DB_PATH}, cached in ${sessionCache.kind}`)
+  console.log(`🔑 Sessions: logins in ${META_DB_TYPE === 'postgresql' ? 'PostgreSQL metadata' : META_DB_PATH}, cached in ${sessionCache.kind}`)
   // Open what can be opened eagerly (SQLite files) so the first query is fast.
   for (const conn of listConnections()) {
     try {

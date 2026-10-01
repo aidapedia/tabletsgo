@@ -13,7 +13,7 @@
 
 import { randomUUID } from 'crypto'
 import { meta } from './meta.js'
-import { deleteConnectionRow } from './connections.js'
+import { deleteConnectionMetadata } from './connections.js'
 import { OWNER_PERMISSION, ownerRoleSlugs, permissionsForRole, roleHasPermission } from './permissions.js'
 import {
   addNodeMember,
@@ -233,29 +233,14 @@ export const removeAllMemberships = (userId) => {
 /**
  * Delete a workspace and everything scoped to it. Kept here (rather than inline
  * in a route) because two callers need the identical cascade, and it must stay
- * in step with the DELETE /api/connections/:id cascade in server.js.
+ * in step with direct connection deletion through one shared operation.
  */
 export const deleteWorkspaceCascade = (workspaceId) => {
   const connectionIds = meta.prepare('SELECT id FROM connections WHERE workspace_id = ?').all(workspaceId).map((r) => r.id)
 
   meta.transaction(() => {
     for (const id of connectionIds) {
-      deleteConnectionRow(id)
-      for (const table of [
-        'saved_queries',
-        'connection_tables',
-        'workflows',
-        'workflow_runs',
-        'dashboards',
-        'folders',
-        'query_history',
-        'connection_access',
-        'schema_migrations',
-        'backup_schedules',
-        'backup_runs',
-      ]) {
-        meta.prepare(`DELETE FROM ${table} WHERE connection_id = ?`).run(id)
-      }
+      deleteConnectionMetadata(id)
     }
     meta.prepare('DELETE FROM storage_destinations WHERE workspace_id = ?').run(workspaceId)
     // Standalone schema drafts hang off the workspace, not a connection, so the

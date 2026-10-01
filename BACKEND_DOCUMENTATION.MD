@@ -51,7 +51,9 @@ endpoint with its request, response, and an example URL.
 | Variable  | Default            | Purpose                                  |
 | --------- | ------------------ | ---------------------------------------- |
 | `PORT`    | `3000`             | HTTP listen port.                        |
-| `META_DB` | `./data/app.db`    | SQLite file storing app metadata (below).|
+| `META_DB` | `./data/app.db`    | SQLite file storing app metadata when `META_DB_TYPE=sqlite`. |
+| `META_DB_TYPE` | `sqlite` | App metadata engine: `sqlite` or `postgresql`. |
+| `META_DATABASE_URL` | | PostgreSQL URL required when `META_DB_TYPE=postgresql`. |
 | `ENCRYPTION_KEY` | *(required)* | AES-256-GCM key encrypting connection credentials at rest — server refuses to start without it. Also derives (with a distinct salt) the key used for storage-destination credentials. |
 | `WORKFLOW_SCHEDULER_ENABLED` | `true` | Set to `false` to disable the minutely cron tick that fires workflows with an active hourly/daily schedule (including backups). Useful for local dev/CI. |
 | `LOGIN_MAX_ATTEMPTS` | `5` | Consecutive failed sign-ins that block an account. `0` disables blocking. |
@@ -208,7 +210,9 @@ sole `INTEGER PRIMARY KEY` on a rowid table). A column is safe to omit from an
 
 ---
 
-## Metadata database (`data/app.db`, SQLite)
+## Metadata database (SQLite or PostgreSQL)
+
+SQLite uses `META_DB` (`data/app.db` by default). PostgreSQL uses `META_DATABASE_URL` and initializes a dedicated empty schema on first boot. The metadata adapter preserves the synchronous store contract used by permissions and sessions. The SQLite migration history stays append-only; PostgreSQL has its own version marker and baseline at SQLite schema version 20. PostgreSQL deployments require `libpq` and `pg_dump` (included in the Docker image). The metadata store is separate from the databases users open in the console.
 
 The server keeps its own SQLite DB (separate from user connections) with these
 tables.
@@ -3081,7 +3085,7 @@ On network failure it degrades to `{ ..., unreachable: true, updateAvailable: fa
 - **Example:** `GET http://localhost:3000/api/system/update/check?refresh=1`
 
 ### POST `/api/system/backup`
-Snapshot the metadata DB (`app.db`) into `data/backups/` (rollback insurance). Admin only.
+Snapshot the selected metadata DB into `data/backups/` (rollback insurance). SQLite produces a `.db` file; PostgreSQL produces a `pg_dump` custom-format `.dump` file. Admin only.
 
 - **200:** `{ "ok": true, "file": "app-0.15.2-1752800000000.db", "sizeBytes": 245760, "createdAt": 1752800000000 }`
 - **Example:** `POST http://localhost:3000/api/system/backup`
@@ -3089,7 +3093,7 @@ Snapshot the metadata DB (`app.db`) into `data/backups/` (rollback insurance). A
 ### GET `/api/system/backup/:file/download`
 Stream a previously-taken snapshot (basename-sanitized; no path traversal). Admin only.
 
-- **200:** the `.db` file as an attachment.
+- **200:** the `.db` or `.dump` file as an attachment.
 - **404:** `{ "error": "Backup not found" }`
 - **Example:** `GET http://localhost:3000/api/system/backup/app-0.15.2-1752800000000.db/download`
 

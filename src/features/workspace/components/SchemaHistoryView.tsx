@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
-import DataGrid from '@/features/workspace/components/DataGrid'
+import DataGrid from '@/shared/ui/table/DataGrid'
 import Button from '@/shared/ui/buttons/Button'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
 import Popover from '@/shared/ui/overlay/Popover'
 import ContextMenu from '@/shared/ui/overlay/ContextMenu'
-import { FilterPanel, SortPanel, ColumnsPanel, matchFilter, sortRows, cycleSortRules, PAGE_SIZES } from '@/features/workspace/components/TableView'
+import { FilterPanel, SortPanel, ColumnsPanel, matchFilter, sortRows, cycleSortRules, PAGE_SIZES } from './TableView'
 import {
   ChevronLeft,
   ChevronRight,
@@ -17,7 +17,7 @@ import {
   SortIcon,
 } from '@/shared/ui/icons'
 import LoadingState from '@/shared/ui/feedback/LoadingState'
-import MigrationInspector, { fmtTime, rollbackTitle } from './MigrationInspector'
+import { MigrationInspector, fmtTime, rollbackTitle } from '@/features/schema-designer'
 
 const COLUMNS = ['Version', 'Status', 'Up SQL', 'Down SQL', 'Reversible', 'Executor', 'Committed at']
 

@@ -4,10 +4,9 @@ import { useWorkspaces } from '@/features/workspaces'
 import { useConnections } from '@/features/connections'
 import { NewSchemaDialog, WorkspaceSchemaList, type WorkspaceSchemaDraft } from '@/features/schema-designer'
 import { createSchemaDraft } from '@/features/schema-designer/lib/api'
-// Deep import, not the `@/features/workspace` barrel: that barrel re-exports the
-// whole DB console (QueryEditor pulls CodeMirror in), and this page only wants
-// the saved-query write a connection-linked draft is stored as.
-import { createSaved } from '@/features/workspace/lib/savedQueries'
+// A connection-linked draft is stored as a saved query. Its small public API
+// stays separate from the DB console's editor-heavy barrel.
+import { createSaved } from '@/features/saved-queries'
 import Button from '@/shared/ui/buttons/Button'
 import LoadingState from '@/shared/ui/feedback/LoadingState'
 import { useToast } from '@/shared/ui/feedback/Toast'

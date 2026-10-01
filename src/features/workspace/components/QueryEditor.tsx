@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { format } from 'sql-formatter'
 import { getSchema, runQuery } from '@/shared/api/database'
-import DataGrid from '@/features/workspace/components/DataGrid'
+import DataGrid from '@/shared/ui/table/DataGrid'
 import Button from '@/shared/ui/buttons/Button'
 import Tooltip from '@/shared/ui/overlay/Tooltip'
 import SqlEditor from '@/shared/ui/SqlEditor'
