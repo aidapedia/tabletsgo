@@ -129,6 +129,36 @@ function ensureBaseSchema(db) {
       ts INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_schema_drafts_workspace ON schema_drafts (workspace_id);
+    -- SSH keys and the gateways that use them to tunnel a connection (see
+    -- server/ssh.js). Workspace-scoped; secrets live in the sealed credentials.
+    CREATE TABLE IF NOT EXISTS ssh_keys (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      algorithm TEXT,              -- 'ssh-ed25519' | 'ssh-rsa' | 'ecdsa-sha2-…'
+      public_key TEXT NOT NULL,    -- OpenSSH one-liner, what goes in authorized_keys
+      fingerprint TEXT,            -- SHA256:… of the public key
+      credentials TEXT,            -- AES-256-GCM: JSON {privateKey, passphrase?}
+      created_by TEXT,
+      created_at INTEGER,
+      updated_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_ssh_keys_workspace ON ssh_keys (workspace_id);
+    CREATE TABLE IF NOT EXISTS ssh_gateways (
+      id TEXT PRIMARY KEY,
+      workspace_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      host TEXT NOT NULL,
+      port INTEGER,
+      username TEXT,
+      auth TEXT,                   -- 'key' | 'password'
+      key_id TEXT,                 -- ssh_keys.id when auth = 'key'
+      host_fingerprint TEXT,       -- pinned on first connect (trust on first use)
+      credentials TEXT,            -- AES-256-GCM: JSON {password?}
+      created_at INTEGER,
+      updated_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_ssh_gateways_workspace ON ssh_gateways (workspace_id);
     CREATE TABLE IF NOT EXISTS dashboards (
       id TEXT PRIMARY KEY,
       connection_id TEXT NOT NULL,
@@ -1193,6 +1223,67 @@ export const MIGRATIONS = [
       // read as "unknown", never as a plausible wrong person.
       db.exec('UPDATE schema_drafts SET created_at = ts WHERE created_at IS NULL')
       db.exec('UPDATE saved_queries SET created_at = ts WHERE created_at IS NULL')
+    },
+  },
+  {
+    version: 21,
+    name: 'SSH keys and gateways, so a connection can be reached through a tunnel',
+    up(db) {
+      // A database that only listens on a private network is reached through a
+      // bastion: the app opens an SSH session to the gateway and forwards the
+      // database port over it (server/db/tunnel.js). Keys and gateways are
+      // workspace resources a connection *refers to* (`sshGatewayId` in its
+      // sealed credentials) rather than settings copied onto every connection,
+      // so rotating a key or moving a bastion is one edit.
+      // IF NOT EXISTS for the same reason as v18: a fresh install runs the
+      // baseline (which creates these) and then this step too.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS ssh_keys (
+          id TEXT PRIMARY KEY,
+          workspace_id TEXT NOT NULL,
+          name TEXT NOT NULL,
+          algorithm TEXT,
+          public_key TEXT NOT NULL,
+          fingerprint TEXT,
+          credentials TEXT,
+          created_by TEXT,
+          created_at INTEGER,
+          updated_at INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_ssh_keys_workspace ON ssh_keys (workspace_id);
+        CREATE TABLE IF NOT EXISTS ssh_gateways (
+          id TEXT PRIMARY KEY,
+          workspace_id TEXT NOT NULL,
+          name TEXT NOT NULL,
+          host TEXT NOT NULL,
+          port INTEGER,
+          username TEXT,
+          auth TEXT,
+          key_id TEXT,
+          host_fingerprint TEXT,
+          credentials TEXT,
+          created_at INTEGER,
+          updated_at INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_ssh_gateways_workspace ON ssh_gateways (workspace_id);
+      `)
+      // `ssh.manage` is new in the catalog; the built-in owner is defined as
+      // holding every key, so give it to them the way v17 did for the
+      // resource-tree keys (built-in rows only, additive).
+      const owner = db.prepare("SELECT id FROM roles WHERE slug = 'owner' AND builtin = 1").get()
+      if (owner) db.prepare('INSERT OR IGNORE INTO role_permissions (role_id, permission) VALUES (?, ?)').run(owner.id, 'ssh.manage')
+    },
+  },
+  {
+    version: 22,
+    name: 'SSH hosts choose how they are reached (direct TCP or Cloudflare Access)',
+    up(db) {
+      // An SSH host behind a Cloudflare Tunnel has no open TCP port: the SSH
+      // stream rides a WebSocket to its Access hostname, authenticated with a
+      // service token (sealed in `credentials` with the other secrets). NULL
+      // reads as 'tcp', so every existing host keeps connecting directly.
+      // addColumn because a fresh install runs this step too (same as v19/v20).
+      addColumn(db, 'ssh_gateways', 'transport TEXT')
     },
   },
 ]

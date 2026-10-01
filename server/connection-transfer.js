@@ -23,6 +23,7 @@ import { meta } from './meta.js'
 import { getConnection, saveConnection } from './connections.js'
 import { FOLDER_TYPES, folderTypeOf } from './folders.js'
 import { LOCAL_STORAGE_ID, listStorageRows } from './storage.js'
+import { getSshGateway } from './ssh.js'
 import { createSchedule, getBackupSchedule } from './backup/schedule.js'
 import { safeJson } from './util.js'
 
@@ -235,6 +236,19 @@ export function importConnectionDoc(doc, { workspaceId, ownerId, name, settings:
     return kept
   }
 
+  // Same for the SSH gateway a connection tunnels through: workspace-scoped, not
+  // bundled. It survives only when it is one of *this* workspace's gateways
+  // (re-importing on the same instance); otherwise the connection connects
+  // directly and the importer is told to pick one.
+  const settings = {
+    ...(src.settings && typeof src.settings === 'object' ? src.settings : {}),
+    ...(settingsOverride && typeof settingsOverride === 'object' ? settingsOverride : {}),
+  }
+  if (settings.sshGatewayId && getSshGateway(settings.sshGatewayId)?.workspaceId !== workspaceId) {
+    delete settings.sshGatewayId
+    warnings.push("The connection used an SSH host this workspace doesn't have; it was removed — edit the connection to pick one.")
+  }
+
   const { idMap: folderIds, typeByOldId, rows: folderRows } = remapFolders(doc.folders, warnings)
   // Only accept an item's folder when it exists *and* groups that kind of item.
   const folderFor = (oldId, type) => (oldId && folderIds.has(oldId) && typeByOldId.get(oldId) === type ? folderIds.get(oldId) : null)
@@ -246,8 +260,7 @@ export function importConnectionDoc(doc, { workspaceId, ownerId, name, settings:
 
   const tx = meta.transaction(() => {
     saveConnection({
-      ...(src.settings && typeof src.settings === 'object' ? src.settings : {}),
-      ...(settingsOverride && typeof settingsOverride === 'object' ? settingsOverride : {}),
+      ...settings,
       id: connectionId,
       type: src.type,
       name: connName,

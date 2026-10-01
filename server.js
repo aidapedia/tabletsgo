@@ -170,6 +170,22 @@ import {
   testStorage,
   updateStorage,
 } from './server/storage.js'
+import {
+  assertGatewayForWorkspace,
+  connectionsUsingGateway,
+  createSshGateway,
+  createSshKey,
+  deleteSshGateway,
+  deleteSshKey,
+  getSshGateway,
+  getSshKey,
+  listSshGateways,
+  listSshKeys,
+  renameSshKey,
+  sshKeyGateways,
+  testSshGateway,
+  updateSshGateway,
+} from './server/ssh.js'
 import { executeAndRecord, listWorkflowsForConnections, runDueWorkflows } from './server/workflow.js'
 import {
   createWorkflow,
@@ -1448,8 +1464,31 @@ app.get('/api/connections', (req, res) => {
   res.json(listConnections().filter((c) => c.workspaceId === workspaceId && userCanAccessConnection(c, user.id)))
 })
 
+// May this caller tunnel a probe through `gatewayId`? A gateway is a way into
+// the workspace's private network, so it takes a signed-in caller who could
+// define a connection there — `connections.create`, or managing the existing
+// connection the form is editing. Answers false after replying.
+function mayProbeThroughGateway(req, res, gatewayId) {
+  const user = requireAuth(req, res)
+  if (!user) return false
+  const gateway = getSshGateway(gatewayId)
+  if (!gateway || !isMember(gateway.workspaceId, user.id)) {
+    res.status(403).json({ ok: false, message: 'That SSH host is not available to you.' })
+    return false
+  }
+  const editing = req.body.id && getConnection(req.body.id)
+  const managesEdited =
+    editing && editing.workspaceId === gateway.workspaceId && (editing.ownerId === user.id || can(gateway.workspaceId, user.id, 'connections.manage'))
+  if (!managesEdited && !can(gateway.workspaceId, user.id, 'connections.create')) {
+    res.status(403).json({ ok: false, message: 'You need to be able to add connections to test one through an SSH host.' })
+    return false
+  }
+  return true
+}
+
 // Probe an unsaved connection form.
 app.post('/api/test-connection', async (req, res) => {
+  if (req.body?.sshGatewayId && !mayProbeThroughGateway(req, res, req.body.sshGatewayId)) return
   try {
     res.json(await db.testConnection(req.body))
   } catch (error) {
@@ -1465,6 +1504,11 @@ app.post('/api/connections', (req, res) => {
   if (!workspaceId) return res.status(403).json({ error: 'Forbidden' })
   const user = requirePermission(req, res, workspaceId, 'connections.create')
   if (!user) return
+  try {
+    assertGatewayForWorkspace(req.body.sshGatewayId, workspaceId)
+  } catch (error) {
+    return fail(res, error)
+  }
   // Default the owner to the creating user (unless one was explicitly provided).
   const conn = { ...req.body, id: randomUUID(), workspaceId, ownerId: req.body.ownerId || user.id }
   saveConnection(conn)
@@ -1550,6 +1594,120 @@ app.post('/api/storages/:sid/test', async (req, res) => {
   res.json(await testStorage(getStorage(req.params.sid)))
 })
 
+// ---- SSH keys + gateways (workspace-scoped) ----
+// Members can see what exists (a connection form lists the gateways, a key's
+// public half is meant to be shared); creating, changing and deleting either is
+// `ssh.manage`. Private keys and passwords never leave the server.
+app.get('/api/ssh/keys', (req, res) => {
+  const user = requireAuth(req, res)
+  if (!user) return
+  const workspaceId = req.query.workspace
+  if (!workspaceId) return res.json([])
+  if (!isMember(workspaceId, user.id)) return res.status(403).json({ error: 'Forbidden' })
+  res.json(listSshKeys(workspaceId))
+})
+
+app.post('/api/ssh/keys', (req, res) => {
+  const body = req.body || {}
+  if (!body.workspaceId) return res.status(403).json({ error: 'Forbidden' })
+  const user = requirePermission(req, res, body.workspaceId, 'ssh.manage')
+  if (!user) return
+  try {
+    res.json(createSshKey(body.workspaceId, body, user.id))
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+app.use('/api/ssh/keys/:kid', (req, res, next) => {
+  const user = requireAuth(req, res)
+  if (!user) return
+  const key = getSshKey(req.params.kid)
+  if (!key) return res.status(404).json({ error: 'SSH key not found' })
+  if (!isMember(key.workspaceId, user.id)) return res.status(403).json({ error: 'Forbidden' })
+  if (req.method !== 'GET' && !requirePermission(req, res, key.workspaceId, 'ssh.manage')) return
+  next()
+})
+
+app.put('/api/ssh/keys/:kid', (req, res) => {
+  try {
+    res.json(renameSshKey(req.params.kid, req.body?.name))
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+app.delete('/api/ssh/keys/:kid', (req, res) => {
+  const gateways = sshKeyGateways(req.params.kid)
+  if (gateways.length) {
+    return res.status(409).json({ error: `This key is used by ${gateways.map((g) => `"${g.name}"`).join(', ')}. Point those SSH hosts at another key first.` })
+  }
+  deleteSshKey(req.params.kid)
+  res.json({ ok: true })
+})
+
+app.get('/api/ssh/gateways', (req, res) => {
+  const user = requireAuth(req, res)
+  if (!user) return
+  const workspaceId = req.query.workspace
+  if (!workspaceId) return res.json([])
+  if (!isMember(workspaceId, user.id)) return res.status(403).json({ error: 'Forbidden' })
+  res.json(listSshGateways(workspaceId))
+})
+
+app.post('/api/ssh/gateways', (req, res) => {
+  const body = req.body || {}
+  if (!body.workspaceId) return res.status(403).json({ error: 'Forbidden' })
+  const user = requirePermission(req, res, body.workspaceId, 'ssh.manage')
+  if (!user) return
+  try {
+    res.json(createSshGateway(body.workspaceId, body))
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+app.use('/api/ssh/gateways/:gid', (req, res, next) => {
+  const user = requireAuth(req, res)
+  if (!user) return
+  const gateway = getSshGateway(req.params.gid)
+  if (!gateway) return res.status(404).json({ error: 'SSH host not found' })
+  if (!isMember(gateway.workspaceId, user.id)) return res.status(403).json({ error: 'Forbidden' })
+  // Testing logs in to the gateway with the workspace's credentials, so it is
+  // a manager's action even though it changes nothing.
+  if (req.method !== 'GET' && !requirePermission(req, res, gateway.workspaceId, 'ssh.manage')) return
+  next()
+})
+
+app.put('/api/ssh/gateways/:gid', async (req, res) => {
+  let gateway
+  try {
+    gateway = updateSshGateway(req.params.gid, req.body || {})
+  } catch (error) {
+    return fail(res, error)
+  }
+  // Every connection tunneling through it holds a tunnel (and pools) built from
+  // the old settings; drop them so the next query dials the new ones.
+  for (const conn of connectionsUsingGateway(req.params.gid)) {
+    db.releaseConnection(conn)
+    await endAllConnectionSessions(conn.id)
+  }
+  res.json(gateway)
+})
+
+app.delete('/api/ssh/gateways/:gid', (req, res) => {
+  const users = connectionsUsingGateway(req.params.gid)
+  if (users.length) {
+    return res.status(409).json({ error: `This SSH host is used by ${users.map((c) => `"${c.name}"`).join(', ')}. Switch those connections to another SSH host (or none) first.` })
+  }
+  deleteSshGateway(req.params.gid)
+  res.json({ ok: true })
+})
+
+app.post('/api/ssh/gateways/:gid/test', async (req, res) => {
+  res.json(await testSshGateway(getSshGateway(req.params.gid)))
+})
+
 // Guard every per-connection route: caller must be able to access the
 // connection. One mount covers PUT/DELETE /:id and all /:id/* data routes.
 app.use('/api/connections/:id', (req, res, next) => {
@@ -1593,6 +1751,15 @@ app.put('/api/connections/:id', async (req, res) => {
   const existing = getConnection(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Connection not found' })
   const updated = { ...existing, ...req.body, id: req.params.id }
+  // A gateway from another workspace would borrow credentials the caller was
+  // never given; the connection's workspace is the one that counts.
+  if (updated.sshGatewayId !== existing.sshGatewayId) {
+    try {
+      assertGatewayForWorkspace(updated.sshGatewayId, existing.workspaceId)
+    } catch (error) {
+      return fail(res, error)
+    }
+  }
   saveConnection(updated)
   renameResourceNode('connection', req.params.id, updated.name)
 
@@ -3016,7 +3183,9 @@ const requireRedis = async (req, res) => {
   }
   return conn
 }
-const redis = db.drivers.redis
+// Through `driverOps`, not `db.drivers.redis`, so a tunneled connection is
+// dialed through its SSH gateway like every generic op.
+const redis = db.driverOps('redis')
 
 // One SCAN page of the keyspace: [{ key, type, ttlMs }] plus the cursor to hand
 // back for the next page. SCAN (never KEYS) so a large keyspace stays responsive.

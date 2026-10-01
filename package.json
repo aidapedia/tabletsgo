@@ -40,7 +40,9 @@
     "react-router-dom": "^6.26.2",
     "reactflow": "^11.11.4",
     "sql-formatter": "^15.8.2",
-    "sql.js": "^1.14.1"
+    "sql.js": "^1.14.1",
+    "ssh2": "^1.17.0",
+    "ws": "^8.22.0"
   },
   "optionalDependencies": {
     "pg-native": "^3.9.1"

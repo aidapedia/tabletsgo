@@ -20,6 +20,8 @@ const WorkspaceSettingsPage = lazy(() => import('@/pages/home/WorkspaceSettingsP
 const MembersPage = lazy(() => import('@/pages/home/MembersPage'))
 const NotificationsPage = lazy(() => import('@/pages/home/NotificationsPage'))
 const StoragePage = lazy(() => import('@/pages/home/StoragePage'))
+const SshHostsPage = lazy(() => import('@/pages/home/SshHostsPage'))
+const SshKeysPage = lazy(() => import('@/pages/home/SshKeysPage'))
 const SettingsPage = lazy(() => import('@/pages/home/SettingsPage'))
 const ResourceTreePage = lazy(() => import('@/pages/home/ResourceTreePage'))
 const WorkflowsPage = lazy(() => import('@/pages/home/WorkflowsPage'))
@@ -141,6 +143,11 @@ export function AppRoutes() {
             here instead of bouncing to the dashboard. */}
         <Route path="/notifications/:sub" element={<NotificationsPage />} />
         <Route path="/storage" element={<StoragePage />} />
+        {/* SSH is a sidebar group, not a page: its two rows are the
+            addresses, and the bare group path lands on the first. */}
+        <Route path="/ssh" element={<Navigate to="/ssh/hosts" replace />} />
+        <Route path="/ssh/hosts" element={<SshHostsPage />} />
+        <Route path="/ssh/keys" element={<SshKeysPage />} />
         {/* Workflows live on connections; this is the workspace-wide list of
             them. A row opens the workflow in its connection's console. */}
         <Route path="/workflows" element={<WorkflowsPage />} />

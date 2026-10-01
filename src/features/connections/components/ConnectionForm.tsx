@@ -1,6 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useConnections } from '../stores/ConnectionsContext'
 import { BackupConfigForm } from '@/features/backup'
+import { addressOf, listSshGateways, type SshGateway } from '@/features/ssh'
+import { useWorkspaces } from '@/features/workspaces'
 import { useToast } from '@/shared/ui/feedback/Toast'
 import { CloseIcon, DbLogo, PlusSmall, ShieldIcon } from '@/shared/ui/icons'
 import Select from '@/shared/ui/form/Select'
@@ -54,6 +57,7 @@ const blankPostgres = {
   database: '',
   sslmode: 'disable',
   keychain: false,
+  sshGatewayId: '',
   folder: '',
   tags: [],
 }
@@ -74,6 +78,7 @@ const blankRedis = {
   database: '0',
   tls: '',
   keychain: false,
+  sshGatewayId: '',
   folder: '',
   tags: [],
 }
@@ -139,6 +144,14 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
 
   const isSqlite = form.type === 'sqlite'
   const isRedis = form.type === 'redis'
+
+  // The gateways a network connection may tunnel through — this workspace's.
+  const { current } = useWorkspaces()
+  const workspaceId = initial?.workspaceId || current?.id
+  const [gateways, setGateways] = useState<SshGateway[]>([])
+  useEffect(() => {
+    if (workspaceId) listSshGateways(workspaceId).then(setGateways)
+  }, [workspaceId])
   // Only the dump-based engines can be backed up; Redis has no SQL export.
   const backupSupported = isEdit && (form.type === 'sqlite' || form.type === 'postgresql')
   const tabs = [
@@ -412,6 +425,39 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
                     </p>
                   </div>
                 )}
+
+                {/* A database on a private network is reached through a bastion:
+                    the app logs in to the gateway and forwards the port. */}
+                <div className="mb-[18px]">
+                  <Label>SSH Tunnel</Label>
+                  <Select
+                    className={controlClass}
+                    value={form.sshGatewayId || ''}
+                    onChange={(v) => setVal('sshGatewayId', v)}
+                    options={[
+                      { value: '', label: 'None — connect directly' },
+                      ...gateways.map((g) => ({ value: g.id, label: g.name, hint: addressOf(g) })),
+                    ]}
+                  />
+                  <p className="mt-2 text-[11px] text-ink-faint">
+                    {form.sshGatewayId ? (
+                      <>
+                        Host and port above are dialed <span className="text-ink-dim">from the SSH host</span> — use the address
+                        it sees (a private IP, or 127.0.0.1 for a database on the host itself).
+                      </>
+                    ) : gateways.length ? (
+                      'Pick an SSH host when the database is only reachable from inside a private network.'
+                    ) : (
+                      <>
+                        No SSH hosts in this workspace yet —{' '}
+                        <Link to="/ssh/hosts" className="text-ink-dim underline hover:text-ink">
+                          add one under SSH → Host
+                        </Link>
+                        .
+                      </>
+                    )}
+                  </p>
+                </div>
               </>
             )}
 

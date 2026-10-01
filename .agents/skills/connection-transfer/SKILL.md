@@ -30,7 +30,10 @@ History/audit rows (`query_history`, `workflow_runs`, `backup_runs`,
 principals don't exist in the importing workspace.
 
 Storage destinations are workspace-scoped too: references the target workspace
-lacks are **dropped (with a warning), never invented**.
+lacks are **dropped (with a warning), never invented**. Same for a connection's
+`sshGatewayId` (an SSH gateway, `server/ssh.js`): kept only when it is one of the
+importing workspace's gateways, otherwise removed with a warning so the
+connection connects directly until someone picks one.
 
 ## Secrets
 

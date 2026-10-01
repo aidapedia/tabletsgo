@@ -65,7 +65,10 @@ export function redisConfig(conn, database) {
     enableOfflineQueue: false,
     retryStrategy: (times) => (times > 3 ? null : Math.min(times * 200, 1000)),
   }
-  if (uri) return { uri, options: common }
+  // Through an SSH tunnel the socket goes to 127.0.0.1, so TLS must be told the
+  // real server name for SNI and the certificate check.
+  const servername = conn.tunneledHost ? { servername: conn.tunneledHost } : {}
+  if (uri) return { uri, options: /^rediss:/i.test(uri) && conn.tunneledHost ? { ...common, tls: servername } : common }
 
   const noAuth = conn.auth === 'none'
   return {
@@ -76,7 +79,7 @@ export function redisConfig(conn, database) {
       username: noAuth ? undefined : conn.username || undefined,
       password: noAuth ? undefined : conn.password || undefined,
       // `tls` is Redis's equivalent of the SQL connections' sslmode.
-      tls: conn.tls ? { rejectUnauthorized: conn.tls !== 'insecure' } : undefined,
+      tls: conn.tls ? { rejectUnauthorized: conn.tls !== 'insecure', ...servername } : undefined,
     },
   }
 }
@@ -479,6 +482,7 @@ export async function redisOverview(client) {
 export const redisDriver = {
   type: 'redis',
   label: 'Redis',
+  defaultPort: 6379,
   // Schemaless — the schema designer is hidden for connections that report none.
   dataTypes: [],
 

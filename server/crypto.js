@@ -19,6 +19,8 @@ export const STORAGE_CRED_KEY = scryptSync(ENCRYPTION_KEY, 'tabletsgo-storage', 
 export const BACKUP_FILE_KEY = scryptSync(ENCRYPTION_KEY, 'tabletsgo-backup-file', 32)
 // Secrets inside instance-wide settings (the global SMTP password).
 export const APP_SETTINGS_KEY = scryptSync(ENCRYPTION_KEY, 'tabletsgo-app-settings', 32)
+// SSH secrets: a key's private half + passphrase, a gateway's password.
+export const SSH_CRED_KEY = scryptSync(ENCRYPTION_KEY, 'tabletsgo-ssh', 32)
 
 export function encryptSecret(plaintext, key = CRED_KEY) {
   const iv = randomBytes(12)

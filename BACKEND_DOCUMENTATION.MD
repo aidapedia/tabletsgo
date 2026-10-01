@@ -133,6 +133,14 @@ A `redis://` / `rediss://` URI's `/N` path is only the *default* database: an
 explicit `?database=` on a request always wins, so the console's database picker
 works on URI-configured connections too.
 
+**SSH tunnel (PostgreSQL, Redis).** Any network connection may carry
+`"sshGatewayId": "<gateway id>"` (stored in the encrypted credentials blob). The
+db layer then reaches it through that gateway — see
+[SSH keys & gateways](#ssh-keys--gateways-workspace-scoped). `host`/`port` (or the
+URI's host) are dialed **from the gateway**, so they are the address the gateway
+sees. `""`/absent means connect directly. The gateway must belong to the
+connection's workspace (`400` otherwise).
+
 ### Saved query
 ```jsonc
 {
@@ -431,6 +439,33 @@ CREATE TABLE storage_destinations (
   path_prefix TEXT,
   force_path_style INTEGER,    -- 0/1 — required by most non-AWS S3-compatible services
   credentials TEXT,            -- AES-256-GCM ciphertext: JSON {accessKeyId, secretAccessKey, sessionToken?}
+  created_at INTEGER,
+  updated_at INTEGER
+);
+CREATE TABLE ssh_keys (                -- meta migration v21
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  algorithm TEXT,              -- 'ssh-ed25519' | 'ssh-rsa' | 'ecdsa-sha2-nistp256'
+  public_key TEXT NOT NULL,    -- OpenSSH one-liner (what goes in authorized_keys)
+  fingerprint TEXT,            -- SHA256:…
+  credentials TEXT,            -- AES-256-GCM ciphertext: JSON {privateKey, passphrase?}
+  created_by TEXT,
+  created_at INTEGER,
+  updated_at INTEGER
+);
+CREATE TABLE ssh_gateways (            -- meta migration v21
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  host TEXT NOT NULL,
+  port INTEGER,                -- default 22
+  username TEXT,
+  auth TEXT,                   -- 'key' | 'password'
+  key_id TEXT,                 -- ssh_keys.id when auth = 'key'
+  transport TEXT,              -- 'tcp' (NULL reads as tcp) | 'cloudflare' — meta migration v22
+  host_fingerprint TEXT,       -- pinned on first login (trust on first use)
+  credentials TEXT,            -- AES-256-GCM ciphertext: JSON {password?, cfClientId?, cfClientSecret?}
   created_at INTEGER,
   updated_at INTEGER
 );
@@ -1046,6 +1081,7 @@ that decides where a role carrying it may be granted (see Resource tree).
 | `teams.manage` | workspace | Change who belongs to a group. Key unchanged when teams became groups (v15) — `role_permissions` stores these strings and drops unknown ones, so renaming it would silently strip the power from every role holding it. Deliberately not `resources.organise`: adding someone to a group grants them access, tidying the tree must not. Old text: create/rename/delete teams and change their membership. |
 | `notifications.manage` | workspace | The `notifications` block on `PUT /api/workspaces/:id`. |
 | `storage.manage` | workspace | Create/edit/delete storage destinations. |
+| `ssh.manage` | workspace | Create/rename/delete SSH keys; create/edit/delete/test SSH gateways. |
 | `connections.create` | workspace | `POST /api/connections` and `POST /api/connections/import`. |
 | `connections.manage` | connection | Edit/delete/export/set access on every connection in scope — the whole workspace, or one connection when granted on its node. |
 | `connections.transfer` | connection | `PUT /api/connections/:id/owner`. |
@@ -1442,6 +1478,7 @@ Test connectivity without saving. Body is a connection-shaped object.
   (Redis: `{ "ok": true, "message": "Connected to Redis 7.4.2 · 128 key(s) in db0." }`)
 - **200 (failure):** `{ "ok": false, "message": "<driver error>" }` (note: failures still return HTTP 200)
 - **400:** `{ "ok": false, "message": "Unsupported connection type: mysql" }`
+- **SSH tunnel:** add `"sshGatewayId"` to test through a gateway (a throwaway tunnel, closed afterwards). This form **requires auth**: the caller must be a member of the gateway's workspace and hold `connections.create` there, or own/manage the existing connection named by the body's `id`. **401** without a token; **403** `{ "ok": false, "message": "That SSH host is not available to you." }` otherwise. A tunnel failure is a normal `200 { "ok": false, "message": "The SSH host 10.0.0.5:22 rejected user \"ubuntu\"." }`.
 - **Example:** `POST http://localhost:3000/api/test-connection`
 
 > **Who may change a connection record.** `PUT`, `DELETE`, `/export` and
@@ -1559,7 +1596,9 @@ Every artifact gets a fresh id: the folder tree is re-parented onto the new ids
 when the folder groups that kind of item, and dashboard row actions are re-pointed
 at the newly created workflow ids. Storage destinations are workspace-scoped and are
 **not** part of the bundle — references this workspace doesn't have are dropped, and
-schedules (workflow + backup) arrive **paused**.
+schedules (workflow + backup) arrive **paused**. The same goes for the SSH gateway: an
+`sshGatewayId` that isn't one of the importing workspace's gateways is removed (with
+a warning), and the connection connects directly until one is picked.
 
 - **Body:**
 ```json
@@ -2370,6 +2409,138 @@ Check the bucket is reachable with the stored credentials (`HeadBucketCommand`).
 
 ---
 
+## SSH keys & gateways (workspace-scoped)
+
+A database on a private network is reached through a bastion. In the UI this is
+the sidebar's **SSH** group: **Host** (`/ssh/hosts`) lists gateways, **Key**
+(`/ssh/keys`) lists keys — the API keeps the name *gateway*. A **key** is a
+keypair the workspace holds — generated on the server or imported — whose
+public half is shown so it can be appended to the bastion's
+`~/.ssh/authorized_keys`. A **gateway** is the bastion itself (host, port, user)
+plus how it logs in: one of the workspace's keys, or a password. A connection
+names a gateway with `sshGatewayId`.
+
+When a tunneled connection is used, the db layer (`server/db/tunnel.js`) opens a
+listener on `127.0.0.1:<random>`, forwards every socket through an SSH session to
+the connection's host:port, and hands the driver the connection pointed at that
+listener — so queries, the Redis keyspace routes and `pg_dump`/`pg_restore`
+backups all go through it. TLS still verifies the real database host name. The
+tunnel is cached per connection and closed with its idle session; editing the
+gateway drops it (and the connection's pools) so the next query dials the new
+settings.
+
+Secrets never leave the server: a private key, its passphrase and a gateway
+password are AES-256-GCM sealed (own key namespace), and reads report
+`hasPassphrase` / `hasPassword` instead. Reads need membership; every write (and
+`/test`) needs **`ssh.manage`**.
+
+**How a host is reached (`transport`).**
+- `"tcp"` (default) — a direct TCP connection to `host:port`. This covers any
+  SSH server, including **Railway** (`host: "ssh.railway.com"`, `username`: the
+  service's domain or instance ID, a key registered with Railway; connections then
+  use private-network addresses like `postgres.railway.internal:5432`, or
+  `127.0.0.1` only when logging in as the database's own service). The username
+  must be the service's public domain or its **service instance ID** (dashboard:
+  open the service, ⌘K / Ctrl+K → *Copy Service Instance ID*) — a
+  `.railway.internal` name is refused with a `400`, because Railway doesn't
+  recognise it and logs the session into its interactive *dev.new* menu, where
+  every forward is refused. That refusal, if it happens anyway, is diagnosed as a
+  wrong username rather than an unreachable database.
+- `"cloudflare"` — an SSH server behind a **Cloudflare Tunnel** protected by
+  Cloudflare Access. `host` is the Access application's hostname (`port` is
+  ignored); the SSH stream is carried over `wss://<host>` in binary WebSocket
+  frames, as `cloudflared access ssh` does, authenticated with an Access
+  **service token** (`Cf-Access-Client-Id` / `Cf-Access-Client-Secret`). No
+  `cloudflared` binary is needed. `ws://` is accepted only for loopback (tests).
+
+The UI's provider presets (SSH server / Railway / Cloudflare Access) are not
+stored: they are derived from `transport` and `host`.
+
+**Host key pinning.** The first successful login records the gateway's host key
+fingerprint (`hostFingerprint`); every later login must present the same key or
+is refused. Changing a gateway's host or port forgets the pin, and so does
+`"resetHostKey": true` on `PUT` (for a bastion that was legitimately rebuilt).
+
+### GET `/api/ssh/keys?workspace=<id>`
+List the workspace's SSH keys (public halves only).
+
+- **200:** `[{ "id", "workspaceId", "name", "algorithm": "ssh-ed25519", "publicKey": "ssh-ed25519 AAAA… Prod-bastion", "fingerprint": "SHA256:…", "hasPassphrase": false, "createdBy", "createdAt", "updatedAt" }]`
+- **403:** `{ "error": "Forbidden" }` (not a member of the workspace)
+- **Example:** `GET http://localhost:3000/api/ssh/keys?workspace=ws-1`
+
+### POST `/api/ssh/keys`
+Generate a new keypair, or import an existing private key. Requires `ssh.manage`.
+The name (spaces → `-`) becomes the public key's comment.
+
+- **Body (generate):** `{ "workspaceId": "ws-1", "name": "Prod bastion", "mode": "generate", "algorithm": "ed25519" }` — `algorithm`: `ed25519` (default) | `ecdsa` (P-256) | `rsa` (4096)
+- **Body (import):** `{ "workspaceId": "ws-1", "name": "Laptop key", "mode": "import", "privateKey": "-----BEGIN OPENSSH PRIVATE KEY-----\n…", "passphrase": "optional" }`
+- **200:** the key (same shape as the list) — copy `publicKey` into `authorized_keys`
+- **400:** `{ "error": "A name is required." }` · `{ "error": "That is a public key — paste the private key (the file without .pub)." }` · `{ "error": "This key is encrypted — enter its passphrase." }`
+- **403:** missing `ssh.manage`
+- **Example:** `POST http://localhost:3000/api/ssh/keys`
+
+### PUT `/api/ssh/keys/:kid`
+Rename a key. Its material never changes — rotate by creating a new key and
+repointing the gateway.
+
+- **Body:** `{ "name": "Prod bastion (2026)" }`
+- **200:** the key
+- **Example:** `PUT http://localhost:3000/api/ssh/keys/key-1`
+
+### DELETE `/api/ssh/keys/:kid`
+Delete a key (and its private half).
+
+- **200:** `{ "ok": true }`
+- **409:** `{ "error": "This key is used by \"Bastion\". Point those SSH hosts at another key first." }`
+- **Example:** `DELETE http://localhost:3000/api/ssh/keys/key-1`
+
+### GET `/api/ssh/gateways?workspace=<id>`
+List the workspace's SSH gateways.
+
+- **200:** `[{ "id", "workspaceId", "name", "host": "bastion.example.com", "port": 22, "username": "ubuntu", "auth": "key", "keyId": "key-1", "keyName": "Prod bastion", "transport": "tcp", "serviceTokenId": "", "hasServiceToken": false, "hostFingerprint": "SHA256:…" | null, "hasPassword": false, "createdAt", "updatedAt" }]`
+  (`serviceTokenId` is the Access token's ID — an identifier, shown so the form can say which token is set; its secret is never returned.)
+- **403:** `{ "error": "Forbidden" }`
+- **Example:** `GET http://localhost:3000/api/ssh/gateways?workspace=ws-1`
+
+### POST `/api/ssh/gateways`
+Create a gateway. Requires `ssh.manage`.
+
+- **Body (key):** `{ "workspaceId": "ws-1", "name": "Bastion", "host": "bastion.example.com", "port": 22, "username": "ubuntu", "auth": "key", "keyId": "key-1" }`
+- **Body (password):** `{ "workspaceId": "ws-1", "name": "Bastion", "host": "10.0.0.5", "port": 22, "username": "ops", "auth": "password", "password": "…" }`
+- **Body (Railway):** `{ "workspaceId": "ws-1", "name": "Railway — api", "host": "ssh.railway.com", "port": 22, "username": "api.up.railway.app", "auth": "key", "keyId": "key-1" }`
+- **Body (Cloudflare Access):** `{ "workspaceId": "ws-1", "name": "Office (Cloudflare)", "transport": "cloudflare", "host": "ssh.example.com", "username": "ubuntu", "auth": "key", "keyId": "key-1", "serviceTokenId": "abc123.access", "serviceTokenSecret": "…" }` — the token is optional only if the Access application bypasses authentication
+- **200:** the gateway
+- **400:** `{ "error": "A host is required." }` · `{ "error": "Pick one of this workspace's SSH keys." }` (missing key, or one from another workspace) · `{ "error": "The port must be between 1 and 65535." }` · `{ "error": "Enter the service token secret." }` · `{ "error": "Unknown transport \"x\"." }`
+- **Example:** `POST http://localhost:3000/api/ssh/gateways`
+
+### PUT `/api/ssh/gateways/:gid`
+Update a gateway (partial patch). An omitted `password` or `serviceTokenSecret`
+keeps the stored one (a stored secret only stays with the same `serviceTokenId`;
+`"serviceTokenId": ""` clears the token). Changing `host`, `port` or `transport`
+forgets the pinned host key, and so does `"resetHostKey": true`. Every connection using the
+gateway has its tunnel, pools and sessions dropped.
+
+- **Body:** `{ "name"?, "host"?, "port"?, "username"?, "auth"?, "keyId"?, "password"?, "transport"?, "serviceTokenId"?, "serviceTokenSecret"?, "resetHostKey"? }`
+- **200:** the gateway
+- **Example:** `PUT http://localhost:3000/api/ssh/gateways/gw-1`
+
+### DELETE `/api/ssh/gateways/:gid`
+
+- **200:** `{ "ok": true }`
+- **409:** `{ "error": "This SSH host is used by \"Prod DB\". Switch those connections to another SSH host (or none) first." }`
+- **Example:** `DELETE http://localhost:3000/api/ssh/gateways/gw-1`
+
+### POST `/api/ssh/gateways/:gid/test`
+Log in to the gateway with its stored credentials (pins the host key on first
+success). Requires `ssh.manage`. Never fails with a 5xx.
+
+- **200 (success):** `{ "ok": true, "message": "Logged in to bastion.example.com as ubuntu.", "hostFingerprint": "SHA256:…" }`
+- **200 (failure):** `{ "ok": false, "message": "The SSH host bastion.example.com:22 rejected user \"ubuntu\".", "hint": "Add the key \"Prod bastion\"'s public key to ~ubuntu/.ssh/authorized_keys on the SSH host." }`
+- **200 (Cloudflare refused):** `{ "ok": false, "message": "Cloudflare Access refused ssh.example.com (HTTP 403).", "hint": "Check the service token ID and secret, …" }` — a `302` means Access wanted a login (no accepted token); `502`/`503`/`530` mean nothing answered behind the tunnel.
+- **Example:** `POST http://localhost:3000/api/ssh/gateways/gw-1/test`
+
+---
+
 ## Backup (per connection)
 
 A standalone system — its own tables (`backup_schedules`, `backup_runs`) and
@@ -2618,7 +2789,9 @@ Never returns a 5xx: a failed handshake is a normal 200 payload. Times out after
   ```
   - `reason` is one of `dns` | `refused` | `timeout` | `network` | `tls` | `auth` |
     `permission` | `missing_database` | `missing_file` | `busy` | `unsupported` |
-    `unknown`. `cause`/`hint` are prose meant to be rendered as-is, so a client
+    `ssh` | `unknown`. `ssh` means the connection's SSH tunnel failed before the
+    database was reached (gateway unreachable, login rejected, host key changed,
+    or the gateway can't reach the database host). `cause`/`hint` are prose meant to be rendered as-is, so a client
     that doesn't know a newer `reason` still shows something useful.
   - Transport failures (refused/DNS/timeout/TLS) are classified generically for
     every engine; engine-specific replies (Postgres SQLSTATEs, Redis `NOAUTH`/

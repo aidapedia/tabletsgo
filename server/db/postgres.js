@@ -30,13 +30,18 @@ const pools = new Map()
 const poolVersions = new WeakMap()
 
 // Build a node-postgres client/pool config from a stored connection.
-// Handles optional database, "no authentication" mode, and SSL modes.
+// Handles optional database, "no authentication" mode, and SSL modes. Through
+// an SSH tunnel `host` is the local end, so TLS checks the name in
+// `tunneledHost` — the server the certificate was actually issued to.
 export function pgConfig(config) {
   const noAuth = config.auth === 'none'
   const ssl =
     !config.sslmode || config.sslmode === 'disable'
       ? false
-      : { rejectUnauthorized: config.sslmode === 'verify-full' }
+      : {
+          rejectUnauthorized: config.sslmode === 'verify-full',
+          ...(config.tunneledHost ? { servername: config.tunneledHost } : {}),
+        }
   return {
     host: config.host,
     port: parseInt(config.port) || 5432,
@@ -59,6 +64,7 @@ const schemaOf = (ctx = {}) => ctx.schema || 'public'
 export const postgresDriver = {
   type: 'postgresql',
   label: 'PostgreSQL',
+  defaultPort: 5432,
   // Postgres uses the database's own type vocabulary (matching what /columns
   // reports) so the same list is consistent for existing and new columns.
   dataTypes: [
@@ -545,11 +551,16 @@ async function runQuery(pool, sql, schema) {
 // honour the same host/port/db, no-auth mode and SSL mode as the pooled client.
 // Password and sslmode go through libpq env vars (PGPASSWORD/PGSSLMODE) — never
 // argv — so they don't leak into the process list.
+//
+// Through an SSH tunnel libpq dials the local end via PGHOSTADDR while `-h`
+// keeps the real host name, which is what verify-full checks the certificate
+// against.
 function toolConn(conn) {
   const noAuth = conn.auth === 'none'
-  const args = ['-h', conn.host, '-p', String(conn.port || 5432), '-d', conn.database]
+  const args = ['-h', conn.tunneledHost || conn.host, '-p', String(conn.port || 5432), '-d', conn.database]
   if (!noAuth && conn.username) args.push('-U', conn.username)
   const env = { ...process.env, PGPASSWORD: noAuth ? '' : conn.password || '' }
+  if (conn.tunneledHost) env.PGHOSTADDR = conn.host
   if (conn.sslmode) env.PGSSLMODE = conn.sslmode
   return { args, env }
 }

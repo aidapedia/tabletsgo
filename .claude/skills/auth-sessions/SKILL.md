@@ -41,9 +41,15 @@ closed set of permission keys plus the seeded builtins — leaf so that both
 `server/permissions.js` owns `roles` + `role_permissions` and caches the whole
 policy in memory, because the guards are sync and must stay sync.
 
-Nine keys today: `workspace.manage`, `workspace.delete`, `members.manage`,
-`teams.manage`, `notifications.manage`, `storage.manage`, `connections.create`,
-`connections.manage`, `connections.transfer`.
+Twelve keys today: `workspace.manage`, `workspace.delete`, `members.manage`,
+`teams.manage`, `notifications.manage`, `storage.manage`, `ssh.manage`,
+`connections.create`, `connections.manage`, `connections.transfer`,
+`resources.organise`, `resources.grant`.
+
+A new key also needs a meta step that gives it to the built-in `owner` (which
+the catalog defines as holding every key) — `seedBuiltinRoles` only inserts
+missing roles, so an existing owner never picks it up otherwise. See v17 and
+v21 (`ssh.manage`), and mirror the step in `server/postgres-meta.js`.
 
 Rules that keep the model honest:
 

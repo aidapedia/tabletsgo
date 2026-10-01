@@ -301,6 +301,13 @@ src/
 │   │   │                         #     BackupCalendarHeatmap, BackupVersionList (run-based restore),
 │   │   │                         #     RestorePanel (restore from uploaded file or browsed storage object)
 │   │   └── lib/                  #   api (storages CRUD, backup schedule/runs/calendar/restore), types
+│   ├── ssh/                      # SSH keys + gateways (workspace-scoped) a connection tunnels through
+│   │   ├── components/           #   SshGatewayList/SshGatewayModal (test, pinned host key, reset),
+│   │   │                         #     SshKeyList/SshKeyModal (generate or import; view = copy public
+│   │   │                         #     key), PublicKeyBox
+│   │   ├── lib/                  #   api (keys + gateways CRUD, gateway test), providers (form presets:
+│   │   │                         #     SSH server / Railway / Cloudflare — derived, never stored)
+│   │   └── types.ts
 │   ├── templates/                # built-in, read-only template catalog (browse + apply only — no
 │   │   │                         #   authoring). A template bundles workflows + dashboards; applying
 │   │   │                         #   creates the workflows first, resolves `{{workflow:<key>}}`
@@ -357,6 +364,9 @@ src/
         ├── ConnectionFormPage    #   /connections/new (engine in ?type=) and /connections/:id/edit/:tab —
         │                         #   both modes of features/connections' ConnectionForm
         ├── StoragePage           # /storage → S3 storage destinations (StorageList), top-level sidebar item
+        ├── SshHostsPage          # /ssh/hosts → sidebar SSH → Host (SshGatewayList; "gateway" in code/API)
+        ├── SshKeysPage           # /ssh/keys → sidebar SSH → Key (SshKeyList); /ssh redirects
+        │                         #   to /ssh/hosts
         ├── WorkflowsPage         # /workflows → every workflow in the workspace, across its connections
         │                         #   (features/workflow's WorkspaceWorkflowList); a row navigates to
         │                         #   /connection/:id?workflow=<id>, which the console opens as a tab
@@ -446,9 +456,10 @@ server/
 ├── config.js             # every env var + filesystem path, resolved once (imports nothing app-level)
 ├── util.js               # safeJson, jsonPreview, describeError, sleep, sanitizeForKey, computeNextRun
 ├── crypto.js             # AES-256-GCM: encryptSecret/decryptSecret + streamed file encryption.
-│                         #   One scrypt-derived key per namespace (connections | storage | backup files)
+│                         #   One scrypt-derived key per namespace (connections | storage | backup files |
+│                         #   app settings | ssh)
 ├── meta.js               # selects SQLite or PostgreSQL for app metadata, initMetaDb(), snapshotMetaSync()
-├── postgres-meta.js      # synchronous PostgreSQL adapter, bootstrap and metadata version check
+├── postgres-meta.js      # synchronous PostgreSQL adapter, v20 bootstrap + its own steps past it
 ├── postgres-sql.js       # metadata placeholder and conflict syntax translation
 ├── postgres-metadata-schema.sql # PostgreSQL baseline matching SQLite migration v20
 ├── migrations.js         # versioned, append-only meta-schema steps (see the `meta-schema` skill)
@@ -499,12 +510,20 @@ server/
 │                         #   Drafts designed against a connection stay saved queries (kind = 'schema').
 │                         #   Both tables carry the audit trail (created_by/updated_by/created_at + ts,
 │                         #   meta v20); server.js's withAudit is what resolves the ids to names
+├── ssh.js                # SSH keys (generate/import; public half + fingerprint as columns, private
+│                         #   key sealed) and gateways (bastions: host/user + key or password, host key
+│                         #   pinned on first login, transport tcp | cloudflare). connectGateway/
+│                         #   forwardOut + SSH error prose
+├── cloudflare-access.js  # SSH over Cloudflare Access: wss:// to the Access hostname with a service
+│                         #   token, raw bytes in binary frames (what `cloudflared access ssh` does)
 ├── storage.js            # storage destinations (S3-compatible + built-in local disk) and object ops:
 │                         #   store/fetch/list/delete/prune. Every step branches on `dest.local`, not a caller
 ├── db/                   # ★ the engine-agnostic database layer — see the `db-engine` skill
 │   ├── index.js          #   the driver contract + generic dispatch (the only file routes import)
 │   ├── diagnose.js       #   why a connection attempt failed: engine-agnostic transport
 │   │                     #     classification + the driver's own `explainError`
+│   ├── tunnel.js         #   SSH tunnels: a 127.0.0.1 listener per connection forwarding through its
+│   │                     #     gateway; every dispatcher dials through it, so drivers never know
 │   ├── sql.js            #   dialect-agnostic SQL text utils shared by the SQL drivers
 │   ├── sqlite.js         #   one file per engine; each adapts itself to the contract
 │   ├── postgres.js

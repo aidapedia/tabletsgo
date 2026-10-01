@@ -3,6 +3,7 @@ import { useConnections } from '../stores/ConnectionsContext'
 import ConnectionAccessPanel from './ConnectionAccessPanel'
 import { TYPE_LABEL } from './DbTypePickerModal'
 import { BackupPanel } from '@/features/backup'
+import { addressOf, listSshGateways, type SshGateway } from '@/features/ssh'
 // Deep import, not the `@/features/schema-designer` barrel: that barrel's
 // WorkspaceSchemaList reads TYPE_LABEL back out of *this* feature, so going
 // through it would make the two barrels a cycle. The panel itself depends on
@@ -105,6 +106,13 @@ export default function ConnectionDetail({ conn, onBack, onOpen, onEdit, onDelet
   const [status, setStatus] = useState<'checking' | 'connected' | 'offline'>('checking')
   const [tableCount, setTableCount] = useState<number | null>(null)
   const [sessions, setSessions] = useState<SessionStats | null>(null)
+  const [gateway, setGateway] = useState<SshGateway | null>(null)
+
+  // The tunnel is part of how this database is reached, so it reads with the host.
+  useEffect(() => {
+    if (!conn.sshGatewayId || !conn.workspaceId) return setGateway(null)
+    listSshGateways(conn.workspaceId).then((list) => setGateway(list.find((g) => g.id === conn.sshGatewayId) || null))
+  }, [conn.sshGatewayId, conn.workspaceId])
 
   useEffect(() => {
     let alive = true
@@ -215,6 +223,12 @@ export default function ConnectionDetail({ conn, onBack, onOpen, onEdit, onDelet
                         <DetailRow label="TLS" value={conn.tls ? (conn.tls === 'insecure' ? 'enabled (unverified)' : 'enabled') : undefined} />
                       ) : (
                         <DetailRow label="SSL mode" value={conn.sslmode} />
+                      )}
+                      {conn.sshGatewayId && (
+                        <DetailRow
+                          label="SSH tunnel"
+                          value={gateway ? `${gateway.name} (${addressOf(gateway)})` : 'host missing'}
+                        />
                       )}
                     </>
                   )}

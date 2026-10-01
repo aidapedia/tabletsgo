@@ -43,7 +43,8 @@ export function snapshotMetaSync(destPath) {
 export function initMetaDb() {
   // SQLite keeps its shipped, append-only migration steps and snapshots an
   // existing file before upgrading. PostgreSQL bootstraps the equivalent v20
-  // schema in a transaction and records its own version.
+  // schema, applies its own steps past it in a transaction, and records its
+  // own version.
   if (postgres) postgres.migratePostgres(meta)
   else migrate(meta, {
     encryptSecret,

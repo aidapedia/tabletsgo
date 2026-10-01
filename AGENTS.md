@@ -72,6 +72,7 @@ src/
 | `workflow` | node-graph automations: builder, scheduling, folders, JSON export/import |
 | `dashboard` | per-connection query dashboards: variables, 12-col grid, hand-rolled SVG charts, row actions |
 | `backup` | S3-compatible storage destinations + per-connection backup schedule and restore |
+| `ssh` | workspace SSH keys (generate/import, copy public key) + the gateways connections tunnel through |
 | `templates` | built-in read-only catalog bundling workflows + dashboards (browse + apply) |
 | `system-update` | version check against GitHub Releases + guided update wizard |
 | `resource-tree` | the instance-wide node hierarchy + the roles granted on it (tree view, node detail, grant editor, group rosters) |
@@ -107,6 +108,8 @@ server/
 ├── workflow-store.js    # workflow metadata CRUD and run history
 ├── folders.js           # the polymorphic folder tree (4 types, depth caps)
 ├── schema-drafts.js     # from-scratch schema drafts: a diagram a *workspace* owns, no connection
+├── ssh.js               # SSH keys + gateways (bastions); host key pinning      → skill db-engine
+├── cloudflare-access.js # SSH over Cloudflare Access (WebSocket + service token) → skill db-engine
 ├── storage.js           # storage destinations (S3 + local disk) and object ops
 ├── db/                  # ★ the engine-agnostic database layer                → skill db-engine
 ├── workflow.js          # the node-graph executor + scheduler
@@ -133,7 +136,7 @@ server/
 
 ### Backend
 - A module owns its table(s): if a route is writing raw SQL against `backup_schedules` or `storage_destinations`, that belongs in the module.
-- Dependencies point one way: `config → crypto → meta → sessions → permissions-catalog → permissions → resource-tree → {auth, workspaces, app-settings, connections, folders, storage} → mail → db → workflow/backup/transfer → server.js`. `resource-tree` owns `node_members` and exports `groupIdsFor`, which `auth.js` imports — never the other way round, because `auth.js` depends on it. No cycles — `sessions` never imports `db`; the db layer hands it a release callback instead (`setReleaseHandler`), which is what lets the sweeper close idle handles. Also `backup/schedule.js` is split out from the runner precisely so `connection-transfer.js` can read a schedule without importing the pipeline.
+- Dependencies point one way: `config → crypto → meta → sessions → permissions-catalog → permissions → resource-tree → {auth, workspaces, app-settings, connections, folders, storage} → ssh → mail → db → workflow/backup/transfer → server.js`. `resource-tree` owns `node_members` and exports `groupIdsFor`, which `auth.js` imports — never the other way round, because `auth.js` depends on it. No cycles — `sessions` never imports `db`; the db layer hands it a release callback instead (`setReleaseHandler`), which is what lets the sweeper close idle handles. Also `backup/schedule.js` is split out from the runner precisely so `connection-transfer.js` can read a schedule without importing the pipeline.
 
 ## EXTRA ACTION
 - Every time you add endpoint on server, create a structure of request response and sample url on BACKEND_DOCUMENTATION.MD

@@ -9,7 +9,7 @@ import Tooltip from '@/shared/ui/overlay/Tooltip'
 import AccountTile from '@/shared/ui/AccountTile'
 import AccountMenu from '@/shared/ui/AccountMenu'
 import IconButton from '@/shared/ui/buttons/IconButton'
-import { BellIcon, BuildingIcon, CloudIcon, DatabaseIcon, DiagramIcon, GridIcon, HomeIcon, Logo, MailIcon, MenuIcon, MoreHorizontalIcon, PanelLeftIcon, SettingsIcon, ShieldIcon, TreeIcon, UsersIcon, WorkflowIcon } from '@/shared/ui/icons'
+import { BellIcon, BuildingIcon, CloudIcon, DatabaseIcon, DiagramIcon, GridIcon, HomeIcon, KeyIcon, Logo, MailIcon, MenuIcon, MoreHorizontalIcon, PanelLeftIcon, SettingsIcon, ShieldIcon, TerminalIcon, TreeIcon, UsersIcon, WorkflowIcon } from '@/shared/ui/icons'
 
 /**
  * Sidebar navigation model — a pinned row plus titled groups.
@@ -37,6 +37,16 @@ const NAV = {
         { label: 'Workflow', Icon: WorkflowIcon, path: '/workflows' },
         { label: 'S3 Storage', Icon: CloudIcon, path: '/storage' },
         { label: 'Resource Tree', Icon: TreeIcon, path: '/resource-tree' },
+      ],
+    },
+    {
+      // How a connection reaches a database on a private network: the SSH
+      // hosts (gateways, in the code) it tunnels through and the keys they log
+      // in with.
+      group: 'SSH',
+      items: [
+        { label: 'Host', Icon: TerminalIcon, path: '/ssh/hosts' },
+        { label: 'Key', Icon: KeyIcon, path: '/ssh/keys' },
       ],
     },
     {

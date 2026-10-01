@@ -34,6 +34,7 @@ export type Permission =
   | 'teams.manage'
   | 'notifications.manage'
   | 'storage.manage'
+  | 'ssh.manage'
   | 'connections.create'
   | 'connections.manage'
   | 'connections.transfer'

@@ -185,6 +185,17 @@ export const PERMISSIONS = [
     ],
   },
   {
+    group: 'SSH',
+    items: [
+      {
+        key: 'ssh.manage',
+        label: 'Manage SSH keys and gateways',
+        description: 'Add, edit and delete the SSH keys and gateways connections tunnel through.',
+        scope: 'workspace',
+      },
+    ],
+  },
+  {
     group: 'Connections',
     items: [
       {
@@ -274,7 +285,7 @@ export const BUILTIN_ROLES = [
   {
     slug: 'owner',
     name: 'Owner',
-    description: 'Manages the workspace: its members, groups, settings, storage and connections.',
+    description: 'Manages the workspace: its members, groups, settings, storage, SSH gateways and connections.',
     permissions: [...PERMISSION_KEYS],
     appliesTo: ['application', 'workspace'],
   },
