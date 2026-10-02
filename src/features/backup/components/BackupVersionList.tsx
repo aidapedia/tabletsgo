@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react'
-import { useConnections } from '@/features/connections'
 import Button from '@/shared/ui/buttons/Button'
 import TextButton from '@/shared/ui/buttons/TextButton'
 import Select from '@/shared/ui/form/Select'
@@ -37,18 +36,19 @@ type Row = { run: BackupRun; upload: BackupUpload }
 export default function BackupVersionList({
   connectionId,
   connectionType,
+  connections,
   workspaceId,
   dateFilter,
   onClearDateFilter,
 }: {
   connectionId: string
   connectionType: string
+  connections: { id: string; name: string; type: string }[]
   workspaceId: string
   dateFilter?: string | null
   onClearDateFilter?: () => void
 }) {
   const toast = useToast()
-  const { connections } = useConnections() as { connections: any[] }
   const [runs, setRuns] = useState<BackupRun[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(0)

@@ -12,7 +12,7 @@ By participating, you agree to follow our [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ### Prerequisites
 
-- Node.js 20+
+- Node.js 22.9+ (`npm run server` loads `.env` via `--env-file-if-exists`)
 - npm
 - Docker (optional, for the container workflow)
 

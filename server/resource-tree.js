@@ -33,8 +33,7 @@
  *   - **A principal is a user or a group.** A group grant resolves through
  *     `node_members` — the roster of the group node the grant names. Membership is
  *     flat (a group holds users, never other groups), so resolving it is one
- *     indexed read with no closure to walk, which is what keeps this file
- *     synchronous. Nesting a group under another therefore organises resources
+ *     indexed read with no closure to walk. Nesting a group under another therefore organises resources
  *     and says nothing about who is in it: re-filing a folder must never hand
  *     anyone access.
  *
@@ -50,15 +49,14 @@
  *
  * ## Why the caching looks like this
  *
- * The route guards are synchronous (see server/auth.js — making `requireAuth`
- * async is the one thing that file forbids), so every read here is synchronous
- * too, and resolution results are memoized behind the same policy version
- * `server/permissions.js` bumps. A role edit, a grant or a node move all
- * invalidate; nothing else has to.
+ * Resolution runs on nearly every request, so its results are memoized behind
+ * the same policy version `server/permissions.js` bumps. A role edit, a grant
+ * or a node move all invalidate; nothing else has to. An answer computed while
+ * any transaction is open is never kept (see `transactionsOpen`).
  */
 
 import { randomUUID } from 'crypto'
-import { meta } from './meta.js'
+import { db, transaction, transactionsOpen } from './meta.js'
 import {
   CUSTOM_NODE_TYPES,
   NODE_TYPE_KEYS,
@@ -115,16 +113,20 @@ export const grantRow = (r) =>
 
 // ---- Reads ----
 
-export const getNode = (id) => nodeRow(meta.prepare('SELECT * FROM resource_nodes WHERE id = ?').get(id))
+export const getNode = async (id) => (id ? nodeRow(await db().resource_nodes.findUnique({ where: { id } })) : null)
 
 /** The node mirroring a given resource row, e.g. `nodeFor('workspace', wsId)`. */
-export const nodeFor = (type, resourceId) =>
-  resourceId ? nodeRow(meta.prepare('SELECT * FROM resource_nodes WHERE type = ? AND resource_id = ?').get(type, resourceId)) : null
+export const nodeFor = async (type, resourceId) =>
+  resourceId ? nodeRow(await db().resource_nodes.findFirst({ where: { type, resource_id: resourceId } })) : null
 
-export const applicationRoot = () => nodeRow(meta.prepare('SELECT * FROM resource_nodes WHERE type = ? LIMIT 1').get(ROOT_NODE_TYPE))
+export const applicationRoot = async () => nodeRow(await db().resource_nodes.findFirst({ where: { type: ROOT_NODE_TYPE } }))
 
-export const childrenOf = (nodeId) =>
-  meta.prepare('SELECT * FROM resource_nodes WHERE parent_id = ? ORDER BY kind DESC, sort ASC, name ASC').all(nodeId).map(nodeRow)
+// Groups before resources, then the hand-set order, then by name — the order
+// every listing of the tree uses.
+const TREE_ORDER = [{ kind: 'desc' }, { sort: 'asc' }, { name: 'asc' }]
+
+export const childrenOf = async (nodeId) =>
+  (await db().resource_nodes.findMany({ where: { parent_id: nodeId }, orderBy: TREE_ORDER })).map(nodeRow)
 
 /**
  * The node's ancestors, root-first, ending with the node itself.
@@ -133,22 +135,22 @@ export const childrenOf = (nodeId) =>
  * ids in hand, rather than a parent-chasing loop that costs one query per level
  * on the hot permission path.
  */
-export const chainOf = (node) => {
+export const chainOf = async (node) => {
   if (!node) return []
   const ids = node.path.split('/').filter(Boolean)
   if (!ids.length) return [node]
-  const rows = meta.prepare(`SELECT * FROM resource_nodes WHERE id IN (${ids.map(() => '?').join(',')})`).all(...ids).map(nodeRow)
+  const rows = (await db().resource_nodes.findMany({ where: { id: { in: ids } } })).map(nodeRow)
   const byId = new Map(rows.map((r) => [r.id, r]))
   return ids.map((id) => byId.get(id)).filter(Boolean)
 }
 
+// "At or below `node`": the node itself, or anything whose path runs through it.
+const inSubtree = (node) => ({ OR: [{ id: node.id }, { path: { startsWith: `${node.path}/` } }] })
+
 /** Every node at or below `node`, including it. One indexed prefix match. */
-export const subtreeOf = (node) =>
+export const subtreeOf = async (node) =>
   node
-    ? meta
-        .prepare('SELECT * FROM resource_nodes WHERE id = ? OR path LIKE ? ORDER BY depth ASC, sort ASC, name ASC')
-        .all(node.id, `${node.path}/%`)
-        .map(nodeRow)
+    ? (await db().resource_nodes.findMany({ where: inSubtree(node), orderBy: [{ depth: 'asc' }, { sort: 'asc' }, { name: 'asc' }] })).map(nodeRow)
     : []
 
 /**
@@ -157,18 +159,17 @@ export const subtreeOf = (node) =>
  * No workspace narrowing, and none needed: a grant names one concrete node, and
  * `addGrant` already refuses to point a grant at a group from another workspace.
  * Membership is deliberately flat — a group holds users, never other groups — so
- * this is one indexed read with no closure to walk and no cycle to guard against,
- * which is what keeps the whole resolver synchronous.
+ * this is one indexed read with no closure to walk and no cycle to guard against.
  */
 // Membership lives on the workspace's own node — it is a group like any other.
 // Inlined rather than imported from auth.js, which depends on this module.
-const isWorkspaceMember = (workspaceId, userId) => {
-  const node = nodeFor('workspace', workspaceId)
-  return !!node && !!meta.prepare('SELECT 1 FROM node_members WHERE node_id = ? AND user_id = ?').get(node.id, userId)
+const isWorkspaceMember = async (workspaceId, userId) => {
+  const node = await nodeFor('workspace', workspaceId)
+  return !!node && (await isNodeMember(node.id, userId))
 }
 
-export const groupIdsFor = (userId) =>
-  userId ? meta.prepare('SELECT node_id id FROM node_members WHERE user_id = ?').all(userId).map((r) => r.id) : []
+export const groupIdsFor = async (userId) =>
+  userId ? (await db().node_members.findMany({ where: { user_id: userId }, select: { node_id: true } })).map((r) => r.node_id) : []
 
 // ---- Resolution ----
 
@@ -176,16 +177,21 @@ export const groupIdsFor = (userId) =>
 // or a node move drops every stale answer at once.
 let resolveCache = new Map()
 let resolveCacheVersion = -1
+// Bumped by every invalidation, so an answer whose computation overlapped a
+// write is returned to its caller but never cached.
+let generation = 0
 
-const memo = (key, compute) => {
+const memo = async (key, compute) => {
   const version = policyVersion()
   if (version !== resolveCacheVersion) {
     resolveCache = new Map()
     resolveCacheVersion = version
   }
   if (resolveCache.has(key)) return resolveCache.get(key)
-  const value = compute()
-  resolveCache.set(key, value)
+  const startedAt = generation
+  const cacheable = !transactionsOpen()
+  const value = await compute()
+  if (cacheable && !transactionsOpen() && startedAt === generation && version === resolveCacheVersion) resolveCache.set(key, value)
   return value
 }
 
@@ -193,6 +199,7 @@ const memo = (key, compute) => {
 export const invalidateResolution = () => {
   resolveCache = new Map()
   resolveCacheVersion = -1
+  generation += 1
 }
 
 /**
@@ -202,17 +209,15 @@ export const invalidateResolution = () => {
  * ancestor's grant counts only when it inherits, while a grant on the node itself
  * always counts.
  */
-export const permissionsAtNode = (node, userId) => {
+export const permissionsAtNode = async (node, userId) => {
   if (!node || !userId) return new Set()
-  return memo(`p:${node.id}:${userId}`, () => {
-    const chain = chainOf(node)
+  return memo(`p:${node.id}:${userId}`, async () => {
+    const chain = await chainOf(node)
     if (!chain.length) return new Set()
 
-    const groups = new Set(groupIdsFor(userId))
+    const groups = new Set(await groupIdsFor(userId))
     const ids = chain.map((n) => n.id)
-    const grants = meta
-      .prepare(`SELECT * FROM resource_grants WHERE node_id IN (${ids.map(() => '?').join(',')})`)
-      .all(...ids)
+    const grants = await db().resource_grants.findMany({ where: { node_id: { in: ids } } })
 
     const out = new Set()
     for (const ancestor of chain) {
@@ -238,15 +243,15 @@ export const permissionsAtNode = (node, userId) => {
  * permissions at its node, so a grant made higher up (on the application root)
  * reaches every workspace, exactly as the tree promises.
  */
-export const permissionsInWorkspace = (workspaceId, userId) => permissionsAtNode(nodeFor('workspace', workspaceId), userId)
+export const permissionsInWorkspace = async (workspaceId, userId) => permissionsAtNode(await nodeFor('workspace', workspaceId), userId)
 
 /** Permissions at the node mirroring a resource, e.g. one connection. */
-export const permissionsAtResource = (type, resourceId, userId) => permissionsAtNode(nodeFor(type, resourceId), userId)
+export const permissionsAtResource = async (type, resourceId, userId) => permissionsAtNode(await nodeFor(type, resourceId), userId)
 
 /** True when the user owns this node or any ancestor of it. */
-export const ownsNode = (node, userId) => {
+export const ownsNode = async (node, userId) => {
   if (!node || !userId) return false
-  return chainOf(node).some((n) => n.ownerId === userId)
+  return (await chainOf(node)).some((n) => n.ownerId === userId)
 }
 
 /**
@@ -265,12 +270,12 @@ export const ownsNode = (node, userId) => {
  * connection" and make each connection's access list dead letter. The
  * application root is excluded for the same reason, one level up.
  */
-export const memberOfGroupAbove = (node, userId) => {
+export const memberOfGroupAbove = async (node, userId) => {
   if (!node || !userId) return false
-  return memo(`r:${node.id}:${userId}`, () => {
-    const mine = new Set(groupIdsFor(userId))
+  return memo(`r:${node.id}:${userId}`, async () => {
+    const mine = new Set(await groupIdsFor(userId))
     if (!mine.size) return false
-    return chainOf(node).some((n) => n.type === 'group' && mine.has(n.id))
+    return (await chainOf(node)).some((n) => n.type === 'group' && mine.has(n.id))
   })
 }
 
@@ -284,36 +289,32 @@ export const memberOfGroupAbove = (node, userId) => {
  * included only for context are marked `context: true`, so the UI can render them
  * as scaffolding rather than as something the user can act on.
  */
-export const visibleTree = (user) => {
+export const visibleTree = async (user) => {
   if (!user) return []
 
   const decorate = (n, context) => ({ ...n, context })
 
   if (user.role === 'admin') {
-    return meta
-      .prepare('SELECT * FROM resource_nodes ORDER BY depth ASC, kind DESC, sort ASC, name ASC')
-      .all()
-      .map((r) => decorate(nodeRow(r), false))
+    return (await db().resource_nodes.findMany({ orderBy: [{ depth: 'asc' }, ...TREE_ORDER] })).map((r) => decorate(nodeRow(r), false))
   }
 
-  const groups = groupIdsFor(user.id)
-  const principalRows = groups.length
-    ? meta
-        .prepare(
-          `SELECT * FROM resource_grants
-            WHERE (principal_type = 'user' AND principal_id = ?)
-               OR (principal_type = 'node' AND principal_id IN (${groups.map(() => '?').join(',')}))`
-        )
-        .all(user.id, ...groups)
-    : meta.prepare("SELECT * FROM resource_grants WHERE principal_type = 'user' AND principal_id = ?").all(user.id)
+  const groups = await groupIdsFor(user.id)
+  const principalRows = await db().resource_grants.findMany({
+    where: {
+      OR: [
+        { principal_type: 'user', principal_id: user.id },
+        ...(groups.length ? [{ principal_type: 'node', principal_id: { in: groups } }] : []),
+      ],
+    },
+  })
 
-  const ownedRows = meta.prepare('SELECT * FROM resource_nodes WHERE owner_id = ?').all(user.id).map(nodeRow)
+  const ownedRows = (await db().resource_nodes.findMany({ where: { owner_id: user.id } })).map(nodeRow)
 
   // Entry points: a node the user owns, or one they hold a grant on.
   const entries = new Map()
   for (const n of ownedRows) entries.set(n.id, { node: n, deep: true })
   for (const g of principalRows) {
-    const n = getNode(g.node_id)
+    const n = await getNode(g.node_id)
     if (!n) continue
     const existing = entries.get(n.id)
     entries.set(n.id, { node: n, deep: (existing?.deep ?? false) || !!g.inherit })
@@ -322,11 +323,11 @@ export const visibleTree = (user) => {
 
   const visible = new Map()
   for (const { node, deep } of entries.values()) {
-    for (const n of deep ? subtreeOf(node) : [node]) visible.set(n.id, decorate(n, false))
+    for (const n of deep ? await subtreeOf(node) : [node]) visible.set(n.id, decorate(n, false))
   }
   // Ancestors, so every visible node has a path back to the root.
   for (const { node } of entries.values()) {
-    for (const a of chainOf(node)) if (!visible.has(a.id)) visible.set(a.id, decorate(a, true))
+    for (const a of await chainOf(node)) if (!visible.has(a.id)) visible.set(a.id, decorate(a, true))
   }
 
   return [...visible.values()].sort((a, b) => a.depth - b.depth || a.name.localeCompare(b.name))
@@ -360,15 +361,13 @@ export const visibleTree = (user) => {
  * `userCanAccessConnection`), so listing them as people with access here would
  * be wrong in both directions.
  */
-export const peopleAtNode = (node) => {
+export const peopleAtNode = async (node) => {
   if (!node) return []
-  const chain = chainOf(node)
+  const chain = await chainOf(node)
   if (!chain.length) return []
 
   const ids = chain.map((n) => n.id)
-  const grants = meta
-    .prepare(`SELECT * FROM resource_grants WHERE node_id IN (${ids.map(() => '?').join(',')})`)
-    .all(...ids)
+  const grants = await db().resource_grants.findMany({ where: { node_id: { in: ids } } })
 
   // Reaching grants only: one made here always counts, one made above counts
   // only if it inherits — the same rule the resolver applies.
@@ -379,18 +378,13 @@ export const peopleAtNode = (node) => {
   const groupIds = [...new Set(reaching.filter((g) => g.principal_type === 'node').map((g) => g.principal_id))]
   const rosters = new Map(groupIds.map((id) => [id, []]))
   if (groupIds.length) {
-    for (const r of meta
-      .prepare(`SELECT node_id, user_id FROM node_members WHERE node_id IN (${groupIds.map(() => '?').join(',')})`)
-      .all(...groupIds)) {
+    for (const r of await db().node_members.findMany({ where: { node_id: { in: groupIds } }, select: { node_id: true, user_id: true } })) {
       rosters.get(r.node_id)?.push(r.user_id)
     }
   }
   const groupName = new Map(
     groupIds.length
-      ? meta
-          .prepare(`SELECT id, name FROM resource_nodes WHERE id IN (${groupIds.map(() => '?').join(',')})`)
-          .all(...groupIds)
-          .map((r) => [r.id, r.name])
+      ? (await db().resource_nodes.findMany({ where: { id: { in: groupIds } }, select: { id: true, name: true } })).map((r) => [r.id, r.name])
       : []
   )
 
@@ -460,9 +454,7 @@ export const peopleAtNode = (node) => {
 
   if (!out.size) return []
   const userIds = [...out.keys()]
-  for (const u of meta
-    .prepare(`SELECT id, name, username FROM users WHERE id IN (${userIds.map(() => '?').join(',')})`)
-    .all(...userIds)) {
+  for (const u of await db().users.findMany({ where: { id: { in: userIds } }, select: { id: true, name: true, username: true } })) {
     const person = out.get(u.id)
     person.name = u.name || ''
     person.email = u.username || ''
@@ -472,13 +464,12 @@ export const peopleAtNode = (node) => {
   // `userCanAccessConnection` requires a membership row, so such a person can
   // administer things here and still not open a database. Worth saying out loud
   // wherever this list is rendered.
-  const wsNode = node.workspaceId ? nodeFor('workspace', node.workspaceId) : null
+  const wsNode = node.workspaceId ? await nodeFor('workspace', node.workspaceId) : null
   const members = wsNode
     ? new Set(
-        meta
-          .prepare(`SELECT user_id FROM node_members WHERE node_id = ? AND user_id IN (${userIds.map(() => '?').join(',')})`)
-          .all(wsNode.id, ...userIds)
-          .map((r) => r.user_id)
+        (await db().node_members.findMany({ where: { node_id: wsNode.id, user_id: { in: userIds } }, select: { user_id: true } })).map(
+          (r) => r.user_id
+        )
       )
     : null
 
@@ -491,20 +482,18 @@ export const peopleAtNode = (node) => {
 
 // ---- Grants ----
 
-export const listGrants = (nodeId) =>
-  meta
-    .prepare(
-      `SELECT g.*,
-              COALESCE(u.name, u.username, gn.name) AS principal_name,
-              u.username AS principal_email
-         FROM resource_grants g
-         LEFT JOIN users u ON g.principal_type = 'user' AND u.id = g.principal_id
-         LEFT JOIN resource_nodes gn ON g.principal_type = 'node' AND gn.id = g.principal_id
-        WHERE g.node_id = ?
-        ORDER BY g.created_at`
-    )
-    .all(nodeId)
-    .map(grantRow)
+export const listGrants = async (nodeId) =>
+  (
+    await db().$queryRaw`
+      SELECT g.*,
+             COALESCE(u.name, u.username, gn.name) AS principal_name,
+             u.username AS principal_email
+        FROM resource_grants g
+        LEFT JOIN users u ON g.principal_type = 'user' AND u.id = g.principal_id
+        LEFT JOIN resource_nodes gn ON g.principal_type = 'node' AND gn.id = g.principal_id
+       WHERE g.node_id = ${nodeId}
+       ORDER BY g.created_at`
+  ).map(grantRow)
 
 /**
  * Grant a role on a node.
@@ -516,8 +505,8 @@ export const listGrants = (nodeId) =>
  * Returns `{ grant }` or `{ error }`; the route turns the latter into a 400 with
  * the reason, which is always specific enough to act on.
  */
-export const addGrant = (nodeId, { principalType, principalId, roleSlug, inherit = true, createdBy = null }) => {
-  const node = getNode(nodeId)
+export const addGrant = async (nodeId, { principalType, principalId, roleSlug, inherit = true, createdBy = null }) => {
+  const node = await getNode(nodeId)
   if (!node) return { error: 'Node not found.' }
   if (principalType !== 'user' && principalType !== 'node') return { error: 'A grant is made to a user or a group.' }
   if (!principalId) return { error: 'Who the grant is for is required.' }
@@ -529,14 +518,14 @@ export const addGrant = (nodeId, { principalType, principalId, roleSlug, inherit
     // Only a group holds people, and only inside its own workspace: a grant
     // pointing at a group from elsewhere would hand this workspace's permissions
     // to a roster nobody here administers.
-    const principal = getNode(principalId)
+    const principal = await getNode(principalId)
     if (!principal) return { error: 'Group not found.' }
     if (principal.kind !== 'group') return { error: 'Only a group can be granted a role — it is the thing that holds people.' }
     if (node.workspaceId && principal.workspaceId !== node.workspaceId) {
       return { error: 'That group belongs to a different workspace.' }
     }
   } else {
-    if (!meta.prepare('SELECT 1 FROM users WHERE id = ?').get(principalId)) return { error: 'User not found.' }
+    if (!(await userExists(principalId))) return { error: 'User not found.' }
     // Membership is the authority on who belongs to a workspace, and it is what
     // gates opening a database. Granting a non-member would leave them half in:
     // resolving to permissions through the tree while `memberRole()` returns null,
@@ -544,29 +533,33 @@ export const addGrant = (nodeId, { principalType, principalId, roleSlug, inherit
     // The group-roster route and connection-owner transfer already apply this
     // rule; grants were the one path that skipped it. Inlined rather than
     // imported from auth.js, which depends on this module.
-    if (node.workspaceId && !isWorkspaceMember(node.workspaceId, principalId)) {
+    if (node.workspaceId && !(await isWorkspaceMember(node.workspaceId, principalId))) {
       return { error: 'That person is not a member of this workspace.' }
     }
   }
 
-  const id = randomUUID()
-  meta
-    .prepare(
-      `INSERT INTO resource_grants (id, node_id, principal_type, principal_id, role_slug, inherit, created_at, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(node_id, principal_type, principal_id, role_slug)
-       DO UPDATE SET inherit = excluded.inherit`
-    )
-    .run(id, nodeId, principalType, principalId, roleSlug, inherit ? 1 : 0, Date.now(), createdBy)
+  const grant = await db().resource_grants.upsert({
+    where: {
+      node_id_principal_type_principal_id_role_slug: { node_id: nodeId, principal_type: principalType, principal_id: principalId, role_slug: roleSlug },
+    },
+    create: {
+      id: randomUUID(),
+      node_id: nodeId,
+      principal_type: principalType,
+      principal_id: principalId,
+      role_slug: roleSlug,
+      inherit: inherit ? 1 : 0,
+      created_at: Date.now(),
+      created_by: createdBy,
+    },
+    update: { inherit: inherit ? 1 : 0 },
+  })
   invalidateResolution()
-  const grant = meta
-    .prepare('SELECT * FROM resource_grants WHERE node_id = ? AND principal_type = ? AND principal_id = ? AND role_slug = ?')
-    .get(nodeId, principalType, principalId, roleSlug)
   return { grant: grantRow(grant) }
 }
 
-export const removeGrant = (grantId) => {
-  meta.prepare('DELETE FROM resource_grants WHERE id = ?').run(grantId)
+export const removeGrant = async (grantId) => {
+  await db().resource_grants.deleteMany({ where: { id: grantId } })
   invalidateResolution()
 }
 
@@ -580,39 +573,39 @@ export const removeGrant = (grantId) => {
 // `resources.organise`.
 
 /** The people in a group, with enough to render them. */
-export const listNodeMembers = (nodeId) =>
-  meta
-    .prepare(
-      `SELECT u.id AS userId, u.username AS email, u.name, m.created_at AS createdAt
-         FROM node_members m JOIN users u ON u.id = m.user_id
-        WHERE m.node_id = ? ORDER BY m.created_at`
-    )
-    .all(nodeId)
+// Unquoted aliases fold to lower case on PostgreSQL, so raw queries alias in
+// snake_case and the camelCase shape is built here.
+export const listNodeMembers = async (nodeId) =>
+  (
+    await db().$queryRaw`
+      SELECT u.id AS user_id, u.username AS email, u.name, m.created_at
+        FROM node_members m JOIN users u ON u.id = m.user_id
+       WHERE m.node_id = ${nodeId} ORDER BY m.created_at`
+  ).map((r) => ({ userId: r.user_id, email: r.email, name: r.name, createdAt: r.created_at }))
 
 /** node_id -> roster size, for every group that has one. One query, not one per node. */
-export const memberCounts = () => {
+export const memberCounts = async () => {
   const out = new Map()
-  for (const r of meta.prepare('SELECT node_id, COUNT(*) c FROM node_members GROUP BY node_id').all()) out.set(r.node_id, r.c)
+  for (const r of await db().node_members.groupBy({ by: ['node_id'], _count: { _all: true } })) out.set(r.node_id, r._count._all)
   return out
 }
 
 /** Group nodes a user belongs to, as node rows — for "where does Sam get this from?". */
-export const nodeMembershipsOf = (userId) => {
-  const ids = groupIdsFor(userId)
+export const nodeMembershipsOf = async (userId) => {
+  const ids = await groupIdsFor(userId)
   if (!ids.length) return []
-  return meta
-    .prepare(`SELECT * FROM resource_nodes WHERE id IN (${ids.map(() => '?').join(',')}) ORDER BY name`)
-    .all(...ids)
-    .map(nodeRow)
+  return (await db().resource_nodes.findMany({ where: { id: { in: ids } }, orderBy: { name: 'asc' } })).map(nodeRow)
 }
 
 /** Is this person on this node's roster? */
-export const isNodeMember = (nodeId, userId) =>
-  !!(nodeId && userId && meta.prepare('SELECT 1 FROM node_members WHERE node_id = ? AND user_id = ?').get(nodeId, userId))
+export const isNodeMember = async (nodeId, userId) =>
+  !!(nodeId && userId && (await db().node_members.findFirst({ where: { node_id: nodeId, user_id: userId }, select: { id: true } })))
 
 /** Just the ids on a node's roster. */
-export const nodeMemberIds = (nodeId) =>
-  meta.prepare('SELECT user_id FROM node_members WHERE node_id = ?').all(nodeId).map((r) => r.user_id)
+export const nodeMemberIds = async (nodeId) =>
+  (await db().node_members.findMany({ where: { node_id: nodeId }, select: { user_id: true } })).map((r) => r.user_id)
+
+const userExists = async (userId) => !!(userId && (await db().users.findUnique({ where: { id: userId }, select: { id: true } })))
 
 /**
  * The role slug a principal was granted directly on one node, or null.
@@ -621,19 +614,24 @@ export const nodeMemberIds = (nodeId) =>
  * its own: belonging is a `node_members` row, and what that person may do is the
  * grant sitting on the same node.
  */
-export const principalGrantRole = (nodeId, principalType, principalId) =>
-  meta
-    .prepare('SELECT role_slug FROM resource_grants WHERE node_id = ? AND principal_type = ? AND principal_id = ? LIMIT 1')
-    .get(nodeId, principalType, principalId)?.role_slug || null
+export const principalGrantRole = async (nodeId, principalType, principalId) =>
+  (
+    await db().resource_grants.findFirst({
+      where: { node_id: nodeId, principal_type: principalType, principal_id: principalId },
+      select: { role_slug: true },
+    })
+  )?.role_slug || null
 
-export const addNodeMember = (nodeId, userId) => {
-  const node = getNode(nodeId)
+export const addNodeMember = async (nodeId, userId) => {
+  const node = await getNode(nodeId)
   if (!node) return { error: 'Group not found.' }
   if (node.kind !== 'group') return { error: 'Only a group holds people.' }
-  if (!meta.prepare('SELECT 1 FROM users WHERE id = ?').get(userId)) return { error: 'User not found.' }
-  meta
-    .prepare('INSERT OR IGNORE INTO node_members (id, node_id, user_id, created_at) VALUES (?, ?, ?, ?)')
-    .run(randomUUID(), nodeId, userId, Date.now())
+  if (!(await userExists(userId))) return { error: 'User not found.' }
+  await db().node_members.upsert({
+    where: { node_id_user_id: { node_id: nodeId, user_id: userId } },
+    create: { id: randomUUID(), node_id: nodeId, user_id: userId, created_at: Date.now() },
+    update: {},
+  })
   // A roster change is a policy change: the resolver reads membership inside its
   // memo, so without this the new seat stays invisible until something else
   // happens to clear the cache.
@@ -641,8 +639,8 @@ export const addNodeMember = (nodeId, userId) => {
   return { ok: true }
 }
 
-export const removeNodeMember = (nodeId, userId) => {
-  meta.prepare('DELETE FROM node_members WHERE node_id = ? AND user_id = ?').run(nodeId, userId)
+export const removeNodeMember = async (nodeId, userId) => {
+  await db().node_members.deleteMany({ where: { node_id: nodeId, user_id: userId } })
   // Matters more in this direction: a cached answer would keep handing the
   // group's permissions to someone who no longer belongs to it.
   invalidateResolution()
@@ -650,21 +648,18 @@ export const removeNodeMember = (nodeId, userId) => {
 }
 
 /** Drop every group seat a user holds, anywhere. Used by the account cascade. */
-export const clearMembershipsFor = (userId) => {
+export const clearMembershipsFor = async (userId) => {
   if (!userId) return
-  meta.prepare('DELETE FROM node_members WHERE user_id = ?').run(userId)
+  await db().node_members.deleteMany({ where: { user_id: userId } })
   invalidateResolution()
 }
 
+const subtreeIds = async (node) => (await db().resource_nodes.findMany({ where: inSubtree(node), select: { id: true } })).map((r) => r.id)
+
 /** Drop a user's seats in every group inside one subtree. Used when they leave a workspace. */
-export const clearMembershipsIn = (node, userId) => {
+export const clearMembershipsIn = async (node, userId) => {
   if (!node) return
-  meta
-    .prepare(
-      `DELETE FROM node_members WHERE user_id = ?
-        AND node_id IN (SELECT id FROM resource_nodes WHERE id = ? OR path LIKE ?)`
-    )
-    .run(userId, node.id, `${node.path}/%`)
+  await db().node_members.deleteMany({ where: { user_id: userId, node_id: { in: await subtreeIds(node) } } })
   invalidateResolution()
 }
 
@@ -673,25 +668,22 @@ export const clearMembershipsIn = (node, userId) => {
  * null. This is what `server/workspaces.js` calls to keep a membership and its
  * workspace-node grant saying the same thing.
  */
-export const setPrincipalGrant = (nodeId, principalType, principalId, roleSlug, { inherit = true, createdBy = null } = {}) => {
-  meta
-    .prepare('DELETE FROM resource_grants WHERE node_id = ? AND principal_type = ? AND principal_id = ?')
-    .run(nodeId, principalType, principalId)
-  invalidateResolution()
-  if (!roleSlug) return { grant: null }
-  return addGrant(nodeId, { principalType, principalId, roleSlug, inherit, createdBy })
-}
+export const setPrincipalGrant = async (nodeId, principalType, principalId, roleSlug, { inherit = true, createdBy = null } = {}) =>
+  transaction(async () => {
+    await db().resource_grants.deleteMany({ where: { node_id: nodeId, principal_type: principalType, principal_id: principalId } })
+    invalidateResolution()
+    if (!roleSlug) return { grant: null }
+    return addGrant(nodeId, { principalType, principalId, roleSlug, inherit, createdBy })
+  })
 
 /**
  * Strip a user's ownership of every node in a subtree. Called when they leave the
  * workspace: an owned node resolves to every permission, so leaving the flag set
  * would keep the door open after the membership is gone.
  */
-export const clearOwnerIn = (node, userId) => {
+export const clearOwnerIn = async (node, userId) => {
   if (!node) return
-  meta
-    .prepare('UPDATE resource_nodes SET owner_id = NULL, updated_at = ? WHERE owner_id = ? AND (id = ? OR path LIKE ?)')
-    .run(Date.now(), userId, node.id, `${node.path}/%`)
+  await db().resource_nodes.updateMany({ where: { owner_id: userId, ...inSubtree(node) }, data: { owner_id: null, updated_at: Date.now() } })
   invalidateResolution()
 }
 
@@ -706,36 +698,32 @@ export const clearOwnerIn = (node, userId) => {
  * gone. An owned node resolves to every permission, so a dangling owner is not
  * merely untidy.
  */
-export const clearOwnedNodesEverywhere = (userId) => {
+export const clearOwnedNodesEverywhere = async (userId) => {
   if (!userId) return
-  meta.prepare('UPDATE resource_nodes SET owner_id = NULL, updated_at = ? WHERE owner_id = ?').run(Date.now(), userId)
+  await db().resource_nodes.updateMany({ where: { owner_id: userId }, data: { owner_id: null, updated_at: Date.now() } })
   invalidateResolution()
 }
 
 /** Drop every grant a principal holds anywhere on the instance, for the same reason. */
-export const revokePrincipalEverywhere = (principalType, principalId) => {
+export const revokePrincipalEverywhere = async (principalType, principalId) => {
   if (!principalId) return
-  meta.prepare('DELETE FROM resource_grants WHERE principal_type = ? AND principal_id = ?').run(principalType, principalId)
+  await db().resource_grants.deleteMany({ where: { principal_type: principalType, principal_id: principalId } })
   invalidateResolution()
 }
 
 /** Drop every grant a principal holds anywhere in a subtree. */
-export const revokePrincipalIn = (node, principalType, principalId) => {
+export const revokePrincipalIn = async (node, principalType, principalId) => {
   if (!node) return
-  meta
-    .prepare(
-      `DELETE FROM resource_grants
-        WHERE principal_type = ? AND principal_id = ?
-          AND node_id IN (SELECT id FROM resource_nodes WHERE id = ? OR path LIKE ?)`
-    )
-    .run(principalType, principalId, node.id, `${node.path}/%`)
+  await db().resource_grants.deleteMany({
+    where: { principal_type: principalType, principal_id: principalId, node_id: { in: await subtreeIds(node) } },
+  })
   invalidateResolution()
 }
 
 // ---- Node writes ----
 
-const insertNode = ({ parentId, kind, type, resourceId = null, name, ownerId = null, workspaceId = null }) => {
-  const parent = parentId ? getNode(parentId) : null
+const insertNode = async ({ parentId, kind, type, resourceId = null, name, ownerId = null, workspaceId = null }) => {
+  const parent = parentId ? await getNode(parentId) : null
   if (parentId && !parent) return { error: 'Parent node not found.' }
   if (parent && !canParent(parent.type, type)) {
     return { error: `A ${nodeType(parent.type)?.label || parent.type} cannot contain a ${nodeType(type)?.label || type}.` }
@@ -743,14 +731,25 @@ const insertNode = ({ parentId, kind, type, resourceId = null, name, ownerId = n
   const id = randomUUID()
   const now = Date.now()
   const path = parent ? `${parent.path}/${id}` : `/${id}`
-  meta
-    .prepare(
-      `INSERT INTO resource_nodes (id, parent_id, kind, type, resource_id, name, owner_id, workspace_id, path, depth, sort, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`
-    )
-    .run(id, parent?.id || null, kind, type, resourceId, name, ownerId, workspaceId ?? parent?.workspaceId ?? null, path, parent ? parent.depth + 1 : 0, now, now)
+  const row = await db().resource_nodes.create({
+    data: {
+      id,
+      parent_id: parent?.id || null,
+      kind,
+      type,
+      resource_id: resourceId,
+      name,
+      owner_id: ownerId,
+      workspace_id: workspaceId ?? parent?.workspaceId ?? null,
+      path,
+      depth: parent ? parent.depth + 1 : 0,
+      sort: 0,
+      created_at: now,
+      updated_at: now,
+    },
+  })
   invalidateResolution()
-  return { node: getNode(id) }
+  return { node: nodeRow(row) }
 }
 
 /**
@@ -769,15 +768,15 @@ const insertNode = ({ parentId, kind, type, resourceId = null, name, ownerId = n
  * exists without its convenience grant is repairable from the grant editor,
  * while failing the create would leave the caller with nothing.
  */
-export const createGroupNode = (parentId, name, { ownerId = null } = {}) => {
-  const parent = getNode(parentId)
+export const createGroupNode = async (parentId, name, { ownerId = null } = {}) => {
+  const parent = await getNode(parentId)
   if (!parent) return { error: 'Parent node not found.' }
   const clean = String(name || '').trim()
   if (!clean) return { error: 'A name is required.' }
   if (!CUSTOM_NODE_TYPES.length) return { error: 'No group type is available.' }
-  const result = insertNode({ parentId, kind: 'group', type: 'group', name: clean, ownerId, workspaceId: parent.workspaceId })
+  const result = await insertNode({ parentId, kind: 'group', type: 'group', name: clean, ownerId, workspaceId: parent.workspaceId })
   if (result.node) {
-    addGrant(result.node.id, {
+    await addGrant(result.node.id, {
       principalType: 'node',
       principalId: result.node.id,
       roleSlug: ROSTER_ROLE,
@@ -797,15 +796,15 @@ export const createGroupNode = (parentId, name, { ownerId = null } = {}) => {
  * connection under its workspace, a dashboard under its connection — but a caller
  * may pass an explicit `parentId` to file it into a custom group instead.
  */
-export const createResourceNode = (type, resourceId, { parentId = null, name, ownerId = null, workspaceId = null } = {}) => {
+export const createResourceNode = async (type, resourceId, { parentId = null, name, ownerId = null, workspaceId = null } = {}) => {
   if (!NODE_TYPE_KEYS.has(type)) return { error: 'Unknown node type.' }
-  const existing = nodeFor(type, resourceId)
+  const existing = await nodeFor(type, resourceId)
   if (existing) return { node: existing }
 
-  let parent = parentId ? getNode(parentId) : null
+  let parent = parentId ? await getNode(parentId) : null
   if (!parent) {
-    if (type === 'workspace') parent = applicationRoot()
-    else if (workspaceId) parent = nodeFor('workspace', workspaceId)
+    if (type === 'workspace') parent = await applicationRoot()
+    else if (workspaceId) parent = await nodeFor('workspace', workspaceId)
   }
   if (!parent) return { error: 'No parent node for that resource.' }
 
@@ -822,28 +821,28 @@ export const createResourceNode = (type, resourceId, { parentId = null, name, ow
 }
 
 /** Keep a node's name in step with the resource it mirrors. */
-export const renameResourceNode = (type, resourceId, name) => {
-  meta.prepare('UPDATE resource_nodes SET name = ?, updated_at = ? WHERE type = ? AND resource_id = ?').run(name, Date.now(), type, resourceId)
+export const renameResourceNode = async (type, resourceId, name) => {
+  await db().resource_nodes.updateMany({ where: { type, resource_id: resourceId }, data: { name, updated_at: Date.now() } })
   invalidateResolution()
 }
 
-export const renameNode = (nodeId, name) => {
+export const renameNode = async (nodeId, name) => {
   const clean = String(name || '').trim()
   if (!clean) return { error: 'A name is required.' }
-  meta.prepare('UPDATE resource_nodes SET name = ?, updated_at = ? WHERE id = ?').run(clean, Date.now(), nodeId)
+  await db().resource_nodes.updateMany({ where: { id: nodeId }, data: { name: clean, updated_at: Date.now() } })
   invalidateResolution()
-  return { node: getNode(nodeId) }
+  return { node: await getNode(nodeId) }
 }
 
-export const setNodeOwner = (nodeId, userId) => {
-  meta.prepare('UPDATE resource_nodes SET owner_id = ?, updated_at = ? WHERE id = ?').run(userId || null, Date.now(), nodeId)
+export const setNodeOwner = async (nodeId, userId) => {
+  await db().resource_nodes.updateMany({ where: { id: nodeId }, data: { owner_id: userId || null, updated_at: Date.now() } })
   invalidateResolution()
   return getNode(nodeId)
 }
 
 /** Set (or change) who owns the application root — the instance-wide superuser. */
-export const setApplicationOwner = (userId) => {
-  const root = applicationRoot()
+export const setApplicationOwner = async (userId) => {
+  const root = await applicationRoot()
   return root ? setNodeOwner(root.id, userId) : null
 }
 
@@ -854,11 +853,11 @@ export const setApplicationOwner = (userId) => {
  * materialized. Refuses a move into the node's own subtree, which would detach it
  * from the root and make `chainOf` loop forever.
  */
-export const moveNode = (nodeId, newParentId) => {
-  const node = getNode(nodeId)
+export const moveNode = async (nodeId, newParentId) => {
+  const node = await getNode(nodeId)
   if (!node) return { error: 'Node not found.' }
   if (!node.parentId) return { error: 'The application root cannot be moved.' }
-  const parent = getNode(newParentId)
+  const parent = await getNode(newParentId)
   if (!parent) return { error: 'Target node not found.' }
   if (parent.id === node.id || parent.path.startsWith(`${node.path}/`)) {
     return { error: 'A node cannot be moved inside itself.' }
@@ -867,20 +866,24 @@ export const moveNode = (nodeId, newParentId) => {
     return { error: `A ${nodeType(parent.type)?.label || parent.type} cannot contain a ${nodeType(node.type)?.label || node.type}.` }
   }
 
-  const descendants = meta.prepare('SELECT * FROM resource_nodes WHERE path LIKE ?').all(`${node.path}/%`).map(nodeRow)
   const newPath = `${parent.path}/${node.id}`
   const depthShift = parent.depth + 1 - node.depth
-  const update = meta.prepare('UPDATE resource_nodes SET path = ?, depth = ?, workspace_id = ?, updated_at = ? WHERE id = ?')
   const now = Date.now()
-  meta.transaction(() => {
-    meta.prepare('UPDATE resource_nodes SET parent_id = ? WHERE id = ?').run(parent.id, node.id)
-    update.run(newPath, parent.depth + 1, parent.workspaceId, now, node.id)
+  await transaction(async () => {
+    const descendants = (await db().resource_nodes.findMany({ where: { path: { startsWith: `${node.path}/` } } })).map(nodeRow)
+    await db().resource_nodes.update({
+      where: { id: node.id },
+      data: { parent_id: parent.id, path: newPath, depth: parent.depth + 1, workspace_id: parent.workspaceId, updated_at: now },
+    })
     for (const d of descendants) {
-      update.run(d.path.replace(node.path, newPath), d.depth + depthShift, parent.workspaceId, now, d.id)
+      await db().resource_nodes.update({
+        where: { id: d.id },
+        data: { path: d.path.replace(node.path, newPath), depth: d.depth + depthShift, workspace_id: parent.workspaceId, updated_at: now },
+      })
     }
-  })()
+  })
   invalidateResolution()
-  return { node: getNode(nodeId) }
+  return { node: await getNode(nodeId) }
 }
 
 /**
@@ -894,23 +897,22 @@ export const moveNode = (nodeId, newParentId) => {
  * remaining callers are resource cascades (a workspace, a connection), where the
  * subtree really is being deleted along with the rows it mirrors.
  */
-export const deleteNode = (nodeId) => {
-  const node = getNode(nodeId)
+export const deleteNode = async (nodeId) => {
+  const node = await getNode(nodeId)
   if (!node) return { ok: true }
   if (!node.parentId) return { error: 'The application root cannot be deleted.' }
 
-  const ids = subtreeOf(node).map((n) => n.id)
-  meta.transaction(() => {
-    const placeholders = ids.map(() => '?').join(',')
-    meta.prepare(`DELETE FROM resource_grants WHERE node_id IN (${placeholders})`).run(...ids)
+  await transaction(async () => {
+    const ids = await subtreeIds(node)
+    await db().resource_grants.deleteMany({ where: { node_id: { in: ids } } })
     // A group is also a principal, so its id can appear on grants and access rows
     // belonging to *other* nodes. Leaving those behind would strand a grant whose
     // roster no longer exists — and if the id were ever reissued, revive it.
-    meta.prepare(`DELETE FROM resource_grants WHERE principal_type = 'node' AND principal_id IN (${placeholders})`).run(...ids)
-    meta.prepare(`DELETE FROM connection_access WHERE principal_type = 'node' AND principal_id IN (${placeholders})`).run(...ids)
-    meta.prepare(`DELETE FROM node_members WHERE node_id IN (${placeholders})`).run(...ids)
-    meta.prepare(`DELETE FROM resource_nodes WHERE id IN (${placeholders})`).run(...ids)
-  })()
+    await db().resource_grants.deleteMany({ where: { principal_type: 'node', principal_id: { in: ids } } })
+    await db().connection_access.deleteMany({ where: { principal_type: 'node', principal_id: { in: ids } } })
+    await db().node_members.deleteMany({ where: { node_id: { in: ids } } })
+    await db().resource_nodes.deleteMany({ where: { id: { in: ids } } })
+  })
   invalidateResolution()
   return { ok: true }
 }
@@ -922,16 +924,16 @@ export const deleteNode = (nodeId) => {
  * cascade deletes everything inside it, and a connection takes its dashboards and
  * workflows. Nothing else mirrored can hold children.
  */
-export const deleteResourceNode = (type, resourceId) => {
-  const node = nodeFor(type, resourceId)
-  if (node) deleteNode(node.id)
+export const deleteResourceNode = async (type, resourceId) => {
+  const node = await nodeFor(type, resourceId)
+  if (node) await deleteNode(node.id)
 }
 
 /**
  * Re-file a resource's node under a different group. The everyday move: dragging
  * a connection into a group you made to scope access with.
  */
-export const moveResourceNode = (type, resourceId, newParentId) => {
-  const node = nodeFor(type, resourceId)
+export const moveResourceNode = async (type, resourceId, newParentId) => {
+  const node = await nodeFor(type, resourceId)
   return node ? moveNode(node.id, newParentId) : { error: 'Node not found.' }
 }

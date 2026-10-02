@@ -51,7 +51,9 @@ endpoint with its request, response, and an example URL.
 | Variable  | Default            | Purpose                                  |
 | --------- | ------------------ | ---------------------------------------- |
 | `PORT`    | `3000`             | HTTP listen port.                        |
-| `META_DB` | `./data/app.db`    | SQLite file storing app metadata (below).|
+| `META_DB` | `./data/app.db`    | SQLite file storing app metadata when `META_DB_TYPE=sqlite`. |
+| `META_DB_TYPE` | `sqlite` | App metadata engine: `sqlite` or `postgresql`. |
+| `META_DATABASE_URL` | | PostgreSQL URL required when `META_DB_TYPE=postgresql`. |
 | `ENCRYPTION_KEY` | *(required)* | AES-256-GCM key encrypting connection credentials at rest — server refuses to start without it. Also derives (with a distinct salt) the key used for storage-destination credentials. |
 | `WORKFLOW_SCHEDULER_ENABLED` | `true` | Set to `false` to disable the minutely cron tick that fires workflows with an active hourly/daily schedule (including backups). Useful for local dev/CI. |
 | `LOGIN_MAX_ATTEMPTS` | `5` | Consecutive failed sign-ins that block an account. `0` disables blocking. |
@@ -131,6 +133,14 @@ A `redis://` / `rediss://` URI's `/N` path is only the *default* database: an
 explicit `?database=` on a request always wins, so the console's database picker
 works on URI-configured connections too.
 
+**SSH tunnel (PostgreSQL, Redis).** Any network connection may carry
+`"sshGatewayId": "<gateway id>"` (stored in the encrypted credentials blob). The
+db layer then reaches it through that gateway — see
+[SSH keys & gateways](#ssh-keys--gateways-workspace-scoped). `host`/`port` (or the
+URI's host) are dialed **from the gateway**, so they are the address the gateway
+sees. `""`/absent means connect directly. The gateway must belong to the
+connection's workspace (`400` otherwise).
+
 ### Saved query
 ```jsonc
 {
@@ -208,21 +218,32 @@ sole `INTEGER PRIMARY KEY` on a rowid table). A column is safe to omit from an
 
 ---
 
-## Metadata database (`data/app.db`, SQLite)
+## Metadata database (SQLite or PostgreSQL)
+
+SQLite uses `META_DB` (`data/app.db` by default). PostgreSQL uses `META_DATABASE_URL` and needs a dedicated empty database (or schema) for a new install. The server reads and writes it through Prisma Client (`server/meta.js`); both engines declare the same models, so no route branches on the engine. PostgreSQL deployments require `libpq` and `pg_dump` (included in the Docker image). The metadata store is separate from the databases users open in the console.
 
 The server keeps its own SQLite DB (separate from user connections) with these
 tables.
 
-**Schema versioning:** the meta schema is managed by versioned, stepped
-migrations in `server/migrations.js`. `PRAGMA user_version` records the last
-applied step; on boot, every pending step runs in its own transaction (oldest
-first) and stamps `user_version` as it goes. Before the first pending step
-touches an existing install, the DB file is snapshotted to
-`data/backups/pre-migrate-v{N}-{ts}.db` so a bad upgrade can be rolled back by
-restoring the file. Steps are **append-only** (never edit a shipped step) and
-**additive-only** (no drops/renames), so an older image can still open a newer
-DB. To change the meta schema, append a new step to the `MIGRATIONS` array —
-don't edit the `CREATE TABLE` baseline (it only applies to fresh installs).
+**Schema versioning:** the meta schema is managed by **Prisma Migrate**, one
+history per engine (`prisma/sqlite/`, `prisma/postgresql/` — each a
+`schema.prisma` plus `migrations/`). Migrations run in a **separate migrator
+process**, never on app boot: `npm run migrate` (`node scripts/migrate.js`), the
+one-shot `migrate` service in `docker-compose.yml`, or the one-shot container the
+in-app Docker updater runs before swapping containers. The app only checks the
+schema is current at startup and exits with an instruction to run the migrator
+otherwise. `npm run migrate -- --status` prints what is applied and pending
+(exit code 2 when something is pending).
+
+A brand-new database is built from `0_baseline` and seeded (built-in roles, the
+resource-tree root). An install made before Prisma is first brought to v22 by the
+frozen legacy steps in `server/migrator/legacy/`, then `0_baseline` (which *is*
+v22) is recorded as applied. Before anything changes on an existing install, the
+DB is snapshotted to `data/backups/pre-migrate-{label}-{ts}.db` so a bad upgrade
+can be rolled back by restoring it. Migrations are **append-only** (never edit a
+shipped migration) and **additive-only** (no drops/renames), so an older image
+can still open a newer DB. To change the meta schema, edit both `schema.prisma`
+files and create a migration for each engine (see the `meta-schema` skill).
 
 ```sql
 CREATE TABLE users (
@@ -288,7 +309,7 @@ CREATE TABLE role_permissions (
 --
 -- `path` is materialized ('/root/<id>/<id>') so "everything under here" is one
 -- indexed prefix match and walking to the root costs a single query — which
--- matters because the route guards are synchronous and resolve through this.
+-- matters because every route guard resolves through this.
 CREATE TABLE resource_nodes (
   id TEXT PRIMARY KEY,          -- the application root is literally 'root'
   parent_id TEXT,               -- NULL only for the application root
@@ -427,6 +448,33 @@ CREATE TABLE storage_destinations (
   path_prefix TEXT,
   force_path_style INTEGER,    -- 0/1 — required by most non-AWS S3-compatible services
   credentials TEXT,            -- AES-256-GCM ciphertext: JSON {accessKeyId, secretAccessKey, sessionToken?}
+  created_at INTEGER,
+  updated_at INTEGER
+);
+CREATE TABLE ssh_keys (                -- meta migration v21
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  algorithm TEXT,              -- 'ssh-ed25519' | 'ssh-rsa' | 'ecdsa-sha2-nistp256'
+  public_key TEXT NOT NULL,    -- OpenSSH one-liner (what goes in authorized_keys)
+  fingerprint TEXT,            -- SHA256:…
+  credentials TEXT,            -- AES-256-GCM ciphertext: JSON {privateKey, passphrase?}
+  created_by TEXT,
+  created_at INTEGER,
+  updated_at INTEGER
+);
+CREATE TABLE ssh_gateways (            -- meta migration v21
+  id TEXT PRIMARY KEY,
+  workspace_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  host TEXT NOT NULL,
+  port INTEGER,                -- default 22
+  username TEXT,
+  auth TEXT,                   -- 'key' | 'password'
+  key_id TEXT,                 -- ssh_keys.id when auth = 'key'
+  transport TEXT,              -- 'tcp' (NULL reads as tcp) | 'cloudflare' — meta migration v22
+  host_fingerprint TEXT,       -- pinned on first login (trust on first use)
+  credentials TEXT,            -- AES-256-GCM ciphertext: JSON {password?, cfClientId?, cfClientSecret?}
   created_at INTEGER,
   updated_at INTEGER
 );
@@ -1042,6 +1090,7 @@ that decides where a role carrying it may be granted (see Resource tree).
 | `teams.manage` | workspace | Change who belongs to a group. Key unchanged when teams became groups (v15) — `role_permissions` stores these strings and drops unknown ones, so renaming it would silently strip the power from every role holding it. Deliberately not `resources.organise`: adding someone to a group grants them access, tidying the tree must not. Old text: create/rename/delete teams and change their membership. |
 | `notifications.manage` | workspace | The `notifications` block on `PUT /api/workspaces/:id`. |
 | `storage.manage` | workspace | Create/edit/delete storage destinations. |
+| `ssh.manage` | workspace | Create/rename/delete SSH keys; create/edit/delete/test SSH gateways. |
 | `connections.create` | workspace | `POST /api/connections` and `POST /api/connections/import`. |
 | `connections.manage` | connection | Edit/delete/export/set access on every connection in scope — the whole workspace, or one connection when granted on its node. |
 | `connections.transfer` | connection | `PUT /api/connections/:id/owner`. |
@@ -1438,6 +1487,7 @@ Test connectivity without saving. Body is a connection-shaped object.
   (Redis: `{ "ok": true, "message": "Connected to Redis 7.4.2 · 128 key(s) in db0." }`)
 - **200 (failure):** `{ "ok": false, "message": "<driver error>" }` (note: failures still return HTTP 200)
 - **400:** `{ "ok": false, "message": "Unsupported connection type: mysql" }`
+- **SSH tunnel:** add `"sshGatewayId"` to test through a gateway (a throwaway tunnel, closed afterwards). This form **requires auth**: the caller must be a member of the gateway's workspace and hold `connections.create` there, or own/manage the existing connection named by the body's `id`. **401** without a token; **403** `{ "ok": false, "message": "That SSH host is not available to you." }` otherwise. A tunnel failure is a normal `200 { "ok": false, "message": "The SSH host 10.0.0.5:22 rejected user \"ubuntu\"." }`.
 - **Example:** `POST http://localhost:3000/api/test-connection`
 
 > **Who may change a connection record.** `PUT`, `DELETE`, `/export` and
@@ -1463,9 +1513,13 @@ The response includes the resolved `ownerName` / `ownerEmail`.
 ### PUT `/api/connections/:id`
 Update a connection (manage-or-own, see above). Merges body into the existing
 record; drops cached pools/handles so the next query reconnects with new settings.
+The database `type` is fixed at creation — omit it, or send the current value.
+Switching between a direct connection and an SSH tunnel is `sshGatewayId`
+(`""` for direct, a gateway id of the same workspace for a tunnel).
 
 - **Body:** partial or full connection fields to change
 - **200:** the updated connection
+- **400:** `{ "error": "A connection’s database type cannot be changed. Create a new connection instead." }` when `type` differs from the stored one
 - **404:** `{ "error": "Connection not found" }`
 - **Example:** `PUT http://localhost:3000/api/connections/demo-sqlite`
 
@@ -1555,7 +1609,9 @@ Every artifact gets a fresh id: the folder tree is re-parented onto the new ids
 when the folder groups that kind of item, and dashboard row actions are re-pointed
 at the newly created workflow ids. Storage destinations are workspace-scoped and are
 **not** part of the bundle — references this workspace doesn't have are dropped, and
-schedules (workflow + backup) arrive **paused**.
+schedules (workflow + backup) arrive **paused**. The same goes for the SSH gateway: an
+`sshGatewayId` that isn't one of the importing workspace's gateways is removed (with
+a warning), and the connection connects directly until one is picked.
 
 - **Body:**
 ```json
@@ -2366,6 +2422,138 @@ Check the bucket is reachable with the stored credentials (`HeadBucketCommand`).
 
 ---
 
+## SSH keys & gateways (workspace-scoped)
+
+A database on a private network is reached through a bastion. In the UI this is
+the sidebar's **SSH** group: **Host** (`/ssh/hosts`) lists gateways, **Key**
+(`/ssh/keys`) lists keys — the API keeps the name *gateway*. A **key** is a
+keypair the workspace holds — generated on the server or imported — whose
+public half is shown so it can be appended to the bastion's
+`~/.ssh/authorized_keys`. A **gateway** is the bastion itself (host, port, user)
+plus how it logs in: one of the workspace's keys, or a password. A connection
+names a gateway with `sshGatewayId`.
+
+When a tunneled connection is used, the db layer (`server/db/tunnel.js`) opens a
+listener on `127.0.0.1:<random>`, forwards every socket through an SSH session to
+the connection's host:port, and hands the driver the connection pointed at that
+listener — so queries, the Redis keyspace routes and `pg_dump`/`pg_restore`
+backups all go through it. TLS still verifies the real database host name. The
+tunnel is cached per connection and closed with its idle session; editing the
+gateway drops it (and the connection's pools) so the next query dials the new
+settings.
+
+Secrets never leave the server: a private key, its passphrase and a gateway
+password are AES-256-GCM sealed (own key namespace), and reads report
+`hasPassphrase` / `hasPassword` instead. Reads need membership; every write (and
+`/test`) needs **`ssh.manage`**.
+
+**How a host is reached (`transport`).**
+- `"tcp"` (default) — a direct TCP connection to `host:port`. This covers any
+  SSH server, including **Railway** (`host: "ssh.railway.com"`, `username`: the
+  service's domain or instance ID, a key registered with Railway; connections then
+  use private-network addresses like `postgres.railway.internal:5432`, or
+  `127.0.0.1` only when logging in as the database's own service). The username
+  must be the service's public domain or its **service instance ID** (dashboard:
+  open the service, ⌘K / Ctrl+K → *Copy Service Instance ID*) — a
+  `.railway.internal` name is refused with a `400`, because Railway doesn't
+  recognise it and logs the session into its interactive *dev.new* menu, where
+  every forward is refused. That refusal, if it happens anyway, is diagnosed as a
+  wrong username rather than an unreachable database.
+- `"cloudflare"` — an SSH server behind a **Cloudflare Tunnel** protected by
+  Cloudflare Access. `host` is the Access application's hostname (`port` is
+  ignored); the SSH stream is carried over `wss://<host>` in binary WebSocket
+  frames, as `cloudflared access ssh` does, authenticated with an Access
+  **service token** (`Cf-Access-Client-Id` / `Cf-Access-Client-Secret`). No
+  `cloudflared` binary is needed. `ws://` is accepted only for loopback (tests).
+
+The UI's provider presets (SSH server / Railway / Cloudflare Access) are not
+stored: they are derived from `transport` and `host`.
+
+**Host key pinning.** The first successful login records the gateway's host key
+fingerprint (`hostFingerprint`); every later login must present the same key or
+is refused. Changing a gateway's host or port forgets the pin, and so does
+`"resetHostKey": true` on `PUT` (for a bastion that was legitimately rebuilt).
+
+### GET `/api/ssh/keys?workspace=<id>`
+List the workspace's SSH keys (public halves only).
+
+- **200:** `[{ "id", "workspaceId", "name", "algorithm": "ssh-ed25519", "publicKey": "ssh-ed25519 AAAA… Prod-bastion", "fingerprint": "SHA256:…", "hasPassphrase": false, "createdBy", "createdAt", "updatedAt" }]`
+- **403:** `{ "error": "Forbidden" }` (not a member of the workspace)
+- **Example:** `GET http://localhost:3000/api/ssh/keys?workspace=ws-1`
+
+### POST `/api/ssh/keys`
+Generate a new keypair, or import an existing private key. Requires `ssh.manage`.
+The name (spaces → `-`) becomes the public key's comment.
+
+- **Body (generate):** `{ "workspaceId": "ws-1", "name": "Prod bastion", "mode": "generate", "algorithm": "ed25519" }` — `algorithm`: `ed25519` (default) | `ecdsa` (P-256) | `rsa` (4096)
+- **Body (import):** `{ "workspaceId": "ws-1", "name": "Laptop key", "mode": "import", "privateKey": "-----BEGIN OPENSSH PRIVATE KEY-----\n…", "passphrase": "optional" }`
+- **200:** the key (same shape as the list) — copy `publicKey` into `authorized_keys`
+- **400:** `{ "error": "A name is required." }` · `{ "error": "That is a public key — paste the private key (the file without .pub)." }` · `{ "error": "This key is encrypted — enter its passphrase." }`
+- **403:** missing `ssh.manage`
+- **Example:** `POST http://localhost:3000/api/ssh/keys`
+
+### PUT `/api/ssh/keys/:kid`
+Rename a key. Its material never changes — rotate by creating a new key and
+repointing the gateway.
+
+- **Body:** `{ "name": "Prod bastion (2026)" }`
+- **200:** the key
+- **Example:** `PUT http://localhost:3000/api/ssh/keys/key-1`
+
+### DELETE `/api/ssh/keys/:kid`
+Delete a key (and its private half).
+
+- **200:** `{ "ok": true }`
+- **409:** `{ "error": "This key is used by \"Bastion\". Point those SSH hosts at another key first." }`
+- **Example:** `DELETE http://localhost:3000/api/ssh/keys/key-1`
+
+### GET `/api/ssh/gateways?workspace=<id>`
+List the workspace's SSH gateways.
+
+- **200:** `[{ "id", "workspaceId", "name", "host": "bastion.example.com", "port": 22, "username": "ubuntu", "auth": "key", "keyId": "key-1", "keyName": "Prod bastion", "transport": "tcp", "serviceTokenId": "", "hasServiceToken": false, "hostFingerprint": "SHA256:…" | null, "hasPassword": false, "createdAt", "updatedAt" }]`
+  (`serviceTokenId` is the Access token's ID — an identifier, shown so the form can say which token is set; its secret is never returned.)
+- **403:** `{ "error": "Forbidden" }`
+- **Example:** `GET http://localhost:3000/api/ssh/gateways?workspace=ws-1`
+
+### POST `/api/ssh/gateways`
+Create a gateway. Requires `ssh.manage`.
+
+- **Body (key):** `{ "workspaceId": "ws-1", "name": "Bastion", "host": "bastion.example.com", "port": 22, "username": "ubuntu", "auth": "key", "keyId": "key-1" }`
+- **Body (password):** `{ "workspaceId": "ws-1", "name": "Bastion", "host": "10.0.0.5", "port": 22, "username": "ops", "auth": "password", "password": "…" }`
+- **Body (Railway):** `{ "workspaceId": "ws-1", "name": "Railway — api", "host": "ssh.railway.com", "port": 22, "username": "api.up.railway.app", "auth": "key", "keyId": "key-1" }`
+- **Body (Cloudflare Access):** `{ "workspaceId": "ws-1", "name": "Office (Cloudflare)", "transport": "cloudflare", "host": "ssh.example.com", "username": "ubuntu", "auth": "key", "keyId": "key-1", "serviceTokenId": "abc123.access", "serviceTokenSecret": "…" }` — the token is optional only if the Access application bypasses authentication
+- **200:** the gateway
+- **400:** `{ "error": "A host is required." }` · `{ "error": "Pick one of this workspace's SSH keys." }` (missing key, or one from another workspace) · `{ "error": "The port must be between 1 and 65535." }` · `{ "error": "Enter the service token secret." }` · `{ "error": "Unknown transport \"x\"." }`
+- **Example:** `POST http://localhost:3000/api/ssh/gateways`
+
+### PUT `/api/ssh/gateways/:gid`
+Update a gateway (partial patch). An omitted `password` or `serviceTokenSecret`
+keeps the stored one (a stored secret only stays with the same `serviceTokenId`;
+`"serviceTokenId": ""` clears the token). Changing `host`, `port` or `transport`
+forgets the pinned host key, and so does `"resetHostKey": true`. Every connection using the
+gateway has its tunnel, pools and sessions dropped.
+
+- **Body:** `{ "name"?, "host"?, "port"?, "username"?, "auth"?, "keyId"?, "password"?, "transport"?, "serviceTokenId"?, "serviceTokenSecret"?, "resetHostKey"? }`
+- **200:** the gateway
+- **Example:** `PUT http://localhost:3000/api/ssh/gateways/gw-1`
+
+### DELETE `/api/ssh/gateways/:gid`
+
+- **200:** `{ "ok": true }`
+- **409:** `{ "error": "This SSH host is used by \"Prod DB\". Switch those connections to another SSH host (or none) first." }`
+- **Example:** `DELETE http://localhost:3000/api/ssh/gateways/gw-1`
+
+### POST `/api/ssh/gateways/:gid/test`
+Log in to the gateway with its stored credentials (pins the host key on first
+success). Requires `ssh.manage`. Never fails with a 5xx.
+
+- **200 (success):** `{ "ok": true, "message": "Logged in to bastion.example.com as ubuntu.", "hostFingerprint": "SHA256:…" }`
+- **200 (failure):** `{ "ok": false, "message": "The SSH host bastion.example.com:22 rejected user \"ubuntu\".", "hint": "Add the key \"Prod bastion\"'s public key to ~ubuntu/.ssh/authorized_keys on the SSH host." }`
+- **200 (Cloudflare refused):** `{ "ok": false, "message": "Cloudflare Access refused ssh.example.com (HTTP 403).", "hint": "Check the service token ID and secret, …" }` — a `302` means Access wanted a login (no accepted token); `502`/`503`/`530` mean nothing answered behind the tunnel.
+- **Example:** `POST http://localhost:3000/api/ssh/gateways/gw-1/test`
+
+---
+
 ## Backup (per connection)
 
 A standalone system — its own tables (`backup_schedules`, `backup_runs`) and
@@ -2614,7 +2802,9 @@ Never returns a 5xx: a failed handshake is a normal 200 payload. Times out after
   ```
   - `reason` is one of `dns` | `refused` | `timeout` | `network` | `tls` | `auth` |
     `permission` | `missing_database` | `missing_file` | `busy` | `unsupported` |
-    `unknown`. `cause`/`hint` are prose meant to be rendered as-is, so a client
+    `ssh` | `unknown`. `ssh` means the connection's SSH tunnel failed before the
+    database was reached (gateway unreachable, login rejected, host key changed,
+    or the gateway can't reach the database host). `cause`/`hint` are prose meant to be rendered as-is, so a client
     that doesn't know a newer `reason` still shows something useful.
   - Transport failures (refused/DNS/timeout/TLS) are classified generically for
     every engine; engine-specific replies (Postgres SQLSTATEs, Redis `NOAUTH`/
@@ -2734,7 +2924,7 @@ Empty for engines without listable functions (e.g. SQLite).
 ### GET `/api/connections/:id/table/:table`
 Read rows from a table (capped by `limit`).
 
-- **Query:** `limit` (default `200`), plus optional `database`, `schema`
+- **Query:** `limit` (default `200`), `offset` (default `0`), plus optional `database`, `schema`
 - **200:** `{ "columns": ["id", "name"], "rows": [ {…} ] }`
   - On a DB error the body is `{ "columns": [], "rows": [], "error": "<msg>" }` (HTTP 200)
 - **Row order:** ordered by primary key when the table has one. Postgres writes a
@@ -2933,6 +3123,133 @@ against the table's existing indexes.
 
 ---
 
+## Table data export / import (per connection)
+
+The console's **Export / Import** tab: table rows out to a file and back in, as
+CSV, JSON or SQL. Engine-agnostic (`server/data-transfer.js` over the db layer's
+`getTableData` / `insertRows` / `runScript` / `tableDdl`), so it works the same on
+SQLite and PostgreSQL and on any engine that implements those ops. A tableless
+engine (Redis) has no tables to export and answers an import with a `400` naming
+its type. Not to be confused with `GET /api/connections/:id/export`, which moves the
+connection's *configuration*.
+
+**Formats**
+
+| Format | Holds | Notes |
+|---|---|---|
+| `csv`  | one table | header row + one line per row; an empty cell is `NULL` both ways |
+| `json` | any number of tables | the `tabletsgo.data` document below; on import a bare array of row objects (into the table named after the file) or a `{ "<table>": [rows] }` map also works |
+| `sql`  | any number of tables | `CREATE TABLE/INDEX IF NOT EXISTS` (with `includeSchema`) then one `INSERT` per row; table names unqualified so the script replays into whichever schema it is imported into |
+
+Bytes are written as `\x…` hex text in CSV/JSON (as an engine-specific literal in
+SQL). Multi-table exports are ordered parents-first by foreign key, so a replay
+never inserts a row before the row it references.
+
+```json
+{
+  "format": "tabletsgo.data",
+  "version": 1,
+  "exportedAt": "2026-10-02T08:00:00.000Z",
+  "source": { "type": "postgresql" },
+  "tables": [
+    {
+      "name": "users",
+      "ddl": ["CREATE TABLE IF NOT EXISTS \"users\" (…);"],
+      "columns": ["id", "name"],
+      "rows": [{ "id": 1, "name": "Ada" }]
+    }
+  ]
+}
+```
+
+`ddl` is present only when exported with `includeSchema`.
+
+### GET `/api/connections/:id/data/export`
+Stream an export file (`Content-Disposition: attachment`).
+
+- **Query:**
+  - `tables` — comma-separated table names (required; must be tables the database reports)
+  - `format` — `csv` | `json` | `sql` (required; `csv` takes exactly one table)
+  - `includeSchema` — `1` to include the DDL (`json`/`sql` only)
+  - `limit` — rows per table (optional; the panel's preview uses `50`); omitted = every row
+  - `database`, `schema` — the namespace, as everywhere else
+- **200:** the file — `text/csv`, `application/json` or `application/sql`, named
+  `<table or connection>-<YYYY-MM-DD>.<ext>`
+- **400:** `{ "error": "Unknown table: nope" }`, `{ "error": "A CSV file holds one table — export the tables one at a time." }`,
+  `{ "error": "Unknown export format \"xml\" — use csv, json or sql." }`, `{ "error": "Pick at least one table to export." }`
+- **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/data/export?tables=users,orders&format=sql&includeSchema=1`
+- **Example (SQL body):**
+  ```sql
+  -- tabletsgo.data v1 · sqlite · 2026-10-02T08:00:00.000Z
+
+  -- Schema: users
+  CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
+
+  -- Data: users
+  INSERT INTO "users" ("id", "name") VALUES (1, 'Ada');
+  ```
+
+### POST `/api/connections/:id/data/import`
+Import a file. The file is the **raw request body** (`Content-Type: text/plain`),
+not JSON-wrapped — up to 50 MB. **The file name is all it needs**; everything else
+is read from the file:
+
+- **Format:** from the extension (`.csv` / `.json` / `.sql`), else sniffed from the
+  content — a leading `[`/`{` is JSON, a leading SQL keyword or comment is SQL,
+  anything else CSV.
+- **Target table:** a CSV or a bare JSON array goes into the table named after the
+  file, minus the extension and an export's date stamp (`users-2026-10-02.csv` →
+  `users`). A `tabletsgo.data` JSON or a `{ "<table>": [rows] }` map names its own
+  tables. An existing table matching a name in any letter case is the one used.
+- **Missing tables are created**: from the file's own `ddl` when it is a
+  `tabletsgo.data` export from the **same engine**, otherwise with column types
+  inferred from the rows — `INTEGER`/`BIGINT`, `DOUBLE PRECISION`, `BOOLEAN`, else
+  `TEXT` (portable names every engine reads; a CSV number with a leading zero, like a
+  zip code, stays `TEXT`). CSV values are converted to those types for a table the
+  import creates; for an existing table they go in as text and the database casts.
+- **SQL** runs as a script.
+
+- **Query:**
+  - `filename` — the uploaded file's name (what the format and target table come from)
+  - `dryRun` — `1` to parse and report without writing anything
+  - `format` — override the detected format (`csv` | `json` | `sql`)
+  - `table` — override the target table for a CSV / bare JSON array
+  - `createTables` — `0` to refuse instead of creating missing tables (default: create)
+  - `database`, `schema` — the namespace
+- **Body:** the file's text
+- **200 (`dryRun=1`, rows):**
+  ```json
+  { "format": "csv", "kind": "rows", "tables": [
+    { "table": "products", "columns": ["id","price","active","zip"], "total": 2,
+      "rows": [ /* first 50 */ ], "exists": false, "schemaFrom": "inferred",
+      "types": { "id": "INTEGER", "price": "DOUBLE PRECISION", "active": "BOOLEAN", "zip": "TEXT" },
+      "ddl": ["CREATE TABLE IF NOT EXISTS \"products\" (…);"] },
+    { "table": "users", "columns": ["id","name"], "total": 2500, "rows": [ /* … */ ], "exists": true } ] }
+  ```
+  `schemaFrom` / `ddl` / `types` appear only on a table the import will create
+  (`types` is `null` when the schema comes from the file).
+- **200 (`dryRun=1`, SQL):** `{ "format": "sql", "kind": "script", "statements": 12, "sample": "-- first 8000 characters…" }`
+- **200 (rows):** `{ "format": "json", "kind": "rows", "created": ["posts"], "tables": [{ "table": "users", "inserted": 2500 }, { "table": "posts", "inserted": 1 }] }`
+- **200 (SQL):** `{ "format": "sql", "kind": "script", "statements": 12 }`
+- **Atomicity:** missing tables are created first; then rows land table by table,
+  each table in one transaction — a failure rolls that table back and stops the
+  import (the error names the tables already imported). A SQL script runs whole in
+  one transaction, unless it opens its own (`BEGIN`/`COMMIT`).
+- **400:** `{ "error": "The file is not valid JSON: …" }`, `{ "error": "The file is empty." }`,
+  `{ "error": "Importing \"users\" failed: UNIQUE constraint failed: users.id" }`,
+  `{ "error": "No such table: posts — create it first." }` (with `createTables=0`),
+  `{ "error": "Data import is not supported for redis connections." }`
+- **413:** `{ "error": "The file is larger than the 50 MB import limit." }`
+- **Example:** `POST http://localhost:3000/api/connections/demo-sqlite/data/import?filename=users.csv&dryRun=1`
+  with body
+  ```
+  id,name
+  1,Ada
+  2,"Lovelace, A."
+  ```
+
+---
+
 ## Redis keyspace (per connection)
 
 Redis has no tables, so the generic `/tables` and `/objects` routes return `[]` for
@@ -3081,7 +3398,7 @@ On network failure it degrades to `{ ..., unreachable: true, updateAvailable: fa
 - **Example:** `GET http://localhost:3000/api/system/update/check?refresh=1`
 
 ### POST `/api/system/backup`
-Snapshot the metadata DB (`app.db`) into `data/backups/` (rollback insurance). Admin only.
+Snapshot the selected metadata DB into `data/backups/` (rollback insurance). SQLite produces a `.db` file; PostgreSQL produces a `pg_dump` custom-format `.dump` file. Admin only.
 
 - **200:** `{ "ok": true, "file": "app-0.15.2-1752800000000.db", "sizeBytes": 245760, "createdAt": 1752800000000 }`
 - **Example:** `POST http://localhost:3000/api/system/backup`
@@ -3089,7 +3406,7 @@ Snapshot the metadata DB (`app.db`) into `data/backups/` (rollback insurance). A
 ### GET `/api/system/backup/:file/download`
 Stream a previously-taken snapshot (basename-sanitized; no path traversal). Admin only.
 
-- **200:** the `.db` file as an attachment.
+- **200:** the `.db` or `.dump` file as an attachment.
 - **404:** `{ "error": "Backup not found" }`
 - **Example:** `GET http://localhost:3000/api/system/backup/app-0.15.2-1752800000000.db/download`
 
@@ -3211,6 +3528,8 @@ Liveness probe. Also reports boot readiness and the running identity.
 | POST   | `/api/connections/:id/insert`             | Insert a row                    |
 | POST   | `/api/connections/:id/query`              | Execute SQL / a Redis command   |
 | POST   | `/api/connections/:id/analyze`            | Analyze query performance       |
+| GET    | `/api/connections/:id/data/export`        | Export tables as CSV/JSON/SQL   |
+| POST   | `/api/connections/:id/data/import`        | Import a CSV/JSON/SQL file      |
 | GET    | `/api/connections/:id/redis/keys`         | SCAN one page of the keyspace   |
 | GET    | `/api/connections/:id/redis/overview`     | Redis db / key count / version  |
 | GET    | `/api/connections/:id/redis/key`          | Read one key's value (paged)    |

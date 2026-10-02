@@ -495,6 +495,14 @@ export const UploadIcon = (props) => (
   </svg>
 )
 
+// Data moving both ways — the console's Export / Import tab.
+export const TransferIcon = (props) => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+    <path d="M7 3v14M3 13l4 4 4-4M17 21V7M13 11l4-4 4 4" />
+  </svg>
+)
+
 // A design bound to a database, and cut loose from it — the two halves of the
 // same chain, so the pair reads as one action and its undo.
 export const LinkIcon = (props) => (

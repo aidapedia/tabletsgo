@@ -19,10 +19,11 @@ import fs from 'fs'
 import path from 'path'
 import { randomUUID } from 'crypto'
 import { APP_NAME, APP_VERSION, BACKUP_TMP_DIR } from './config.js'
-import { meta } from './meta.js'
+import { db, transaction } from './meta.js'
 import { getConnection, saveConnection } from './connections.js'
 import { FOLDER_TYPES, folderTypeOf } from './folders.js'
 import { LOCAL_STORAGE_ID, listStorageRows } from './storage.js'
+import { getSshGateway } from './ssh.js'
 import { createSchedule, getBackupSchedule } from './backup/schedule.js'
 import { safeJson } from './util.js'
 
@@ -61,8 +62,8 @@ function stripWorkflowGraphSecrets(graph) {
 // Build the export document for one connection. `includeSecrets` keeps the
 // stored password (for moving a connection between instances verbatim);
 // otherwise every secret field is dropped and the importer supplies it.
-export function buildConnectionExport(connectionId, { includeSecrets = false } = {}) {
-  const conn = getConnection(connectionId)
+export async function buildConnectionExport(connectionId, { includeSecrets = false } = {}) {
+  const conn = await getConnection(connectionId)
   if (!conn) return null
   // Peel off the identity/ownership columns — an import re-creates them.
   const { id, workspaceId, ownerId, ownerName, ownerEmail, schemaVersion, type, name, environment, folder, tags, ...settings } = conn
@@ -71,20 +72,26 @@ export function buildConnectionExport(connectionId, { includeSecrets = false } =
     if (typeof settings.uri === 'string' && settings.uri) settings.uri = redactUriPassword(settings.uri)
   }
 
-  const folders = meta
-    .prepare('SELECT id, type, name, color, parent_id, ts FROM folders WHERE connection_id = ? ORDER BY ts ASC')
-    .all(connectionId)
-    .map((r) => ({ id: r.id, type: r.type, name: r.name, color: r.color || null, parentId: r.parent_id || null, ts: r.ts }))
+  const byConnection = { where: { connection_id: connectionId }, orderBy: { ts: 'asc' } }
 
-  const tableFolders = meta
-    .prepare('SELECT table_name, folder_id FROM connection_tables WHERE connection_id = ? AND folder_id IS NOT NULL ORDER BY table_name ASC')
-    .all(connectionId)
-    .map((r) => ({ tableName: r.table_name, folderId: r.folder_id }))
+  const folders = (await db().folders.findMany(byConnection)).map((r) => ({
+    id: r.id,
+    type: r.type,
+    name: r.name,
+    color: r.color || null,
+    parentId: r.parent_id || null,
+    ts: r.ts,
+  }))
 
-  const savedQueries = meta
-    .prepare('SELECT id, name, sql, kind, folder_id, layout, ts FROM saved_queries WHERE connection_id = ? ORDER BY ts ASC')
-    .all(connectionId)
-    .map((r) => ({
+  const tableFolders = (
+    await db().connection_tables.findMany({
+      where: { connection_id: connectionId, folder_id: { not: null } },
+      select: { table_name: true, folder_id: true },
+      orderBy: { table_name: 'asc' },
+    })
+  ).map((r) => ({ tableName: r.table_name, folderId: r.folder_id }))
+
+  const savedQueries = (await db().saved_queries.findMany(byConnection)).map((r) => ({
       id: r.id,
       name: r.name,
       sql: r.sql,
@@ -96,10 +103,7 @@ export function buildConnectionExport(connectionId, { includeSecrets = false } =
       ts: r.ts,
     }))
 
-  const workflows = meta
-    .prepare('SELECT id, name, graph, folder_id, schedule_enabled, ts FROM workflows WHERE connection_id = ? ORDER BY ts ASC')
-    .all(connectionId)
-    .map((r) => ({
+  const workflows = (await db().workflows.findMany(byConnection)).map((r) => ({
       id: r.id,
       name: r.name,
       graph: stripWorkflowGraphSecrets(safeJson(r.graph) || { nodes: [], edges: [] }),
@@ -108,10 +112,7 @@ export function buildConnectionExport(connectionId, { includeSecrets = false } =
       ts: r.ts,
     }))
 
-  const dashboards = meta
-    .prepare('SELECT id, name, config, folder_id, ts FROM dashboards WHERE connection_id = ? ORDER BY ts ASC')
-    .all(connectionId)
-    .map((r) => ({
+  const dashboards = (await db().dashboards.findMany(byConnection)).map((r) => ({
       id: r.id,
       name: r.name,
       config: safeJson(r.config) || { variables: [], widgets: [] },
@@ -119,7 +120,7 @@ export function buildConnectionExport(connectionId, { includeSecrets = false } =
       ts: r.ts,
     }))
 
-  const schedule = getBackupSchedule(connectionId)
+  const schedule = await getBackupSchedule(connectionId)
   const backupSchedule = schedule ? (({ connectionId: _c, ...rest }) => rest)(schedule) : null
 
   return {
@@ -143,7 +144,7 @@ export function buildConnectionExport(connectionId, { includeSecrets = false } =
 // object storage and may sit there for years — restoring it means re-entering
 // the password. Output: { filePath, sizeBytes }.
 export async function exportConnectionConfigToFile(conn) {
-  const doc = buildConnectionExport(conn.id, { includeSecrets: false })
+  const doc = await buildConnectionExport(conn.id, { includeSecrets: false })
   if (!doc) throw new Error('Connection not found')
   const filePath = path.join(BACKUP_TMP_DIR, `${randomUUID()}.connection.json`)
   await fs.promises.writeFile(filePath, JSON.stringify(doc, null, 2))
@@ -213,7 +214,7 @@ function remapIdsDeep(value, idMap) {
 // Create a connection (plus all its artifacts) from an export document. Runs in
 // one transaction: a rejected document leaves nothing behind. Returns the new
 // connection with a per-artifact count and any warnings worth surfacing.
-export function importConnectionDoc(doc, { workspaceId, ownerId, name, settings: settingsOverride }) {
+export async function importConnectionDoc(doc, { workspaceId, ownerId, name, settings: settingsOverride }) {
   if (!doc || doc.kind !== 'connection') throw Object.assign(new Error('Not a connection export file.'), { status: 400 })
   if (Number(doc.version) > CONNECTION_EXPORT_VERSION)
     throw Object.assign(new Error(`This file was exported by a newer version of ${APP_NAME}.`), { status: 400 })
@@ -227,12 +228,25 @@ export function importConnectionDoc(doc, { workspaceId, ownerId, name, settings:
 
   // Storage destinations are workspace-scoped and are NOT part of the bundle —
   // references to ones this workspace doesn't have are dropped, not invented.
-  const knownDestinations = new Set([LOCAL_STORAGE_ID, ...listStorageRows(workspaceId).map((d) => d.id)])
+  const knownDestinations = new Set([LOCAL_STORAGE_ID, ...(await listStorageRows(workspaceId)).map((d) => d.id)])
   const keepDestinations = (ids, label) => {
     const list = (Array.isArray(ids) ? ids : []).filter((d) => typeof d === 'string')
     const kept = list.filter((d) => knownDestinations.has(d))
     if (kept.length < list.length) warnings.push(`${label} referenced a storage destination this workspace doesn't have; it was removed.`)
     return kept
+  }
+
+  // Same for the SSH gateway a connection tunnels through: workspace-scoped, not
+  // bundled. It survives only when it is one of *this* workspace's gateways
+  // (re-importing on the same instance); otherwise the connection connects
+  // directly and the importer is told to pick one.
+  const settings = {
+    ...(src.settings && typeof src.settings === 'object' ? src.settings : {}),
+    ...(settingsOverride && typeof settingsOverride === 'object' ? settingsOverride : {}),
+  }
+  if (settings.sshGatewayId && (await getSshGateway(settings.sshGatewayId))?.workspaceId !== workspaceId) {
+    delete settings.sshGatewayId
+    warnings.push("The connection used an SSH host this workspace doesn't have; it was removed — edit the connection to pick one.")
   }
 
   const { idMap: folderIds, typeByOldId, rows: folderRows } = remapFolders(doc.folders, warnings)
@@ -244,10 +258,9 @@ export function importConnectionDoc(doc, { workspaceId, ownerId, name, settings:
 
   const counts = { folders: folderRows.length, tables: 0, savedQueries: 0, workflows: 0, dashboards: 0 }
 
-  const tx = meta.transaction(() => {
-    saveConnection({
-      ...(src.settings && typeof src.settings === 'object' ? src.settings : {}),
-      ...(settingsOverride && typeof settingsOverride === 'object' ? settingsOverride : {}),
+  await transaction(async () => {
+    await saveConnection({
+      ...settings,
       id: connectionId,
       type: src.type,
       name: connName,
@@ -259,41 +272,41 @@ export function importConnectionDoc(doc, { workspaceId, ownerId, name, settings:
       schemaVersion: 1,
     })
 
-    const insFolder = meta.prepare('INSERT INTO folders (id, connection_id, type, name, color, parent_id, ts) VALUES (?, ?, ?, ?, ?, ?, ?)')
-    for (const f of folderRows) insFolder.run(f.id, connectionId, f.type, f.name, f.color, f.parentId, f.ts)
+    if (folderRows.length) {
+      await db().folders.createMany({
+        data: folderRows.map((f) => ({ id: f.id, connection_id: connectionId, type: f.type, name: f.name, color: f.color, parent_id: f.parentId, ts: f.ts })),
+      })
+    }
 
-    const insTable = meta.prepare('INSERT INTO connection_tables (id, connection_id, table_name, folder_id, ts) VALUES (?, ?, ?, ?, ?)')
     for (const t of Array.isArray(doc.tableFolders) ? doc.tableFolders : []) {
       const fid = folderFor(t?.folderId, 'table')
       if (!t?.tableName || !fid) continue
-      insTable.run(randomUUID(), connectionId, String(t.tableName), fid, Date.now())
+      await db().connection_tables.create({
+        data: { id: randomUUID(), connection_id: connectionId, table_name: String(t.tableName), folder_id: fid, ts: Date.now() },
+      })
       counts.tables++
     }
 
-    const insQuery = meta.prepare(
-      'INSERT INTO saved_queries (id, connection_id, name, sql, kind, folder_id, layout, ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-    )
     for (const q of Array.isArray(doc.savedQueries) ? doc.savedQueries : []) {
       if (!q?.name?.trim() || !q?.sql?.trim()) continue
       const layout = q.layout && typeof q.layout === 'object' && !Array.isArray(q.layout) ? JSON.stringify(q.layout) : null
-      insQuery.run(
-        randomUUID(),
-        connectionId,
-        q.name.trim(),
-        q.sql.trim(),
-        q.kind || 'query',
-        folderFor(q.folderId, 'query'),
-        layout,
-        Number(q.ts) || Date.now()
-      )
+      await db().saved_queries.create({
+        data: {
+          id: randomUUID(),
+          connection_id: connectionId,
+          name: q.name.trim(),
+          sql: q.sql.trim(),
+          kind: q.kind || 'query',
+          folder_id: folderFor(q.folderId, 'query'),
+          layout,
+          ts: Number(q.ts) || Date.now(),
+        },
+      })
       counts.savedQueries++
     }
 
     // Schedules are imported paused: an import shouldn't silently start firing
     // jobs (or backups) against a database the user hasn't verified yet.
-    const insWorkflow = meta.prepare(
-      'INSERT INTO workflows (id, connection_id, name, graph, folder_id, schedule_enabled, next_run_at, ts) VALUES (?, ?, ?, ?, ?, 0, NULL, ?)'
-    )
     let pausedWorkflows = 0
     for (const w of Array.isArray(doc.workflows) ? doc.workflows : []) {
       if (!w?.name?.trim() || !workflowIds.has(w.id)) continue
@@ -304,29 +317,41 @@ export function importConnectionDoc(doc, { workspaceId, ownerId, name, settings:
         return n
       })
       if (w.scheduleEnabled) pausedWorkflows++
-      insWorkflow.run(
-        workflowIds.get(w.id),
-        connectionId,
-        w.name.trim(),
-        JSON.stringify({ nodes, edges: w.graph?.edges || [] }),
-        folderFor(w.folderId, 'workflow'),
-        Number(w.ts) || Date.now()
-      )
+      await db().workflows.create({
+        data: {
+          id: workflowIds.get(w.id),
+          connection_id: connectionId,
+          name: w.name.trim(),
+          graph: JSON.stringify({ nodes, edges: w.graph?.edges || [] }),
+          folder_id: folderFor(w.folderId, 'workflow'),
+          schedule_enabled: 0,
+          next_run_at: null,
+          ts: Number(w.ts) || Date.now(),
+        },
+      })
       counts.workflows++
     }
     if (pausedWorkflows) warnings.push(`${pausedWorkflows} scheduled workflow(s) were imported paused — enable them once the connection is verified.`)
 
-    const insDashboard = meta.prepare('INSERT INTO dashboards (id, connection_id, name, config, folder_id, ts) VALUES (?, ?, ?, ?, ?, ?)')
     for (const d of Array.isArray(doc.dashboards) ? doc.dashboards : []) {
       if (!d?.name?.trim()) continue
       const config = remapIdsDeep(d.config && typeof d.config === 'object' ? d.config : { variables: [], widgets: [] }, workflowIds)
-      insDashboard.run(randomUUID(), connectionId, d.name.trim(), JSON.stringify(config), folderFor(d.folderId, 'dashboard'), Number(d.ts) || Date.now())
+      await db().dashboards.create({
+        data: {
+          id: randomUUID(),
+          connection_id: connectionId,
+          name: d.name.trim(),
+          config: JSON.stringify(config),
+          folder_id: folderFor(d.folderId, 'dashboard'),
+          ts: Number(d.ts) || Date.now(),
+        },
+      })
       counts.dashboards++
     }
 
     const bs = doc.backupSchedule
     if (bs && typeof bs === 'object' && bs.frequency) {
-      createSchedule(
+      await createSchedule(
         connectionId,
         { ...bs, destinationIds: keepDestinations(bs.destinationIds, 'The backup schedule') },
         { paused: true }
@@ -334,7 +359,6 @@ export function importConnectionDoc(doc, { workspaceId, ownerId, name, settings:
       warnings.push('The backup schedule was imported paused — review its destinations, then activate it.')
     }
   })
-  tx()
 
-  return { connection: getConnection(connectionId), counts, warnings }
+  return { connection: await getConnection(connectionId), counts, warnings }
 }

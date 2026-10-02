@@ -30,7 +30,7 @@ export function Section({
   return (
     <div className="w-full">
       <PageHeader title={title} desc={desc} action={action} />
-      <div className="mt-7">{children}</div>
+      <div className="mt-6">{children}</div>
     </div>
   )
 }

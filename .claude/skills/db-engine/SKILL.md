@@ -33,7 +33,11 @@ what that means at the API edge:
 - **optional** ops answer with the empty result (`listTables` → `[]`,
   `getDiagram` → `{tables:[],foreignKeys:[]}`), so Redis just shows nothing.
 - **required** ops throw `UnsupportedError` (status 400) naming the type —
-  `insertRow`, `analyze`, `runQuery`, `dump`, `restore`.
+  `insertRow`, `insertRows`, `runScript`, `analyze`, `runQuery`, `dump`, `restore`.
+  (`tableDdl` is optional → `[]`; `insertRows`/`runScript`/`tableDdl` plus
+  `getTableData`'s `offset` are what `server/data-transfer.js` — the console's
+  Export / Import tab — is built on, so a new engine gets that tab by
+  implementing them.)
 
 Use `db.requireCapability(conn, op)` to fail *before* unrelated work (that's how
 `/analyze` tells a Redis user about Redis instead of about SQL syntax), and
@@ -65,6 +69,50 @@ renders as-is, so a new reason never breaks an older client. Frontend side:
 
 A session-limit rejection surfaces here as `reason:'at_capacity'` with the
 session list, so the connect dialog can name who's holding them.
+
+## SSH tunnels
+
+A network connection may name an SSH gateway (`sshGatewayId`, in its sealed
+credentials). **Drivers never know.** Every dispatcher in `index.js` hands the
+driver `await dial(conn)` instead of `conn`: `server/db/tunnel.js` opens (or
+reuses) a `127.0.0.1:<random>` listener whose sockets are forwarded through an
+SSH session on the gateway, and returns the connection with host/port/URI
+pointed at it. A local TCP port, not an in-process stream, because
+`pg_dump`/`pg_restore` dial too.
+
+- A driver opts in by declaring `defaultPort`; a file engine (SQLite) has none,
+  so `dial` leaves it alone.
+- The only driver-side duty is TLS: honour `conn.tunneledHost` as the TLS server
+  name (pg `ssl.servername`, ioredis `tls.servername`, libpq `-h` +
+  `PGHOSTADDR`), or verification checks the cert against 127.0.0.1.
+- Sessions register against the **stored** connection; `releaseConnection`
+  closes the tunnel with the handles, so the idle sweeper reclaims both.
+- The listener's port survives a dropped SSH session (the next socket logs in
+  again), so a pool never goes stale; a gateway edit or new target changes the
+  tunnel's signature, which replaces it **and** releases the driver's pools.
+- Routes that call an engine's own ops (Redis keyspace) use `db.driverOps(type)`,
+  never `db.drivers[type]` — the latter skips `dial`.
+- A tunnel failure carries `sshReason`; `diagnose` reports it as
+  `reason:'ssh'` with the prose from `server/ssh.js` (gateway unreachable, login
+  rejected, host key changed, gateway can't reach the target). Each new SSH
+  session probes the target once, so "the gateway can't reach db:5432" surfaces
+  instead of a driver's "connection terminated".
+- `testConnection` gets a throwaway tunnel (`withTunnel`), never the cached one.
+- **How the SSH host itself is reached** is the gateway's `transport`, decided
+  in `server/ssh.js`'s `connectGateway` and invisible to the tunnel: `tcp`
+  (ssh2 dials host:port — also Railway's `ssh.railway.com`) or `cloudflare`
+  (`server/cloudflare-access.js` opens `wss://<Access hostname>` with a service
+  token and hands ssh2 the stream as `sock`). A new route to an SSH host is one
+  more transport there — never a new tunnel kind. Its failures use
+  `phase: 'transport'` so the diagnosis blames Cloudflare, not SSH.
+- **Railway forwards like plain `ssh -N`** once the username names a service
+  (its public domain or service instance ID). A username it doesn't recognise —
+  typically a `.railway.internal` name — lands in Railway's interactive
+  *dev.new* menu, which refuses every forward ("…rides your dev.new session…")
+  and drops the connection if a session is opened without picking a box. Don't
+  "fix" that by holding a shell open (tried against the real service: it can't
+  work); `server/ssh.js` refuses the username at save time and explains the
+  refusal instead.
 
 ## Redis — the shape every non-relational engine should follow
 

@@ -18,6 +18,13 @@ src/
 │   ├── main.tsx                  # entry: mounts <AppProviders><App/>
 │   ├── App.tsx                   # renders <AppRoutes/>
 │   ├── providers/                # ThemeContext + AppProviders (composes every provider)
+│   ├── layouts/                  # route shells rendered around an <Outlet/>: HomeLayout (the
+│   │                             #   authenticated shell — grouped sidebar nav, rows are real <a> so
+│   │                             #   they can be opened in a new tab, wrapping THE content container:
+│   │                             #   one max-width, centered, shared by every page, so a page never
+│   │                             #   sets its own width). A layout lives here rather than under the
+│   │                             #   section that happens to use it first — HomeLayout is the shell for
+│   │                             #   the home, admin and account halves alike
 │   └── routes/                   # AppRoutes (route table + RequireAuth guard)
 │
 ├── shared/                       # reusable, feature-agnostic code
@@ -32,7 +39,8 @@ src/
 │   │   │                         #     column — pages never cap themselves, HomeLayout owns the width)
 │   │   ├── overlay/              #   Popover, Tooltip, ContextMenu
 │   │   ├── feedback/             #   Toast, ConfirmDialog, TypeToConfirmDialog, LoadingState, EmptyState, Wizard
-│   │   ├── table/                #   DataTable (the shared list-as-table: sortable columns, row click,
+│   │   ├── table/                #   DataGrid (editable console grid shared with Redis), DataTable
+│   │   │                         #   (the shared list-as-table: sortable columns, row click,
 │   │   │                         #     pagination footer), Pagination, useDataTable (client-side
 │   │   │                         #     sort/paging state — spread its result into DataTable; pass the
 │   │   │                         #     props yourself for server-side paging), RowActions/RowAction/RowMenu
@@ -49,7 +57,7 @@ src/
 │   │                             #   suppresses native drag events)
 │   ├── lib/                      # helpers: recents, schemaDraft, toggleId
 │   ├── api/                      # backend client: request.ts (fetch wrapper) + database.ts
-│   ├── config/                   # runtime config / env (API_URL from VITE_API_URL)
+│   ├── config/                   # runtime API_URL and shared database type catalog/labels
 │   └── types/                    # ambient/shared TS types (globals.d.ts)
 │
 ├── features/                     # self-contained business features (each has index.ts barrel)
@@ -76,7 +84,7 @@ src/
 │   │                             #   ConnectionForm, ConnectionDetail (Data/Access/Schema history/Backup
 │   │                             #     tabs — `detailTabs(type)` drops Schema history on a schemaless
 │   │                             #     engine; the tab itself is schema-designer's SchemaHistoryPanel),
-│   │                             #   ConnectionAccessPanel, DbTypePickerModal (owns DB_CATALOG/TYPE_LABEL),
+│   │                             #   ConnectionAccessPanel, DbTypePickerModal (uses shared/config/databaseTypes),
 │   │                             #   ConnectionSwitcherModal (the console's "switch connection" overlay:
 │   │                             #     search + database-type filter chips + a collapsible folder tree —
 │   │                             #     a connection's `folder` string nests on "/"; ↑/↓/Enter/Esc),
@@ -155,14 +163,18 @@ src/
 │   │                             #   (path/tree order). Drives the sidebar folder view and the
 │   │                             #   schema-designer's draggable/editable folder regions.
 │   ├── keymap/                   # stores/KeymapContext (useKeymap/useShortcut) + KeymapSetting
+│   ├── saved-queries/            # saved-query API shared by the console and schema designer
 │   ├── workspace/                # the DB console (one connection): data browsing + querying
-│   │   ├── components/           #   DataGrid (drag / Shift+click selects a rectangular cell range —
+│   │   ├── components/           #   TableView uses shared/ui/table/DataGrid (drag / Shift+click selects a rectangular cell range —
 │   │   │                         #     ⌘/Ctrl+C copies it as TSV, Esc clears; the range rides along in
 │   │   │                         #     onCellContextMenu's payload as `selection`), TableView (its cell
 │   │   │                         #     context menu acts on that selection: copy as TSV/CSV/JSON, set
 │   │   │                         #     NULL/EMPTY/DEFAULT, duplicate/delete the spanned rows),
 │   │   │                         #   SchemaView, QueryEditor, FunctionView,
 │   │   │                         #   QueryHistoryView, InsertRowPanel, ChangesPanel, SavedQueriesPanel,
+│   │   │                         #   DataTransferView (the Export / Import tab the toolbar's button beside
+│   │   │                         #     Query history open; DataExportPane + DataImportPane in a shared
+│   │   │                         #     TransferLayout; hidden on Redis),
 │   │   │                         #   IconRail (its DB logo at the top opens the ConnectionSwitcherModal via
 │   │   │                         #     onBrowseConnections — no inline connection popover anymore. Every
 │   │   │                         #     entry selects a sidebar panel except Schema, which *leaves* the
@@ -178,7 +190,33 @@ src/
 │   │   │                         #   connection name, environment pill, current database/schema, and the
 │   │   │                         #   schema version on the right — clicking it opens the schema history tab.
 │   │   │                         #   Env + version live here only; the top toolbar no longer shows them)
-│   │   └── lib/                  #   savedQueries, queryHistory (backend calls)
+│   │   │                         #   DatabaseConsole (the shell itself — rail + sidebar + panes + status
+│   │   │                         #     bar, and nothing else: it wires the hooks below to the components
+│   │   │                         #     around it), ConsoleSidebar (the aside + namespace breadcrumb, with
+│   │   │                         #     the selected panel as children), ObjectBrowser (tables/views/
+│   │   │                         #     functions accordion + table folders — owns its own filter, sort and
+│   │   │                         #     folders, none of which leave it), ConsoleToolbar, EditorPanes (both
+│   │   │                         #     panes + the drag divider; takes a renderContent render prop),
+│   │   │                         #     TabContent (one tab's body — the kind switch, and where the lazy
+│   │   │                         #     QueryEditor / WorkflowEditor / DashboardView / RedisConsole are
+│   │   │                         #     imported), EmptyWorkspace, TabContextMenu, ConnectionLostModal
+│   │   ├── hooks/                #   the console's state engines, each independently readable:
+│   │   │                         #   useConsoleTabs (the flat tab list + panes + split + per-tab editor
+│   │   │                         #     state: openTab focuses where a tab already lives else the focused
+│   │   │                         #     pane; settlePanes re-points each pane's active tab after any change
+│   │   │                         #     and folds the split away once pane 1 empties),
+│   │   │                         #   useConnectionBrowser (namespace, objects, ping + heartbeat, nsConn),
+│   │   │                         #   useStagedChanges (the Changes queue, direct-execute, commit batches,
+│   │   │                         #     one schema-version bump per batch),
+│   │   │                         #   useQueryHistory, useSchemaHistory (trail + rollback),
+│   │   │                         #   useFolderTree (the folder CRUD all three panels share),
+│   │   │                         #   useResourceLibrary (a foldered per-connection resource you open in a
+│   │   │                         #     tab — workflows and dashboards are the same object to the console,
+│   │   │                         #     so they are one hook parameterized, not two copies),
+│   │   │                         #   useSavedQueries (not a library: a saved query seeds a tab rather than
+│   │   │                         #     being edited in place, and saving from its tab updates it)
+│   │   └── lib/                  #   savedQueries, queryHistory, dataTransfer (backend calls), dialect, consoleCommands
+│   │                             #     (the ⌘K entries — engine-aware, hints mirror the live keymap)
 │   ├── schema-designer/          # visual schema design (React Flow ERD + table/column editors; tables
 │   │   │                         #   sharing a folder are clustered into a draggable, editable region;
 │   │   │                         #   sticky notes pinned to the canvas, and the whole arrangement —
@@ -203,7 +241,7 @@ src/
 │   │   │                         #     engine only — and cut a draft loose from one, carrying its live
 │   │   │                         #     tables out as DDL), SchemaHistoryPanel (the connection's migration
 │   │   │                         #     trail as a *home* tab — /connections/:id/schema. Not
-│   │   │                         #     SchemaHistoryView: that one is the console's DataGrid with a
+│   │   │                         #     workspace/components/SchemaHistoryView: that one is the console's DataGrid with a
 │   │   │                         #     flex height; this is the shared DataTable. Both take
 │   │   │                         #     canRollbackTo/rollbackTitle/MigrationInspector from
 │   │   │                         #     MigrationInspector, so the rollback rule is written once)
@@ -266,6 +304,13 @@ src/
 │   │   │                         #     BackupCalendarHeatmap, BackupVersionList (run-based restore),
 │   │   │                         #     RestorePanel (restore from uploaded file or browsed storage object)
 │   │   └── lib/                  #   api (storages CRUD, backup schedule/runs/calendar/restore), types
+│   ├── ssh/                      # SSH keys + gateways (workspace-scoped) a connection tunnels through
+│   │   ├── components/           #   SshGatewayList/SshGatewayModal (test, pinned host key, reset),
+│   │   │                         #     SshKeyList/SshKeyModal (generate or import; view = copy public
+│   │   │                         #     key), PublicKeyBox
+│   │   ├── lib/                  #   api (keys + gateways CRUD, gateway test), providers (form presets:
+│   │   │                         #     SSH server / Railway / Cloudflare — derived, never stored)
+│   │   └── types.ts
 │   ├── templates/                # built-in, read-only template catalog (browse + apply only — no
 │   │   │                         #   authoring). A template bundles workflows + dashboards; applying
 │   │   │                         #   creates the workflows first, resolves `{{workflow:<key>}}`
@@ -297,17 +342,12 @@ src/
     │                             #   SMTP config) — no tabs, the sidebar switches. Only reachable
     │                             #   with the system role 'admin'; AppRoutes' RequireSystemAdmin /
     │                             #   RequireWorkspaceUser send each audience to the other's home
-    ├── console/                  # WorkspacePage — the per-connection DB console (route /connection/:id).
-    │                             #   Tabs are one flat list; each carries the editor pane (0 | 1) it shows
-    │                             #   in, so a split is just "some tabs live in pane 1". Every open-X helper
-    │                             #   funnels through openTab (focus where it already lives, else the focused
-    │                             #   pane); settlePanes re-points each pane's active tab after any change and
-    │                             #   folds the split away once pane 1 empties. Both panes render through the
-    │                             #   same renderTabContent, so a split mounts two tabs at once
-    └── home/                     # the authenticated home shell — one file per sidebar section
-        ├── HomeLayout            #   sidebar (grouped nav, rows are real <a> so they can be opened in a
-        │                         #   new tab) + <Outlet/> inside THE content container: one max-width,
-        │                         #   centered, shared by every page — a page never sets its own width
+    ├── console/                  # WorkspacePage — the route /connection/:id. Thin: it reads the :id and
+    │                             #   renders <DatabaseConsole/>, which owns the shell (see
+    │                             #   features/workspace/components). Routed outside HomeLayout because the
+    │                             #   console brings its own rail, sidebar and status bar
+    └── home/                     # the authenticated home shell's pages — one file per sidebar section
+        │                         #   (the shell itself is app/layouts/HomeLayout)
         ├── ui                    #   page composition: Section, TabbedSection, SubHead, ComingSoon, plus
         │                         #   re-exports of shared/ui/page's PageHeader / PageTabs / Narrow
         ├── useTabRoute           #   binds a tab bar to a path segment; the bare section path redirects
@@ -327,6 +367,9 @@ src/
         ├── ConnectionFormPage    #   /connections/new (engine in ?type=) and /connections/:id/edit/:tab —
         │                         #   both modes of features/connections' ConnectionForm
         ├── StoragePage           # /storage → S3 storage destinations (StorageList), top-level sidebar item
+        ├── SshHostsPage          # /ssh/hosts → sidebar Infrastructure → SSH Host (SshGatewayList; "gateway" in code/API)
+        ├── SshKeysPage           # /ssh/keys → sidebar Infrastructure → SSH Key (SshKeyList); /ssh redirects
+        │                         #   to /ssh/hosts
         ├── WorkflowsPage         # /workflows → every workflow in the workspace, across its connections
         │                         #   (features/workflow's WorkspaceWorkflowList); a row navigates to
         │                         #   /connection/:id?workflow=<id>, which the console opens as a tab
@@ -341,7 +384,8 @@ src/
         │                         #   /schemas/:id?unlink=1 (the editor opens with the dialog up, because
         │                         #   the move carries the canvas's tables out), schema version history ⟶
         │                         #   /connections/:id/schema (the target connection's own history tab)
-        ├── SchemaDraftPage       # /schemas/:id → the schema editor page, hosting either kind of draft,
+        ├── SchemaDraftPage       # thin route wrapper for schema-designer's controller hook and view;
+        │                         # /schemas/:id hosts either kind of draft,
         │                         #   and /schemas/connection/:connectionId → "the editor for this
         │                         #   connection", which is what the console's rail Schema icon opens: it
         │                         #   reads that connection's saved queries and redirects (replace) to the
@@ -394,10 +438,15 @@ invites); `features/workspace` (singular) is the per-connection DB console. Don'
 conflate them.
 
 ### Future decomposition candidates
-Out of scope so far: `pages/console/WorkspacePage.tsx` (~2200 lines),
-`schema-designer/SchemaEditor.tsx` (~1800), `workspace/TableView.tsx` (~900), and
-`server.js` (~2900 — the remaining step is moving route handlers into
-`server/routes/*.js` express routers).
+Out of scope so far: `schema-designer/SchemaEditor.tsx` (~2500),
+`workspace/TableView.tsx` (~900), and `server.js` (~2900 — the remaining step is
+moving route handlers into `server/routes/*.js` express routers).
+
+The console was the other one. It is now `workspace/components/DatabaseConsole.tsx`
+(~600 lines of wiring) over `workspace/hooks/*`; `pages/console/WorkspacePage.tsx`
+is a dozen lines. Same shape to copy for SchemaEditor: pull the state engines out
+as hooks, the regions out as components, and leave the top file saying only how
+they talk to each other.
 
 ## Backend (`server.js` + `server/`)
 
@@ -405,26 +454,50 @@ Out of scope so far: `pages/console/WorkspacePage.tsx` (~2200 lines),
 under `server/`.
 
 ```
+prisma.config.mjs         # Prisma CLI config: META_DB_TYPE picks prisma/<engine>/ (paths from server/config.js)
+prisma/
+├── sqlite/               # schema.prisma + migrations/ (0_baseline = legacy v22) — Prisma Migrate's
+└── postgresql/           #   history is provider-locked, so one per engine; both declare the same models
+scripts/migrate.js        # `npm run migrate [-- --status]` — the migrator CLI (compose `migrate` service)
 server.js                 # express app: 108 routes, static frontend, schedulers, shutdown
 server/
 ├── config.js             # every env var + filesystem path, resolved once (imports nothing app-level)
 ├── util.js               # safeJson, jsonPreview, describeError, sleep, sanitizeForKey, computeNextRun
 ├── crypto.js             # AES-256-GCM: encryptSecret/decryptSecret + streamed file encryption.
-│                         #   One scrypt-derived key per namespace (connections | storage | backup files)
-├── meta.js               # the app's own SQLite handle, initMetaDb(), snapshotMetaSync()
-├── migrations.js         # versioned, append-only meta-schema steps (see the `meta-schema` skill)
+│                         #   One scrypt-derived key per namespace (connections | storage | backup files |
+│                         #   app settings | ssh)
+├── meta-connection.js    # openMeta() (SQLite or PostgreSQL, the one place that picks) + snapshotMeta()
+├── meta.js               # Prisma Client for the app's store: db() (the open transaction's client, or
+│                         #   the shared one), transaction(fn) (nested calls join), backupMeta(),
+│                         #   checkMetaIntegrity(), seedAdminFromEnv(). BIGINTs come back as numbers;
+│                         #   on SQLite a gate keeps other requests out of an open transaction. Never migrates
+├── postgres-meta.js      # synchronous PostgreSQL handle — only the migrator uses it now
+├── postgres-sql.js       # metadata placeholder and conflict syntax translation
+├── migrator/             # ★ the migration service (see the `meta-schema` skill). Runs as its own
+│   │                     #   process — `npm run migrate`, the compose `migrate` service, the
+│   │                     #   updater's one-shot container — never inside the app
+│   ├── index.js          # runMigrations(): empty → Prisma baseline + seed; pre-Prisma → legacy
+│   │                     #   steps to v22, record 0_baseline applied; then `prisma migrate deploy`.
+│   │                     #   metaSchemaStatus()/assertMetaSchemaCurrent() (the app's boot check)
+│   └── legacy/           # FROZEN pre-Prisma history, only for upgrading old installs to v22
+│       ├── sqlite.js     #   v1–v22 stepped migrations + DEPRECATED_TABLES
+│       ├── postgresql.js #   PostgreSQL v20 bootstrap + v21–v22
+│       └── postgresql-v20.sql
+├── dashboards.js         # dashboard metadata CRUD and workspace summaries
+├── workflow-store.js     # workflow metadata CRUD and run-history reads
 ├── auth.js               # the guards — requireAuth, requireSystemAdmin (system role),
 │                         #   requirePermission/requireMember (workspace role) — plus the
 │                         #   connection-access rules. `sessionMiddleware` resolves the bearer
-│                         #   token once per request so the ~100 sync guards stay sync.
+│                         #   token once per request, so requireAuth stays a sync read; the
+│                         #   workspace guards are async — always awaited.
 │                         #   `permissionsIn`/`can` resolve through resource-tree.js; membership
 │                         #   is what still gates *opening* a database
 ├── permissions-catalog.js # leaf: the closed set of permission keys (each with the node type it
 │                         #   is meaningful at), the node types the resource tree is built from,
 │                         #   and the seeded builtin roles. Imports nothing, so permissions.js,
-│                         #   resource-tree.js and migrations.js can all use it
+│                         #   resource-tree.js and the migrator can all use it
 ├── permissions.js        # ★ the role catalog: `roles` + `role_permissions`, an in-memory policy
-│                         #   cache (the guards are sync), and a role's requirement criteria —
+│                         #   cache (loaded at boot, reloaded on write), and a role's requirement criteria —
 │                         #   `roleGrantableOn(slug, nodeType)`. Roles are instance-wide, admin-defined
 ├── resource-tree.js      # ★ the hierarchy everything hangs off, and where a role is granted:
 │                         #   application → workspace → group → {connection, storage} →
@@ -458,12 +531,20 @@ server/
 │                         #   Drafts designed against a connection stay saved queries (kind = 'schema').
 │                         #   Both tables carry the audit trail (created_by/updated_by/created_at + ts,
 │                         #   meta v20); server.js's withAudit is what resolves the ids to names
+├── ssh.js                # SSH keys (generate/import; public half + fingerprint as columns, private
+│                         #   key sealed) and gateways (bastions: host/user + key or password, host key
+│                         #   pinned on first login, transport tcp | cloudflare). connectGateway/
+│                         #   forwardOut + SSH error prose
+├── cloudflare-access.js  # SSH over Cloudflare Access: wss:// to the Access hostname with a service
+│                         #   token, raw bytes in binary frames (what `cloudflared access ssh` does)
 ├── storage.js            # storage destinations (S3-compatible + built-in local disk) and object ops:
 │                         #   store/fetch/list/delete/prune. Every step branches on `dest.local`, not a caller
 ├── db/                   # ★ the engine-agnostic database layer — see the `db-engine` skill
 │   ├── index.js          #   the driver contract + generic dispatch (the only file routes import)
 │   ├── diagnose.js       #   why a connection attempt failed: engine-agnostic transport
 │   │                     #     classification + the driver's own `explainError`
+│   ├── tunnel.js         #   SSH tunnels: a 127.0.0.1 listener per connection forwarding through its
+│   │                     #     gateway; every dispatcher dials through it, so drivers never know
 │   ├── sql.js            #   dialect-agnostic SQL text utils shared by the SQL drivers
 │   ├── sqlite.js         #   one file per engine; each adapts itself to the contract
 │   ├── postgres.js
@@ -471,10 +552,14 @@ server/
 ├── workflow.js           # the node-graph executor (vm sandbox, {{input.x}} substitution),
 │                         #   executeAndRecord, nextRunForGraph, runDueWorkflows
 ├── connection-transfer.js  # the portable connection export/import bundle (see that skill)
+├── data-transfer.js      # table rows out/in as CSV/JSON/SQL (the console's Export / Import tab):
+│                         #   planExport streams pages of getTableData; previewImport/runImport go
+│                         #   through insertRows/runScript/tableDdl — engine-agnostic
 ├── backup/
 │   ├── index.js          #   barrel — what the routes import
 │   ├── schedule.js       #   the backup_schedules row store, clamps and validation
 │   ├── runner.js         #   export → store, retries, run history, failure notification
+│   ├── history.js        #   backup run calendar, listing and upload status
 │   └── restore.js        #   fetch artifact → decrypt → hand to the driver
 └── system-update.js      # GitHub release checking (cached) + Docker-socket self-update
 ```

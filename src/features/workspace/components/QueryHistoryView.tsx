@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import DataGrid from '@/features/workspace/components/DataGrid'
+import DataGrid from '@/shared/ui/table/DataGrid'
 import Button from '@/shared/ui/buttons/Button'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
 import Popover from '@/shared/ui/overlay/Popover'

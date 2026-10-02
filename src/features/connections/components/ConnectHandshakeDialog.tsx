@@ -33,6 +33,7 @@ const REASONS: Record<string, { title: string; icon: any }> = {
   busy: { title: 'Server unavailable', icon: ClockIcon },
   at_capacity: { title: 'Session limit reached', icon: UsersIcon },
   unsupported: { title: 'Not supported', icon: InfoIcon },
+  ssh: { title: 'SSH tunnel failed', icon: KeyIcon },
   unknown: { title: 'Connection failed', icon: InfoIcon },
 }
 

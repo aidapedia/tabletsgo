@@ -52,11 +52,11 @@ export default function ResourceTreePage() {
       />
 
       {loading ? (
-        <div className="mt-7 rounded-card border border-edge bg-card py-16">
+        <div className="mt-6 rounded-card border border-edge bg-card py-16">
           <LoadingState className="text-center" />
         </div>
       ) : nodes.length === 0 ? (
-        <div className="mt-7 flex flex-col items-center gap-4 rounded-card border border-dashed border-edge-strong bg-card py-20 text-center">
+        <div className="mt-6 flex flex-col items-center gap-4 rounded-card border border-dashed border-edge-strong bg-card py-20 text-center">
           <FolderIcon width={36} height={36} className="opacity-25" />
           <div>
             <p className="text-sm font-medium text-ink-dim">Nothing here yet</p>
@@ -69,7 +69,7 @@ export default function ResourceTreePage() {
           </Button>
         </div>
       ) : (
-        <div className="mt-7 grid grid-cols-[300px_1fr] gap-4 max-[860px]:grid-cols-1">
+        <div className="mt-6 grid grid-cols-[300px_1fr] gap-4 max-[860px]:grid-cols-1">
           {/* Tree */}
           <div className="rounded-card border border-edge bg-card p-4">
             <div className="mb-3 flex items-center gap-2 px-1.5 text-[11px] font-semibold text-ink-dim">

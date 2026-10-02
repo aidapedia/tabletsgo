@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { getColumns, getTableData } from '@/shared/api/database'
 import { useSettings } from '@/features/settings'
 import { useShortcut } from '@/features/keymap'
-import DataGrid, { cellText } from '@/features/workspace/components/DataGrid'
+import DataGrid, { cellText } from '@/shared/ui/table/DataGrid'
 import RowEditorPanel from '@/features/workspace/components/RowEditorPanel'
 import { EXPORT_FORMATS, downloadRows, sqlValue, toCsv, toJson } from '@/features/workspace/lib/exportRows'
 import Button from '@/shared/ui/buttons/Button'
@@ -626,10 +626,6 @@ export default function TableView({ conn, table, onChange, onOpenReference, filt
               table,
             })
             stagedInfo('Added update to changes — commit to apply.')
-            // Must close explicitly: useSlideOver runs this commit *instead of*
-            // onClose, so the invisible overlay would stay mounted and swallow
-            // every click.
-            setInspecting(null)
           }}
         />
       )}

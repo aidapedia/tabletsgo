@@ -9,7 +9,7 @@
 
 import fs from 'fs'
 import { randomUUID } from 'crypto'
-import { meta } from '../meta.js'
+import { db } from '../meta.js'
 import { getConnection } from '../connections.js'
 import { computeNextRun, describeError, safeJson, sleep } from '../util.js'
 import { exportDatabaseToFile } from '../db/index.js'
@@ -71,12 +71,20 @@ export async function runBackupOnce(scheduleRow, conn, triggerKind) {
     if (exportOutput?.filePath) fs.rm(exportOutput.filePath, { force: true }, () => {})
     if (configOutput?.filePath) fs.rm(configOutput.filePath, { force: true }, () => {})
   }
-  meta
-    .prepare(
-      `INSERT INTO backup_runs (id, connection_id, schedule_id, trigger_kind, status, error, uploads, started_at, finished_at, ts)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-    .run(randomUUID(), conn.id, scheduleRow.id, triggerKind, status, error, JSON.stringify(uploads), startedAt, Date.now(), startedAt)
+  await db().backup_runs.create({
+    data: {
+      id: randomUUID(),
+      connection_id: conn.id,
+      schedule_id: scheduleRow.id,
+      trigger_kind: triggerKind,
+      status,
+      error,
+      uploads: JSON.stringify(uploads),
+      started_at: startedAt,
+      finished_at: Date.now(),
+      ts: startedAt,
+    },
+  })
   return { ok: status === 'success', error, uploads }
 }
 
@@ -97,10 +105,13 @@ export async function runBackupWithRetries(scheduleRow, conn) {
 // Fire every schedule whose next_run_at has been reached, claiming the next slot
 // before the run starts so a slow run can't be double-fired by the next tick.
 export async function runDueBackups() {
-  const due = meta.prepare('SELECT * FROM backup_schedules WHERE enabled = 1 AND next_run_at <= ?').all(Date.now())
+  const due = await db().backup_schedules.findMany({ where: { enabled: 1, next_run_at: { lte: Date.now() } } })
   for (const schedule of due) {
-    meta.prepare('UPDATE backup_schedules SET next_run_at = ? WHERE id = ?').run(computeNextRun(schedule.frequency, schedule.hour_of_day), schedule.id)
-    const conn = getConnection(schedule.connection_id)
+    await db().backup_schedules.updateMany({
+      where: { id: schedule.id },
+      data: { next_run_at: computeNextRun(schedule.frequency, schedule.hour_of_day) },
+    })
+    const conn = await getConnection(schedule.connection_id)
     if (!conn) continue
     runBackupWithRetries(schedule, conn).catch((e) => console.error(`Scheduled backup failed for connection ${schedule.connection_id}:`, e.message))
   }
@@ -110,14 +121,13 @@ export async function runDueBackups() {
 // (after retries, if any). Best-effort — never throws.
 async function notifyBackupFailure(conn, result) {
   try {
-    const wsRow = meta.prepare('SELECT * FROM workspaces WHERE id = ?').get(conn.workspaceId)
+    const wsRow = conn.workspaceId ? await db().workspaces.findUnique({ where: { id: conn.workspaceId } }) : null
     if (!wsRow) return
     const cfg = safeJson(wsRow.settings).notifications?.backupFailure
     if (!cfg?.enabled || !cfg.memberIds?.length) return
-    const smtp = smtpConfig()
+    const smtp = await smtpConfig()
     if (!smtp) return
-    const placeholders = cfg.memberIds.map(() => '?').join(',')
-    const recipients = meta.prepare(`SELECT username FROM users WHERE id IN (${placeholders})`).all(...cfg.memberIds)
+    const recipients = await db().users.findMany({ where: { id: { in: cfg.memberIds } }, select: { username: true } })
     const when = new Date().toISOString()
     for (const r of recipients) {
       try {

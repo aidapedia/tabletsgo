@@ -9,16 +9,16 @@ import Tooltip from '@/shared/ui/overlay/Tooltip'
 import AccountTile from '@/shared/ui/AccountTile'
 import AccountMenu from '@/shared/ui/AccountMenu'
 import IconButton from '@/shared/ui/buttons/IconButton'
-import { BellIcon, BuildingIcon, CloudIcon, DatabaseIcon, DiagramIcon, GridIcon, HomeIcon, Logo, MailIcon, MenuIcon, MoreHorizontalIcon, PanelLeftIcon, SettingsIcon, ShieldIcon, TreeIcon, UsersIcon, WorkflowIcon } from '@/shared/ui/icons'
+import { BellIcon, BuildingIcon, CloudIcon, DatabaseIcon, DiagramIcon, GridIcon, HomeIcon, KeyIcon, Logo, MailIcon, MenuIcon, MoreHorizontalIcon, PanelLeftIcon, SettingsIcon, ShieldIcon, TerminalIcon, TreeIcon, UsersIcon, WorkflowIcon } from '@/shared/ui/icons'
 
 /**
  * Sidebar navigation model — a pinned row plus titled groups.
  *
  * `pinned` is the section that answers "where am I" rather than "what do I
  * work on", so it sits above the group headers with no title of its own.
- * Groups below it read as: what the workspace holds, how the workspace is run,
- * and the account. Every group earns its header — a one-item group is a sign
- * the item belongs in a neighbouring one.
+ * Groups below it read as: what the workspace holds, what that runs on, how
+ * the workspace is run, and the account. Every group earns its header — a
+ * one-item group is a sign the item belongs in a neighbouring one.
  *
  * `path` is the section's own address and doubles as the active-state test: a
  * row lights up for its path *and everything under it*, so `/connections/42`
@@ -35,15 +35,27 @@ const NAV = {
         { label: 'Dashboard', Icon: GridIcon, path: '/dashboards' },
         { label: 'Schema Editor', Icon: DiagramIcon, path: '/schemas' },
         { label: 'Workflow', Icon: WorkflowIcon, path: '/workflows' },
-        { label: 'S3 Storage', Icon: CloudIcon, path: '/storage' },
-        { label: 'Resource Tree', Icon: TreeIcon, path: '/resource-tree' },
       ],
     },
     {
+      // What the resources above run on rather than resources themselves: where
+      // backups land, and the SSH hosts (gateways, in the code) a connection
+      // tunnels through plus the keys they log in with.
+      group: 'Infrastructure',
+      items: [
+        { label: 'S3 Storage', Icon: CloudIcon, path: '/storage' },
+        { label: 'SSH Host', Icon: TerminalIcon, path: '/ssh/hosts' },
+        { label: 'SSH Key', Icon: KeyIcon, path: '/ssh/keys' },
+      ],
+    },
+    {
+      // Resource Tree is who may do what — how the workspace is run, so it sits
+      // with the members it grants to, not with the things it grants on.
       group: 'Workspace',
       items: [
         { label: 'General', Icon: BuildingIcon, path: '/workspace' },
         { label: 'Member', Icon: UsersIcon, path: '/members' },
+        { label: 'Resource Tree', Icon: TreeIcon, path: '/resource-tree' },
         { label: 'Notification', Icon: BellIcon, path: '/notifications' },
       ],
     },

@@ -4,7 +4,7 @@
  *
  * A leaf module on purpose — it imports nothing, so `server/permissions.js`
  * (which reads and writes the role rows), `server/resource-tree.js` (which
- * validates nodes and grants) and `server/migrations.js` (which seeds them) can
+ * validates nodes and grants) and `server/migrator/` (which seeds them) can
  * all use it without the dependency graph growing a cycle.
  *
  * **The catalog is code, the grants are data.** A permission exists here because
@@ -185,6 +185,17 @@ export const PERMISSIONS = [
     ],
   },
   {
+    group: 'SSH',
+    items: [
+      {
+        key: 'ssh.manage',
+        label: 'Manage SSH keys and gateways',
+        description: 'Add, edit and delete the SSH keys and gateways connections tunnel through.',
+        scope: 'workspace',
+      },
+    ],
+  },
+  {
     group: 'Connections',
     items: [
       {
@@ -274,7 +285,7 @@ export const BUILTIN_ROLES = [
   {
     slug: 'owner',
     name: 'Owner',
-    description: 'Manages the workspace: its members, groups, settings, storage and connections.',
+    description: 'Manages the workspace: its members, groups, settings, storage, SSH gateways and connections.',
     permissions: [...PERMISSION_KEYS],
     appliesTo: ['application', 'workspace'],
   },

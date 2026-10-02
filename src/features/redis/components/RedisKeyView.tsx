@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import DataGrid from '@/features/workspace/components/DataGrid'
+import DataGrid from '@/shared/ui/table/DataGrid'
 import Button from '@/shared/ui/buttons/Button'
 import IconButton from '@/shared/ui/buttons/IconButton'
 import Tooltip from '@/shared/ui/overlay/Tooltip'

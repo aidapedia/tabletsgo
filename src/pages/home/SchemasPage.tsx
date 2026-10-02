@@ -4,15 +4,14 @@ import { useWorkspaces } from '@/features/workspaces'
 import { useConnections } from '@/features/connections'
 import { NewSchemaDialog, WorkspaceSchemaList, type WorkspaceSchemaDraft } from '@/features/schema-designer'
 import { createSchemaDraft } from '@/features/schema-designer/lib/api'
-// Deep import, not the `@/features/workspace` barrel: that barrel re-exports the
-// whole DB console (QueryEditor pulls CodeMirror in), and this page only wants
-// the saved-query write a connection-linked draft is stored as.
-import { createSaved } from '@/features/workspace/lib/savedQueries'
+// A connection-linked draft is stored as a saved query. Its small public API
+// stays separate from the DB console's editor-heavy barrel.
+import { createSaved } from '@/features/saved-queries'
 import Button from '@/shared/ui/buttons/Button'
 import LoadingState from '@/shared/ui/feedback/LoadingState'
 import { useToast } from '@/shared/ui/feedback/Toast'
 import { PlusIcon } from '@/shared/ui/icons'
-import { PageHeader } from './ui'
+import { Section } from './ui'
 
 // Schema — every schema draft in the current workspace, across its connections
 // plus the ones designed from scratch. The console has no diagram of its own:
@@ -75,30 +74,26 @@ export default function SchemasPage() {
   }
 
   return (
-    <div className="w-full">
-      <PageHeader
-        title="Schema Editor"
-        desc="Every schema draft in this workspace — which database it targets, and how much is staged."
-        action={
-          <Button variant="primary" size="sm" icon={PlusIcon} onClick={() => setCreating(true)} disabled={!current}>
-            New schema
-          </Button>
-        }
-      />
-
-      <div className="mt-6">
-        {current ? (
-          <WorkspaceSchemaList
-            key={reloadKey}
-            workspaceId={current.id}
-            onOpen={open}
-            onUnlink={unlink}
-            onShowHistory={showHistory}
-          />
-        ) : (
-          <LoadingState className="" />
-        )}
-      </div>
+    <Section
+      title="Schema Editor"
+      desc="Every schema draft in this workspace — which database it targets, and how much is staged."
+      action={
+        <Button variant="primary" size="lg" icon={PlusIcon} onClick={() => setCreating(true)} disabled={!current}>
+          New schema
+        </Button>
+      }
+    >
+      {current ? (
+        <WorkspaceSchemaList
+          key={reloadKey}
+          workspaceId={current.id}
+          onOpen={open}
+          onUnlink={unlink}
+          onShowHistory={showHistory}
+        />
+      ) : (
+        <LoadingState className="" />
+      )}
 
       {creating && (
         <NewSchemaDialog
@@ -108,6 +103,6 @@ export default function SchemasPage() {
           onFromScratch={fromScratch}
         />
       )}
-    </div>
+    </Section>
   )
 }

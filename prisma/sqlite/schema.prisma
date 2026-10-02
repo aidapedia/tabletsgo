@@ -1,0 +1,419 @@
+// The app's own metadata schema (sqlite). Prisma Migrate owns its history
+// in ./migrations; the baseline (0_baseline) is the shape legacy step v22 left.
+//
+// Edit this file and prisma/postgresql/schema.prisma together — the two
+// declare the same models and differ only in provider — then create a migration
+// for each engine (see the meta-schema skill). Rules carried over from the legacy
+// steps: additive only, never DROP or rename, no NOT NULL column without a default.
+// Superseded tables stay declared here (see DEPRECATED_TABLES in
+// server/migrator/legacy/sqlite.js), or the next migration would drop them.
+
+// The app's query client (server/meta.js picks the one matching META_DB_TYPE).
+// Generated, not committed: `npm run prisma:generate`.
+generator client {
+  provider = "prisma-client-js"
+  output   = "../../server/generated/prisma-sqlite"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model app_settings {
+  key        String  @id
+  value      String?
+  updated_at BigInt?
+}
+
+model backup_runs {
+  id            String  @id
+  connection_id String
+  schedule_id   String
+  trigger_kind  String
+  status        String
+  error         String?
+  uploads       String?
+  started_at    BigInt
+  finished_at   BigInt?
+  ts            BigInt
+
+  @@index([connection_id, started_at], map: "idx_backup_runs_conn_day")
+}
+
+model backup_schedules {
+  id              String  @id
+  connection_id   String  @unique
+  frequency       String
+  hour_of_day     BigInt?
+  destination_ids String?
+  retry_limit     BigInt? @default(0)
+  retry_delay_sec BigInt? @default(60)
+  retention_days  BigInt? @default(0)
+  encrypt         BigInt? @default(0)
+  enabled         BigInt? @default(1)
+  next_run_at     BigInt?
+  created_at      BigInt?
+  updated_at      BigInt?
+  include_config  BigInt? @default(0)
+}
+
+model connection_access {
+  id             String  @id
+  connection_id  String
+  principal_type String
+  principal_id   String
+  created_at     BigInt?
+
+  @@unique([connection_id, principal_type, principal_id])
+  @@index([connection_id], map: "idx_connection_access_conn")
+}
+
+model connection_tables {
+  id            String  @id
+  connection_id String
+  table_name    String
+  folder_id     String?
+  ts            BigInt?
+
+  @@unique([connection_id, table_name])
+  @@index([connection_id], map: "idx_connection_tables_conn")
+}
+
+model connections {
+  id             String  @id
+  data           String?
+  created_at     BigInt?
+  type           String?
+  name           String?
+  workspace_id   String?
+  environment    String?
+  folder         String?
+  tags           String?
+  credentials    String?
+  schema_version BigInt?
+  updated_at     BigInt?
+  owner_id       String?
+  max_sessions   BigInt? @default(0)
+}
+
+model dashboards {
+  id            String  @id
+  connection_id String
+  name          String
+  config        String?
+  ts            BigInt?
+  folder_id     String?
+}
+
+model domains {
+  id            String  @id
+  connection_id String
+  name          String
+  color         String?
+  ts            BigInt?
+}
+
+model folders {
+  id            String  @id
+  connection_id String
+  type          String
+  name          String
+  parent_id     String?
+  ts            BigInt?
+  color         String?
+}
+
+model node_members {
+  id         String  @id
+  node_id    String
+  user_id    String
+  created_at BigInt?
+
+  @@unique([node_id, user_id])
+  @@index([node_id], map: "idx_node_members_node")
+  @@index([user_id], map: "idx_node_members_user")
+}
+
+model query_history {
+  id            String  @id
+  connection_id String
+  table_name    String?
+  query         String
+  status        String
+  latency       BigInt?
+  error         String?
+  executor_id   String?
+  executor_name String?
+  ts            BigInt?
+}
+
+model resource_grants {
+  id             String  @id
+  node_id        String
+  principal_type String
+  principal_id   String
+  role_slug      String
+  inherit        BigInt  @default(1)
+  created_at     BigInt?
+  created_by     String?
+
+  @@unique([node_id, principal_type, principal_id, role_slug])
+  @@index([node_id], map: "idx_resource_grants_node")
+  @@index([principal_type, principal_id], map: "idx_resource_grants_principal")
+}
+
+model resource_nodes {
+  id           String  @id
+  parent_id    String?
+  kind         String
+  type         String
+  resource_id  String?
+  name         String
+  owner_id     String?
+  workspace_id String?
+  path         String
+  depth        BigInt  @default(0)
+  sort         BigInt? @default(0)
+  created_at   BigInt?
+  updated_at   BigInt?
+
+  @@unique([type, resource_id], map: "idx_resource_nodes_resource")
+  @@index([owner_id], map: "idx_resource_nodes_owner")
+  @@index([parent_id], map: "idx_resource_nodes_parent")
+  @@index([path], map: "idx_resource_nodes_path")
+  @@index([workspace_id], map: "idx_resource_nodes_workspace")
+}
+
+model role_permissions {
+  role_id    String
+  permission String
+
+  @@unique([role_id, permission])
+  @@index([role_id], map: "idx_role_permissions_role")
+}
+
+model roles {
+  id          String  @id
+  slug        String  @unique
+  name        String
+  description String?
+  builtin     BigInt? @default(0)
+  created_at  BigInt?
+  updated_at  BigInt?
+  applies_to  String?
+}
+
+model saved_folders {
+  id            String  @id
+  connection_id String
+  name          String
+  ts            BigInt?
+  parent_id     String?
+}
+
+model saved_queries {
+  id            String  @id
+  connection_id String
+  name          String
+  sql           String
+  kind          String?
+  ts            BigInt?
+  folder_id     String?
+  layout        String?
+  created_by    String?
+  updated_by    String?
+  created_at    BigInt?
+}
+
+model schema_drafts {
+  id           String  @id
+  workspace_id String
+  name         String
+  db_type      String
+  sql          String?
+  created_by   String?
+  ts           BigInt?
+  layout       String?
+  updated_by   String?
+  created_at   BigInt?
+
+  @@index([workspace_id], map: "idx_schema_drafts_workspace")
+}
+
+model schema_migrations {
+  id            String  @id
+  connection_id String
+  version       BigInt
+  forward_sql   String
+  rollback_sql  String?
+  reversible    BigInt
+  status        String?
+  executor_id   String?
+  executor_name String?
+  ts            BigInt?
+}
+
+model sessions {
+  token      String  @id
+  user_id    String
+  created_at BigInt?
+  ns         String?
+  context    String?
+  expires_at BigInt?
+
+  @@index([ns, expires_at], map: "idx_sessions_ns_expires")
+  @@index([user_id], map: "idx_sessions_user")
+}
+
+model spacetree_nodes {
+  id                    String            @id
+  parent_id             String?
+  type                  String
+  resource_id           String?
+  name                  String
+  owner_id              String?
+  ts                    BigInt
+  spacetree_nodes       spacetree_nodes?  @relation("spacetree_nodesTospacetree_nodes", fields: [parent_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  other_spacetree_nodes spacetree_nodes[] @relation("spacetree_nodesTospacetree_nodes")
+
+  @@index([owner_id], map: "idx_spacetree_owner")
+  @@index([parent_id], map: "idx_spacetree_parent")
+  @@index([type, resource_id], map: "idx_spacetree_type_resource")
+}
+
+model ssh_gateways {
+  id               String  @id
+  workspace_id     String
+  name             String
+  host             String
+  port             BigInt?
+  username         String?
+  auth             String?
+  key_id           String?
+  host_fingerprint String?
+  credentials      String?
+  created_at       BigInt?
+  updated_at       BigInt?
+  transport        String?
+
+  @@index([workspace_id], map: "idx_ssh_gateways_workspace")
+}
+
+model ssh_keys {
+  id           String  @id
+  workspace_id String
+  name         String
+  algorithm    String?
+  public_key   String
+  fingerprint  String?
+  credentials  String?
+  created_by   String?
+  created_at   BigInt?
+  updated_at   BigInt?
+
+  @@index([workspace_id], map: "idx_ssh_keys_workspace")
+}
+
+model storage_destinations {
+  id               String  @id
+  workspace_id     String
+  name             String
+  endpoint         String?
+  region           String?
+  bucket           String
+  path_prefix      String?
+  force_path_style BigInt?
+  credentials      String?
+  created_at       BigInt?
+  updated_at       BigInt?
+}
+
+model table_domains {
+  id            String  @id
+  connection_id String
+  table_name    String
+  domain_id     String
+  ts            BigInt?
+
+  @@unique([connection_id, table_name])
+  @@index([connection_id], map: "idx_table_domains_conn")
+}
+
+model team_members {
+  id         String  @id
+  team_id    String
+  user_id    String
+  created_at BigInt?
+
+  @@unique([team_id, user_id])
+  @@index([team_id], map: "idx_team_members_team")
+}
+
+model teams {
+  id           String  @id
+  workspace_id String
+  name         String
+  created_at   BigInt?
+}
+
+model users {
+  id               String  @id
+  username         String  @unique
+  password_hash    String
+  name             String?
+  role             String?
+  status           String?
+  invite_token     String?
+  invite_workspace String?
+  token_expires    BigInt?
+  reset_token      String?
+  reset_expires    BigInt?
+  failed_logins    BigInt? @default(0)
+  last_failed_at   BigInt?
+  locked_at        BigInt?
+  locked_until     BigInt?
+}
+
+model workflow_runs {
+  id            String  @id
+  workflow_id   String
+  connection_id String
+  trigger_kind  String
+  status        String
+  log           String?
+  error         String?
+  started_at    BigInt
+  finished_at   BigInt?
+  ts            BigInt
+
+  @@index([connection_id, started_at], map: "idx_workflow_runs_conn_day")
+}
+
+model workflows {
+  id               String  @id
+  connection_id    String
+  name             String
+  graph            String?
+  ts               BigInt?
+  protected        BigInt? @default(0)
+  schedule_enabled BigInt? @default(0)
+  next_run_at      BigInt?
+  folder_id        String?
+}
+
+model workspace_members {
+  id           String  @id
+  workspace_id String
+  user_id      String
+  role         String
+  created_at   BigInt?
+
+  @@unique([workspace_id, user_id])
+}
+
+model workspaces {
+  id         String  @id
+  name       String
+  settings   String?
+  created_at BigInt?
+}

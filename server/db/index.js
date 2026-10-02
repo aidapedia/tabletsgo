@@ -17,6 +17,9 @@
  * numbered db). Methods may be sync or async — callers always `await`.
  *
  *   type, label, dataTypes        identity + the column types the schema editor offers
+ *   defaultPort                   the TCP port when a connection names none; a network
+ *                                 engine declares it, which is also what makes its
+ *                                 connections tunnelable (see "SSH tunnels" below)
  *   testConnection(config)        → { ok, message }; `config` is unsaved form input
  *   explainError(error, conn)     → { reason, cause, hint } for an engine-specific
  *                                   failure the generic classifier can't read (optional;
@@ -29,7 +32,8 @@
  *   listTables(conn, ctx)         → string[]
  *   listObjects(conn, ctx)        → [{ name, type, … }]
  *   listFunctions(conn, ctx, n)   → [{ name, args, definition }]
- *   getTableData(conn, ctx, { table, limit })  → { columns, rows, error? }
+ *   getTableData(conn, ctx, { table, limit, offset })  → { columns, rows, error? }
+ *                                 (a stable order, so `offset` pages through a whole table)
  *   getColumns(conn, ctx, table)  → [{ name, type, notnull, pk, default, autoIncrement, references }]
  *   getIndexes(conn, ctx, table)  → [{ name, algorithm, unique, columns, condition,
  *                                     primary, constraint, … }]  (`constraint`: made by a
@@ -39,6 +43,14 @@
  *                                 (opts.tables narrows the read to those tables, so a
  *                                  caller can walk a large schema in slices)
  *   insertRow(conn, ctx, { table, values })    → { ok, changes, … }
+ *   insertRows(conn, ctx, { table, rows })     → { ok, inserted } — one transaction
+ *   runScript(conn, ctx, sql)     → { ok } — a multi-statement script, one transaction
+ *                                 unless it opens its own; throws on the first failure
+ *   tableDdl(conn, ctx, table)    → [statement, …] that recreate the table and its
+ *                                   indexes, idempotently (IF NOT EXISTS)
+ *   sqlLiteral(value)             a value as an inline literal (optional property;
+ *                                 ./sql.js's default when the engine spells nothing
+ *                                 differently)
  *   runQuery(conn, ctx, sql)      → { type:'rows', columns, rows } | { type:'message', message } | { error }
  *                                 (a failed statement is `{ error }`, not a throw —
  *                                  see runQueryOrThrow below for the other contract)
@@ -60,6 +72,15 @@
  *    `listTables` is `[]` rather than an error — the sidebar just shows nothing).
  *  - **required** ops throw `UnsupportedError` (status 400) naming the type, so
  *    a route never silently hangs or returns `undefined`.
+ *
+ * ## SSH tunnels
+ *
+ * A connection with an `sshGatewayId` is dialed through that gateway: every
+ * dispatcher here hands the driver the connection as returned by `dial`, which
+ * points host/port/URI at a local tunnel (./tunnel.js). Drivers never see the
+ * difference, apart from honouring `tunneledHost` for TLS name checks. Sessions
+ * are still registered against the stored connection, and `release` closes the
+ * tunnel along with the driver's handles.
  */
 
 import fs from 'fs'
@@ -68,6 +89,8 @@ import { randomUUID } from 'crypto'
 import { BACKUP_TMP_DIR, HANDSHAKE_TIMEOUT_MS } from '../config.js'
 import { SessionLimitError, setReleaseHandler, touchConnectionSession } from '../sessions/index.js'
 import { diagnose, targetOf } from './diagnose.js'
+import { closeAllTunnels, closeTunnel, reach, withTunnel } from './tunnel.js'
+import { sqlLiteral } from './sql.js'
 import { sqliteDriver } from './sqlite.js'
 import { postgresDriver } from './postgres.js'
 import { redisDriver } from './redis.js'
@@ -104,6 +127,8 @@ const UNSUPPORTED = {
   testConnection: (conn) => `Unsupported connection type: ${conn.type}`,
   namespaces: (conn) => `Namespaces are not supported for ${conn.type} connections.`,
   insertRow: (conn) => `Row insert is not supported for ${conn.type} connections.`,
+  insertRows: (conn) => `Data import is not supported for ${conn.type} connections.`,
+  runScript: (conn) => `SQL import is not supported for ${conn.type} connections.`,
   runQuery: (conn) => `Unsupported connection type: ${conn.type}`,
   analyze: (conn) => `Query analysis is not supported for ${conn.type} connections.`,
   dump: (conn) => `Export not supported for connection type: ${conn.type}`,
@@ -120,8 +145,16 @@ export function requireCapability(conn, op) {
   return driver
 }
 
+// The connection as its driver should dial it — through its SSH tunnel when it
+// names a gateway. A tunnel replaced under a live pool (gateway edited) drops
+// that pool, since it points at a port that no longer forwards anywhere.
+const dial = (conn) => reach(conn, drivers[conn?.type]?.defaultPort, (stale) => drivers[stale.type]?.release?.(stale))
+
 // Dispatch to an op every engine must answer.
-const required = (op) => (conn, ...args) => requireCapability(conn, op)[op](conn, ...args)
+const required = (op) => async (conn, ...args) => {
+  const driver = requireCapability(conn, op)
+  return driver[op](await dial(conn), ...args)
+}
 
 // Dispatch to an op some engines simply don't have; `empty` (a value or a
 // function of the connection) is the answer for those.
@@ -147,14 +180,29 @@ export const enterSession = (conn, ctx = {}) => touchConnectionSession(conn, ctx
 const gatedRequired = (op) => async (conn, ctx, ...args) => {
   const driver = requireCapability(conn, op)
   await enterSession(conn, ctx)
-  return driver[op](conn, ctx, ...args)
+  return driver[op](await dial(conn), ctx, ...args)
 }
 
 const gatedOptional = (op, empty) => async (conn, ctx, ...args) => {
   const driver = driverFor(conn)
   if (typeof driver[op] !== 'function') return typeof empty === 'function' ? empty(conn) : empty
   await enterSession(conn, ctx)
-  return driver[op](conn, ctx, ...args)
+  return driver[op](await dial(conn), ctx, ...args)
+}
+
+/**
+ * An engine's own ops (ones outside the generic contract, like Redis's
+ * keyspace browsing) with the same dialing every generic op gets. Routes that
+ * reach a driver directly use this rather than `drivers[type]`, so a tunneled
+ * connection works there too.
+ */
+export function driverOps(type) {
+  const driver = drivers[type]
+  const ops = {}
+  for (const [name, fn] of Object.entries(driver)) {
+    if (typeof fn === 'function') ops[name] = async (conn, ...args) => fn.call(driver, await dial(conn), ...args)
+  }
+  return ops
 }
 
 // Releasing a handle is the db layer's job; deciding *when* is the session
@@ -162,11 +210,20 @@ const gatedOptional = (op, empty) => async (conn, ctx, ...args) => {
 setReleaseHandler((conn) => releaseConnection(conn))
 
 // ---- Lifecycle ----
-export const testConnection = (config) => requireCapability(config, 'testConnection').testConnection(config)
+// An unsaved form gets a throwaway tunnel, never the saved connection's.
+export const testConnection = (config) => {
+  const driver = requireCapability(config, 'testConnection')
+  return withTunnel(config, driver.defaultPort, (reached) => driver.testConnection(reached))
+}
 export const prewarmConnection = optional('prewarm', undefined)
-export const releaseConnection = optional('release', undefined)
+const releaseHandles = optional('release', undefined)
+export const releaseConnection = (conn) => {
+  releaseHandles(conn)
+  if (conn?.id) closeTunnel(conn.id)
+}
 export const closeAllConnections = () => {
   for (const driver of Object.values(drivers)) driver.closeAll?.()
+  closeAllTunnels()
 }
 
 // Column types the schema editor offers. Schemaless engines report none.
@@ -257,6 +314,12 @@ export const getTableData = gatedOptional('getTableData', (conn) => ({
 
 // ---- Data ----
 export const insertRow = gatedRequired('insertRow')
+export const insertRows = gatedRequired('insertRows')
+export const runScript = gatedRequired('runScript')
+export const tableDdl = gatedOptional('tableDdl', [])
+
+// How this engine writes a value as an inline literal (SQL export).
+export const literalFor = (conn) => drivers[conn?.type]?.sqlLiteral || sqlLiteral
 export const analyze = gatedRequired('analyze')
 
 // Execute one statement (or, on a command-driven engine, one command buffer)
@@ -281,7 +344,7 @@ export async function runQueryOrThrow(conn, ctx, sql) {
 export async function exportDatabaseToFile(conn) {
   const driver = requireCapability(conn, 'dump')
   const filePath = path.join(BACKUP_TMP_DIR, `${randomUUID()}.dump`)
-  await driver.dump(conn, filePath)
+  await driver.dump(await dial(conn), filePath)
   return { filePath, sizeBytes: fs.statSync(filePath).size, dialect: conn.type }
 }
 

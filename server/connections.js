@@ -11,10 +11,19 @@
  * driver — needs to know how storage is laid out.
  */
 
-import { meta } from './meta.js'
+import { db, transaction } from './meta.js'
 import { decryptSecret, encryptSecret } from './crypto.js'
 
-export function rowToConnection(row) {
+// Owner display fields for a set of rows, in one query: userId -> { name, username }.
+const ownersOf = async (rows) => {
+  const ids = [...new Set(rows.map((r) => r?.owner_id).filter(Boolean))]
+  if (!ids.length) return new Map()
+  const users = await db().users.findMany({ where: { id: { in: ids } }, select: { id: true, name: true, username: true } })
+  return new Map(users.map((u) => [u.id, u]))
+}
+
+// `owners` is what ownersOf() returned for the batch this row came from.
+function toConnection(row, owners) {
   if (!row) return null
   let credentials = {}
   if (row.credentials) {
@@ -33,12 +42,10 @@ export function rowToConnection(row) {
   // Resolve the owner's display fields (best-effort) so the detail view can show
   // who owns the connection without a second round-trip.
   let ownerName, ownerEmail
-  if (row.owner_id) {
-    const u = meta.prepare('SELECT name, username FROM users WHERE id = ?').get(row.owner_id)
-    if (u) {
-      ownerName = u.name || u.username
-      ownerEmail = u.username
-    }
+  const u = row.owner_id ? owners.get(row.owner_id) : null
+  if (u) {
+    ownerName = u.name || u.username
+    ownerEmail = u.username
   }
   return {
     id: row.id,
@@ -55,6 +62,8 @@ export function rowToConnection(row) {
     ownerEmail,
   }
 }
+
+export const rowToConnection = async (row) => (row ? toConnection(row, await ownersOf([row])) : null)
 
 // Split a flat connection object back into row columns + encrypted credentials.
 // Owner + resolved owner display fields are peeled off so they never end up in
@@ -79,35 +88,64 @@ export function connectionToRow(conn) {
   }
 }
 
-export const listConnections = () => meta.prepare('SELECT * FROM connections ORDER BY created_at').all().map(rowToConnection)
-
-export const getConnection = (id) => rowToConnection(meta.prepare('SELECT * FROM connections WHERE id = ?').get(id))
-
-export const saveConnection = (conn) => {
-  const row = connectionToRow(conn)
-  const now = Date.now()
-  meta
-    .prepare(
-      // `data` is a placeholder — installs predating this migration created it
-      // as `data TEXT NOT NULL`, so every write must still supply *something*.
-      // `max_sessions` is left out on purpose: the column stays (migrations are
-      // additive-only) but nothing reads it any more, so it falls back to
-      // its DEFAULT 0.
-      `INSERT OR REPLACE INTO connections
-       (id, type, name, workspace_id, environment, folder, tags, credentials, schema_version, owner_id, data, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', COALESCE((SELECT created_at FROM connections WHERE id = ?), ?), ?)`
-    )
-    .run(row.id, row.type, row.name, row.workspace_id, row.environment, row.folder, row.tags, row.credentials, row.schema_version, row.owner_id, row.id, now, now)
+export const listConnections = async () => {
+  const rows = await db().connections.findMany({ orderBy: { created_at: 'asc' } })
+  const owners = await ownersOf(rows)
+  return rows.map((row) => toConnection(row, owners))
 }
 
-export const deleteConnectionRow = (id) => meta.prepare('DELETE FROM connections WHERE id = ?').run(id)
+export const getConnection = async (id) => (id ? rowToConnection(await db().connections.findUnique({ where: { id } })) : null)
+
+export const saveConnection = async (conn) => {
+  const { id, ...row } = connectionToRow(conn)
+  const now = Date.now()
+  // `data` is a placeholder — installs predating its removal created it as
+  // `data TEXT NOT NULL`, so every write must still supply *something*.
+  // `max_sessions` is left out on purpose: the column stays (migrations are
+  // additive-only) but nothing reads it any more, so it falls back to its
+  // DEFAULT 0.
+  await db().connections.upsert({
+    where: { id },
+    create: { id, ...row, data: '{}', created_at: now, updated_at: now },
+    update: { ...row, data: '{}', updated_at: now },
+  })
+}
+
+// Every table holding rows that belong to one connection (by `connection_id`).
+export const CONNECTION_TABLES = [
+  'saved_queries',
+  'connection_tables',
+  'workflows',
+  'workflow_runs',
+  'dashboards',
+  'folders',
+  'query_history',
+  'connection_access',
+  'schema_migrations',
+  'backup_schedules',
+  'backup_runs',
+]
+
+// One metadata cascade for both connection deletion and workspace deletion.
+// History and backup rows are instance-specific (so they are not exported), but
+// they still belong to the connection and must be removed with it. The caller
+// removes the mirrored resource node in the same outer transaction.
+export const deleteConnectionMetadata = async (id) =>
+  transaction(async () => {
+    for (const table of CONNECTION_TABLES) await db()[table].deleteMany({ where: { connection_id: id } })
+    await db().connections.deleteMany({ where: { id } })
+  })
 
 // Bump a connection's schema version after a successful DDL commit. Direct
 // column update — avoids round-tripping (and re-encrypting) the full row.
-export const bumpSchemaVersion = (id) => {
-  meta.prepare('UPDATE connections SET schema_version = schema_version + 1, updated_at = ? WHERE id = ?').run(Date.now(), id)
-  return meta.prepare('SELECT schema_version FROM connections WHERE id = ?').get(id)?.schema_version
+export const bumpSchemaVersion = async (id) => {
+  const rows = await db().connections.updateManyAndReturn({
+    where: { id },
+    data: { schema_version: { increment: 1 }, updated_at: Date.now() },
+    select: { schema_version: true },
+  })
+  return rows[0]?.schema_version
 }
 
-export const setSchemaVersion = (id, version) =>
-  meta.prepare('UPDATE connections SET schema_version = ?, updated_at = ? WHERE id = ?').run(version, Date.now(), id)
+export const setSchemaVersion = async (id, version) =>
+  db().connections.updateMany({ where: { id }, data: { schema_version: version, updated_at: Date.now() } })

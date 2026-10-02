@@ -25,14 +25,18 @@ if (!process.env.ENCRYPTION_KEY) {
 }
 export const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY
 
-// ---- Metadata store (the app's own SQLite DB) ----
+// ---- Metadata store (the app's own records, separate from user connections) ----
+export const META_DB_TYPE = (process.env.META_DB_TYPE || 'sqlite').toLowerCase()
+if (!['sqlite', 'postgresql'].includes(META_DB_TYPE)) throw new Error('META_DB_TYPE must be sqlite or postgresql')
+export const META_DATABASE_URL = process.env.META_DATABASE_URL || ''
+if (META_DB_TYPE === 'postgresql' && !META_DATABASE_URL) throw new Error('META_DATABASE_URL is required when META_DB_TYPE=postgresql')
 export const META_DB_PATH = process.env.META_DB || path.join(ROOT_DIR, 'data', 'app.db')
-fs.mkdirSync(path.dirname(META_DB_PATH), { recursive: true })
+if (META_DB_TYPE === 'sqlite') fs.mkdirSync(path.dirname(META_DB_PATH), { recursive: true })
 
 // App-level snapshots of the meta DB (users/connections/etc.) — distinct from the
 // S3 database backups feature. Both the boot pre-migration snapshot and the
 // update wizard's manual backup land here.
-export const BACKUPS_DIR = path.join(path.dirname(META_DB_PATH), 'backups')
+export const BACKUPS_DIR = path.join(META_DB_TYPE === 'sqlite' ? path.dirname(META_DB_PATH) : path.join(ROOT_DIR, 'data'), 'backups')
 
 // ---- Backup working directories ----
 // The reserved "local server disk" storage destination writes here; database

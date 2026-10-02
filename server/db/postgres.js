@@ -12,9 +12,13 @@ import { execFile } from 'child_process'
 import pkg from 'pg'
 import {
   ROW_ID_COLUMN,
+  buildCreateTableSql,
+  ifNotExists,
+  insertBatches,
   makeIndexSuggestion,
   queryLevelSuggestions,
   quoteIdent,
+  sqlLiteral,
 } from './sql.js'
 
 const { Client, Pool } = pkg
@@ -30,13 +34,18 @@ const pools = new Map()
 const poolVersions = new WeakMap()
 
 // Build a node-postgres client/pool config from a stored connection.
-// Handles optional database, "no authentication" mode, and SSL modes.
+// Handles optional database, "no authentication" mode, and SSL modes. Through
+// an SSH tunnel `host` is the local end, so TLS checks the name in
+// `tunneledHost` — the server the certificate was actually issued to.
 export function pgConfig(config) {
   const noAuth = config.auth === 'none'
   const ssl =
     !config.sslmode || config.sslmode === 'disable'
       ? false
-      : { rejectUnauthorized: config.sslmode === 'verify-full' }
+      : {
+          rejectUnauthorized: config.sslmode === 'verify-full',
+          ...(config.tunneledHost ? { servername: config.tunneledHost } : {}),
+        }
   return {
     host: config.host,
     port: parseInt(config.port) || 5432,
@@ -59,6 +68,7 @@ const schemaOf = (ctx = {}) => ctx.schema || 'public'
 export const postgresDriver = {
   type: 'postgresql',
   label: 'PostgreSQL',
+  defaultPort: 5432,
   // Postgres uses the database's own type vocabulary (matching what /columns
   // reports) so the same list is consistent for existing and new columns.
   dataTypes: [
@@ -228,9 +238,10 @@ export const postgresDriver = {
     return r.rows.map((row) => ({ name: row.name, args: row.args || '', definition: row.definition || '' }))
   },
 
-  async getTableData(conn, ctx, { table, limit = 200 }) {
+  async getTableData(conn, ctx, { table, limit = 200, offset = 0 }) {
     const pool = poolFor(conn, ctx)
     const schema = schemaOf(ctx)
+    const page = `LIMIT ${parseInt(limit) || 200} OFFSET ${parseInt(offset) || 0}`
     try {
       const columns = await pool.query(
         `SELECT column_name FROM information_schema.columns
@@ -246,17 +257,17 @@ export const postgresDriver = {
         // heap — it jumps to the bottom of the grid, or drops out of view once
         // the table is larger than `limit`, which reads as "my edit wasn't saved".
         const order = pk.map((c) => `"${c}"`).join(', ')
-        rows = await pool.query(`SELECT * FROM "${schema}"."${table}" ORDER BY ${order} LIMIT ${limit}`)
+        rows = await pool.query(`SELECT * FROM "${schema}"."${table}" ORDER BY ${order} ${page}`)
       } else {
         // No PK: carry the ctid so edits can target the exact row (see
         // ROW_ID_COLUMN). Only physical tables have one — a view falls back to
         // the plain unordered read.
         try {
           rows = await pool.query(
-            `SELECT ctid::text AS "${ROW_ID_COLUMN}", * FROM "${schema}"."${table}" ORDER BY ctid LIMIT ${limit}`
+            `SELECT ctid::text AS "${ROW_ID_COLUMN}", * FROM "${schema}"."${table}" ORDER BY ctid ${page}`
           )
         } catch {
-          rows = await pool.query(`SELECT * FROM "${schema}"."${table}" LIMIT ${limit}`)
+          rows = await pool.query(`SELECT * FROM "${schema}"."${table}" ${page}`)
         }
       }
       return { columns: columnNames, rows: rows.rows }
@@ -327,6 +338,52 @@ export const postgresDriver = {
     const result = await poolFor(conn, ctx).query(sql, cols.map((c) => values[c]))
     return { ok: true, changes: result.rowCount }
   },
+
+  // Every batch in one transaction: an import lands whole or not at all.
+  async insertRows(conn, ctx, { table, rows }) {
+    const columns = [...new Set(rows.flatMap((r) => Object.keys(r)))]
+    if (!columns.length) return { ok: true, inserted: 0 }
+    const target = `${quoteIdent(schemaOf(ctx))}.${quoteIdent(table)}`
+    const batches = insertBatches(target, columns, rows, { placeholder: (n) => `$${n}`, maxParams: 60000 })
+    await inTransaction(poolFor(conn, ctx), null, async (client) => {
+      for (const b of batches) await client.query(b.sql, b.params.map(bindable))
+    })
+    return { ok: true, inserted: rows.length }
+  },
+
+  // A multi-statement script (a .sql import). The simple query protocol runs
+  // every statement in one round trip, all inside one transaction, with the
+  // console's schema first on the search path so unqualified names land there.
+  async runScript(conn, ctx, sql) {
+    await inTransaction(poolFor(conn, ctx), schemaOf(ctx), (client) => client.query(sql))
+    return { ok: true }
+  },
+
+  // Postgres keeps no CREATE TABLE text, so the table is rebuilt from its
+  // columns; indexes come from pg_get_indexdef, minus the ones a PK/UNIQUE
+  // constraint already creates. Names are left unqualified so the script
+  // replays into whichever schema it is imported into.
+  async tableDdl(conn, ctx, table) {
+    const pool = poolFor(conn, ctx)
+    const schema = schemaOf(ctx)
+    const columns = await getColumns(pool, table, schema)
+    const create = buildCreateTableSql(table, columns, {
+      serial: { smallint: 'smallserial', integer: 'serial', bigint: 'bigserial' },
+    })
+    const idx = await pool.query(
+      `SELECT pg_get_indexdef(ix.indexrelid) AS def, quote_ident(n.nspname) AS ns
+       FROM pg_index ix
+       JOIN pg_class t ON t.oid = ix.indrelid
+       JOIN pg_namespace n ON n.oid = t.relnamespace
+       WHERE n.nspname = $1 AND t.relname = $2
+         AND NOT EXISTS (SELECT 1 FROM pg_constraint c WHERE c.conindid = ix.indexrelid)`,
+      [schema, table]
+    )
+    return [create, ...idx.rows.map((r) => `${ifNotExists(r.def.replace(` ON ${r.ns}.`, ' ON ').replace(` ON ONLY ${r.ns}.`, ' ON ONLY '))};`)]
+  },
+
+  // bytea is written as an escaped hex string, not SQLite's X'…' (a bit string here).
+  sqlLiteral: (v) => (Buffer.isBuffer(v) ? `'\\x${v.toString('hex')}'::bytea` : sqlLiteral(v)),
 
   runQuery: (conn, ctx, sql) => runQuery(poolFor(conn, ctx), sql, ctx?.schema),
 
@@ -508,6 +565,32 @@ async function getIndexes(pool, table, schema = 'public') {
   return (await indexesBySchema(pool, schema, [table]))[table] || []
 }
 
+// node-postgres sends a JS array as a Postgres array literal, which a json
+// column rejects — serialize objects and arrays as JSON text instead.
+const bindable = (v) => (v !== null && typeof v === 'object' && !Buffer.isBuffer(v) && !(v instanceof Date) ? JSON.stringify(v) : v)
+
+// Run `fn(client)` on one pooled client inside BEGIN/COMMIT, rolling back on
+// any failure. `schema` (when not public) goes first on the search path.
+async function inTransaction(pool, schema, fn) {
+  const client = await pool.connect()
+  try {
+    if (schema && schema !== 'public') await client.query(`SET search_path TO ${quoteIdent(schema)}, public`)
+    await client.query('BEGIN')
+    try {
+      const result = await fn(client)
+      await client.query('COMMIT')
+      return result
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {})
+      throw error
+    }
+  } finally {
+    // A pooled client keeps its session settings; reset the search path.
+    if (schema && schema !== 'public') await client.query('RESET search_path').catch(() => {})
+    client.release()
+  }
+}
+
 async function runQuery(pool, sql, schema) {
   try {
     let result
@@ -545,11 +628,16 @@ async function runQuery(pool, sql, schema) {
 // honour the same host/port/db, no-auth mode and SSL mode as the pooled client.
 // Password and sslmode go through libpq env vars (PGPASSWORD/PGSSLMODE) — never
 // argv — so they don't leak into the process list.
+//
+// Through an SSH tunnel libpq dials the local end via PGHOSTADDR while `-h`
+// keeps the real host name, which is what verify-full checks the certificate
+// against.
 function toolConn(conn) {
   const noAuth = conn.auth === 'none'
-  const args = ['-h', conn.host, '-p', String(conn.port || 5432), '-d', conn.database]
+  const args = ['-h', conn.tunneledHost || conn.host, '-p', String(conn.port || 5432), '-d', conn.database]
   if (!noAuth && conn.username) args.push('-U', conn.username)
   const env = { ...process.env, PGPASSWORD: noAuth ? '' : conn.password || '' }
+  if (conn.tunneledHost) env.PGHOSTADDR = conn.host
   if (conn.sslmode) env.PGSSLMODE = conn.sslmode
   return { args, env }
 }

@@ -12,6 +12,7 @@ export { default as NewSchemaDialog } from './components/NewSchemaDialog'
 // A connection's migration trail, for a host that has a connection but no
 // console — the connection detail page's Schema history tab.
 export { default as SchemaHistoryPanel } from './components/SchemaHistoryPanel'
+export { default as MigrationInspector, fmtTime, rollbackTitle } from './components/MigrationInspector'
 export type { SchemaDraft, SchemaDraftDetail, SchemaEngine, WorkspaceSchemaDraft } from './types'
 // The design document (layout + notes + groups) is the schema editor's other
 // half — the hosts that save a draft need its type, and the design file format

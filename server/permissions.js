@@ -18,13 +18,13 @@
  *      role would only be a way to grant an admin the data they're meant not to
  *      have.
  *
- * Lookups are synchronous because every route guard is (making `requireAuth`
- * async is the one thing server/auth.js forbids), so the whole policy — a few
- * dozen rows — lives in memory and is dropped on write.
+ * The whole policy — a few dozen rows — lives in memory: `loadPolicy()` reads it
+ * once at boot and again after every write here, so every lookup below stays a
+ * synchronous read of that cache, on the hot path of every permission check.
  */
 
 import { randomUUID } from 'crypto'
-import { meta } from './meta.js'
+import { db, transaction } from './meta.js'
 import {
   BUILTIN_ROLES,
   NODE_TYPES,
@@ -62,7 +62,8 @@ const serializeAppliesTo = (list) => {
 
 // ---- Policy cache ----
 // A handful of rows read on nearly every request, so hold them in memory and
-// drop the lot on write. Sync by necessity: the guards are.
+// reload the lot on write. Single process (see README), so this process's
+// writes are the only ones there are.
 let cache = null
 
 /**
@@ -74,10 +75,9 @@ let cache = null
 let version = 0
 export const policyVersion = () => version
 
-const loadPolicy = () => {
-  if (cache) return cache
-  const roles = meta.prepare('SELECT id, slug, name, description, builtin, applies_to, created_at, updated_at FROM roles').all()
-  const grants = meta.prepare('SELECT role_id, permission FROM role_permissions').all()
+/** Read the policy into memory. Called at boot, and by every write below. */
+export async function loadPolicy() {
+  const [roles, grants] = await Promise.all([db().roles.findMany(), db().role_permissions.findMany()])
   cache = new Map(
     roles.map((r) => [
       r.slug,
@@ -97,12 +97,13 @@ const loadPolicy = () => {
       },
     ])
   )
+  version += 1
   return cache
 }
 
-export const invalidatePolicy = () => {
-  cache = null
-  version += 1
+const policy = () => {
+  if (!cache) throw new Error('The role policy is not loaded — await loadPolicy() at boot.')
+  return cache
 }
 
 // ---- Reads ----
@@ -121,14 +122,14 @@ const toPublic = (role) => ({
 // Built-ins first, then alphabetically — one stable order for the admin list and
 // every role dropdown rendered from it.
 export const listRoles = () =>
-  [...loadPolicy().values()].map(toPublic).sort((a, b) => Number(b.builtin) - Number(a.builtin) || a.name.localeCompare(b.name))
+  [...policy().values()].map(toPublic).sort((a, b) => Number(b.builtin) - Number(a.builtin) || a.name.localeCompare(b.name))
 
 export const getRole = (slug) => {
-  const role = loadPolicy().get(slug)
+  const role = policy().get(slug)
   return role ? toPublic(role) : null
 }
 
-export const roleExists = (slug) => loadPolicy().has(slug)
+export const roleExists = (slug) => policy().has(slug)
 
 /**
  * The permissions a membership role carries. 'admin' is the pre-v8 spelling of
@@ -138,7 +139,7 @@ export const roleExists = (slug) => loadPolicy().has(slug)
  */
 export const permissionsForRole = (slug) => {
   if (!slug) return new Set()
-  const role = loadPolicy().get(slug === 'admin' ? 'owner' : slug)
+  const role = policy().get(slug === 'admin' ? 'owner' : slug)
   return role ? role.permissions : new Set()
 }
 
@@ -159,7 +160,7 @@ export const roleHasPermission = (slug, permission) => permissionsForRole(slug).
  * is not.
  */
 export const roleGrantableOn = (slug, type) => {
-  const role = loadPolicy().get(slug === 'admin' ? 'owner' : slug)
+  const role = policy().get(slug === 'admin' ? 'owner' : slug)
   if (!role) return { ok: false, reason: 'That role no longer exists.' }
   if (!NODE_TYPE_KEYS.has(type)) return { ok: false, reason: 'Unknown node type.' }
 
@@ -191,30 +192,30 @@ export const rolesGrantableOn = (type) => listRoles().filter((r) => roleGrantabl
  * like the built-in `owner` does.
  */
 export const ownerRoleSlugs = () => {
-  const slugs = [...loadPolicy().values()].filter((r) => r.permissions.has(OWNER_PERMISSION)).map((r) => r.slug)
+  const slugs = [...policy().values()].filter((r) => r.permissions.has(OWNER_PERMISSION)).map((r) => r.slug)
   // 'admin' is the pre-v8 spelling still present in old membership rows; it
   // reads as 'owner', so the SQL that counts owners has to match it too.
   return slugs.includes('owner') ? [...slugs, 'admin'] : slugs
 }
 
 // ---- Writes ----
-const writeGrants = (roleId, permissions) => {
-  meta.prepare('DELETE FROM role_permissions WHERE role_id = ?').run(roleId)
-  const ins = meta.prepare('INSERT OR IGNORE INTO role_permissions (role_id, permission) VALUES (?, ?)')
-  for (const p of permissions) if (PERMISSION_KEYS.has(p)) ins.run(roleId, p)
+const writeGrants = async (roleId, permissions) => {
+  await db().role_permissions.deleteMany({ where: { role_id: roleId } })
+  const keys = [...new Set(permissions)].filter((p) => PERMISSION_KEYS.has(p))
+  if (keys.length) await db().role_permissions.createMany({ data: keys.map((permission) => ({ role_id: roleId, permission })) })
 }
 
-export const createRole = ({ name, description = '', permissions = [], appliesTo = null }) => {
+export const createRole = async ({ name, description = '', permissions = [], appliesTo = null }) => {
   const id = randomUUID()
   const now = Date.now()
   const slug = uniqueSlug(name)
-  meta.transaction(() => {
-    meta
-      .prepare('INSERT INTO roles (id, slug, name, description, builtin, applies_to, created_at, updated_at) VALUES (?, ?, ?, ?, 0, ?, ?, ?)')
-      .run(id, slug, name.trim(), description.trim(), serializeAppliesTo(appliesTo), now, now)
-    writeGrants(id, permissions)
-  })()
-  invalidatePolicy()
+  await transaction(async () => {
+    await db().roles.create({
+      data: { id, slug, name: name.trim(), description: description.trim(), builtin: 0, applies_to: serializeAppliesTo(appliesTo), created_at: now, updated_at: now },
+    })
+    await writeGrants(id, permissions)
+  })
+  await loadPolicy()
   return getRole(slug)
 }
 
@@ -223,8 +224,8 @@ export const createRole = ({ name, description = '', permissions = [], appliesTo
  * reference it — and `owner` always keeps OWNER_PERMISSION, because a workspace
  * whose owners can't manage it is a workspace nobody can fix.
  */
-export const updateRole = (slug, { name, description, permissions, appliesTo }) => {
-  const role = loadPolicy().get(slug)
+export const updateRole = async (slug, { name, description, permissions, appliesTo }) => {
+  const role = policy().get(slug)
   if (!role) return null
   const next = Array.isArray(permissions) ? permissions.filter((p) => PERMISSION_KEYS.has(p)) : null
   // `appliesTo` is three-valued: undefined leaves it alone, null widens it back to
@@ -232,25 +233,30 @@ export const updateRole = (slug, { name, description, permissions, appliesTo }) 
   // the criteria decides what may be granted next, it doesn't revoke what someone
   // already holds (which would take access away silently, from a role edit).
   const criteria = appliesTo === undefined ? undefined : serializeAppliesTo(appliesTo)
-  meta.transaction(() => {
-    meta
-      .prepare('UPDATE roles SET name = ?, description = ?, updated_at = ? WHERE id = ?')
-      .run(String(name ?? role.name).trim(), String(description ?? role.description).trim(), Date.now(), role.id)
-    if (criteria !== undefined) meta.prepare('UPDATE roles SET applies_to = ? WHERE id = ?').run(criteria, role.id)
-    if (next) writeGrants(role.id, slug === 'owner' ? [...new Set([...next, OWNER_PERMISSION])] : next)
-  })()
-  invalidatePolicy()
+  await transaction(async () => {
+    await db().roles.update({
+      where: { id: role.id },
+      data: {
+        name: String(name ?? role.name).trim(),
+        description: String(description ?? role.description).trim(),
+        updated_at: Date.now(),
+        ...(criteria !== undefined ? { applies_to: criteria } : null),
+      },
+    })
+    if (next) await writeGrants(role.id, slug === 'owner' ? [...new Set([...next, OWNER_PERMISSION])] : next)
+  })
+  await loadPolicy()
   return getRole(slug)
 }
 
-export const deleteRole = (slug) => {
-  const role = loadPolicy().get(slug)
+export const deleteRole = async (slug) => {
+  const role = policy().get(slug)
   if (!role) return
-  meta.transaction(() => {
-    meta.prepare('DELETE FROM role_permissions WHERE role_id = ?').run(role.id)
-    meta.prepare('DELETE FROM roles WHERE id = ?').run(role.id)
-  })()
-  invalidatePolicy()
+  await transaction(async () => {
+    await db().role_permissions.deleteMany({ where: { role_id: role.id } })
+    await db().roles.delete({ where: { id: role.id } })
+  })
+  await loadPolicy()
 }
 
 /**
@@ -260,8 +266,7 @@ export const deleteRole = (slug) => {
  * Grants are the whole answer since meta migration v16 — a membership no longer
  * carries a role of its own, it *is* a grant on the workspace's node.
  */
-export const countRoleUsage = (slug) =>
-  meta.prepare('SELECT COUNT(*) c FROM resource_grants WHERE role_slug = ?').get(slug).c
+export const countRoleUsage = async (slug) => db().resource_grants.count({ where: { role_slug: slug } })
 
 /**
  * How many grants hold each role, as `{ [slug]: { members, grants } }`.
@@ -277,25 +282,20 @@ export const countRoleUsage = (slug) =>
  * Pre-v8 rows spelled `owner` as `admin`; fold them in so the count matches what
  * the delete guard will actually find.
  */
-export const roleUsageCounts = () => {
+export const roleUsageCounts = async () => {
   const counts = {}
   const bump = (slug, key, n) => {
     const s = slug === 'admin' ? 'owner' : slug
     counts[s] = counts[s] || { members: 0, grants: 0 }
     counts[s][key] += n
   }
-  for (const { role, c } of meta
-    .prepare(
-      `SELECT g.role_slug AS role, COUNT(*) c FROM resource_grants g
-         JOIN resource_nodes n ON n.id = g.node_id
-        WHERE n.type = 'workspace' AND g.principal_type = 'user' GROUP BY g.role_slug`
-    )
-    .all()) {
-    bump(role, 'members', c)
-  }
-  for (const { role_slug: role, c } of meta.prepare('SELECT role_slug, COUNT(*) c FROM resource_grants GROUP BY role_slug').all()) {
-    bump(role, 'grants', c)
-  }
+  const members = await db().$queryRaw`
+    SELECT g.role_slug AS role, COUNT(*) AS c FROM resource_grants g
+      JOIN resource_nodes n ON n.id = g.node_id
+     WHERE n.type = 'workspace' AND g.principal_type = 'user' GROUP BY g.role_slug`
+  for (const { role, c } of members) bump(role, 'members', c)
+  const grants = await db().resource_grants.groupBy({ by: ['role_slug'], _count: { _all: true } })
+  for (const { role_slug: role, _count } of grants) bump(role, 'grants', _count._all)
   return counts
 }
 
@@ -312,7 +312,7 @@ function uniqueSlug(name) {
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-|-$/g, '')
       .slice(0, 40) || 'role'
-  const taken = loadPolicy()
+  const taken = policy()
   if (!taken.has(base)) return base
   let n = 2
   while (taken.has(`${base}-${n}`)) n += 1

@@ -12,9 +12,9 @@
  */
 
 import { randomUUID } from 'crypto'
-import { meta } from './meta.js'
+import { db, transaction } from './meta.js'
 import { sha256 } from './crypto.js'
-import { LOCK_COLUMNS, clearFailures, lockStatus } from './login-guard.js'
+import { LOCK_FIELDS, clearFailures, lockStatus } from './login-guard.js'
 import { isOwnerRole, membershipsOf, removeAllMemberships } from './workspaces.js'
 import { clearMembershipsFor, clearOwnedNodesEverywhere, revokePrincipalEverywhere } from './resource-tree.js'
 import { getRole } from './permissions.js'
@@ -27,20 +27,22 @@ export const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000
 // the brute-force guard (server/login-guard.js) — an account blocked by failed
 // sign-ins keeps its 'active' status, so the invite flow's pending/active
 // meaning is untouched.
-const toPublic = (u) => ({
+const toPublic = async (u) => ({
   id: u.id,
   email: u.username,
   name: u.name || u.username,
   role: u.role === 'admin' ? 'admin' : 'user',
   status: u.status || 'active',
   ...lockStatus(u),
-  workspaces: workspacesOf(u.id),
+  workspaces: await workspacesOf(u.id),
 })
+
+const PUBLIC_FIELDS = { id: true, username: true, name: true, role: true, status: true, ...LOCK_FIELDS }
 
 // Where this user stands in each workspace — what makes the admin user list
 // actionable ("who owns what") without a second round trip.
-const workspacesOf = (userId) =>
-  membershipsOf(userId)
+const workspacesOf = async (userId) =>
+  (await membershipsOf(userId))
     .map((r) => {
       const role = r.role === 'admin' ? 'owner' : r.role
       // `roleName` and `isOwner` so the admin list can render a configurable
@@ -48,11 +50,13 @@ const workspacesOf = (userId) =>
       return { id: r.id, name: r.name, role, roleName: getRole(role)?.name || role, isOwner: isOwnerRole(role) }
     })
 
-export const listUsers = () =>
-  meta.prepare(`SELECT id, username, name, role, status, ${LOCK_COLUMNS} FROM users ORDER BY role DESC, username`).all().map(toPublic)
+export const listUsers = async () =>
+  Promise.all(
+    (await db().users.findMany({ select: PUBLIC_FIELDS, orderBy: [{ role: 'desc' }, { username: 'asc' }] })).map(toPublic)
+  )
 
-export const getUser = (id) => {
-  const u = meta.prepare(`SELECT id, username, name, role, status, ${LOCK_COLUMNS} FROM users WHERE id = ?`).get(id)
+export const getUser = async (id) => {
+  const u = id ? await db().users.findUnique({ where: { id }, select: PUBLIC_FIELDS }) : null
   return u ? toPublic(u) : null
 }
 
@@ -66,42 +70,37 @@ export const getUser = (id) => {
  * is simply absent from the map, which is what lets the caller render it as
  * unattributed rather than leaking a stray id into the UI.
  */
-export const userSummaries = (ids = []) => {
+export const userSummaries = async (ids = []) => {
   const unique = [...new Set(ids.filter(Boolean))]
   if (!unique.length) return new Map()
-  const rows = meta
-    .prepare(`SELECT id, username, name FROM users WHERE id IN (${unique.map(() => '?').join(', ')})`)
-    .all(...unique)
+  const rows = await db().users.findMany({ where: { id: { in: unique } }, select: { id: true, username: true, name: true } })
   return new Map(rows.map((u) => [u.id, { id: u.id, name: u.name || u.username, email: u.username }]))
 }
 
-export const countAdmins = () => meta.prepare("SELECT COUNT(*) c FROM users WHERE role = 'admin'").get().c
+export const countAdmins = async () => db().users.count({ where: { role: 'admin' } })
 
 /**
  * Create an account. With a password it is active immediately; without one it
  * is 'pending' and gets an invite token the caller turns into a link — the same
  * shape the workspace invite flow uses, so both land in one account model.
  */
-export const createUser = ({ email, name, password, role = 'user', inviteWorkspaceId = null }) => {
+export const createUser = async ({ email, name, password, role = 'user', inviteWorkspaceId = null }) => {
   const id = randomUUID()
   const token = password ? null : randomUUID()
-  meta
-    .prepare(
-      `INSERT INTO users (id, username, password_hash, name, role, status, invite_token, invite_workspace, token_expires)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-    .run(
+  await db().users.create({
+    data: {
       id,
-      email,
-      password ? sha256(password) : '',
-      name || email,
-      role === 'admin' ? 'admin' : 'user',
-      password ? 'active' : 'pending',
-      token,
-      token ? inviteWorkspaceId : null,
-      token ? Date.now() + INVITE_TTL_MS : null
-    )
-  return { user: getUser(id), inviteToken: token }
+      username: email,
+      password_hash: password ? sha256(password) : '',
+      name: name || email,
+      role: role === 'admin' ? 'admin' : 'user',
+      status: password ? 'active' : 'pending',
+      invite_token: token,
+      invite_workspace: token ? inviteWorkspaceId : null,
+      token_expires: token ? Date.now() + INVITE_TTL_MS : null,
+    },
+  })
+  return { user: await getUser(id), inviteToken: token }
 }
 
 /**
@@ -110,19 +109,19 @@ export const createUser = ({ email, name, password, role = 'user', inviteWorkspa
  * old password — a stolen token alone must not be enough to lock its owner out.
  * A 'pending' account has no password yet, so it can never match.
  */
-export const verifyPassword = (id, password) => {
-  const row = meta.prepare('SELECT password_hash, status FROM users WHERE id = ?').get(id)
+export const verifyPassword = async (id, password) => {
+  const row = id ? await db().users.findUnique({ where: { id }, select: { password_hash: true, status: true } }) : null
   if (!row || row.status === 'pending' || !row.password_hash) return false
   return row.password_hash === sha256(password)
 }
 
-export const updateUser = (id, { name, password }) => {
-  if (name !== undefined) meta.prepare('UPDATE users SET name = ? WHERE id = ?').run(name, id)
+export const updateUser = async (id, { name, password }) => {
+  if (name !== undefined) await db().users.updateMany({ where: { id }, data: { name } })
   if (password) {
-    meta.prepare("UPDATE users SET password_hash = ?, status = 'active' WHERE id = ?").run(sha256(password), id)
+    await db().users.updateMany({ where: { id }, data: { password_hash: sha256(password), status: 'active' } })
     // A new password hands the account back to its owner — the failed-attempt
     // counter (and any block it caused) is about the old one.
-    clearFailures(id)
+    await clearFailures(id)
   }
   return getUser(id)
 }
@@ -135,32 +134,35 @@ export const updateUser = (id, { name, password }) => {
  * free of data access. Demoting only changes the role — the user comes back
  * with no workspaces until an owner (or an admin) puts them in one.
  */
-export const setSystemRole = (id, role) => {
+export const setSystemRole = async (id, role) => {
   const next = role === 'admin' ? 'admin' : 'user'
-  meta.prepare('UPDATE users SET role = ? WHERE id = ?').run(next, id)
-  if (next === 'admin') removeAllMemberships(id)
+  await transaction(async () => {
+    await db().users.updateMany({ where: { id }, data: { role: next } })
+    if (next === 'admin') await removeAllMemberships(id)
+  })
   return getUser(id)
 }
 
-export const issueInviteToken = (id, workspaceId = null) => {
+export const issueInviteToken = async (id, workspaceId = null) => {
   const token = randomUUID()
-  meta
-    .prepare('UPDATE users SET invite_token = ?, invite_workspace = ?, token_expires = ? WHERE id = ?')
-    .run(token, workspaceId, Date.now() + INVITE_TTL_MS, id)
+  await db().users.updateMany({
+    where: { id },
+    data: { invite_token: token, invite_workspace: workspaceId, token_expires: Date.now() + INVITE_TTL_MS },
+  })
   return token
 }
 
-export const deleteUser = (id) => {
-  meta.transaction(() => {
-    removeAllMemberships(id)
-    meta.prepare("DELETE FROM connection_access WHERE principal_type = 'user' AND principal_id = ?").run(id)
+export const deleteUser = async (id) => {
+  await transaction(async () => {
+    await removeAllMemberships(id)
+    await db().connection_access.deleteMany({ where: { principal_type: 'user', principal_id: id } })
     // Memberships only reach the workspaces they were memberships *of*. Anything
     // the account owned or was granted at the application root, or in a workspace
     // it had already left, survives that sweep — so clear it instance-wide before
     // the row goes, or the tree keeps pointing at a user who no longer exists.
-    clearOwnedNodesEverywhere(id)
-    revokePrincipalEverywhere('user', id)
-    clearMembershipsFor(id)
-    meta.prepare('DELETE FROM users WHERE id = ?').run(id)
-  })()
+    await clearOwnedNodesEverywhere(id)
+    await revokePrincipalEverywhere('user', id)
+    await clearMembershipsFor(id)
+    await db().users.deleteMany({ where: { id } })
+  })
 }

@@ -19,7 +19,7 @@ import { describeError } from '../util.js'
 // ./index.js — but it's listed so the full set a client may see lives in one place.
 export const REASONS = [
   'dns', 'refused', 'timeout', 'network', 'tls', 'auth', 'permission',
-  'missing_database', 'missing_file', 'busy', 'at_capacity', 'unsupported', 'unknown',
+  'missing_database', 'missing_file', 'busy', 'at_capacity', 'unsupported', 'ssh', 'unknown',
 ]
 
 // What this connection points at, as one string: "host:port", a file path, or a
@@ -111,6 +111,11 @@ export function classifyTransport(error, conn = {}) {
  */
 export function diagnose(driver, conn, error) {
   const detail = describeError(error)
+  // The SSH tunnel failed before the database was ever reached (./tunnel.js):
+  // it already explained itself, and blaming the database would mislead.
+  if (error?.sshReason) {
+    return { reason: 'ssh', cause: error.message, hint: error.hint || 'Open the SSH host (SSH → Host) and run "Test".', code: error.code || undefined, detail: error.cause?.message || detail }
+  }
   const explained =
     driver?.explainError?.(error, conn) ||
     classifyTransport(error, conn) || {

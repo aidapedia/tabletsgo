@@ -1,17 +1,8 @@
 import IconButton from '@/shared/ui/buttons/IconButton'
 import { CloseIcon, DatabaseIcon, DbLogo } from '@/shared/ui/icons'
+import { DB_CATALOG } from '@/shared/config/databaseTypes'
 
-// Database types offered when creating a connection.
-export const DB_CATALOG = [
-  { id: 'postgresql', label: 'PostgreSQL', desc: 'Open-source relational database', available: true },
-  { id: 'sqlite', label: 'SQLite', desc: 'Embedded file-based database', available: true },
-  { id: 'mysql', label: 'MySQL', desc: 'Popular relational database', available: false },
-  { id: 'mariadb', label: 'MariaDB', desc: 'MySQL-compatible database', available: false },
-  { id: 'mongodb', label: 'MongoDB', desc: 'Document NoSQL database', available: false },
-  { id: 'redis', label: 'Redis', desc: 'In-memory key-value store', available: true },
-]
-
-export const TYPE_LABEL: Record<string, string> = Object.fromEntries(DB_CATALOG.map((d) => [d.id, d.label]))
+export { DB_CATALOG, TYPE_LABEL } from '@/shared/config/databaseTypes'
 
 // Full-screen "choose a database type" modal shown before the create form.
 export default function DbTypePickerModal({ onClose, onPick }: { onClose: () => void; onPick: (typeId: string) => void }) {

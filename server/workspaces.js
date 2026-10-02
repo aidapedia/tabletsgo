@@ -12,8 +12,8 @@
  */
 
 import { randomUUID } from 'crypto'
-import { meta } from './meta.js'
-import { deleteConnectionRow } from './connections.js'
+import { db, transaction } from './meta.js'
+import { deleteConnectionMetadata } from './connections.js'
 import { OWNER_PERMISSION, ownerRoleSlugs, permissionsForRole, roleHasPermission } from './permissions.js'
 import {
   addNodeMember,
@@ -39,15 +39,15 @@ import {
  * nothing. Writing both here, in one function per change, is what stops them from
  * drifting: no route touches either directly.
  */
-const syncMemberGrant = (workspaceId, userId, role) => {
-  const node = nodeFor('workspace', workspaceId)
+const syncMemberGrant = async (workspaceId, userId, role) => {
+  const node = await nodeFor('workspace', workspaceId)
   if (!node) return
-  setPrincipalGrant(node.id, 'user', userId, role, { inherit: true })
+  await setPrincipalGrant(node.id, 'user', userId, role, { inherit: true })
   // A workspace whose node has no owner is a workspace where "the owner can do
   // anything under this node" means nothing, so the first person to hold
   // `workspace.manage` claims it. Later owners don't take it over — transferring
   // it is a deliberate act (PUT /api/resource-tree/:id/owner).
-  if (!node.ownerId && isOwnerRole(role)) setNodeOwner(node.id, userId)
+  if (!node.ownerId && isOwnerRole(role)) await setNodeOwner(node.id, userId)
 }
 
 /**
@@ -65,68 +65,76 @@ export const isOwnerRole = (role) => roleHasPermission(role, OWNER_PERMISSION)
  * membership", exported so no other module re-derives it. `role` is null for a
  * member holding no grant — they belong, and may do nothing.
  */
-export const membershipsOf = (userId) =>
-  meta
-    .prepare(
-      `SELECT w.id, w.name, w.created_at, w.settings, g.role_slug AS role
-         FROM node_members nm
-         JOIN resource_nodes n ON n.id = nm.node_id AND n.type = 'workspace'
-         JOIN workspaces w ON w.id = n.resource_id
-         LEFT JOIN resource_grants g
-           ON g.node_id = n.id AND g.principal_type = 'user' AND g.principal_id = nm.user_id
-        WHERE nm.user_id = ? ORDER BY w.created_at`
-    )
-    .all(userId)
-    .map((r) => ({ ...r, role: r.role === 'admin' ? 'owner' : r.role }))
+export const membershipsOf = async (userId) =>
+  (
+    await db().$queryRaw`
+      SELECT w.id, w.name, w.created_at, w.settings, g.role_slug AS role
+        FROM node_members nm
+        JOIN resource_nodes n ON n.id = nm.node_id AND n.type = 'workspace'
+        JOIN workspaces w ON w.id = n.resource_id
+        LEFT JOIN resource_grants g
+          ON g.node_id = n.id AND g.principal_type = 'user' AND g.principal_id = nm.user_id
+       WHERE nm.user_id = ${userId} ORDER BY w.created_at`
+  ).map((r) => ({ ...r, role: r.role === 'admin' ? 'owner' : r.role }))
 
-export const getWorkspaceRow = (id) => meta.prepare('SELECT id, name, settings, created_at FROM workspaces WHERE id = ?').get(id) || null
+export const getWorkspaceRow = async (id) =>
+  (id ? await db().workspaces.findUnique({ where: { id }, select: { id: true, name: true, settings: true, created_at: true } }) : null) || null
 
 // Every workspace on the instance, with counts and its owners — the admin list.
-export const listAllWorkspaces = () =>
-  meta
-    .prepare(
-      `SELECT w.id, w.name, w.created_at,
-              (SELECT COUNT(*) FROM node_members nm
-                 JOIN resource_nodes n ON n.id = nm.node_id
-                WHERE n.type = 'workspace' AND n.resource_id = w.id) AS memberCount,
-              (SELECT COUNT(*) FROM resource_nodes n
-                WHERE n.workspace_id = w.id AND n.type = 'group') AS groupCount
-         FROM workspaces w ORDER BY w.created_at`
-    )
-    .all()
-    .map((w) => ({
+// (Aliases are snake_case: PostgreSQL folds unquoted ones to lower case.)
+export const listAllWorkspaces = async () => {
+  const rows = await db().$queryRaw`
+    SELECT w.id, w.name, w.created_at,
+           (SELECT COUNT(*) FROM node_members nm
+              JOIN resource_nodes n ON n.id = nm.node_id
+             WHERE n.type = 'workspace' AND n.resource_id = w.id) AS member_count,
+           (SELECT COUNT(*) FROM resource_nodes n
+             WHERE n.workspace_id = w.id AND n.type = 'group') AS group_count,
+           (SELECT COUNT(*) FROM connections c WHERE c.workspace_id = w.id) AS connection_count
+      FROM workspaces w ORDER BY w.created_at`
+  return Promise.all(
+    rows.map(async (w) => ({
       id: w.id,
       name: w.name,
       createdAt: w.created_at,
-      memberCount: w.memberCount,
-      groupCount: w.groupCount,
-      connectionCount: meta.prepare('SELECT COUNT(*) c FROM connections WHERE workspace_id = ?').get(w.id).c,
-      owners: listWorkspaceMembers(w.id).filter((m) => m.isOwner),
+      memberCount: w.member_count,
+      groupCount: w.group_count,
+      connectionCount: w.connection_count,
+      owners: (await listWorkspaceMembers(w.id)).filter((m) => m.isOwner),
     }))
+  )
+}
 
 /**
  * A workspace's members. Each carries the permissions their role grants, so the
  * client renders "what can this person do" without a second request and without
  * knowing what any given role means.
  */
-export const listWorkspaceMembers = (workspaceId) => {
-  const node = nodeFor('workspace', workspaceId)
+export const listWorkspaceMembers = async (workspaceId) => {
+  const node = await nodeFor('workspace', workspaceId)
   if (!node) return []
-  return meta
-    .prepare(
-      `SELECT u.id AS userId, u.username AS email, u.name, u.status, u.role AS systemRole,
-              g.role_slug AS role, nm.created_at AS createdAt
-         FROM node_members nm
-         JOIN users u ON u.id = nm.user_id
-         LEFT JOIN resource_grants g
-           ON g.node_id = nm.node_id AND g.principal_type = 'user' AND g.principal_id = nm.user_id
-        WHERE nm.node_id = ? ORDER BY nm.created_at`
-    )
-    .all(node.id)
-    .map((m) => {
-      const role = m.role === 'admin' ? 'owner' : m.role
-      return { ...m, role, permissions: role ? [...permissionsForRole(role)] : [], isOwner: !!role && isOwnerRole(role) }
-    })
+  const rows = await db().$queryRaw`
+    SELECT u.id AS user_id, u.username AS email, u.name, u.status, u.role AS system_role,
+           g.role_slug AS role, nm.created_at
+      FROM node_members nm
+      JOIN users u ON u.id = nm.user_id
+      LEFT JOIN resource_grants g
+        ON g.node_id = nm.node_id AND g.principal_type = 'user' AND g.principal_id = nm.user_id
+     WHERE nm.node_id = ${node.id} ORDER BY nm.created_at`
+  return rows.map((m) => {
+    const role = m.role === 'admin' ? 'owner' : m.role
+    return {
+      userId: m.user_id,
+      email: m.email,
+      name: m.name,
+      status: m.status,
+      systemRole: m.system_role,
+      role,
+      createdAt: m.created_at,
+      permissions: role ? [...permissionsForRole(role)] : [],
+      isOwner: !!role && isOwnerRole(role),
+    }
+  })
 }
 
 /**
@@ -134,21 +142,21 @@ export const listWorkspaceMembers = (workspaceId) => {
  * carry `workspace.manage` rather than a hardcoded list, so demoting the last one
  * is still refused after an admin invents a role that grants it.
  */
-export const countOwners = (workspaceId) => {
+export const countOwners = async (workspaceId) => {
   const slugs = ownerRoleSlugs()
-  const node = nodeFor('workspace', workspaceId)
+  const node = await nodeFor('workspace', workspaceId)
   if (!slugs.length || !node) return 0
-  const placeholders = slugs.map(() => '?').join(', ')
   // On the roster *and* holding a grant that carries it — belonging alone is not
   // owning, now that the two are separate facts.
-  return meta
-    .prepare(
-      `SELECT COUNT(*) c FROM node_members nm
-         JOIN resource_grants g
-           ON g.node_id = nm.node_id AND g.principal_type = 'user' AND g.principal_id = nm.user_id
-        WHERE nm.node_id = ? AND g.role_slug IN (${placeholders})`
-    )
-    .get(node.id, ...slugs).c
+  const [roster, grants] = await Promise.all([
+    db().node_members.findMany({ where: { node_id: node.id }, select: { user_id: true } }),
+    db().resource_grants.findMany({
+      where: { node_id: node.id, principal_type: 'user', role_slug: { in: slugs } },
+      select: { principal_id: true },
+    }),
+  ])
+  const onRoster = new Set(roster.map((r) => r.user_id))
+  return grants.filter((g) => onRoster.has(g.principal_id)).length
 }
 
 /**
@@ -157,34 +165,36 @@ export const countOwners = (workspaceId) => {
  * exist. The workspace's node is owned by its first owner, which is what makes
  * "the owner can do anything under this node" true from the first request.
  */
-export const createWorkspace = (name, { ownerId } = {}) => {
+export const createWorkspace = async (name, { ownerId } = {}) => {
   const id = randomUUID()
   const now = Date.now()
-  meta.transaction(() => {
-    meta.prepare('INSERT INTO workspaces (id, name, settings, created_at) VALUES (?, ?, ?, ?)').run(id, name, '{}', now)
-    createResourceNode('workspace', id, { name, ownerId: ownerId || null, workspaceId: id })
-    if (ownerId) addMember(id, ownerId, 'owner')
-  })()
+  await transaction(async () => {
+    await db().workspaces.create({ data: { id, name, settings: '{}', created_at: now } })
+    await createResourceNode('workspace', id, { name, ownerId: ownerId || null, workspaceId: id })
+    if (ownerId) await addMember(id, ownerId, 'owner')
+  })
   return { id, name, createdAt: now }
 }
 
-export const renameWorkspace = (id, name) => {
-  meta.prepare('UPDATE workspaces SET name = ? WHERE id = ?').run(name, id)
-  renameResourceNode('workspace', id, name)
-}
+export const renameWorkspace = async (id, name) =>
+  transaction(async () => {
+    await db().workspaces.update({ where: { id }, data: { name } })
+    await renameResourceNode('workspace', id, name)
+  })
 
-export const addMember = (workspaceId, userId, role = 'member') => {
-  const node = nodeFor('workspace', workspaceId)
-  if (!node) return
-  // Roster first, grant second — `addGrant` refuses a user who isn't a member of
-  // the workspace, so the order is load-bearing, not stylistic.
-  addNodeMember(node.id, userId)
-  syncMemberGrant(workspaceId, userId, role)
-}
+export const addMember = async (workspaceId, userId, role = 'member') =>
+  transaction(async () => {
+    const node = await nodeFor('workspace', workspaceId)
+    if (!node) return
+    // Roster first, grant second — `addGrant` refuses a user who isn't a member of
+    // the workspace, so the order is load-bearing, not stylistic.
+    await addNodeMember(node.id, userId)
+    await syncMemberGrant(workspaceId, userId, role)
+  })
 
-export const setMemberRole = (workspaceId, userId, role) => {
+export const setMemberRole = async (workspaceId, userId, role) => {
   // The role *is* the grant now, so there is nothing else to update.
-  syncMemberGrant(workspaceId, userId, role)
+  await syncMemberGrant(workspaceId, userId, role)
 }
 
 /**
@@ -192,82 +202,64 @@ export const setMemberRole = (workspaceId, userId, role) => {
  * seats and any individual connection grants. Leaving those behind would keep
  * handing access to someone who is no longer a member.
  */
-export const removeMember = (workspaceId, userId) => {
-  const node = nodeFor('workspace', workspaceId)
-  meta.transaction(() => {
+export const removeMember = async (workspaceId, userId) => {
+  const node = await nodeFor('workspace', workspaceId)
+  await transaction(async () => {
     // Every group seat they held inside this workspace — including the workspace
     // node's own roster, which is the membership itself. A seat is what a grant
     // made elsewhere reaches through, so leaving one behind would keep handing
     // access to someone who is no longer a member.
-    clearMembershipsIn(node, userId)
-    meta
-      .prepare(
-        `DELETE FROM connection_access
-          WHERE principal_type = 'user' AND principal_id = ?
-            AND connection_id IN (SELECT id FROM connections WHERE workspace_id = ?)`
-      )
-      .run(userId, workspaceId)
+    await clearMembershipsIn(node, userId)
+    const connections = await db().connections.findMany({ where: { workspace_id: workspaceId }, select: { id: true } })
+    await db().connection_access.deleteMany({
+      where: { principal_type: 'user', principal_id: userId, connection_id: { in: connections.map((c) => c.id) } },
+    })
     // Every grant they held anywhere in this workspace's subtree, not only the
     // one mirroring the membership — a grant left on a single connection would
     // keep handing access to someone who is no longer a member.
-    revokePrincipalIn(node, 'user', userId)
+    await revokePrincipalIn(node, 'user', userId)
     // Ownership of a node inside the workspace goes with them too, or they would
     // still resolve to every permission in that subtree.
-    clearOwnerIn(node, userId)
-  })()
+    await clearOwnerIn(node, userId)
+  })
 }
 
 // Workspaces this user is the *last* owner of — deleting the account would
 // leave them unmanageable, so the admin route refuses until someone else owns them.
-export const listUserSoleOwnerships = (userId) =>
-  membershipsOf(userId)
-    .filter((w) => w.role && isOwnerRole(w.role) && countOwners(w.id) <= 1)
-    .map(({ id, name }) => ({ id, name }))
+export const listUserSoleOwnerships = async (userId) => {
+  const sole = []
+  for (const w of await membershipsOf(userId)) {
+    if (w.role && isOwnerRole(w.role) && (await countOwners(w.id)) <= 1) sole.push({ id: w.id, name: w.name })
+  }
+  return sole
+}
 
 // Every workspace membership a user holds — used when promoting them to
 // instance admin, which must leave them with none.
-export const removeAllMemberships = (userId) => {
-  for (const { id } of membershipsOf(userId)) removeMember(id, userId)
+export const removeAllMemberships = async (userId) => {
+  for (const { id } of await membershipsOf(userId)) await removeMember(id, userId)
 }
 
 /**
  * Delete a workspace and everything scoped to it. Kept here (rather than inline
  * in a route) because two callers need the identical cascade, and it must stay
- * in step with the DELETE /api/connections/:id cascade in server.js.
+ * in step with direct connection deletion through one shared operation.
  */
-export const deleteWorkspaceCascade = (workspaceId) => {
-  const connectionIds = meta.prepare('SELECT id FROM connections WHERE workspace_id = ?').all(workspaceId).map((r) => r.id)
-
-  meta.transaction(() => {
+export const deleteWorkspaceCascade = async (workspaceId) =>
+  transaction(async () => {
+    const connectionIds = (await db().connections.findMany({ where: { workspace_id: workspaceId }, select: { id: true } })).map((r) => r.id)
     for (const id of connectionIds) {
-      deleteConnectionRow(id)
-      for (const table of [
-        'saved_queries',
-        'connection_tables',
-        'workflows',
-        'workflow_runs',
-        'dashboards',
-        'folders',
-        'query_history',
-        'connection_access',
-        'schema_migrations',
-        'backup_schedules',
-        'backup_runs',
-      ]) {
-        meta.prepare(`DELETE FROM ${table} WHERE connection_id = ?`).run(id)
-      }
+      await deleteConnectionMetadata(id)
     }
-    meta.prepare('DELETE FROM storage_destinations WHERE workspace_id = ?').run(workspaceId)
+    await db().storage_destinations.deleteMany({ where: { workspace_id: workspaceId } })
     // Standalone schema drafts hang off the workspace, not a connection, so the
     // per-connection loop above never reaches them.
-    meta.prepare('DELETE FROM schema_drafts WHERE workspace_id = ?').run(workspaceId)
-    meta.prepare('DELETE FROM workspaces WHERE id = ?').run(workspaceId)
+    await db().schema_drafts.deleteMany({ where: { workspace_id: workspaceId } })
+    await db().workspaces.deleteMany({ where: { id: workspaceId } })
     // One call takes the workspace's whole subtree — group, connection, dashboard
     // and workflow nodes — with every grant on any of them, every roster
     // (including the workspace's own, which is its membership),
     // and every grant that named one of those groups as its principal.
-    deleteResourceNode('workspace', workspaceId)
-  })()
-
-  return connectionIds
-}
+    await deleteResourceNode('workspace', workspaceId)
+    return connectionIds
+  })

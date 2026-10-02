@@ -40,8 +40,8 @@ export const envSmtp = () => {
  * `source` says which layer answered ('global' | 'env'), which is all the UI
  * needs to explain where the settings came from.
  */
-export const smtpConfig = () => {
-  const global = globalSmtp()
+export const smtpConfig = async () => {
+  const global = await globalSmtp()
   const env = global ? null : envSmtp()
   const cfg = global ? { source: 'global', ...global } : env ? { source: 'env', ...env } : null
   if (!cfg) return null
@@ -59,8 +59,8 @@ export const smtpConfig = () => {
 
 // The same config with the password stripped — what routes hand a client so a
 // settings form can show what's in effect without the secret leaving the server.
-export const publicSmtpConfig = () => {
-  const cfg = smtpConfig()
+export const publicSmtpConfig = async () => {
+  const cfg = await smtpConfig()
   if (!cfg) return null
   const { pass, ...rest } = cfg
   return rest

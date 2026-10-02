@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
+import { useConnections } from '../stores/ConnectionsContext'
 import ConnectionAccessPanel from './ConnectionAccessPanel'
 import { TYPE_LABEL } from './DbTypePickerModal'
 import { BackupPanel } from '@/features/backup'
+import { addressOf, listSshGateways, type SshGateway } from '@/features/ssh'
 // Deep import, not the `@/features/schema-designer` barrel: that barrel's
 // WorkspaceSchemaList reads TYPE_LABEL back out of *this* feature, so going
 // through it would make the two barrels a cycle. The panel itself depends on
@@ -100,9 +102,17 @@ function DetailRow({ label, value }: { label: string; value?: string }) {
 // (it lives in the URL as `/connections/:id/:tab`), so a tab is linkable.
 export default function ConnectionDetail({ conn, onBack, onOpen, onEdit, onDelete, onExport, onRefresh, connecting, tab = 'data', onTab }: any) {
   const toast = useToast()
+  const { connections } = useConnections()
   const [status, setStatus] = useState<'checking' | 'connected' | 'offline'>('checking')
   const [tableCount, setTableCount] = useState<number | null>(null)
   const [sessions, setSessions] = useState<SessionStats | null>(null)
+  const [gateway, setGateway] = useState<SshGateway | null>(null)
+
+  // The tunnel is part of how this database is reached, so it reads with the host.
+  useEffect(() => {
+    if (!conn.sshGatewayId || !conn.workspaceId) return setGateway(null)
+    listSshGateways(conn.workspaceId).then((list) => setGateway(list.find((g) => g.id === conn.sshGatewayId) || null))
+  }, [conn.sshGatewayId, conn.workspaceId])
 
   useEffect(() => {
     let alive = true
@@ -214,6 +224,12 @@ export default function ConnectionDetail({ conn, onBack, onOpen, onEdit, onDelet
                       ) : (
                         <DetailRow label="SSL mode" value={conn.sslmode} />
                       )}
+                      {conn.sshGatewayId && (
+                        <DetailRow
+                          label="SSH tunnel"
+                          value={gateway ? `${gateway.name} (${addressOf(gateway)})` : 'host missing'}
+                        />
+                      )}
                     </>
                   )}
                   {conn.folder && <DetailRow label="Folder" value={conn.folder} />}
@@ -260,7 +276,9 @@ export default function ConnectionDetail({ conn, onBack, onOpen, onEdit, onDelet
           <BackupPanel
             connectionId={conn.id}
             connectionType={conn.type}
+            connectionName={conn.name}
             workspaceId={conn.workspaceId}
+            connections={connections}
             onConfigure={() => onEdit(conn, 'backup')}
           />
         )}

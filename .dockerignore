@@ -11,3 +11,4 @@ demo.db-*
 *.db-wal
 .DS_Store
 scratchpad
+server/generated

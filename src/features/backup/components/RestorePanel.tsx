@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from 'react'
-import { useConnections } from '@/features/connections'
 import Button from '@/shared/ui/buttons/Button'
 import Select from '@/shared/ui/form/Select'
 import SearchInput from '@/shared/ui/form/SearchInput'
@@ -31,10 +30,8 @@ type Source = { kind: 'upload'; file: File } | { kind: 'storage'; destinationId:
 // history: a backup file uploaded from disk, or any file picked out of a
 // storage destination (S3 or the local server disk). Complements the run-based
 // restore in BackupVersionList.
-export default function RestorePanel({ connectionId, workspaceId }: { connectionId: string; workspaceId: string }) {
+export default function RestorePanel({ connectionId, connectionName, workspaceId }: { connectionId: string; connectionName: string; workspaceId: string }) {
   const toast = useToast()
-  const { connections } = useConnections() as { connections: any[] }
-  const connectionName = connections.find((c) => c.id === connectionId)?.name || ''
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const [browsing, setBrowsing] = useState(false)
