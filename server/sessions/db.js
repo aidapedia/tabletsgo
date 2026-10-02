@@ -16,7 +16,7 @@
  * "expired" means "filtered out", and `sweepExpired()` reclaims the rows.
  */
 
-import { meta } from '../meta.js'
+import { db } from '../meta.js'
 
 // `ns` keeps the contract honest for any namespace, though only 'auth' is
 // stored durably today (connection sessions describe live sockets and must not
@@ -44,23 +44,20 @@ export function dbStore() {
     kind: 'db',
 
     async put(ns, id, value, ttlMs) {
-      meta
-        .prepare(
-          `INSERT INTO sessions (token, ns, user_id, context, created_at, expires_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-           ON CONFLICT(token) DO UPDATE SET
-             ns = excluded.ns, user_id = excluded.user_id,
-             context = excluded.context, expires_at = excluded.expires_at`
-        )
-        .run(id, ns, userIdOf(value), JSON.stringify(value), value?.createdAt || now(), now() + ttlMs)
+      const row = { ns, user_id: userIdOf(value), context: JSON.stringify(value), expires_at: now() + ttlMs }
+      await db().sessions.upsert({
+        where: { token: id },
+        create: { token: id, ...row, created_at: value?.createdAt || now() },
+        update: row,
+      })
       return value
     },
 
     async get(ns, id) {
-      const row = meta.prepare('SELECT context, expires_at FROM sessions WHERE token = ? AND ns = ?').get(id, ns)
+      const row = await db().sessions.findFirst({ where: { token: id, ns }, select: { context: true, expires_at: true } })
       if (!row) return null
       if (row.expires_at <= now()) {
-        meta.prepare('DELETE FROM sessions WHERE token = ?').run(id)
+        await db().sessions.deleteMany({ where: { token: id } })
         return null
       }
       return parse(row)
@@ -69,46 +66,42 @@ export function dbStore() {
     // Slide the expiry without rewriting the value. Returns false for a session
     // that's already gone, so the caller can treat it as signed out.
     async touch(ns, id, ttlMs) {
-      const changes = meta
-        .prepare('UPDATE sessions SET expires_at = ? WHERE token = ? AND ns = ? AND expires_at > ?')
-        .run(now() + ttlMs, id, ns, now()).changes
-      return changes > 0
+      const { count } = await db().sessions.updateMany({
+        where: { token: id, ns, expires_at: { gt: now() } },
+        data: { expires_at: now() + ttlMs },
+      })
+      return count > 0
     },
 
     async del(ns, id) {
-      return meta.prepare('DELETE FROM sessions WHERE token = ? AND ns = ?').run(id, ns).changes > 0
+      return (await db().sessions.deleteMany({ where: { token: id, ns } })).count > 0
     },
 
     async list(ns) {
-      return meta
-        .prepare('SELECT token, context FROM sessions WHERE ns = ? AND expires_at > ?')
-        .all(ns, now())
+      return (await db().sessions.findMany({ where: { ns, expires_at: { gt: now() } }, select: { token: true, context: true } }))
         .map((r) => ({ id: r.token, value: parse(r) }))
         .filter((e) => e.value !== null)
     },
 
     async count(ns) {
-      return meta.prepare('SELECT COUNT(*) c FROM sessions WHERE ns = ? AND expires_at > ?').get(ns, now()).c
+      return db().sessions.count({ where: { ns, expires_at: { gt: now() } } })
     },
 
     async clear(ns) {
-      meta.prepare('DELETE FROM sessions WHERE ns = ?').run(ns)
+      await db().sessions.deleteMany({ where: { ns } })
     },
 
     // Every token belonging to a user — the indexed path behind
     // `destroyAuthSessionsForUser`, so signing someone out doesn't read every
     // session on the instance.
     async idsForUser(userId, ns = AUTH_NS) {
-      return meta
-        .prepare('SELECT token FROM sessions WHERE ns = ? AND user_id = ?')
-        .all(ns, userId)
-        .map((r) => r.token)
+      return (await db().sessions.findMany({ where: { ns, user_id: userId }, select: { token: true } })).map((r) => r.token)
     },
 
     // Reclaim rows past their expiry. Reads already ignore them; this is what
     // stops the table growing without bound. Driven by the minutely sweeper.
     async sweepExpired() {
-      return meta.prepare('DELETE FROM sessions WHERE expires_at <= ?').run(now()).changes
+      return (await db().sessions.deleteMany({ where: { expires_at: { lte: now() } } })).count
     },
 
     // The meta DB's lifetime is owned by meta.js, not by this store.

@@ -24,7 +24,7 @@
 
 import { createHash, randomUUID } from 'crypto'
 import ssh2 from 'ssh2'
-import { meta } from './meta.js'
+import { db } from './meta.js'
 import { SSH_CRED_KEY, decryptSecret, encryptSecret } from './crypto.js'
 import { listConnections } from './connections.js'
 import { explainAccessError, openAccessStream } from './cloudflare-access.js'
@@ -112,12 +112,12 @@ export function rowToSshKey(row) {
   }
 }
 
-const keyRow = (id) => meta.prepare('SELECT * FROM ssh_keys WHERE id = ?').get(id)
+const keyRow = async (id) => (id ? db().ssh_keys.findUnique({ where: { id } }) : null)
 
-export const getSshKey = (id) => rowToSshKey(keyRow(id))
+export const getSshKey = async (id) => rowToSshKey(await keyRow(id))
 
-export const listSshKeys = (workspaceId) =>
-  meta.prepare('SELECT * FROM ssh_keys WHERE workspace_id = ? ORDER BY created_at').all(workspaceId).map(rowToSshKey)
+export const listSshKeys = async (workspaceId) =>
+  (await db().ssh_keys.findMany({ where: { workspace_id: workspaceId }, orderBy: { created_at: 'asc' } })).map(rowToSshKey)
 
 /**
  * Create a key. `mode: 'generate'` makes a fresh pair (`algorithm` picks it);
@@ -125,7 +125,7 @@ export const listSshKeys = (workspaceId) =>
  * The key's name doubles as the public key's comment, so the line in
  * `authorized_keys` says where it came from.
  */
-export function createSshKey(workspaceId, { name, mode = 'generate', algorithm = 'ed25519', privateKey, passphrase }, userId) {
+export async function createSshKey(workspaceId, { name, mode = 'generate', algorithm = 'ed25519', privateKey, passphrase }, userId) {
   const label = String(name || '').trim()
   if (!label) throw invalid('A name is required.')
   const comment = label.replace(/\s+/g, '-')
@@ -141,45 +141,41 @@ export function createSshKey(workspaceId, { name, mode = 'generate', algorithm =
   }
   const id = randomUUID()
   const now = Date.now()
-  meta
-    .prepare(
-      `INSERT INTO ssh_keys (id, workspace_id, name, algorithm, public_key, fingerprint, credentials, created_by, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-    .run(
+  await db().ssh_keys.create({
+    data: {
       id,
-      workspaceId,
-      label,
-      described.algorithm,
-      described.publicKey,
-      described.fingerprint,
-      seal({ privateKey: described.privateKey, passphrase: passphrase || undefined }),
-      userId || null,
-      now,
-      now
-    )
+      workspace_id: workspaceId,
+      name: label,
+      algorithm: described.algorithm,
+      public_key: described.publicKey,
+      fingerprint: described.fingerprint,
+      credentials: seal({ privateKey: described.privateKey, passphrase: passphrase || undefined }),
+      created_by: userId || null,
+      created_at: now,
+      updated_at: now,
+    },
+  })
   return getSshKey(id)
 }
 
 // Only the name changes — a key's material is its identity, so a new key is a
 // new row (and a gateway is repointed at it).
-export function renameSshKey(id, name) {
+export async function renameSshKey(id, name) {
   const label = String(name || '').trim()
   if (!label) throw invalid('A name is required.')
-  meta.prepare('UPDATE ssh_keys SET name = ?, updated_at = ? WHERE id = ?').run(label, Date.now(), id)
+  await db().ssh_keys.updateMany({ where: { id }, data: { name: label, updated_at: Date.now() } })
   return getSshKey(id)
 }
 
-export const sshKeyGateways = (id) =>
-  meta.prepare('SELECT id, name FROM ssh_gateways WHERE key_id = ?').all(id)
+export const sshKeyGateways = async (id) => db().ssh_gateways.findMany({ where: { key_id: id }, select: { id: true, name: true } })
 
-export const deleteSshKey = (id) => meta.prepare('DELETE FROM ssh_keys WHERE id = ?').run(id)
+export const deleteSshKey = async (id) => db().ssh_keys.deleteMany({ where: { id } })
 
 // ---- Gateways ----
 
-export function rowToSshGateway(row) {
+export async function rowToSshGateway(row) {
   if (!row) return null
-  const key = row.key_id ? meta.prepare('SELECT name FROM ssh_keys WHERE id = ?').get(row.key_id) : null
+  const key = row.key_id ? await db().ssh_keys.findUnique({ where: { id: row.key_id }, select: { name: true } }) : null
   const secrets = sealed(row)
   return {
     id: row.id,
@@ -203,16 +199,18 @@ export function rowToSshGateway(row) {
   }
 }
 
-const gatewayRow = (id) => meta.prepare('SELECT * FROM ssh_gateways WHERE id = ?').get(id)
+const gatewayRow = async (id) => (id ? db().ssh_gateways.findUnique({ where: { id } }) : null)
 
-export const getSshGateway = (id) => rowToSshGateway(gatewayRow(id))
+export const getSshGateway = async (id) => rowToSshGateway(await gatewayRow(id))
 
-export const listSshGateways = (workspaceId) =>
-  meta.prepare('SELECT * FROM ssh_gateways WHERE workspace_id = ? ORDER BY created_at').all(workspaceId).map(rowToSshGateway)
+export const listSshGateways = async (workspaceId) =>
+  Promise.all(
+    (await db().ssh_gateways.findMany({ where: { workspace_id: workspaceId }, orderBy: { created_at: 'asc' } })).map(rowToSshGateway)
+  )
 
 // Validate a gateway body against its workspace. A key from another workspace
 // would be a way to borrow credentials the caller was never given.
-function gatewayFields(workspaceId, body, existing) {
+async function gatewayFields(workspaceId, body, existing) {
   const name = String(body.name ?? existing?.name ?? '').trim()
   const host = String(body.host ?? existing?.host ?? '').trim()
   const username = String(body.username ?? existing?.username ?? '').trim()
@@ -231,7 +229,7 @@ function gatewayFields(workspaceId, body, existing) {
     throw invalid(`Railway doesn't accept a private-network name (${username}) as the SSH user — ${RAILWAY_USERNAME_HELP}.`)
   }
   if (auth === 'key') {
-    const key = keyId && getSshKey(keyId)
+    const key = keyId && (await getSshKey(keyId))
     if (!key || key.workspaceId !== workspaceId) throw invalid('Pick one of this workspace\'s SSH keys.')
   }
   return { name, host, username, port, auth, keyId, transport }
@@ -252,17 +250,26 @@ function gatewaySecrets(f, body, stored = {}) {
   return { password, cfClientId: cfClientId || undefined, cfClientSecret }
 }
 
-export function createSshGateway(workspaceId, body) {
-  const f = gatewayFields(workspaceId, body)
+// The columns a gateway's validated fields map to — shared by create and update.
+const gatewayColumns = (f, secrets) => ({
+  name: f.name,
+  host: f.host,
+  port: f.port,
+  username: f.username,
+  auth: f.auth,
+  key_id: f.keyId,
+  transport: f.transport,
+  credentials: seal(secrets),
+})
+
+export async function createSshGateway(workspaceId, body) {
+  const f = await gatewayFields(workspaceId, body)
   const secrets = gatewaySecrets(f, body)
   const id = randomUUID()
   const now = Date.now()
-  meta
-    .prepare(
-      `INSERT INTO ssh_gateways (id, workspace_id, name, host, port, username, auth, key_id, transport, host_fingerprint, credentials, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`
-    )
-    .run(id, workspaceId, f.name, f.host, f.port, f.username, f.auth, f.keyId, f.transport, seal(secrets), now, now)
+  await db().ssh_gateways.create({
+    data: { id, workspace_id: workspaceId, ...gatewayColumns(f, secrets), host_fingerprint: null, created_at: now, updated_at: now },
+  })
   return getSshGateway(id)
 }
 
@@ -273,41 +280,39 @@ export function createSshGateway(workspaceId, body) {
  * `resetHostKey: true` — the way to accept a bastion that was legitimately
  * rebuilt.
  */
-export function updateSshGateway(id, body) {
-  const row = gatewayRow(id)
-  const existing = rowToSshGateway(row)
-  const f = gatewayFields(existing.workspaceId, body, existing)
+export async function updateSshGateway(id, body) {
+  const row = await gatewayRow(id)
+  const existing = await rowToSshGateway(row)
+  const f = await gatewayFields(existing.workspaceId, body, existing)
   const secrets = gatewaySecrets(f, body, sealed(row))
   const moved = f.host !== existing.host || f.port !== existing.port || f.transport !== existing.transport
   const fingerprint = moved || body.resetHostKey ? null : existing.hostFingerprint
-  meta
-    .prepare(
-      `UPDATE ssh_gateways SET name = ?, host = ?, port = ?, username = ?, auth = ?, key_id = ?, transport = ?, host_fingerprint = ?, credentials = ?, updated_at = ?
-       WHERE id = ?`
-    )
-    .run(f.name, f.host, f.port, f.username, f.auth, f.keyId, f.transport, fingerprint, seal(secrets), Date.now(), id)
+  await db().ssh_gateways.updateMany({
+    where: { id },
+    data: { ...gatewayColumns(f, secrets), host_fingerprint: fingerprint, updated_at: Date.now() },
+  })
   return getSshGateway(id)
 }
 
 // Pin the host key on first contact. Leaves `updated_at` alone on purpose: the
 // tunnel cache keys on it, and learning the key is not an edit to the gateway.
-export const pinHostFingerprint = (id, fingerprint) =>
-  meta.prepare('UPDATE ssh_gateways SET host_fingerprint = ? WHERE id = ? AND host_fingerprint IS NULL').run(fingerprint, id)
+export const pinHostFingerprint = async (id, fingerprint) =>
+  db().ssh_gateways.updateMany({ where: { id, host_fingerprint: null }, data: { host_fingerprint: fingerprint } })
 
-export const deleteSshGateway = (id) => meta.prepare('DELETE FROM ssh_gateways WHERE id = ?').run(id)
+export const deleteSshGateway = async (id) => db().ssh_gateways.deleteMany({ where: { id } })
 
 // The connections that tunnel through a gateway — a gateway still in use can't
 // be deleted, and editing one must drop those connections' open handles.
-export const connectionsUsingGateway = (id) => listConnections().filter((c) => c.sshGatewayId === id)
+export const connectionsUsingGateway = async (id) => (await listConnections()).filter((c) => c.sshGatewayId === id)
 
 /**
  * Is `gatewayId` something a connection in `workspaceId` may tunnel through?
  * Empty means "no tunnel" and is always fine; otherwise the gateway must exist
  * and belong to the same workspace. Throws a 400 naming the problem.
  */
-export function assertGatewayForWorkspace(gatewayId, workspaceId) {
+export async function assertGatewayForWorkspace(gatewayId, workspaceId) {
   if (!gatewayId) return null
-  const gateway = getSshGateway(gatewayId)
+  const gateway = await getSshGateway(gatewayId)
   if (!gateway || gateway.workspaceId !== workspaceId) throw invalid('That SSH host is not part of this workspace.')
   return gateway
 }
@@ -315,10 +320,10 @@ export function assertGatewayForWorkspace(gatewayId, workspaceId) {
 // ---- Connecting ----
 
 // The ssh2 `connect()` options for a gateway: who to log in as and how.
-export function gatewayConnectConfig(gateway) {
+export async function gatewayConnectConfig(gateway) {
   const base = { host: gateway.host, port: gateway.port || 22, username: gateway.username }
-  if (gateway.auth === 'password') return { ...base, password: sealed(gatewayRow(gateway.id)).password || '' }
-  const secrets = sealed(keyRow(gateway.keyId))
+  if (gateway.auth === 'password') return { ...base, password: sealed(await gatewayRow(gateway.id)).password || '' }
+  const secrets = sealed(await keyRow(gateway.keyId))
   if (!secrets.privateKey) throw Object.assign(new Error('The SSH key this SSH host uses no longer exists.'), { sshReason: true })
   return { ...base, privateKey: secrets.privateKey, passphrase: secrets.passphrase || undefined }
 }
@@ -391,7 +396,7 @@ export function sshError(error, gateway, phase, target) {
 // dials host:port itself when there is none).
 async function transportSocket(gateway) {
   if (gateway.transport !== 'cloudflare') return undefined
-  const secrets = sealed(gatewayRow(gateway.id))
+  const secrets = sealed(await gatewayRow(gateway.id))
   try {
     return await openAccessStream({
       hostname: gateway.host,
@@ -409,7 +414,7 @@ async function transportSocket(gateway) {
  * Resolves the ready ssh2 Client; rejects with an `sshError`.
  */
 export async function connectGateway(gateway) {
-  const config = gatewayConnectConfig(gateway)
+  const config = await gatewayConnectConfig(gateway)
   const sock = await transportSocket(gateway)
   return new Promise((resolve, reject) => {
     const client = new Client()
@@ -417,8 +422,12 @@ export async function connectGateway(gateway) {
     let seen = null
     client
       .on('ready', () => {
-        if (seen && !gateway.hostFingerprint) pinHostFingerprint(gateway.id, seen)
-        resolve(client)
+        // Pinned before resolving, so whoever asked for the session (a test
+        // reporting the key, a tunnel) reads the key it just learned.
+        const pinning = seen && !gateway.hostFingerprint ? pinHostFingerprint(gateway.id, seen) : Promise.resolve()
+        void pinning
+          .catch((e) => console.error('Pinning the SSH host key failed:', e.message))
+          .then(() => resolve(client))
       })
       .on('error', (error) => {
         sock?.destroy()
@@ -451,7 +460,7 @@ export async function testSshGateway(gateway) {
   let client
   try {
     client = await connectGateway(gateway)
-    const pinned = getSshGateway(gateway.id)?.hostFingerprint
+    const pinned = (await getSshGateway(gateway.id))?.hostFingerprint
     return { ok: true, message: `Logged in to ${gateway.host} as ${gateway.username}.`, hostFingerprint: pinned }
   } catch (error) {
     return { ok: false, message: error.message, hint: error.hint }

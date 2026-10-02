@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import test from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 import Database from 'better-sqlite3'
-import { migrate, LATEST_VERSION } from '../server/migrations.js'
+import { migrate, LATEST_VERSION } from '../server/migrator/legacy/sqlite.js'
 import { postgresSql } from '../server/postgres-sql.js'
 
 test('metadata SQL translation keeps bound values and quoted question marks', () => {
@@ -15,14 +15,15 @@ test('metadata SQL translation keeps bound values and quoted question marks', ()
 
 test('PostgreSQL metadata initializes, matches SQLite columns, and rolls back writes',
   { skip: !process.env.PG_META_TEST_URL }, async () => {
-    const { PostgresMeta, migratePostgres } = await import('../server/postgres-meta.js')
+    const { PostgresMeta } = await import('../server/postgres-meta.js')
+    const { migratePostgres } = await import('../server/migrator/legacy/postgresql.js')
     const schema = `tabletsgo_test_${randomUUID().replaceAll('-', '')}`
     const pg = new PostgresMeta(process.env.PG_META_TEST_URL)
     const sqlite = new Database(':memory:')
     try {
       pg.exec(`CREATE SCHEMA "${schema}"`)
       pg.exec(`SET search_path TO "${schema}"`)
-      assert.deepEqual(migratePostgres(pg), { from: 0, applied: [LATEST_VERSION] })
+      assert.equal(migratePostgres(pg).applied.at(-1), LATEST_VERSION)
       assert.deepEqual(migratePostgres(pg), { from: LATEST_VERSION, applied: [] })
       migrate(sqlite, { encryptSecret: (x) => x, encryptAppSetting: (x) => x })
       for (const { name } of sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all()) {

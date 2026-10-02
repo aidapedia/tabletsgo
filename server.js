@@ -6,7 +6,7 @@
  * module under server/:
  *
  *   db/           the engine-agnostic database layer (sqlite | postgres | redis)
- *   meta.js       the app's own SQLite/PostgreSQL store; migrations.js evolves SQLite
+ *   meta.js       the app's own SQLite/PostgreSQL store; migrator/ evolves its schema
  *   auth.js       sessions, guards, workspace/connection access rules
  *   connections.js  connection records (credentials encrypted at rest)
  *   folders.js    the polymorphic folder tree
@@ -43,9 +43,10 @@ import {
   PORT,
   SCHEDULER_ENABLED,
 } from './server/config.js'
-import { meta, initMetaDb } from './server/meta.js'
+import { backupMeta, checkMetaIntegrity, closeMeta, db as meta, seedAdminFromEnv, transaction } from './server/meta.js'
+import { assertMetaSchemaCurrent } from './server/migrator/index.js'
 import { sha256 } from './server/crypto.js'
-import { describeError, safeJson, sanitizeForKey } from './server/util.js'
+import { describeError, filterAsync, safeJson, sanitizeForKey } from './server/util.js'
 import {
   authUser,
   baseUrl,
@@ -94,6 +95,7 @@ import {
   deleteRole,
   getRole,
   listRoles,
+  loadPolicy,
   roleExists,
   roleGrantableOn,
   roleUsageCounts,
@@ -101,7 +103,7 @@ import {
 } from './server/permissions.js'
 import { CUSTOM_NODE_TYPES } from './server/permissions-catalog.js'
 import {
-  LOCK_COLUMNS,
+  LOCK_FIELDS,
   clearFailures,
   loginRefusal,
   recordFailure,
@@ -264,15 +266,42 @@ import {
 } from './server/system-update.js'
 
 const app = express()
+
+// Express 4 ignores the promise an async handler returns, so a rejection would
+// leave the request hanging. Hand it to the error handler at the bottom of this
+// file instead. (Four-argument functions are error handlers; one-argument
+// `app.get(name)` is the settings getter.)
+const forwardRejections = (handler) =>
+  typeof handler !== 'function' || handler.length === 4
+    ? handler
+    : (req, res, next) => {
+        const result = handler(req, res, next)
+        if (typeof result?.catch === 'function') result.catch(next)
+      }
+for (const method of ['use', 'get', 'post', 'put', 'patch', 'delete']) {
+  const register = app[method].bind(app)
+  app[method] = (...args) => (method === 'get' && args.length === 1 ? register(...args) : register(...args.map(forwardRejections)))
+}
+
 app.use(cors())
 app.use(express.json({ limit: '10mb' }))
-// Resolve the bearer token once per request (the session store is async, the
-// ~100 `requireAuth` call sites are not — see server/auth.js).
+// Resolve the bearer token once per request and park the user on `req`, so
+// `requireAuth` stays a synchronous read (see server/auth.js).
 app.use(sessionMiddleware)
 
-// Boot readiness — flipped true once the meta DB's migrations are done.
+// Boot readiness — flipped true once the meta DB is known to be current. The
+// app never migrates: `npm run migrate` (the compose `migrate` service) runs
+// first, and a stale schema stops the boot here with that instruction.
 let bootReady = false
-initMetaDb()
+try {
+  assertMetaSchemaCurrent()
+} catch (e) {
+  console.error(`❌ ${e.message}`)
+  process.exit(1)
+}
+// The role policy is read once here; every permission check reads it from memory.
+await loadPolicy()
+await seedAdminFromEnv()
 bootReady = true
 
 // The database/schema a request is aimed at. Every db layer call takes one, and
@@ -323,21 +352,24 @@ const lockRow = (lock) => ({ locked_at: lock.lockedAt, locked_until: lock.locked
 // counted and gets the same generic answer as a wrong password.
 app.post('/api/auth/login', async (req, res) => {
   const { username, password } = req.body || {}
-  const row = meta
-    .prepare(`SELECT id, username, name, role, status, password_hash, ${LOCK_COLUMNS} FROM users WHERE username = ?`)
-    .get(username)
+  const row = username
+    ? await meta().users.findUnique({
+        where: { username: String(username) },
+        select: { id: true, username: true, name: true, role: true, status: true, password_hash: true, ...LOCK_FIELDS },
+      })
+    : null
   if (row) {
-    const refusal = loginRefusal(row)
+    const refusal = await loginRefusal(row)
     if (refusal) return res.status(refusal.status).json(refusal.body)
   }
   if (!row || row.status === 'pending' || row.password_hash !== sha256(password)) {
     if (row && row.status !== 'pending') {
-      const lock = recordFailure(row)
-      if (lock) return res.status(423).json(loginRefusal({ ...row, ...lockRow(lock) }).body)
+      const lock = await recordFailure(row)
+      if (lock) return res.status(423).json((await loginRefusal({ ...row, ...lockRow(lock) })).body)
     }
     return res.status(401).json({ error: 'Invalid email or password' })
   }
-  clearFailures(row.id)
+  await clearFailures(row.id)
   res.json({ user: publicUser(row), token: await createSession(row.id, sessionContext(req)) })
 })
 
@@ -355,20 +387,20 @@ app.post('/api/auth/logout', async (req, res) => {
 // editable here — changing it is an admin action.
 
 // The caller's own profile, re-read from the DB (the client caches it).
-app.get('/api/auth/me', (req, res) => {
+app.get('/api/auth/me', async (req, res) => {
   const user = requireAuth(req, res)
   if (!user) return
   res.json({ user: publicUser(user) })
 })
 
 // Rename yourself. Name is the only self-editable profile field.
-app.patch('/api/auth/profile', (req, res) => {
+app.patch('/api/auth/profile', async (req, res) => {
   const user = requireAuth(req, res)
   if (!user) return
   const name = (req.body?.name ?? '').trim()
   if (!name) return res.status(400).json({ error: 'A name is required.' })
-  updateUser(user.id, { name })
-  res.json({ user: publicUser(userRow(user.id)) })
+  await updateUser(user.id, { name })
+  res.json({ user: publicUser(await userRow(user.id)) })
 })
 
 // Change your own password. The current password is required — a session token
@@ -384,27 +416,27 @@ app.post('/api/auth/password', async (req, res) => {
   if (!currentPassword || !newPassword) {
     return res.status(400).json({ error: 'Both your current and new password are required.' })
   }
-  if (!verifyPassword(user.id, currentPassword)) {
+  if (!(await verifyPassword(user.id, currentPassword))) {
     return res.status(400).json({ error: 'Your current password is incorrect.' })
   }
   if (currentPassword === newPassword) {
     return res.status(400).json({ error: 'The new password must be different from the current one.' })
   }
-  updateUser(user.id, { password: newPassword })
+  await updateUser(user.id, { password: newPassword })
   await destroyAuthSessionsForUser(user.id)
-  res.json({ user: publicUser(userRow(user.id)), token: await createSession(user.id, sessionContext(req)) })
+  res.json({ user: publicUser(await userRow(user.id)), token: await createSession(user.id, sessionContext(req)) })
 })
 
 // Request a password reset. Always 200 — never reveal whether the email exists.
 // When SMTP is available the reset link is emailed; the link is never returned.
 app.post('/api/auth/forgot', async (req, res) => {
   const email = (req.body?.email || '').trim().toLowerCase()
-  const user = email ? meta.prepare('SELECT id, username, status FROM users WHERE username = ?').get(email) : null
+  const user = email ? await meta().users.findUnique({ where: { username: email }, select: { id: true, status: true } }) : null
   if (user && user.status !== 'pending') {
     const token = randomUUID()
     const expires = Date.now() + 60 * 60 * 1000 // 1 hour
-    meta.prepare('UPDATE users SET reset_token = ?, reset_expires = ? WHERE id = ?').run(token, expires, user.id)
-    const cfg = smtpConfig()
+    await meta().users.update({ where: { id: user.id }, data: { reset_token: token, reset_expires: expires } })
+    const cfg = await smtpConfig()
     if (cfg) {
       try {
         await sendResetEmail(cfg, { to: email, link: `${baseUrl(req)}/reset/${token}` })
@@ -419,8 +451,8 @@ app.post('/api/auth/forgot', async (req, res) => {
 })
 
 // Validate a reset token (for the reset page).
-app.get('/api/auth/reset/:token', (req, res) => {
-  const u = meta.prepare('SELECT username, reset_expires FROM users WHERE reset_token = ?').get(req.params.token)
+app.get('/api/auth/reset/:token', async (req, res) => {
+  const u = await meta().users.findFirst({ where: { reset_token: req.params.token }, select: { username: true, reset_expires: true } })
   if (!u || (u.reset_expires && u.reset_expires < Date.now())) {
     return res.status(404).json({ error: 'This reset link is invalid or has expired.' })
   }
@@ -429,21 +461,22 @@ app.get('/api/auth/reset/:token', (req, res) => {
 
 // Set a new password, invalidate existing sessions, and log the user in.
 app.post('/api/auth/reset/:token', async (req, res) => {
-  const u = meta.prepare('SELECT id, reset_expires FROM users WHERE reset_token = ?').get(req.params.token)
+  const u = await meta().users.findFirst({ where: { reset_token: req.params.token }, select: { id: true, reset_expires: true } })
   if (!u || (u.reset_expires && u.reset_expires < Date.now())) {
     return res.status(404).json({ error: 'This reset link is invalid or has expired.' })
   }
   const { password } = req.body || {}
   if (!password) return res.status(400).json({ error: 'A password is required.' })
-  meta
-    .prepare("UPDATE users SET password_hash = ?, status = 'active', reset_token = NULL, reset_expires = NULL WHERE id = ?")
-    .run(sha256(password), u.id)
+  await meta().users.update({
+    where: { id: u.id },
+    data: { password_hash: sha256(password), status: 'active', reset_token: null, reset_expires: null },
+  })
   // Setting a new password through an emailed link proves control of the
   // mailbox, so it lifts a brute-force block as well — otherwise the one
   // self-service recovery path would dead-end at the login page.
-  clearFailures(u.id)
+  await clearFailures(u.id)
   await destroyAuthSessionsForUser(u.id) // sign out everywhere else
-  const user = meta.prepare('SELECT id, username, name, role FROM users WHERE id = ?').get(u.id)
+  const user = await userRow(u.id)
   res.json({ user: publicUser(user), token: await createSession(u.id, sessionContext(req)) })
 })
 
@@ -452,10 +485,10 @@ app.post('/api/auth/reset/:token', async (req, res) => {
 // system role (migrateToWorkspaces) has accounts but no admin, and the admin
 // area would otherwise be unreachable by everyone. `hasUsers` tells the wizard
 // which of its two shapes to render.
-app.get('/api/setup', (req, res) => {
+app.get('/api/setup', async (req, res) => {
   res.json({
-    needsSetup: countAdmins() === 0,
-    hasUsers: !!meta.prepare('SELECT 1 FROM users LIMIT 1').get(),
+    needsSetup: await countAdmins() === 0,
+    hasUsers: (await meta().users.count()) > 0,
   })
 })
 
@@ -469,58 +502,68 @@ app.get('/api/setup', (req, res) => {
 // — creating an admin out of nothing is reserved for a genuinely empty install,
 // so an adminless legacy instance can't be claimed by a passing stranger.
 app.post('/api/setup', async (req, res) => {
-  if (countAdmins() > 0) return res.status(403).json({ error: 'Setup has already been completed.' })
+  if (await countAdmins() > 0) return res.status(403).json({ error: 'Setup has already been completed.' })
   const email = (req.body?.email || '').trim()
   const { password, name } = req.body || {}
   if (!email || !password) return res.status(400).json({ error: 'Email and password are required.' })
 
-  if (meta.prepare('SELECT 1 FROM users LIMIT 1').get()) {
-    const existing = getUserByEmail(email)
-    if (!existing || existing.status === 'pending' || !verifyPassword(existing.id, password)) {
+  if ((await meta().users.count()) > 0) {
+    const existing = await getUserByEmail(email)
+    if (!existing || existing.status === 'pending' || !(await verifyPassword(existing.id, password))) {
       return res.status(401).json({ error: 'Invalid email or password' })
     }
     // Promotion drops every workspace membership, which can leave a legacy
     // workspace ownerless — recoverable, and only from here: the new admin
     // assigns an owner from the admin area (PUT /api/admin/workspaces/:id/members).
-    setSystemRole(existing.id, 'admin')
-    if (name?.trim()) updateUser(existing.id, { name: name.trim() })
+    await setSystemRole(existing.id, 'admin')
+    if (name?.trim()) await updateUser(existing.id, { name: name.trim() })
     // The sessions this account already holds were authorized for access it no
     // longer has — same reason the admin role-change route signs them out.
     await destroyAuthSessionsForUser(existing.id)
-    return res.json({ user: publicUser(userRow(existing.id)), token: await createSession(existing.id, sessionContext(req)) })
+    return res.json({ user: publicUser(await userRow(existing.id)), token: await createSession(existing.id, sessionContext(req)) })
   }
 
-  if (getUserByEmail(email)) return res.status(400).json({ error: 'That email already has an account.' })
-  const { user: created } = createUser({ email, name: name?.trim() || 'Admin', password, role: 'admin' })
-  res.json({ user: publicUser(userRow(created.id)), token: await createSession(created.id, sessionContext(req)) })
+  if (await getUserByEmail(email)) return res.status(400).json({ error: 'That email already has an account.' })
+  const { user: created } = await createUser({ email, name: name?.trim() || 'Admin', password, role: 'admin' })
+  res.json({ user: publicUser(await userRow(created.id)), token: await createSession(created.id, sessionContext(req)) })
 })
 
 // Validate an invite token → who it's for and which workspace.
-app.get('/api/invite/:token', (req, res) => {
-  const u = meta
-    .prepare('SELECT username, invite_workspace, token_expires FROM users WHERE invite_token = ?')
-    .get(req.params.token)
+app.get('/api/invite/:token', async (req, res) => {
+  const u = await meta().users.findFirst({
+    where: { invite_token: req.params.token },
+    select: { username: true, invite_workspace: true, token_expires: true },
+  })
   if (!u || (u.token_expires && u.token_expires < Date.now())) {
     return res.status(404).json({ error: 'This invite is invalid or has expired.' })
   }
-  const ws = meta.prepare('SELECT name FROM workspaces WHERE id = ?').get(u.invite_workspace)
+  const ws = await getWorkspaceRow(u.invite_workspace)
   res.json({ email: u.username, workspaceName: ws?.name || 'a workspace' })
 })
 
 // Accept an invite — set name + password, activate the account, log in.
 app.post('/api/invite/:token/accept', async (req, res) => {
-  const u = meta
-    .prepare('SELECT id, username, name, token_expires FROM users WHERE invite_token = ?')
-    .get(req.params.token)
+  const u = await meta().users.findFirst({
+    where: { invite_token: req.params.token },
+    select: { id: true, username: true, name: true, token_expires: true },
+  })
   if (!u || (u.token_expires && u.token_expires < Date.now())) {
     return res.status(404).json({ error: 'This invite is invalid or has expired.' })
   }
   const { name, password } = req.body || {}
   if (!password) return res.status(400).json({ error: 'A password is required.' })
-  meta
-    .prepare("UPDATE users SET password_hash = ?, name = ?, status = 'active', invite_token = NULL, invite_workspace = NULL, token_expires = NULL WHERE id = ?")
-    .run(sha256(password), name?.trim() || u.name || u.username, u.id)
-  const user = meta.prepare('SELECT id, username, name, role FROM users WHERE id = ?').get(u.id)
+  await meta().users.update({
+    where: { id: u.id },
+    data: {
+      password_hash: sha256(password),
+      name: name?.trim() || u.name || u.username,
+      status: 'active',
+      invite_token: null,
+      invite_workspace: null,
+      token_expires: null,
+    },
+  })
+  const user = await userRow(u.id)
   res.json({ user: publicUser(user), token: await createSession(u.id, sessionContext(req)) })
 })
 
@@ -540,7 +583,7 @@ app.use('/api/admin', (req, res, next) => {
 
 // ---- Workspaces ----
 
-app.get('/api/admin/workspaces', (_req, res) => res.json(listAllWorkspaces()))
+app.get('/api/admin/workspaces', async (_req, res) => res.json(await listAllWorkspaces()))
 
 // Create a workspace and hand it to someone. `ownerEmail` must name an account
 // that already exists — creating a person as a side effect of creating a
@@ -554,23 +597,23 @@ app.post('/api/admin/workspaces', async (req, res) => {
   if (!name) return res.status(400).json({ error: 'Workspace name is required.' })
   if (!ownerEmail) return res.status(400).json({ error: 'An owner email is required — a workspace needs someone to run it.' })
 
-  const owner = getUserByEmail(ownerEmail)
+  const owner = await getUserByEmail(ownerEmail)
   if (!owner) {
     return res.status(400).json({ error: 'No account with that email — create the user first, then assign them.' })
   }
   if (isSystemAdmin(owner)) {
     return res.status(400).json({ error: 'That account administers the instance and cannot own a workspace.' })
   }
-  const ws = createWorkspaceRow(name)
+  const ws = await createWorkspaceRow(name)
   let inviteLink = null
   if (owner.status === 'pending') {
-    inviteLink = `${baseUrl(req)}/invite/${issueInviteToken(owner.id, ws.id)}`
+    inviteLink = `${baseUrl(req)}/invite/${await issueInviteToken(owner.id, ws.id)}`
   }
-  addWorkspaceMember(ws.id, owner.id, 'owner')
+  await addWorkspaceMember(ws.id, owner.id, 'owner')
 
   let emailed = false
   if (inviteLink) {
-    const cfg = smtpConfig()
+    const cfg = await smtpConfig()
     if (cfg) {
       try {
         await sendInviteEmail(cfg, { to: ownerEmail, workspaceName: ws.name, link: inviteLink })
@@ -583,55 +626,55 @@ app.post('/api/admin/workspaces', async (req, res) => {
   res.json({ workspace: { ...ws, memberCount: 1, groupCount: 0, connectionCount: 0 }, inviteLink, emailed })
 })
 
-app.put('/api/admin/workspaces/:id', (req, res) => {
-  if (!getWorkspaceRow(req.params.id)) return res.status(404).json({ error: 'Workspace not found' })
+app.put('/api/admin/workspaces/:id', async (req, res) => {
+  if (!(await getWorkspaceRow(req.params.id))) return res.status(404).json({ error: 'Workspace not found' })
   const name = (req.body?.name || '').trim()
   if (!name) return res.status(400).json({ error: 'Workspace name is required.' })
-  renameWorkspace(req.params.id, name)
+  await renameWorkspace(req.params.id, name)
   res.json({ ok: true, name })
 })
 
 app.delete('/api/admin/workspaces/:id', async (req, res) => {
-  if (!getWorkspaceRow(req.params.id)) return res.status(404).json({ error: 'Workspace not found' })
+  if (!(await getWorkspaceRow(req.params.id))) return res.status(404).json({ error: 'Workspace not found' })
   const removed = await dropWorkspace(req.params.id)
   res.json({ ok: true, connectionsDeleted: removed.length })
 })
 
 // The membership list, so an admin can see and change who owns a workspace
 // without joining it.
-app.get('/api/admin/workspaces/:id/members', (req, res) => {
-  if (!getWorkspaceRow(req.params.id)) return res.status(404).json({ error: 'Workspace not found' })
-  res.json(listWorkspaceMembers(req.params.id))
+app.get('/api/admin/workspaces/:id/members', async (req, res) => {
+  if (!(await getWorkspaceRow(req.params.id))) return res.status(404).json({ error: 'Workspace not found' })
+  res.json(await listWorkspaceMembers(req.params.id))
 })
 
 // Grant or revoke ownership. This is the admin's lever over a workspace they
 // can't enter: it can rescue one whose owners have all left.
-app.put('/api/admin/workspaces/:id/members/:userId', (req, res) => {
-  if (!getWorkspaceRow(req.params.id)) return res.status(404).json({ error: 'Workspace not found' })
+app.put('/api/admin/workspaces/:id/members/:userId', async (req, res) => {
+  if (!(await getWorkspaceRow(req.params.id))) return res.status(404).json({ error: 'Workspace not found' })
   const role = req.body?.role
   if (!roleExists(role)) return res.status(400).json({ error: 'Unknown role.' })
-  const target = userRow(req.params.userId)
+  const target = await userRow(req.params.userId)
   if (!target) return res.status(404).json({ error: 'User not found' })
   if (isSystemAdmin(target)) return res.status(400).json({ error: 'An instance admin cannot belong to a workspace.' })
 
-  const current = memberRole(req.params.id, req.params.userId)
-  if (!isMember(req.params.id, req.params.userId)) addWorkspaceMember(req.params.id, req.params.userId, role)
+  const current = await memberRole(req.params.id, req.params.userId)
+  if (!(await isMember(req.params.id, req.params.userId))) await addWorkspaceMember(req.params.id, req.params.userId, role)
   else {
-    if (isOwnerRole(current) && !isOwnerRole(role) && countOwners(req.params.id) <= 1) {
+    if (isOwnerRole(current) && !isOwnerRole(role) && await countOwners(req.params.id) <= 1) {
       return res.status(400).json({ error: 'The workspace needs at least one owner.' })
     }
-    setWorkspaceMemberRole(req.params.id, req.params.userId, role)
+    await setWorkspaceMemberRole(req.params.id, req.params.userId, role)
   }
   res.json({ ok: true, role })
 })
 
-app.delete('/api/admin/workspaces/:id/members/:userId', (req, res) => {
-  const current = memberRole(req.params.id, req.params.userId)
-  if (!isMember(req.params.id, req.params.userId)) return res.status(404).json({ error: 'Member not found' })
-  if (isOwnerRole(current) && countOwners(req.params.id) <= 1) {
+app.delete('/api/admin/workspaces/:id/members/:userId', async (req, res) => {
+  const current = await memberRole(req.params.id, req.params.userId)
+  if (!(await isMember(req.params.id, req.params.userId))) return res.status(404).json({ error: 'Member not found' })
+  if (isOwnerRole(current) && await countOwners(req.params.id) <= 1) {
     return res.status(400).json({ error: 'The workspace needs at least one owner.' })
   }
-  removeWorkspaceMember(req.params.id, req.params.userId)
+  await removeWorkspaceMember(req.params.id, req.params.userId)
   res.json({ ok: true })
 })
 
@@ -643,13 +686,13 @@ app.delete('/api/admin/workspaces/:id/members/:userId', (req, res) => {
 
 // The permission catalog: everything a role can be given, grouped for the editor.
 // It comes from code, not the DB, so the UI can only offer what a route enforces.
-app.get('/api/admin/permissions', (_req, res) => res.json(PERMISSIONS))
+app.get('/api/admin/permissions', async (_req, res) => res.json(PERMISSIONS))
 
-app.post('/api/admin/roles', (req, res) => {
+app.post('/api/admin/roles', async (req, res) => {
   const name = (req.body?.name || '').trim()
   if (!name) return res.status(400).json({ error: 'A role name is required.' })
   res.json(
-    createRole({
+    await createRole({
       name,
       description: req.body?.description || '',
       permissions: req.body?.permissions || [],
@@ -661,58 +704,58 @@ app.post('/api/admin/roles', (req, res) => {
 
 // Rename a role or change what it grants. The slug is fixed at creation because
 // memberships store it, so a rename never touches a single membership row.
-app.put('/api/admin/roles/:slug', (req, res) => {
+app.put('/api/admin/roles/:slug', async (req, res) => {
   if (!roleExists(req.params.slug)) return res.status(404).json({ error: 'Role not found' })
   const { name, description, permissions, appliesTo } = req.body || {}
   if (name !== undefined && !String(name).trim()) return res.status(400).json({ error: 'A role name is required.' })
   // `appliesTo` is three-valued (see updateRole): absent leaves the criteria
   // alone, null widens them to any node type, an array narrows them.
-  res.json(updateRole(req.params.slug, { name, description, permissions, appliesTo }))
+  res.json(await updateRole(req.params.slug, { name, description, permissions, appliesTo }))
 })
 
 // Delete a custom role. Refused while anyone holds it — those memberships would
 // silently fail closed to no access — and builtins are never deletable.
-app.delete('/api/admin/roles/:slug', (req, res) => {
+app.delete('/api/admin/roles/:slug', async (req, res) => {
   const role = getRole(req.params.slug)
   if (!role) return res.status(404).json({ error: 'Role not found' })
   if (role.builtin) return res.status(400).json({ error: 'A built-in role cannot be deleted.' })
   // Memberships *and* tree grants — either one would fail closed to no access.
-  const inUse = countRoleUsage(req.params.slug)
+  const inUse = await countRoleUsage(req.params.slug)
   if (inUse) return res.status(409).json({ error: `${inUse} member${inUse === 1 ? '' : 's'} or grant${inUse === 1 ? '' : 's'} still hold this role.`, inUse })
-  deleteRole(req.params.slug)
+  await deleteRole(req.params.slug)
   res.json({ ok: true })
 })
 
 // ---- Users ----
 
-app.get('/api/admin/users', (_req, res) => res.json(listUsers()))
+app.get('/api/admin/users', async (_req, res) => res.json(await listUsers()))
 
 // Create an account. With a password it's usable immediately; without one it's
 // pending and the returned invite link is how they set theirs.
-app.post('/api/admin/users', (req, res) => {
+app.post('/api/admin/users', async (req, res) => {
   const email = (req.body?.email || '').trim().toLowerCase()
   const { name, password, role } = req.body || {}
   if (!email) return res.status(400).json({ error: 'Email is required.' })
-  if (getUserByEmail(email)) return res.status(400).json({ error: 'That email already has an account.' })
-  const { user: created, inviteToken } = createUser({ email, name: name?.trim(), password, role })
+  if (await getUserByEmail(email)) return res.status(400).json({ error: 'That email already has an account.' })
+  const { user: created, inviteToken } = await createUser({ email, name: name?.trim(), password, role })
   res.json({ user: created, inviteLink: inviteToken ? `${baseUrl(req)}/invite/${inviteToken}` : null })
 })
 
 // Rename, reset a password, or move between the two system roles. Promoting to
 // admin drops every workspace membership the account had (server/users.js).
 app.put('/api/admin/users/:id', async (req, res) => {
-  const target = userRow(req.params.id)
+  const target = await userRow(req.params.id)
   if (!target) return res.status(404).json({ error: 'User not found' })
   const { name, password, role } = req.body || {}
   if (role !== undefined && !SYSTEM_ROLES.includes(role)) return res.status(400).json({ error: "Role must be 'admin' or 'user'." })
-  if (role === 'user' && target.role === 'admin' && countAdmins() <= 1) {
+  if (role === 'user' && target.role === 'admin' && await countAdmins() <= 1) {
     return res.status(400).json({ error: 'The instance needs at least one admin.' })
   }
   // Promoting drops every workspace membership (an admin holds none), so it
   // would orphan any workspace this account is the last owner of. Same refusal
   // as deleting them — reassign ownership first.
   if (role === 'admin' && target.role !== 'admin') {
-    const orphaned = listUserSoleOwnerships(req.params.id)
+    const orphaned = await listUserSoleOwnerships(req.params.id)
     if (orphaned.length) {
       return res.status(409).json({
         error: `This account is the only owner of ${orphaned
@@ -722,33 +765,33 @@ app.put('/api/admin/users/:id', async (req, res) => {
       })
     }
   }
-  updateUser(req.params.id, { name: name?.trim(), password })
-  if (role !== undefined && role !== target.role) setSystemRole(req.params.id, role)
+  await updateUser(req.params.id, { name: name?.trim(), password })
+  if (role !== undefined && role !== target.role) await setSystemRole(req.params.id, role)
   // A changed password or a changed role invalidates what the open sessions
   // were authorized for — make them sign in again.
   if (password || (role !== undefined && role !== target.role)) await destroyAuthSessionsForUser(req.params.id)
-  res.json(getUser(req.params.id))
+  res.json(await getUser(req.params.id))
 })
 
 // Lift a brute-force block: clears the failed-attempt counter and lets the
 // account sign in again. The only way back in for a blocked account other than
 // a password reset — an admin is never blocked indefinitely, so this can't be
 // the door that locks itself.
-app.post('/api/admin/users/:id/unblock', (req, res) => {
-  const target = userRow(req.params.id)
+app.post('/api/admin/users/:id/unblock', async (req, res) => {
+  const target = await userRow(req.params.id)
   if (!target) return res.status(404).json({ error: 'User not found' })
-  unblockUser(req.params.id)
-  res.json(getUser(req.params.id))
+  await unblockUser(req.params.id)
+  res.json(await getUser(req.params.id))
 })
 
 app.delete('/api/admin/users/:id', async (req, res) => {
-  const target = userRow(req.params.id)
+  const target = await userRow(req.params.id)
   if (!target) return res.status(404).json({ error: 'User not found' })
   if (req.params.id === authUser(req).id) return res.status(400).json({ error: "You can't delete your own account." })
-  if (target.role === 'admin' && countAdmins() <= 1) return res.status(400).json({ error: 'The instance needs at least one admin.' })
+  if (target.role === 'admin' && await countAdmins() <= 1) return res.status(400).json({ error: 'The instance needs at least one admin.' })
   // Refuse to orphan a workspace — reassign its ownership first, so the deletion
   // can never quietly leave a workspace nobody can manage.
-  const orphaned = listUserSoleOwnerships(req.params.id)
+  const orphaned = await listUserSoleOwnerships(req.params.id)
   if (orphaned.length) {
     return res.status(409).json({
       error: `This account is the only owner of ${orphaned.map((w) => w.name).join(', ')}. Assign another owner first.`,
@@ -756,7 +799,7 @@ app.delete('/api/admin/users/:id', async (req, res) => {
     })
   }
   await destroyAuthSessionsForUser(req.params.id)
-  deleteUser(req.params.id)
+  await deleteUser(req.params.id)
   res.json({ ok: true })
 })
 
@@ -768,35 +811,35 @@ app.delete('/api/admin/users/:id', async (req, res) => {
 // docker-compose keeps working without an admin ever opening this page.
 // Deliberately admin-only: workspaces no longer configure their own.
 
-app.get('/api/admin/smtp', (_req, res) => {
+app.get('/api/admin/smtp', async (_req, res) => {
   // `env` is the layer under the saved config — shown so an admin can see what
   // docker-compose already configured (and pre-fill the form from it). Password
   // stripped, like every other config the API hands out.
   const env = envSmtp()
   res.json({
-    smtp: publicGlobalSmtp(),
+    smtp: await publicGlobalSmtp(),
     env: env ? { host: env.host, port: env.port || '587', secure: env.secure, user: env.user, from: env.from || env.user || '' } : null,
   })
 })
 
-app.put('/api/admin/smtp', (req, res) => {
+app.put('/api/admin/smtp', async (req, res) => {
   const { host, port, secure, user, from, pass } = req.body || {}
-  const saved = saveGlobalSmtp({ host, port, secure, user, from, pass })
+  const saved = await saveGlobalSmtp({ host, port, secure, user, from, pass })
   res.json({ smtp: saved })
 })
 
 // Drop the saved config — the instance falls back to the SMTP_* env vars, or
 // to no mail at all.
-app.delete('/api/admin/smtp', (_req, res) => {
-  clearGlobalSmtp()
-  res.json({ ok: true, smtp: publicGlobalSmtp() })
+app.delete('/api/admin/smtp', async (_req, res) => {
+  await clearGlobalSmtp()
+  res.json({ ok: true, smtp: await publicGlobalSmtp() })
 })
 
 // Test the unsaved form values (body.smtp) or, with none, whatever is in
 // effect instance-wide right now.
 app.post('/api/admin/smtp/test', async (req, res) => {
   const { to, smtp: overrides } = req.body || {}
-  const stored = smtpConfig()
+  const stored = await smtpConfig()
   let cfg
   if (overrides?.host) {
     const user = overrides.user || ''
@@ -831,9 +874,9 @@ app.post('/api/admin/smtp/test', async (req, res) => {
 //
 // `memberCount` rides along (one grouped query, not one per role) so the admin
 // list can show who is affected by an edit — and why a delete would be refused.
-app.get('/api/roles', (req, res) => {
+app.get('/api/roles', async (req, res) => {
   if (!requireAuth(req, res)) return
-  const usage = roleUsageCounts()
+  const usage = await roleUsageCounts()
   res.json(
     listRoles().map((r) => ({
       ...r,
@@ -846,35 +889,37 @@ app.get('/api/roles', (req, res) => {
 })
 
 // Workspaces the caller belongs to.
-app.get('/api/workspaces', (req, res) => {
+app.get('/api/workspaces', async (req, res) => {
   const user = requireAuth(req, res)
   if (!user) return
-  const rows = membershipsOf(user.id)
+  const rows = await membershipsOf(user.id)
   // Beta experiment flags + notification prefs ship in the list response (not
   // just the detail route) so nav-level gating and this settings panel don't
   // go stale after a save that only refreshes via listWorkspaces().
   // `permissions` rides along for the same reason: every nav item and button
   // gated on a capability would otherwise flicker until the detail route lands.
   res.json(
-    rows.map((r) => {
-      const settings = safeJson(r.settings)
-      return {
-        id: r.id,
-        name: r.name,
-        role: r.role,
-        permissions: [...permissionsIn(r.id, user.id)],
-        createdAt: r.created_at,
-        experiments: settings.experiments || {},
-        notifications: settings.notifications || {},
-      }
-    })
+    await Promise.all(
+      rows.map(async (r) => {
+        const settings = safeJson(r.settings)
+        return {
+          id: r.id,
+          name: r.name,
+          role: r.role,
+          permissions: [...(await permissionsIn(r.id, user.id))],
+          createdAt: r.created_at,
+          experiments: settings.experiments || {},
+          notifications: settings.notifications || {},
+        }
+      })
+    )
   )
 })
 
 // Create a workspace — the caller becomes its owner. Instance admins don't go
 // through here (they'd become a member of it); they use POST /api/admin/workspaces,
 // which names someone else as the owner.
-app.post('/api/workspaces', (req, res) => {
+app.post('/api/workspaces', async (req, res) => {
   const user = requireAuth(req, res)
   if (!user) return
   if (isSystemAdmin(user)) {
@@ -882,16 +927,16 @@ app.post('/api/workspaces', (req, res) => {
   }
   const { name } = req.body || {}
   if (!name?.trim()) return res.status(400).json({ error: 'Workspace name is required.' })
-  const ws = createWorkspaceRow(name.trim(), { ownerId: user.id })
+  const ws = await createWorkspaceRow(name.trim(), { ownerId: user.id })
   res.json({ ...ws, role: 'owner' })
 })
 
-app.get('/api/workspaces/:id', (req, res) => {
+app.get('/api/workspaces/:id', async (req, res) => {
   const user = requireAuth(req, res)
   if (!user) return
-  const ws = workspaceForUser(req.params.id, user.id)
+  const ws = await workspaceForUser(req.params.id, user.id)
   if (!ws) return res.status(404).json({ error: 'Workspace not found' })
-  const row = meta.prepare('SELECT settings FROM workspaces WHERE id = ?').get(req.params.id)
+  const row = await getWorkspaceRow(req.params.id)
   const settings = safeJson(row?.settings)
   // Beta experiment flags — visible to every member (they gate what the whole
   // workspace sees, e.g. the S3/Backup nav item), toggleable by admins only
@@ -909,7 +954,7 @@ app.get('/api/workspaces/:id', (req, res) => {
   // here: SMTP is instance-level, configured by an admin at /api/admin/smtp.
   // Null when the instance has none, which is what the Notification tab uses to
   // warn that invites can only be shared as links.
-  if (ws.role === 'owner') ws.smtp = publicSmtpConfig()
+  if (ws.role === 'owner') ws.smtp = await publicSmtpConfig()
   res.json(ws)
 })
 
@@ -921,20 +966,20 @@ app.get('/api/workspaces/:id', (req, res) => {
  * and nothing else), so the body is checked field by field rather than the whole
  * route being gated on `workspace.manage`.
  */
-app.put('/api/workspaces/:id', (req, res) => {
+app.put('/api/workspaces/:id', async (req, res) => {
   const user = requireAuth(req, res)
   if (!user) return
   // No `smtp` here on purpose: the mail server is instance-level (admin-only).
   // An older client still sending one is ignored rather than rejected.
   const { name, experiments, notifications, sessions } = req.body || {}
   const needsManage = name?.trim() || experiments || sessions
-  if (needsManage && !requirePermission(req, res, req.params.id, 'workspace.manage')) return
-  if (notifications && !requirePermission(req, res, req.params.id, 'notifications.manage')) return
-  if (!needsManage && !notifications && !isMember(req.params.id, user.id)) return res.status(403).json({ error: 'Forbidden' })
+  if (needsManage && !(await requirePermission(req, res, req.params.id, 'workspace.manage'))) return
+  if (notifications && !(await requirePermission(req, res, req.params.id, 'notifications.manage'))) return
+  if (!needsManage && !notifications && !(await isMember(req.params.id, user.id))) return res.status(403).json({ error: 'Forbidden' })
 
-  const row = meta.prepare('SELECT settings FROM workspaces WHERE id = ?').get(req.params.id)
+  const row = await getWorkspaceRow(req.params.id)
   if (!row) return res.status(404).json({ error: 'Workspace not found' })
-  if (name?.trim()) meta.prepare('UPDATE workspaces SET name = ? WHERE id = ?').run(name.trim(), req.params.id)
+  if (name?.trim()) await meta().workspaces.update({ where: { id: req.params.id }, data: { name: name.trim() } })
   if (experiments || notifications || sessions) {
     const settings = safeJson(row.settings)
     if (experiments) settings.experiments = { ...(settings.experiments || {}), ...experiments }
@@ -951,16 +996,16 @@ app.put('/api/workspaces/:id', (req, res) => {
         }
       }
     }
-    meta.prepare('UPDATE workspaces SET settings = ? WHERE id = ?').run(JSON.stringify(settings), req.params.id)
+    await meta().workspaces.update({ where: { id: req.params.id }, data: { settings: JSON.stringify(settings) } })
   }
   res.json({ ok: true })
 })
 
 // Delete a workspace and everything scoped to it. Never the caller's last one.
 app.delete('/api/workspaces/:id', async (req, res) => {
-  const user = requirePermission(req, res, req.params.id, 'workspace.delete')
+  const user = await requirePermission(req, res, req.params.id, 'workspace.delete')
   if (!user) return
-  const mine = membershipsOf(user.id).length
+  const mine = (await membershipsOf(user.id)).length
   if (mine <= 1) return res.status(400).json({ error: 'You must belong to at least one workspace.' })
   await dropWorkspace(req.params.id)
   res.json({ ok: true })
@@ -972,13 +1017,13 @@ app.delete('/api/workspaces/:id', async (req, res) => {
  * so a workspace never disappears while its pools stay open.
  */
 async function dropWorkspace(workspaceId) {
-  for (const conn of listConnections().filter((c) => c.workspaceId === workspaceId)) {
+  for (const conn of (await listConnections()).filter((c) => c.workspaceId === workspaceId)) {
     db.releaseConnection(conn)
     await endAllConnectionSessions(conn.id)
   }
   // The workspace's whole subtree goes with it — deleteWorkspaceCascade does it
   // inside the same transaction as the rest of the metadata.
-  return deleteWorkspaceCascade(workspaceId)
+  return await deleteWorkspaceCascade(workspaceId)
 }
 
 // ---- Resource tree ----
@@ -994,10 +1039,10 @@ async function dropWorkspace(workspaceId) {
 
 // May the caller do `permission` at this node? Returns the node, or null having
 // already sent the response — the same shape as the guards in server/auth.js.
-const requireNode = (req, res, nodeId, permission) => {
+const requireNode = async (req, res, nodeId, permission) => {
   const user = requireAuth(req, res)
   if (!user) return null
-  const node = getNode(nodeId)
+  const node = await getNode(nodeId)
   if (!node) {
     res.status(404).json({ error: 'Node not found' })
     return null
@@ -1005,13 +1050,13 @@ const requireNode = (req, res, nodeId, permission) => {
   if (isSystemAdmin(user)) return node
   if (!permission) {
     // A read: seeing the node at all is the permission.
-    if (!visibleTree(user).some((n) => n.id === node.id)) {
+    if (!(await visibleTree(user)).some((n) => n.id === node.id)) {
       res.status(403).json({ error: 'Forbidden' })
       return null
     }
     return node
   }
-  if (!permissionsAtNode(node, user.id).has(permission)) {
+  if (!(await permissionsAtNode(node, user.id)).has(permission)) {
     res.status(403).json({ error: 'You do not have permission to do that.', permission })
     return null
   }
@@ -1022,27 +1067,27 @@ const requireNode = (req, res, nodeId, permission) => {
 // carry `canOpen` because visibility and data access are different questions:
 // the tree shows you a connection exists, `connection_access` decides whether you
 // may open it.
-app.get('/api/resource-tree', (req, res) => {
+app.get('/api/resource-tree', async (req, res) => {
   const user = requireAuth(req, res)
   if (!user) return
   try {
-    const counts = memberCounts()
+    const counts = await memberCounts()
     const admin = isSystemAdmin(user)
-    const nodes = visibleTree(user).map((n) => ({
+    const nodes = await Promise.all((await visibleTree(user)).map(async (n) => ({
       ...n,
       owned: !!n.ownerId && n.ownerId === user.id,
       // Groups are principals, so their size is part of reading the tree — it is
       // how many people a grant to this group actually reaches.
       memberCount: n.kind === 'group' ? counts.get(n.id) || 0 : undefined,
-      canOpen: n.type === 'connection' ? userCanAccessConnection(getConnection(n.resourceId), user.id) : undefined,
+      canOpen: n.type === 'connection' ? await userCanAccessConnection(await getConnection(n.resourceId), user.id) : undefined,
       // Whether the caller may reorganise *here*: file a new group inside a
       // group, and re-file this node somewhere else. Resolved at the node, like
       // every other permission, so the tree can offer both exactly where the
       // request would succeed instead of finding out by being refused. Answered
       // for resources too — a connection is the thing you most often move, and
       // the move guard asks at the node being moved, not at its parent.
-      canOrganise: admin || permissionsAtNode(n, user.id).has('resources.organise'),
-    }))
+      canOrganise: admin || (await permissionsAtNode(n, user.id)).has('resources.organise'),
+    })))
     res.json(nodes)
   } catch (error) {
     console.error('resource-tree error:', error.message)
@@ -1052,7 +1097,7 @@ app.get('/api/resource-tree', (req, res) => {
 
 // What the tree is made of, and which roles may be granted where — so the grant
 // editor never offers a choice the server would refuse.
-app.get('/api/resource-tree/catalog', (req, res) => {
+app.get('/api/resource-tree/catalog', async (req, res) => {
   if (!requireAuth(req, res)) return
   res.json({
     nodeTypes: NODE_TYPES,
@@ -1084,27 +1129,27 @@ app.get('/api/resource-tree/catalog', (req, res) => {
  * `userCanAccessConnection`. Same reason, and the same `canOpen` field, as the
  * tree route above.
  */
-const resolvedPeople = (node) => {
-  const people = peopleAtNode(node)
+const resolvedPeople = async (node) => {
+  const people = await peopleAtNode(node)
   if (node.type !== 'connection') return people
-  const conn = getConnection(node.resourceId)
-  return people.map((p) => ({ ...p, canOpen: userCanAccessConnection(conn, p.userId) }))
+  const conn = await getConnection(node.resourceId)
+  return Promise.all(people.map(async (p) => ({ ...p, canOpen: await userCanAccessConnection(conn, p.userId) })))
 }
 
 // One node in full: where it sits, what's in it, who has been granted what, and
 // what the caller themselves may do here.
-app.get('/api/resource-tree/:id', (req, res) => {
+app.get('/api/resource-tree/:id', async (req, res) => {
   const user = requireAuth(req, res)
   if (!user) return
-  const node = requireNode(req, res, req.params.id, null)
+  const node = await requireNode(req, res, req.params.id, null)
   if (!node) return
-  const mine = isSystemAdmin(user) ? [...PERMISSION_KEYS] : [...permissionsAtNode(node, user.id)]
+  const mine = isSystemAdmin(user) ? [...PERMISSION_KEYS] : [...await permissionsAtNode(node, user.id)]
 
   // The tree already decided what this person may see; the detail payload has to
   // give the same answer, because `childrenOf` is the raw hierarchy. At the
   // application root that is *every workspace on the instance* — which a caller
   // reaches whenever a node they do hold something in sits underneath it.
-  const seen = visibleTree(user)
+  const seen = await visibleTree(user)
   const visible = new Set(seen.map((n) => n.id))
   // Scaffolding: in the payload only so what's underneath has a path to the root.
   // They hold nothing here, so who else was granted what — and who is in it — is
@@ -1114,26 +1159,26 @@ app.get('/api/resource-tree/:id', (req, res) => {
   res.json({
     node,
     context,
-    ancestors: chainOf(node).slice(0, -1).filter((a) => visible.has(a.id)),
-    children: childrenOf(node.id).filter((c) => visible.has(c.id)),
-    grants: context ? [] : listGrants(node.id),
-    members: node.kind === 'group' && !context ? listNodeMembers(node.id) : undefined,
+    ancestors: (await chainOf(node)).slice(0, -1).filter((a) => visible.has(a.id)),
+    children: (await childrenOf(node.id)).filter((c) => visible.has(c.id)),
+    grants: context ? [] : await listGrants(node.id),
+    members: node.kind === 'group' && !context ? await listNodeMembers(node.id) : undefined,
     // Everyone who can actually reach this node, and why. `grants` is only what
     // was granted *here*; this resolves the ancestors, the inherited grants and
     // the group rosters too, so access the node never mentions cannot hide. On a
     // connection each person also carries `canOpen` — see `resolvedPeople`.
     // Blanked for scaffolding for the same reason grants are: they hold nothing
     // here, so who else does is not theirs to read.
-    people: context ? [] : resolvedPeople(node),
+    people: context ? [] : await resolvedPeople(node),
     permissions: mine,
-    owner: node.ownerId ? publicUser(userRow(node.ownerId)) : null,
+    owner: node.ownerId ? publicUser(await userRow(node.ownerId)) : null,
   })
 })
 
 // Create a group — the one node type made by hand. Everything else appears
 // because its resource was created.
-app.post('/api/resource-tree/:id/groups', (req, res) => {
-  const parent = requireNode(req, res, req.params.id, 'resources.organise')
+app.post('/api/resource-tree/:id/groups', async (req, res) => {
+  const parent = await requireNode(req, res, req.params.id, 'resources.organise')
   if (!parent) return
   // You own what you create — but only inside a subtree you already own, where
   // ownership is yours by cascade anyway and writing it down grants nothing new.
@@ -1141,21 +1186,21 @@ app.post('/api/resource-tree/:id/groups', (req, res) => {
   // and move a connection into it, inheriting every permission on that
   // connection: the move guard checks both ends, and both ends would be legal.
   const caller = authUser(req)
-  const ownerId = req.body?.ownerId || (ownsNode(parent, caller.id) ? caller.id : null)
-  const result = createGroupNode(parent.id, req.body?.name, { ownerId })
+  const ownerId = req.body?.ownerId || (await ownsNode(parent, caller.id) ? caller.id : null)
+  const result = await createGroupNode(parent.id, req.body?.name, { ownerId })
   if (result.error) return res.status(400).json({ error: result.error })
   res.json(result.node)
 })
 
 // Rename a node. Mirrored nodes are renamed by their own resource's route, so
 // this is refused for them rather than letting the two drift.
-app.put('/api/resource-tree/:id', (req, res) => {
-  const node = requireNode(req, res, req.params.id, 'resources.organise')
+app.put('/api/resource-tree/:id', async (req, res) => {
+  const node = await requireNode(req, res, req.params.id, 'resources.organise')
   if (!node) return
   if (!CUSTOM_NODE_TYPES.includes(node.type)) {
     return res.status(400).json({ error: `Rename the ${node.type} itself — its node follows automatically.` })
   }
-  const result = renameNode(node.id, req.body?.name)
+  const result = await renameNode(node.id, req.body?.name)
   if (result.error) return res.status(400).json({ error: result.error })
   res.json(result.node)
 })
@@ -1163,10 +1208,10 @@ app.put('/api/resource-tree/:id', (req, res) => {
 // Re-file a node under a different group. Needs `resources.organise` at both
 // ends: moving a connection out of a group you control and into one you don't
 // would otherwise be a way to grant yourself access to it.
-app.put('/api/resource-tree/:id/move', (req, res) => {
-  const node = requireNode(req, res, req.params.id, 'resources.organise')
+app.put('/api/resource-tree/:id/move', async (req, res) => {
+  const node = await requireNode(req, res, req.params.id, 'resources.organise')
   if (!node) return
-  const target = requireNode(req, res, req.body?.parentId, 'resources.organise')
+  const target = await requireNode(req, res, req.body?.parentId, 'resources.organise')
   if (!target) return
   // Re-filing a *connection* is a change to who may open the database, because a
   // group's roster can use what is filed under it (server/auth.js
@@ -1177,12 +1222,12 @@ app.put('/api/resource-tree/:id/move', (req, res) => {
   // still moves groups and everything else freely.
   const caller = authUser(req)
   if (node.type === 'connection' && !isSystemAdmin(caller)) {
-    const conn = getConnection(node.resourceId)
-    if (conn && conn.ownerId !== caller.id && !permissionsAtNode(node, caller.id).has('connections.manage')) {
+    const conn = await getConnection(node.resourceId)
+    if (conn && conn.ownerId !== caller.id && !(await permissionsAtNode(node, caller.id)).has('connections.manage')) {
       return res.status(403).json({ error: 'You need to own this connection to move it.' })
     }
   }
-  const result = moveNode(node.id, target.id)
+  const result = await moveNode(node.id, target.id)
   if (result.error) return res.status(400).json({ error: result.error })
   res.json(result.node)
 })
@@ -1190,17 +1235,17 @@ app.put('/api/resource-tree/:id/move', (req, res) => {
 // Hand a node over. Ownership cascades, so this is the strongest thing the tree
 // can do — only the current owner (who resolves to every permission here) or an
 // instance admin can.
-app.put('/api/resource-tree/:id/owner', (req, res) => {
+app.put('/api/resource-tree/:id/owner', async (req, res) => {
   const user = requireAuth(req, res)
   if (!user) return
-  const node = getNode(req.params.id)
+  const node = await getNode(req.params.id)
   if (!node) return res.status(404).json({ error: 'Node not found' })
-  const ownsIt = ownsNode(node, user.id)
+  const ownsIt = await ownsNode(node, user.id)
   if (!isSystemAdmin(user) && !ownsIt) return res.status(403).json({ error: 'Only the owner can hand this over.' })
 
   const ownerId = req.body?.ownerId || null
   if (ownerId) {
-    const target = userRow(ownerId)
+    const target = await userRow(ownerId)
     if (!target) return res.status(404).json({ error: 'User not found' })
     // An instance admin holds no membership anywhere by design; making one the
     // owner of a workspace node would hand them the data access that rule exists
@@ -1208,17 +1253,17 @@ app.put('/api/resource-tree/:id/owner', (req, res) => {
     if (target.role === 'admin' && node.type !== 'application') {
       return res.status(400).json({ error: 'An instance admin cannot own a workspace resource.' })
     }
-    if (node.workspaceId && !isMember(node.workspaceId, ownerId)) {
+    if (node.workspaceId && !(await isMember(node.workspaceId, ownerId))) {
       return res.status(400).json({ error: 'The new owner must be a member of this workspace.' })
     }
   }
-  res.json(setNodeOwner(node.id, ownerId))
+  res.json(await setNodeOwner(node.id, ownerId))
 })
 
 // Delete a group. What was filed inside it moves up rather than disappearing —
 // the resources still exist.
-app.delete('/api/resource-tree/:id', (req, res) => {
-  const node = requireNode(req, res, req.params.id, 'resources.organise')
+app.delete('/api/resource-tree/:id', async (req, res) => {
+  const node = await requireNode(req, res, req.params.id, 'resources.organise')
   if (!node) return
   if (!CUSTOM_NODE_TYPES.includes(node.type)) {
     return res.status(400).json({ error: `Delete the ${node.type} itself — its node goes with it.` })
@@ -1227,35 +1272,35 @@ app.delete('/api/resource-tree/:id', (req, res) => {
   // the user's call, not a silent reparent they never asked for. It also settles
   // by construction what `reparent` was there to prevent — a resource left with
   // no node, invisible in the tree and unanswerable by the resolver.
-  const inside = childrenOf(node.id)
+  const inside = await childrenOf(node.id)
   if (inside.length) {
     return res.status(409).json({
       error: `Move or delete the ${inside.length} item${inside.length === 1 ? '' : 's'} inside this group first.`,
       children: inside.map((n) => ({ id: n.id, name: n.name, type: n.type })),
     })
   }
-  const result = deleteNode(node.id)
+  const result = await deleteNode(node.id)
   if (result.error) return res.status(400).json({ error: result.error })
   res.json({ ok: true })
 })
 
 // ---- Grants on a node ----
 
-app.get('/api/resource-tree/:id/grants', (req, res) => {
-  const node = requireNode(req, res, req.params.id, null)
+app.get('/api/resource-tree/:id/grants', async (req, res) => {
+  const node = await requireNode(req, res, req.params.id, null)
   if (!node) return
-  res.json(listGrants(node.id))
+  res.json(await listGrants(node.id))
 })
 
 // Give a person or group a role here. The role's requirement criteria decide
 // whether it may be granted at this node type at all (server/permissions.js).
-app.post('/api/resource-tree/:id/grants', (req, res) => {
+app.post('/api/resource-tree/:id/grants', async (req, res) => {
   const user = requireAuth(req, res)
   if (!user) return
-  const node = requireNode(req, res, req.params.id, 'resources.grant')
+  const node = await requireNode(req, res, req.params.id, 'resources.grant')
   if (!node) return
   const { principalType, principalId, roleSlug, inherit } = req.body || {}
-  const result = addGrant(node.id, {
+  const result = await addGrant(node.id, {
     principalType,
     principalId,
     roleSlug,
@@ -1266,10 +1311,10 @@ app.post('/api/resource-tree/:id/grants', (req, res) => {
   res.json(result.grant)
 })
 
-app.delete('/api/resource-tree/:id/grants/:grantId', (req, res) => {
-  const node = requireNode(req, res, req.params.id, 'resources.grant')
+app.delete('/api/resource-tree/:id/grants/:grantId', async (req, res) => {
+  const node = await requireNode(req, res, req.params.id, 'resources.grant')
   if (!node) return
-  removeGrant(req.params.grantId)
+  await removeGrant(req.params.grantId)
   res.json({ ok: true })
 })
 
@@ -1281,11 +1326,11 @@ app.delete('/api/resource-tree/:id/grants/:grantId', (req, res) => {
 // grant list of the node they just reached. Tidying the tree must not carry that
 // power with it.
 
-app.get('/api/resource-tree/:id/members', (req, res) => {
-  const node = requireNode(req, res, req.params.id, null)
+app.get('/api/resource-tree/:id/members', async (req, res) => {
+  const node = await requireNode(req, res, req.params.id, null)
   if (!node) return
   if (node.kind !== 'group') return res.status(400).json({ error: 'Only a group holds people.' })
-  res.json(listNodeMembers(node.id))
+  res.json(await listNodeMembers(node.id))
 })
 
 // A workspace's roster *is* its membership, so it answers to `members.manage`;
@@ -1294,13 +1339,13 @@ app.get('/api/resource-tree/:id/members', (req, res) => {
 // are different powers, and a role may carry one without the other.
 const rosterPermission = (node) => (node.type === 'workspace' ? 'members.manage' : 'teams.manage')
 
-app.post('/api/resource-tree/:id/members', (req, res) => {
-  const node = requireNode(req, res, req.params.id, null)
+app.post('/api/resource-tree/:id/members', async (req, res) => {
+  const node = await requireNode(req, res, req.params.id, null)
   if (!node) return
-  if (!requireNode(req, res, req.params.id, rosterPermission(node))) return
+  if (!(await requireNode(req, res, req.params.id, rosterPermission(node)))) return
   const userId = req.body?.userId
   if (!userId) return res.status(400).json({ error: 'userId is required.' })
-  const target = userRow(userId)
+  const target = await userRow(userId)
   if (!target) return res.status(404).json({ error: 'User not found' })
   // An instance admin holds no workspace membership by design — that is what
   // keeps instance administration away from workspace data.
@@ -1308,69 +1353,69 @@ app.post('/api/resource-tree/:id/members', (req, res) => {
   // A group inside a workspace can only staff itself from that workspace's
   // members. The workspace node is the exception: its roster is where membership
   // begins, so requiring membership first would be circular.
-  if (node.type !== 'workspace' && node.workspaceId && !isMember(node.workspaceId, userId)) {
+  if (node.type !== 'workspace' && node.workspaceId && !(await isMember(node.workspaceId, userId))) {
     return res.status(400).json({ error: 'That person is not a member of this workspace.' })
   }
   if (node.type === 'workspace') {
     // Goes through the workspace module so the roster and the membership's grant
     // are written together, exactly as an invite would.
-    addWorkspaceMember(node.resourceId, userId, 'member')
+    await addWorkspaceMember(node.resourceId, userId, 'member')
     return res.json({ ok: true })
   }
-  const result = addNodeMember(node.id, userId)
+  const result = await addNodeMember(node.id, userId)
   if (result.error) return res.status(400).json({ error: result.error })
   res.json({ ok: true })
 })
 
-app.delete('/api/resource-tree/:id/members/:userId', (req, res) => {
-  const node = requireNode(req, res, req.params.id, null)
+app.delete('/api/resource-tree/:id/members/:userId', async (req, res) => {
+  const node = await requireNode(req, res, req.params.id, null)
   if (!node) return
-  const user = requireNode(req, res, req.params.id, rosterPermission(node))
+  const user = await requireNode(req, res, req.params.id, rosterPermission(node))
   if (!user) return
   if (node.type === 'workspace') {
     // Removing a workspace member is the full cascade (their grants, their group
     // seats, anything they owned inside), and it must not strand the workspace.
     if (req.params.userId === authUser(req).id) return res.status(400).json({ error: "You can't remove yourself." })
-    const role = memberRole(node.resourceId, req.params.userId)
-    if (role && isOwnerRole(role) && countOwners(node.resourceId) <= 1) {
+    const role = await memberRole(node.resourceId, req.params.userId)
+    if (role && isOwnerRole(role) && await countOwners(node.resourceId) <= 1) {
       return res.status(400).json({ error: 'The workspace needs at least one owner.' })
     }
-    removeWorkspaceMember(node.resourceId, req.params.userId)
+    await removeWorkspaceMember(node.resourceId, req.params.userId)
     return res.json({ ok: true })
   }
-  removeNodeMember(node.id, req.params.userId)
+  await removeNodeMember(node.id, req.params.userId)
   res.json({ ok: true })
 })
 
 // ---- Members ----
 
 // List a workspace's members (any member can view).
-app.get('/api/workspaces/:id/members', (req, res) => {
-  const user = requireMember(req, res, req.params.id)
+app.get('/api/workspaces/:id/members', async (req, res) => {
+  const user = await requireMember(req, res, req.params.id)
   if (!user) return
-  res.json(listWorkspaceMembers(req.params.id))
+  res.json(await listWorkspaceMembers(req.params.id))
 })
 
 // Move a member to a different role. Any role in the instance catalog is valid;
 // a workspace can have any number of owners but never zero, and an instance
 // admin can't be given a seat at all.
-app.put('/api/workspaces/:id/members/:userId', (req, res) => {
-  const user = requirePermission(req, res, req.params.id, 'members.manage')
+app.put('/api/workspaces/:id/members/:userId', async (req, res) => {
+  const user = await requirePermission(req, res, req.params.id, 'members.manage')
   if (!user) return
   const role = req.body?.role
   if (!roleExists(role)) return res.status(400).json({ error: 'Unknown role.' })
-  const current = memberRole(req.params.id, req.params.userId)
-  if (!isMember(req.params.id, req.params.userId)) return res.status(404).json({ error: 'Member not found' })
-  const target = userRow(req.params.userId)
+  const current = await memberRole(req.params.id, req.params.userId)
+  if (!(await isMember(req.params.id, req.params.userId))) return res.status(404).json({ error: 'Member not found' })
+  const target = await userRow(req.params.userId)
   if (isSystemAdmin(target)) {
     return res.status(400).json({ error: 'An instance admin cannot belong to a workspace.' })
   }
   // "Owner" is whoever holds workspace.manage — so this catches moving the last
   // one to any role that doesn't, not just to the built-in 'member'.
-  if (isOwnerRole(current) && !isOwnerRole(role) && countOwners(req.params.id) <= 1) {
+  if (isOwnerRole(current) && !isOwnerRole(role) && await countOwners(req.params.id) <= 1) {
     return res.status(400).json({ error: 'The workspace needs at least one owner.' })
   }
-  setWorkspaceMemberRole(req.params.id, req.params.userId, role)
+  await setWorkspaceMemberRole(req.params.id, req.params.userId, role)
   res.json({ ok: true, role })
 })
 
@@ -1378,7 +1423,7 @@ app.put('/api/workspaces/:id/members/:userId', (req, res) => {
 // unknown/pending emails get a pending account + an invite link. The link is
 // always returned so it works without SMTP.
 app.post('/api/workspaces/:id/members', async (req, res) => {
-  const user = requirePermission(req, res, req.params.id, 'members.manage')
+  const user = await requirePermission(req, res, req.params.id, 'members.manage')
   if (!user) return
   const email = (req.body?.email || '').trim().toLowerCase()
   if (!email) return res.status(400).json({ error: 'Email is required.' })
@@ -1387,8 +1432,8 @@ app.post('/api/workspaces/:id/members', async (req, res) => {
   const role = req.body?.role || 'member'
   if (!roleExists(role)) return res.status(400).json({ error: 'Unknown role.' })
 
-  let target = getUserByEmail(email)
-  if (target && isMember(req.params.id, target.id)) {
+  let target = await getUserByEmail(email)
+  if (target && await isMember(req.params.id, target.id)) {
     return res.status(400).json({ error: 'That person is already a member.' })
   }
   if (isSystemAdmin(target)) {
@@ -1399,20 +1444,20 @@ app.post('/api/workspaces/:id/members', async (req, res) => {
   if (!target) {
     // Brand-new account: 'user' is the system role (a plain, non-admin account);
     // what they may do here is the workspace role set just below.
-    const { user: created, inviteToken } = createUser({ email, name: email, inviteWorkspaceId: req.params.id })
+    const { user: created, inviteToken } = await createUser({ email, name: email, inviteWorkspaceId: req.params.id })
     target = { id: created.id, username: email, status: 'pending' }
     inviteLink = `${baseUrl(req)}/invite/${inviteToken}`
   } else if (target.status === 'pending') {
-    inviteLink = `${baseUrl(req)}/invite/${issueInviteToken(target.id, req.params.id)}`
+    inviteLink = `${baseUrl(req)}/invite/${await issueInviteToken(target.id, req.params.id)}`
   }
 
-  addWorkspaceMember(req.params.id, target.id, role)
+  await addWorkspaceMember(req.params.id, target.id, role)
 
   // Email the invite link when SMTP is configured — non-fatal, link is returned regardless.
   let emailed = false
   if (inviteLink) {
-    const ws = meta.prepare('SELECT name FROM workspaces WHERE id = ?').get(req.params.id)
-    const cfg = smtpConfig()
+    const ws = await getWorkspaceRow(req.params.id)
+    const cfg = await smtpConfig()
     if (cfg) {
       try {
         await sendInviteEmail(cfg, { to: email, workspaceName: ws.name, link: inviteLink })
@@ -1431,22 +1476,22 @@ app.post('/api/workspaces/:id/members', async (req, res) => {
 })
 
 // Remove a member. Can't remove yourself or the last owner.
-app.delete('/api/workspaces/:id/members/:userId', (req, res) => {
-  const user = requirePermission(req, res, req.params.id, 'members.manage')
+app.delete('/api/workspaces/:id/members/:userId', async (req, res) => {
+  const user = await requirePermission(req, res, req.params.id, 'members.manage')
   if (!user) return
   if (req.params.userId === user.id) return res.status(400).json({ error: "You can't remove yourself." })
-  const role = memberRole(req.params.id, req.params.userId)
-  if (!isMember(req.params.id, req.params.userId)) return res.status(404).json({ error: 'Member not found' })
-  if (isOwnerRole(role) && countOwners(req.params.id) <= 1) {
+  const role = await memberRole(req.params.id, req.params.userId)
+  if (!(await isMember(req.params.id, req.params.userId))) return res.status(404).json({ error: 'Member not found' })
+  if (isOwnerRole(role) && await countOwners(req.params.id) <= 1) {
     return res.status(400).json({ error: 'The workspace needs at least one owner.' })
   }
   // Drops the membership plus everything it granted (group seats, individual
   // connection grants).
-  removeWorkspaceMember(req.params.id, req.params.userId)
+  await removeWorkspaceMember(req.params.id, req.params.userId)
   // Clean up a pending user that no longer belongs to any workspace.
-  const left = membershipsOf(req.params.userId).length
-  const u = meta.prepare('SELECT status FROM users WHERE id = ?').get(req.params.userId)
-  if (left === 0 && u?.status === 'pending') meta.prepare('DELETE FROM users WHERE id = ?').run(req.params.userId)
+  const left = (await membershipsOf(req.params.userId)).length
+  const u = await userRow(req.params.userId)
+  if (left === 0 && u?.status === 'pending') await meta().users.deleteMany({ where: { id: req.params.userId } })
   res.json({ ok: true })
 })
 
@@ -1454,32 +1499,40 @@ app.delete('/api/workspaces/:id/members/:userId', (req, res) => {
 // Connections (scoped to a workspace the caller belongs to)
 // ============================================================================
 
+// The connections in a workspace this caller may open — what every
+// workspace-wide listing (connections, dashboards, workflows) is built from.
+const openableConnections = async (workspaceId, userId) =>
+  filterAsync(
+    (await listConnections()).filter((c) => c.workspaceId === workspaceId),
+    (c) => userCanAccessConnection(c, userId)
+  )
+
 // List connections for a workspace.
-app.get('/api/connections', (req, res) => {
+app.get('/api/connections', async (req, res) => {
   const user = requireAuth(req, res)
   if (!user) return
   const workspaceId = req.query.workspace
   if (!workspaceId) return res.json([])
-  if (!isMember(workspaceId, user.id)) return res.status(403).json({ error: 'Forbidden' })
-  res.json(listConnections().filter((c) => c.workspaceId === workspaceId && userCanAccessConnection(c, user.id)))
+  if (!(await isMember(workspaceId, user.id))) return res.status(403).json({ error: 'Forbidden' })
+  res.json(await openableConnections(workspaceId, user.id))
 })
 
 // May this caller tunnel a probe through `gatewayId`? A gateway is a way into
 // the workspace's private network, so it takes a signed-in caller who could
 // define a connection there — `connections.create`, or managing the existing
 // connection the form is editing. Answers false after replying.
-function mayProbeThroughGateway(req, res, gatewayId) {
+async function mayProbeThroughGateway(req, res, gatewayId) {
   const user = requireAuth(req, res)
   if (!user) return false
-  const gateway = getSshGateway(gatewayId)
-  if (!gateway || !isMember(gateway.workspaceId, user.id)) {
+  const gateway = await getSshGateway(gatewayId)
+  if (!gateway || !(await isMember(gateway.workspaceId, user.id))) {
     res.status(403).json({ ok: false, message: 'That SSH host is not available to you.' })
     return false
   }
-  const editing = req.body.id && getConnection(req.body.id)
+  const editing = req.body.id && await getConnection(req.body.id)
   const managesEdited =
-    editing && editing.workspaceId === gateway.workspaceId && (editing.ownerId === user.id || can(gateway.workspaceId, user.id, 'connections.manage'))
-  if (!managesEdited && !can(gateway.workspaceId, user.id, 'connections.create')) {
+    editing && editing.workspaceId === gateway.workspaceId && (editing.ownerId === user.id || await can(gateway.workspaceId, user.id, 'connections.manage'))
+  if (!managesEdited && !(await can(gateway.workspaceId, user.id, 'connections.create'))) {
     res.status(403).json({ ok: false, message: 'You need to be able to add connections to test one through an SSH host.' })
     return false
   }
@@ -1488,7 +1541,7 @@ function mayProbeThroughGateway(req, res, gatewayId) {
 
 // Probe an unsaved connection form.
 app.post('/api/test-connection', async (req, res) => {
-  if (req.body?.sshGatewayId && !mayProbeThroughGateway(req, res, req.body.sshGatewayId)) return
+  if (req.body?.sshGatewayId && !(await mayProbeThroughGateway(req, res, req.body.sshGatewayId))) return
   try {
     res.json(await db.testConnection(req.body))
   } catch (error) {
@@ -1499,40 +1552,40 @@ app.post('/api/test-connection', async (req, res) => {
 // Add a connection to a workspace. Defining one is `connections.create`: the
 // credentials it carries are the workspace's, not something anyone who can use a
 // database gets to point somewhere else.
-app.post('/api/connections', (req, res) => {
+app.post('/api/connections', async (req, res) => {
   const workspaceId = req.body.workspaceId
   if (!workspaceId) return res.status(403).json({ error: 'Forbidden' })
-  const user = requirePermission(req, res, workspaceId, 'connections.create')
+  const user = await requirePermission(req, res, workspaceId, 'connections.create')
   if (!user) return
   try {
-    assertGatewayForWorkspace(req.body.sshGatewayId, workspaceId)
+    await assertGatewayForWorkspace(req.body.sshGatewayId, workspaceId)
   } catch (error) {
     return fail(res, error)
   }
   // Default the owner to the creating user (unless one was explicitly provided).
   const conn = { ...req.body, id: randomUUID(), workspaceId, ownerId: req.body.ownerId || user.id }
-  saveConnection(conn)
+  await saveConnection(conn)
   // File it in the resource tree. `parentId` lets the caller drop it straight
   // into a group they organise with; without one it lands under the workspace.
-  createResourceNode('connection', conn.id, {
+  await createResourceNode('connection', conn.id, {
     parentId: req.body.parentNodeId || null,
     name: conn.name,
     ownerId: conn.ownerId,
     workspaceId,
   })
-  res.json(getConnection(conn.id))
+  res.json(await getConnection(conn.id))
 })
 
 // Import an export document as a brand-new connection in `workspaceId`.
 // Mounted above the `/api/connections/:id` guard so "import" isn't read as an id.
-app.post('/api/connections/import', (req, res) => {
+app.post('/api/connections/import', async (req, res) => {
   const { workspaceId, document, name, settings } = req.body || {}
   if (!workspaceId) return res.status(403).json({ error: 'Forbidden' })
-  const user = requirePermission(req, res, workspaceId, 'connections.create')
+  const user = await requirePermission(req, res, workspaceId, 'connections.create')
   if (!user) return
   try {
-    const imported = importConnectionDoc(document, { workspaceId, ownerId: user.id, name, settings })
-    createResourceNode('connection', imported.id, { name: imported.name, ownerId: user.id, workspaceId })
+    const imported = await importConnectionDoc(document, { workspaceId, ownerId: user.id, name, settings })
+    await createResourceNode('connection', imported.id, { name: imported.name, ownerId: user.id, workspaceId })
     res.json(imported)
   } catch (error) {
     fail(res, error)
@@ -1540,182 +1593,182 @@ app.post('/api/connections/import', (req, res) => {
 })
 
 // ---- Storage destinations (S3-compatible, workspace-scoped) ----
-app.get('/api/storages', (req, res) => {
+app.get('/api/storages', async (req, res) => {
   const user = requireAuth(req, res)
   if (!user) return
   const workspaceId = req.query.workspace
   if (!workspaceId) return res.json([])
-  if (!isMember(workspaceId, user.id)) return res.status(403).json({ error: 'Forbidden' })
-  res.json(listStorageRows(workspaceId))
+  if (!(await isMember(workspaceId, user.id))) return res.status(403).json({ error: 'Forbidden' })
+  res.json(await listStorageRows(workspaceId))
 })
 
 // Create a storage destination — it holds credentials for somewhere the
 // workspace's data gets written, so it carries its own permission.
-app.post('/api/storages', (req, res) => {
+app.post('/api/storages', async (req, res) => {
   const body = req.body || {}
   if (!body.workspaceId) return res.status(403).json({ error: 'Forbidden' })
-  const user = requirePermission(req, res, body.workspaceId, 'storage.manage')
+  const user = await requirePermission(req, res, body.workspaceId, 'storage.manage')
   if (!user) return
   if (!body.name?.trim() || !body.bucket?.trim()) return res.status(400).json({ error: 'A name and bucket are required' })
-  const dest = createStorage(body.workspaceId, body)
-  createResourceNode('storage', dest.id, { name: dest.name, workspaceId: body.workspaceId })
+  const dest = await createStorage(body.workspaceId, body)
+  await createResourceNode('storage', dest.id, { name: dest.name, workspaceId: body.workspaceId })
   res.json(dest)
 })
 
 // Guard every per-storage route: reading needs membership, changing needs
 // `storage.manage`.
-app.use('/api/storages/:sid', (req, res, next) => {
+app.use('/api/storages/:sid', async (req, res, next) => {
   const user = requireAuth(req, res)
   if (!user) return
-  const dest = getStorage(req.params.sid)
+  const dest = await getStorage(req.params.sid)
   if (!dest) return res.status(404).json({ error: 'Storage destination not found' })
-  if (!isMember(dest.workspaceId, user.id)) return res.status(403).json({ error: 'Forbidden' })
-  if (req.method !== 'GET' && !requirePermission(req, res, dest.workspaceId, 'storage.manage')) return
+  if (!(await isMember(dest.workspaceId, user.id))) return res.status(403).json({ error: 'Forbidden' })
+  if (req.method !== 'GET' && !(await requirePermission(req, res, dest.workspaceId, 'storage.manage'))) return
   next()
 })
 
-app.put('/api/storages/:sid', (req, res) => {
-  const merged = { ...getStorage(req.params.sid), ...(req.body || {}) }
+app.put('/api/storages/:sid', async (req, res) => {
+  const merged = { ...await getStorage(req.params.sid), ...(req.body || {}) }
   if (!merged.name?.trim() || !merged.bucket?.trim()) return res.status(400).json({ error: 'A name and bucket are required' })
-  renameResourceNode('storage', req.params.sid, merged.name.trim())
-  res.json(updateStorage(req.params.sid, merged))
+  await renameResourceNode('storage', req.params.sid, merged.name.trim())
+  res.json(await updateStorage(req.params.sid, merged))
 })
 
-app.delete('/api/storages/:sid', (req, res) => {
-  if (isStorageInUse(req.params.sid)) {
+app.delete('/api/storages/:sid', async (req, res) => {
+  if (await isStorageInUse(req.params.sid)) {
     return res.status(409).json({ error: 'This storage destination is used by a workflow and cannot be deleted.' })
   }
-  deleteStorage(req.params.sid)
-  deleteResourceNode('storage', req.params.sid)
+  await deleteStorage(req.params.sid)
+  await deleteResourceNode('storage', req.params.sid)
   res.json({ ok: true })
 })
 
 app.post('/api/storages/:sid/test', async (req, res) => {
-  res.json(await testStorage(getStorage(req.params.sid)))
+  res.json(await testStorage(await getStorage(req.params.sid)))
 })
 
 // ---- SSH keys + gateways (workspace-scoped) ----
 // Members can see what exists (a connection form lists the gateways, a key's
 // public half is meant to be shared); creating, changing and deleting either is
 // `ssh.manage`. Private keys and passwords never leave the server.
-app.get('/api/ssh/keys', (req, res) => {
+app.get('/api/ssh/keys', async (req, res) => {
   const user = requireAuth(req, res)
   if (!user) return
   const workspaceId = req.query.workspace
   if (!workspaceId) return res.json([])
-  if (!isMember(workspaceId, user.id)) return res.status(403).json({ error: 'Forbidden' })
-  res.json(listSshKeys(workspaceId))
+  if (!(await isMember(workspaceId, user.id))) return res.status(403).json({ error: 'Forbidden' })
+  res.json(await listSshKeys(workspaceId))
 })
 
-app.post('/api/ssh/keys', (req, res) => {
+app.post('/api/ssh/keys', async (req, res) => {
   const body = req.body || {}
   if (!body.workspaceId) return res.status(403).json({ error: 'Forbidden' })
-  const user = requirePermission(req, res, body.workspaceId, 'ssh.manage')
+  const user = await requirePermission(req, res, body.workspaceId, 'ssh.manage')
   if (!user) return
   try {
-    res.json(createSshKey(body.workspaceId, body, user.id))
+    res.json(await createSshKey(body.workspaceId, body, user.id))
   } catch (error) {
     fail(res, error)
   }
 })
 
-app.use('/api/ssh/keys/:kid', (req, res, next) => {
+app.use('/api/ssh/keys/:kid', async (req, res, next) => {
   const user = requireAuth(req, res)
   if (!user) return
-  const key = getSshKey(req.params.kid)
+  const key = await getSshKey(req.params.kid)
   if (!key) return res.status(404).json({ error: 'SSH key not found' })
-  if (!isMember(key.workspaceId, user.id)) return res.status(403).json({ error: 'Forbidden' })
-  if (req.method !== 'GET' && !requirePermission(req, res, key.workspaceId, 'ssh.manage')) return
+  if (!(await isMember(key.workspaceId, user.id))) return res.status(403).json({ error: 'Forbidden' })
+  if (req.method !== 'GET' && !(await requirePermission(req, res, key.workspaceId, 'ssh.manage'))) return
   next()
 })
 
-app.put('/api/ssh/keys/:kid', (req, res) => {
+app.put('/api/ssh/keys/:kid', async (req, res) => {
   try {
-    res.json(renameSshKey(req.params.kid, req.body?.name))
+    res.json(await renameSshKey(req.params.kid, req.body?.name))
   } catch (error) {
     fail(res, error)
   }
 })
 
-app.delete('/api/ssh/keys/:kid', (req, res) => {
-  const gateways = sshKeyGateways(req.params.kid)
+app.delete('/api/ssh/keys/:kid', async (req, res) => {
+  const gateways = await sshKeyGateways(req.params.kid)
   if (gateways.length) {
     return res.status(409).json({ error: `This key is used by ${gateways.map((g) => `"${g.name}"`).join(', ')}. Point those SSH hosts at another key first.` })
   }
-  deleteSshKey(req.params.kid)
+  await deleteSshKey(req.params.kid)
   res.json({ ok: true })
 })
 
-app.get('/api/ssh/gateways', (req, res) => {
+app.get('/api/ssh/gateways', async (req, res) => {
   const user = requireAuth(req, res)
   if (!user) return
   const workspaceId = req.query.workspace
   if (!workspaceId) return res.json([])
-  if (!isMember(workspaceId, user.id)) return res.status(403).json({ error: 'Forbidden' })
-  res.json(listSshGateways(workspaceId))
+  if (!(await isMember(workspaceId, user.id))) return res.status(403).json({ error: 'Forbidden' })
+  res.json(await listSshGateways(workspaceId))
 })
 
-app.post('/api/ssh/gateways', (req, res) => {
+app.post('/api/ssh/gateways', async (req, res) => {
   const body = req.body || {}
   if (!body.workspaceId) return res.status(403).json({ error: 'Forbidden' })
-  const user = requirePermission(req, res, body.workspaceId, 'ssh.manage')
+  const user = await requirePermission(req, res, body.workspaceId, 'ssh.manage')
   if (!user) return
   try {
-    res.json(createSshGateway(body.workspaceId, body))
+    res.json(await createSshGateway(body.workspaceId, body))
   } catch (error) {
     fail(res, error)
   }
 })
 
-app.use('/api/ssh/gateways/:gid', (req, res, next) => {
+app.use('/api/ssh/gateways/:gid', async (req, res, next) => {
   const user = requireAuth(req, res)
   if (!user) return
-  const gateway = getSshGateway(req.params.gid)
+  const gateway = await getSshGateway(req.params.gid)
   if (!gateway) return res.status(404).json({ error: 'SSH host not found' })
-  if (!isMember(gateway.workspaceId, user.id)) return res.status(403).json({ error: 'Forbidden' })
+  if (!(await isMember(gateway.workspaceId, user.id))) return res.status(403).json({ error: 'Forbidden' })
   // Testing logs in to the gateway with the workspace's credentials, so it is
   // a manager's action even though it changes nothing.
-  if (req.method !== 'GET' && !requirePermission(req, res, gateway.workspaceId, 'ssh.manage')) return
+  if (req.method !== 'GET' && !(await requirePermission(req, res, gateway.workspaceId, 'ssh.manage'))) return
   next()
 })
 
 app.put('/api/ssh/gateways/:gid', async (req, res) => {
   let gateway
   try {
-    gateway = updateSshGateway(req.params.gid, req.body || {})
+    gateway = await updateSshGateway(req.params.gid, req.body || {})
   } catch (error) {
     return fail(res, error)
   }
   // Every connection tunneling through it holds a tunnel (and pools) built from
   // the old settings; drop them so the next query dials the new ones.
-  for (const conn of connectionsUsingGateway(req.params.gid)) {
+  for (const conn of await connectionsUsingGateway(req.params.gid)) {
     db.releaseConnection(conn)
     await endAllConnectionSessions(conn.id)
   }
   res.json(gateway)
 })
 
-app.delete('/api/ssh/gateways/:gid', (req, res) => {
-  const users = connectionsUsingGateway(req.params.gid)
+app.delete('/api/ssh/gateways/:gid', async (req, res) => {
+  const users = await connectionsUsingGateway(req.params.gid)
   if (users.length) {
     return res.status(409).json({ error: `This SSH host is used by ${users.map((c) => `"${c.name}"`).join(', ')}. Switch those connections to another SSH host (or none) first.` })
   }
-  deleteSshGateway(req.params.gid)
+  await deleteSshGateway(req.params.gid)
   res.json({ ok: true })
 })
 
 app.post('/api/ssh/gateways/:gid/test', async (req, res) => {
-  res.json(await testSshGateway(getSshGateway(req.params.gid)))
+  res.json(await testSshGateway(await getSshGateway(req.params.gid)))
 })
 
 // Guard every per-connection route: caller must be able to access the
 // connection. One mount covers PUT/DELETE /:id and all /:id/* data routes.
-app.use('/api/connections/:id', (req, res, next) => {
+app.use('/api/connections/:id', async (req, res, next) => {
   const user = requireAuth(req, res)
   if (!user) return
-  const conn = getConnection(req.params.id)
+  const conn = await getConnection(req.params.id)
   if (!conn) return res.status(404).json({ error: 'Connection not found' })
-  if (conn.workspaceId && !userCanAccessConnection(conn, user.id)) return res.status(403).json({ error: 'Forbidden' })
+  if (conn.workspaceId && !(await userCanAccessConnection(conn, user.id))) return res.status(403).json({ error: 'Forbidden' })
   next()
 })
 
@@ -1731,14 +1784,14 @@ app.use('/api/connections/:id', (req, res, next) => {
  * member run their own connection — its backups, its access list — without being
  * given the whole workspace.
  */
-const requireConnectionOwner = (req, res, what = 'change a connection') => {
-  const conn = getConnection(req.params.id)
+const requireConnectionOwner = async (req, res, what = 'change a connection') => {
+  const conn = await getConnection(req.params.id)
   if (!conn) {
     res.status(404).json({ error: 'Connection not found' })
     return null
   }
   const userId = authUser(req).id
-  if (conn.workspaceId && conn.ownerId !== userId && !can(conn.workspaceId, userId, 'connections.manage')) {
+  if (conn.workspaceId && conn.ownerId !== userId && !(await can(conn.workspaceId, userId, 'connections.manage'))) {
     res.status(403).json({ error: `You need to own this connection to ${what}.` })
     return null
   }
@@ -1747,21 +1800,27 @@ const requireConnectionOwner = (req, res, what = 'change a connection') => {
 
 // Update connection (owner).
 app.put('/api/connections/:id', async (req, res) => {
-  if (!requireConnectionOwner(req, res)) return
-  const existing = getConnection(req.params.id)
+  if (!(await requireConnectionOwner(req, res))) return
+  const existing = await getConnection(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Connection not found' })
-  const updated = { ...existing, ...req.body, id: req.params.id }
+  // The engine is fixed at creation: dashboards, workflows, saved queries and
+  // the schema trail are all written for it, so changing it would leave them
+  // pointing at a database that speaks something else.
+  if (req.body.type && req.body.type !== existing.type) {
+    return res.status(400).json({ error: 'A connection’s database type cannot be changed. Create a new connection instead.' })
+  }
+  const updated = { ...existing, ...req.body, id: req.params.id, type: existing.type }
   // A gateway from another workspace would borrow credentials the caller was
   // never given; the connection's workspace is the one that counts.
   if (updated.sshGatewayId !== existing.sshGatewayId) {
     try {
-      assertGatewayForWorkspace(updated.sshGatewayId, existing.workspaceId)
+      await assertGatewayForWorkspace(updated.sshGatewayId, existing.workspaceId)
     } catch (error) {
       return fail(res, error)
     }
   }
-  saveConnection(updated)
-  renameResourceNode('connection', req.params.id, updated.name)
+  await saveConnection(updated)
+  await renameResourceNode('connection', req.params.id, updated.name)
 
   // Drop any cached pool/handle so the next query reconnects with the new
   // config (otherwise edits to host/credentials/database are ignored), and end
@@ -1776,18 +1835,18 @@ app.put('/api/connections/:id', async (req, res) => {
 
 // Delete connection (owner).
 app.delete('/api/connections/:id', async (req, res) => {
-  const conn = requireConnectionOwner(req, res)
+  const conn = await requireConnectionOwner(req, res)
   if (!conn) return
 
   db.releaseConnection(conn)
   await endAllConnectionSessions(req.params.id)
 
-  meta.transaction(() => {
-    deleteConnectionMetadata(req.params.id)
+  await transaction(async () => {
+    await deleteConnectionMetadata(req.params.id)
     // Takes the connection's node and everything filed under it (its dashboard
     // and workflow nodes), plus every grant made on any of them.
-    deleteResourceNode('connection', req.params.id)
-  })()
+    await deleteResourceNode('connection', req.params.id)
+  })
   res.json({ ok: true })
 })
 
@@ -1795,10 +1854,10 @@ app.delete('/api/connections/:id', async (req, res) => {
 // server/connection-transfer.js for what's in it). `?secrets=1` keeps the stored
 // password — off by default, since the file usually leaves the instance.
 // Owner-only: the document is the connection's definition, secrets aside.
-app.get('/api/connections/:id/export', (req, res) => {
-  if (!requireConnectionOwner(req, res, 'export a connection')) return
+app.get('/api/connections/:id/export', async (req, res) => {
+  if (!(await requireConnectionOwner(req, res, 'export a connection'))) return
   const includeSecrets = ['1', 'true', 'yes'].includes(String(req.query.secrets || '').toLowerCase())
-  const doc = buildConnectionExport(req.params.id, { includeSecrets })
+  const doc = await buildConnectionExport(req.params.id, { includeSecrets })
   if (!doc) return res.status(404).json({ error: 'Connection not found' })
   res.json(doc)
 })
@@ -1815,44 +1874,42 @@ app.get('/api/connections/:id/export', (req, res) => {
  * workspace access — and an instance admin can never hold it, for the same
  * reason they hold no membership.
  */
-app.put('/api/connections/:id/owner', (req, res) => {
-  const conn = getConnection(req.params.id)
+app.put('/api/connections/:id/owner', async (req, res) => {
+  const conn = await getConnection(req.params.id)
   if (!conn) return res.status(404).json({ error: 'Connection not found' })
   if (!conn.workspaceId) return res.status(400).json({ error: 'This connection does not belong to a workspace.' })
-  if (!requirePermission(req, res, conn.workspaceId, 'connections.transfer')) return
+  if (!(await requirePermission(req, res, conn.workspaceId, 'connections.transfer'))) return
 
   const ownerId = req.body?.ownerId
   if (!ownerId) return res.status(400).json({ error: 'ownerId is required.' })
-  if (!isMember(conn.workspaceId, ownerId)) return res.status(400).json({ error: 'That person is not a member of this workspace.' })
-  if (isSystemAdmin(userRow(ownerId))) return res.status(400).json({ error: 'An instance admin cannot own a connection.' })
+  if (!(await isMember(conn.workspaceId, ownerId))) return res.status(400).json({ error: 'That person is not a member of this workspace.' })
+  if (isSystemAdmin(await userRow(ownerId))) return res.status(400).json({ error: 'An instance admin cannot own a connection.' })
 
-  saveConnection({ ...conn, ownerId })
-  res.json(getConnection(req.params.id))
+  await saveConnection({ ...conn, ownerId })
+  res.json(await getConnection(req.params.id))
 })
 
 // ---- Connection access (which groups/members may see this connection) ----
 // Any user who passes the access guard can read the assignment; only a
 // workspace owner can change it.
-app.get('/api/connections/:id/access', (req, res) => {
-  res.json(connectionAccess(req.params.id))
+app.get('/api/connections/:id/access', async (req, res) => {
+  res.json(await connectionAccess(req.params.id))
 })
 
-app.put('/api/connections/:id/access', (req, res) => {
-  if (!requireConnectionOwner(req, res, "change a connection's access list")) return
+app.put('/api/connections/:id/access', async (req, res) => {
+  if (!(await requireConnectionOwner(req, res, "change a connection's access list"))) return
   const groups = Array.isArray(req.body?.groups) ? req.body.groups : []
   const users = Array.isArray(req.body?.users) ? req.body.users : []
-  setConnectionAccess(req.params.id, { groups, users })
-  res.json(connectionAccess(req.params.id))
+  await setConnectionAccess(req.params.id, { groups, users })
+  res.json(await connectionAccess(req.params.id))
 })
 
 // ============================================================================
 // Saved queries + folders (per connection)
 // ============================================================================
 
-app.get('/api/connections/:id/saved', (req, res) => {
-  const rows = meta
-    .prepare('SELECT id, name, sql, kind, folder_id, layout, ts FROM saved_queries WHERE connection_id = ? ORDER BY ts DESC')
-    .all(req.params.id)
+app.get('/api/connections/:id/saved', async (req, res) => {
+  const rows = await meta().saved_queries.findMany({ where: { connection_id: req.params.id }, orderBy: { ts: 'desc' } })
   // `layout` is the schema editor's diagram arrangement and only a schema draft
   // ever has one — a plain query row carries null, not an empty object, so the
   // editor can tell "never arranged" from "arranged into nothing".
@@ -1869,24 +1926,24 @@ app.get('/api/connections/:id/saved', (req, res) => {
   )
 })
 
-app.get('/api/connections/:id/folders', (req, res) => {
+// One of this connection's folders (optionally of one type), or null.
+const findFolder = async (connectionId, folderId, type) =>
+  folderId ? meta().folders.findFirst({ where: { id: folderId, connection_id: connectionId, ...(type ? { type } : null) } }) : null
+
+app.get('/api/connections/:id/folders', async (req, res) => {
   const type = folderTypeOf(req.query.type)
-  const rows = meta
-    .prepare('SELECT id, name, color, parent_id, ts FROM folders WHERE connection_id = ? AND type = ? ORDER BY ts ASC')
-    .all(req.params.id, type)
-  res.json(rows.map((r) => folderRow(req.params.id, type, r)))
+  const rows = await meta().folders.findMany({ where: { connection_id: req.params.id, type }, orderBy: { ts: 'asc' } })
+  res.json(await Promise.all(rows.map((r) => folderRow(req.params.id, type, r))))
 })
 
-app.post('/api/connections/:id/folders', (req, res) => {
+app.post('/api/connections/:id/folders', async (req, res) => {
   const { name, parentId, color } = req.body || {}
   const type = folderTypeOf(req.body?.type)
   if (!name?.trim()) return res.status(400).json({ error: 'A folder name is required' })
   if (parentId) {
-    const parent = meta
-      .prepare('SELECT id FROM folders WHERE id = ? AND connection_id = ? AND type = ?')
-      .get(parentId, req.params.id, type)
+    const parent = await findFolder(req.params.id, parentId, type)
     if (!parent) return res.status(400).json({ error: 'Parent folder not found' })
-    if (folderDepth(req.params.id, type, parentId) >= FOLDER_TYPES[type].maxDepth)
+    if ((await folderDepth(req.params.id, type, parentId)) >= FOLDER_TYPES[type].maxDepth)
       return res.status(400).json({ error: `Folders can only nest ${FOLDER_TYPES[type].maxDepth} levels deep` })
   }
   const entry = {
@@ -1897,102 +1954,85 @@ app.post('/api/connections/:id/folders', (req, res) => {
     type,
     ts: Date.now(),
   }
-  meta
-    .prepare('INSERT INTO folders (id, connection_id, type, name, color, parent_id, ts) VALUES (?, ?, ?, ?, ?, ?, ?)')
-    .run(entry.id, req.params.id, entry.type, entry.name, entry.color, entry.parentId, entry.ts)
+  await meta().folders.create({
+    data: { id: entry.id, connection_id: req.params.id, type: entry.type, name: entry.name, color: entry.color, parent_id: entry.parentId, ts: entry.ts },
+  })
   res.json(type === 'table' ? { ...entry, tables: [] } : entry)
 })
 
-app.put('/api/connections/:id/folders/:fid', (req, res) => {
+app.put('/api/connections/:id/folders/:fid', async (req, res) => {
   const body = req.body || {}
-  const folder = meta
-    .prepare('SELECT type FROM folders WHERE id = ? AND connection_id = ?')
-    .get(req.params.fid, req.params.id)
+  const folder = await findFolder(req.params.id, req.params.fid)
   if (!folder) return res.status(404).json({ error: 'Not found' })
   const type = folderTypeOf(folder.type)
   const { name } = body
-  const sets = []
-  const vals = []
+  const data = {}
   if (name != null) {
     if (!name.trim()) return res.status(400).json({ error: 'A folder name is required' })
-    sets.push('name = ?')
-    vals.push(name.trim())
+    data.name = name.trim()
   }
   // color is explicitly settable (null clears it back to the default look).
-  if ('color' in body) {
-    sets.push('color = ?')
-    vals.push(body.color || null)
-  }
+  if ('color' in body) data.color = body.color || null
   // parentId is explicitly settable (null moves the folder to the root).
   if ('parentId' in body) {
     const parentId = body.parentId || null
     if (parentId) {
       if (parentId === req.params.fid) return res.status(400).json({ error: "A folder can't be its own parent" })
-      const parent = meta
-        .prepare('SELECT id FROM folders WHERE id = ? AND connection_id = ? AND type = ?')
-        .get(parentId, req.params.id, type)
+      const parent = await findFolder(req.params.id, parentId, type)
       if (!parent) return res.status(400).json({ error: 'Parent folder not found' })
-      if (folderHasAncestor(req.params.id, type, parentId, req.params.fid))
+      if (await folderHasAncestor(req.params.id, type, parentId, req.params.fid))
         return res.status(400).json({ error: "Can't move a folder into its own subfolder" })
       // The moved subtree's deepest leaf must still fit within the depth cap.
-      const newDepth = folderDepth(req.params.id, type, parentId) + folderHeight(req.params.id, type, req.params.fid)
+      const newDepth = (await folderDepth(req.params.id, type, parentId)) + (await folderHeight(req.params.id, type, req.params.fid))
       if (newDepth > FOLDER_TYPES[type].maxDepth)
         return res.status(400).json({ error: `Folders can only nest ${FOLDER_TYPES[type].maxDepth} levels deep` })
     }
-    sets.push('parent_id = ?')
-    vals.push(parentId)
+    data.parent_id = parentId
   }
-  if (!sets.length) return res.status(400).json({ error: 'Nothing to update' })
-  const r = meta
-    .prepare(`UPDATE folders SET ${sets.join(', ')} WHERE id = ? AND connection_id = ?`)
-    .run(...vals, req.params.fid, req.params.id)
-  if (!r.changes) return res.status(404).json({ error: 'Not found' })
+  if (!Object.keys(data).length) return res.status(400).json({ error: 'Nothing to update' })
+  const { count } = await meta().folders.updateMany({ where: { id: req.params.fid, connection_id: req.params.id }, data })
+  if (!count) return res.status(404).json({ error: 'Not found' })
   res.json({ ok: true })
 })
 
-app.delete('/api/connections/:id/folders/:fid', (req, res) => {
+app.delete('/api/connections/:id/folders/:fid', async (req, res) => {
   // Reparent the folder's contents up one level (to its own parent) rather than
   // deleting them: child folders and items move to the deleted folder's parent.
-  const row = meta
-    .prepare('SELECT type, parent_id FROM folders WHERE id = ? AND connection_id = ?')
-    .get(req.params.fid, req.params.id)
+  const row = await findFolder(req.params.id, req.params.fid)
   const type = folderTypeOf(row?.type)
   const parentId = row?.parent_id || null
-  meta
-    .prepare('UPDATE folders SET parent_id = ? WHERE parent_id = ? AND connection_id = ?')
-    .run(parentId, req.params.fid, req.params.id)
-  // itemTable comes from the FOLDER_TYPES allowlist (via folderTypeOf) — safe to interpolate.
-  meta
-    .prepare(`UPDATE ${FOLDER_TYPES[type].itemTable} SET folder_id = ? WHERE folder_id = ? AND connection_id = ?`)
-    .run(parentId, req.params.fid, req.params.id)
-  // A connection_tables row only records membership, so "moved to the root" means
-  // ungrouped — drop the row rather than leaving a folder-less mapping behind.
-  if (type === 'table' && !parentId)
-    meta.prepare('DELETE FROM connection_tables WHERE folder_id IS NULL AND connection_id = ?').run(req.params.id)
-  meta.prepare('DELETE FROM folders WHERE id = ? AND connection_id = ?').run(req.params.fid, req.params.id)
+  const scope = { connection_id: req.params.id }
+  await transaction(async () => {
+    await meta().folders.updateMany({ where: { ...scope, parent_id: req.params.fid }, data: { parent_id: parentId } })
+    // itemTable comes from the FOLDER_TYPES allowlist (via folderTypeOf), and each
+    // one is also the name of its Prisma model.
+    await meta()[FOLDER_TYPES[type].itemTable].updateMany({ where: { ...scope, folder_id: req.params.fid }, data: { folder_id: parentId } })
+    // A connection_tables row only records membership, so "moved to the root" means
+    // ungrouped — drop the row rather than leaving a folder-less mapping behind.
+    if (type === 'table' && !parentId) await meta().connection_tables.deleteMany({ where: { ...scope, folder_id: null } })
+    await meta().folders.deleteMany({ where: { ...scope, id: req.params.fid } })
+  })
   res.json({ ok: true })
 })
 
 // Set (or clear) a table's folder. `folderId: null` ungroups the table;
 // otherwise it's reassigned to that single folder (upsert — one folder per
 // table). Table names are plain strings, so this works for any dialect.
-app.put('/api/connections/:id/tables/:table/folder', (req, res) => {
+app.put('/api/connections/:id/tables/:table/folder', async (req, res) => {
   const folderId = req.body?.folderId ?? null
   const table = req.params.table
   if (folderId === null) {
-    meta.prepare('DELETE FROM connection_tables WHERE connection_id = ? AND table_name = ?').run(req.params.id, table)
+    await meta().connection_tables.deleteMany({ where: { connection_id: req.params.id, table_name: table } })
     return res.json({ ok: true })
   }
-  const folder = meta
-    .prepare("SELECT id FROM folders WHERE id = ? AND connection_id = ? AND type = 'table'")
-    .get(folderId, req.params.id)
+  const folder = await findFolder(req.params.id, folderId, 'table')
   if (!folder) return res.status(404).json({ error: 'Folder not found' })
-  meta
-    .prepare(
-      `INSERT INTO connection_tables (id, connection_id, table_name, folder_id, ts) VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(connection_id, table_name) DO UPDATE SET folder_id = excluded.folder_id, ts = excluded.ts`
-    )
-    .run(randomUUID(), req.params.id, table, folderId, Date.now())
+  const now = Date.now()
+  await meta().connection_tables.upsert({
+    where: { connection_id_table_name: { connection_id: req.params.id, table_name: table } },
+    create: { id: randomUUID(), connection_id: req.params.id, table_name: table, folder_id: folderId, ts: now },
+    update: { folder_id: folderId, ts: now },
+  })
   res.json({ ok: true })
 })
 
@@ -2001,7 +2041,7 @@ app.put('/api/connections/:id/tables/:table/folder', (req, res) => {
 // be empty — you cleared the changes, or forked a copy before staging any — and
 // refusing that is what left the editor unable to save a draft it had just
 // emptied. Same split on the update below.
-app.post('/api/connections/:id/saved', (req, res) => {
+app.post('/api/connections/:id/saved', async (req, res) => {
   const { name, sql, kind, layout } = req.body || {}
   if (!name?.trim()) return res.status(400).json({ error: 'A name and SQL are required' })
   if ((kind || 'query') !== 'schema' && !sql?.trim()) return res.status(400).json({ error: 'A name and SQL are required' })
@@ -2021,79 +2061,64 @@ app.post('/api/connections/:id/saved', (req, res) => {
     createdAt: at,
     ts: at,
   }
-  meta
-    .prepare(
-      'INSERT INTO saved_queries (id, connection_id, name, sql, kind, layout, created_by, updated_by, created_at, ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    )
-    .run(
-      entry.id,
-      req.params.id,
-      entry.name,
-      entry.sql,
-      entry.kind,
-      entry.layout ? JSON.stringify(entry.layout) : null,
-      entry.createdBy,
-      entry.updatedBy,
-      entry.createdAt,
-      entry.ts
-    )
+  await meta().saved_queries.create({
+    data: {
+      id: entry.id,
+      connection_id: req.params.id,
+      name: entry.name,
+      sql: entry.sql,
+      kind: entry.kind,
+      layout: entry.layout ? JSON.stringify(entry.layout) : null,
+      created_by: entry.createdBy,
+      updated_by: entry.updatedBy,
+      created_at: entry.createdAt,
+      ts: entry.ts,
+    },
+  })
   res.json(entry)
 })
 
-app.put('/api/connections/:id/saved/:sid', (req, res) => {
+app.put('/api/connections/:id/saved/:sid', async (req, res) => {
   const body = req.body || {}
   const { name, sql } = body
   // The row's own kind decides whether empty SQL is allowed, so read it first
   // rather than trusting a `kind` in the body — this is the same 404 the write
   // below would have produced, only reached before the validation.
-  const row = meta
-    .prepare('SELECT kind FROM saved_queries WHERE id = ? AND connection_id = ?')
-    .get(req.params.sid, req.params.id)
+  const row = await meta().saved_queries.findFirst({ where: { id: req.params.sid, connection_id: req.params.id }, select: { kind: true } })
   if (!row) return res.status(404).json({ error: 'Not found' })
-  const sets = []
-  const vals = []
+  const data = {}
   if (name != null) {
     if (!name.trim()) return res.status(400).json({ error: 'A name is required' })
-    sets.push('name = ?')
-    vals.push(name.trim())
+    data.name = name.trim()
   }
   if (sql != null) {
     if (!sql.trim() && row.kind !== 'schema') return res.status(400).json({ error: 'SQL is required' })
-    sets.push('sql = ?')
-    vals.push(sql.trim())
+    data.sql = sql.trim()
   }
   // folderId is explicitly settable (null moves the query back to the root).
-  if ('folderId' in body) {
-    sets.push('folder_id = ?')
-    vals.push(body.folderId || null)
-  }
+  if ('folderId' in body) data.folder_id = body.folderId || null
   // Saving the schema editor sends `sql` and `layout` together; a rename sends
   // neither. An explicit null forgets the arrangement.
   if ('layout' in body) {
-    sets.push('layout = ?')
     const layout = schemaLayout(body.layout)
-    vals.push(layout ? JSON.stringify(layout) : null)
+    data.layout = layout ? JSON.stringify(layout) : null
   }
-  if (!sets.length) return res.status(400).json({ error: 'Nothing to update' })
+  if (!Object.keys(data).length) return res.status(400).json({ error: 'Nothing to update' })
   // Stamp the write. `ts` used to be set once, at insert, which made the Schema
   // list's "Updated 3 months ago" the *creation* date of a draft someone saved
   // this morning — and left "last updated by" nothing to hang off. Both move
   // together, so the name and the time always describe the same save. It also
   // reorders the saved list by last touched, which is what `/schemas/connection/:id`
   // means by "the draft to resume".
-  sets.push('ts = ?')
-  vals.push(Date.now())
-  sets.push('updated_by = ?')
-  vals.push(authUser(req).id)
-  const r = meta
-    .prepare(`UPDATE saved_queries SET ${sets.join(', ')} WHERE id = ? AND connection_id = ?`)
-    .run(...vals, req.params.sid, req.params.id)
-  if (!r.changes) return res.status(404).json({ error: 'Not found' })
+  data.ts = Date.now()
+  data.updated_by = authUser(req).id
+  const { count } = await meta().saved_queries.updateMany({ where: { id: req.params.sid, connection_id: req.params.id }, data })
+  if (!count) return res.status(404).json({ error: 'Not found' })
   res.json({ ok: true })
 })
 
-app.delete('/api/connections/:id/saved/:sid', (req, res) => {
-  meta.prepare('DELETE FROM saved_queries WHERE id = ? AND connection_id = ?').run(req.params.sid, req.params.id)
+app.delete('/api/connections/:id/saved/:sid', async (req, res) => {
+  await meta().saved_queries.deleteMany({ where: { id: req.params.sid, connection_id: req.params.id } })
   res.json({ ok: true })
 })
 
@@ -2108,48 +2133,48 @@ app.delete('/api/connections/:id/saved/:sid', (req, res) => {
 // section shows. Membership gates seeing the workspace at all; each connection
 // is then filtered by whether the caller may open it, so this can never show
 // more than the per-connection routes below would.
-app.get('/api/workspaces/:id/workflows', (req, res) => {
-  const user = requireMember(req, res, req.params.id)
+app.get('/api/workspaces/:id/workflows', async (req, res) => {
+  const user = await requireMember(req, res, req.params.id)
   if (!user) return
-  const conns = listConnections().filter((c) => c.workspaceId === req.params.id && userCanAccessConnection(c, user.id))
+  const conns = await openableConnections(req.params.id, user.id)
   const byId = new Map(conns.map((c) => [c.id, c]))
   res.json(
-    listWorkflowsForConnections([...byId.keys()]).map((w) => {
+    (await listWorkflowsForConnections([...byId.keys()])).map((w) => {
       const conn = byId.get(w.connectionId)
       return { ...w, connectionName: conn.name, connectionType: conn.type }
     })
   )
 })
 
-app.get('/api/connections/:id/workflows', (req, res) => {
-  res.json(listConnectionWorkflows(req.params.id))
+app.get('/api/connections/:id/workflows', async (req, res) => {
+  res.json(await listConnectionWorkflows(req.params.id))
 })
 
-app.post('/api/connections/:id/workflows', (req, res) => {
+app.post('/api/connections/:id/workflows', async (req, res) => {
   try {
-    res.json(createWorkflow(req.params.id, req.body))
+    res.json(await createWorkflow(req.params.id, req.body))
   } catch (error) {
     fail(res, error)
   }
 })
 
-app.get('/api/connections/:id/workflows/:wid', (req, res) => {
-  const workflow = getWorkflow(req.params.id, req.params.wid)
+app.get('/api/connections/:id/workflows/:wid', async (req, res) => {
+  const workflow = await getWorkflow(req.params.id, req.params.wid)
   if (!workflow) return res.status(404).json({ error: 'Not found' })
   res.json(workflow)
 })
 
-app.put('/api/connections/:id/workflows/:wid', (req, res) => {
+app.put('/api/connections/:id/workflows/:wid', async (req, res) => {
   try {
-    if (!updateWorkflow(req.params.id, req.params.wid, req.body)) return res.status(404).json({ error: 'Not found' })
+    if (!(await updateWorkflow(req.params.id, req.params.wid, req.body))) return res.status(404).json({ error: 'Not found' })
     res.json({ ok: true })
   } catch (error) {
     fail(res, error)
   }
 })
 
-app.delete('/api/connections/:id/workflows/:wid', (req, res) => {
-  const result = deleteWorkflow(req.params.id, req.params.wid)
+app.delete('/api/connections/:id/workflows/:wid', async (req, res) => {
+  const result = await deleteWorkflow(req.params.id, req.params.wid)
   if (result === 'missing') return res.status(404).json({ error: 'Not found' })
   if (result === 'protected') return res.status(409).json({ error: 'This workflow is protected and cannot be deleted.' })
   res.json({ ok: true })
@@ -2158,11 +2183,11 @@ app.delete('/api/connections/:id/workflows/:wid', (req, res) => {
 // Run a workflow — executes the posted graph (unsaved edits) or the stored
 // one, and records the outcome in workflow_runs.
 app.post('/api/connections/:id/workflows/:wid/run', async (req, res) => {
-  const conn = getConnection(req.params.id)
+  const conn = await getConnection(req.params.id)
   if (!conn) return res.status(404).json({ error: 'Connection not found' })
   let graph = req.body?.graph
   if (!graph) {
-    const workflow = getWorkflow(req.params.id, req.params.wid)
+    const workflow = await getWorkflow(req.params.id, req.params.wid)
     if (!workflow) return res.status(404).json({ error: 'Not found' })
     graph = workflow.graph
   }
@@ -2177,16 +2202,16 @@ app.post('/api/connections/:id/workflows/:wid/run', async (req, res) => {
 // Every run (manual, dashboard, schedule, webhook) is persisted to workflow_runs
 // by executeAndRecord; these expose that trail. The list omits the (potentially
 // large) per-node log; fetch a single run to drill into it.
-app.get('/api/connections/:id/workflows/:wid/runs', (req, res) => {
+app.get('/api/connections/:id/workflows/:wid/runs', async (req, res) => {
   const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 200)
   const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0)
-  const runs = listWorkflowRuns(req.params.id, req.params.wid, { limit, offset })
+  const runs = await listWorkflowRuns(req.params.id, req.params.wid, { limit, offset })
   if (!runs) return res.status(404).json({ error: 'Not found' })
   res.json(runs)
 })
 
-app.get('/api/connections/:id/workflows/:wid/runs/:runId', (req, res) => {
-  const run = getWorkflowRun(req.params.id, req.params.wid, req.params.runId)
+app.get('/api/connections/:id/workflows/:wid/runs/:runId', async (req, res) => {
+  const run = await getWorkflowRun(req.params.id, req.params.wid, req.params.runId)
   if (!run) return res.status(404).json({ error: 'Not found' })
   res.json(run)
 })
@@ -2200,7 +2225,7 @@ app.get('/api/connections/:id/workflows/:wid/runs/:runId', (req, res) => {
 // applies: the run executes with the same trust as any member-authored workflow.
 app.all('/api/hooks/wf/:wid/:token', async (req, res) => {
   if (req.method !== 'POST' && req.method !== 'GET') return res.status(405).json({ error: 'Use GET or POST' })
-  const workflow = getWebhookWorkflow(req.params.wid)
+  const workflow = await getWebhookWorkflow(req.params.wid)
   if (!workflow) return res.status(404).json({ error: 'Not found' })
   const graph = workflow.graph
   const hook = (graph?.nodes || []).find((n) => n.type === 'webhook')
@@ -2212,7 +2237,7 @@ app.all('/api/hooks/wf/:wid/:token', async (req, res) => {
     expected.length === provided.length &&
     timingSafeEqual(Buffer.from(expected), Buffer.from(provided))
   if (!ok) return res.status(401).json({ error: 'Invalid webhook token' })
-  const conn = getConnection(workflow.connectionId)
+  const conn = await getConnection(workflow.connectionId)
   if (!conn) return res.status(404).json({ error: 'Connection not found' })
   // The request body seeds the trigger; query params are exposed too so simple
   // GET pings can pass data without a body.
@@ -2238,11 +2263,11 @@ app.all('/api/hooks/wf/:wid/:token', async (req, res) => {
 // The config is summarised (widget/variable counts) rather than returned: the
 // list only needs the shape of a dashboard, and a workspace's worth of full
 // configs is a lot of JSON to send for a table nobody renders charts from.
-app.get('/api/workspaces/:id/dashboards', (req, res) => {
-  const user = requireMember(req, res, req.params.id)
+app.get('/api/workspaces/:id/dashboards', async (req, res) => {
+  const user = await requireMember(req, res, req.params.id)
   if (!user) return
-  const conns = listConnections().filter((c) => c.workspaceId === req.params.id && userCanAccessConnection(c, user.id))
-  res.json(listDashboardsForConnections(conns))
+  const conns = await openableConnections(req.params.id, user.id)
+  res.json(await listDashboardsForConnections(conns))
 })
 
 /**
@@ -2257,8 +2282,8 @@ app.get('/api/workspaces/:id/dashboards', (req, res) => {
  *
  * One query for the whole page, not one per row.
  */
-const withAudit = (rows) => {
-  const people = userSummaries(rows.flatMap((r) => [r.createdBy, r.updatedBy]))
+const withAudit = async (rows) => {
+  const people = await userSummaries(rows.flatMap((r) => [r.createdBy, r.updatedBy]))
   return rows.map((r) => ({
     ...r,
     createdByName: people.get(r.createdBy)?.name || null,
@@ -2266,7 +2291,7 @@ const withAudit = (rows) => {
   }))
 }
 
-const withAuditOne = (row) => withAudit([row])[0]
+const withAuditOne = async (row) => (await withAudit([row]))[0]
 
 // Every schema draft in a workspace, in one list — what the home area's Schema
 // section shows. A draft is a saved_queries row with kind='schema': the staged,
@@ -2276,22 +2301,16 @@ const withAuditOne = (row) => withAudit([row])[0]
 //
 // The DDL itself is summarised (a statement count) rather than returned: the
 // list only needs the size of a draft, and rendering one needs the editor.
-app.get('/api/workspaces/:id/schemas', (req, res) => {
-  const user = requireMember(req, res, req.params.id)
+app.get('/api/workspaces/:id/schemas', async (req, res) => {
+  const user = await requireMember(req, res, req.params.id)
   if (!user) return
-  const conns = listConnections().filter((c) => c.workspaceId === req.params.id && userCanAccessConnection(c, user.id))
+  const conns = await openableConnections(req.params.id, user.id)
   const byId = new Map(conns.map((c) => [c.id, c]))
   const ids = [...byId.keys()]
   // No reachable connection is not an empty answer — the from-scratch drafts
   // below hang off the workspace, so they are still there to list.
   const rows = ids.length
-    ? meta
-        .prepare(
-          `SELECT id, connection_id, name, sql, created_by, updated_by, created_at, ts FROM saved_queries
-            WHERE kind = 'schema' AND connection_id IN (${ids.map(() => '?').join(', ')})
-            ORDER BY ts DESC`
-        )
-        .all(...ids)
+    ? await meta().saved_queries.findMany({ where: { kind: 'schema', connection_id: { in: ids } }, orderBy: { ts: 'desc' } })
     : []
   // Both kinds of draft, in one list: designed against a connection (a saved
   // query) or from scratch (a workspace row with a dialect and no connection).
@@ -2319,7 +2338,7 @@ app.get('/api/workspaces/:id/schemas', (req, res) => {
       statementCount: schemaStatementCount(r.sql),
     }
   })
-  const scratch = listSchemaDrafts(req.params.id).map((d) => ({
+  const scratch = (await listSchemaDrafts(req.params.id)).map((d) => ({
     id: d.id,
     connectionId: null,
     connectionName: null,
@@ -2333,7 +2352,7 @@ app.get('/api/workspaces/:id/schemas', (req, res) => {
     updatedBy: d.updatedBy,
     statementCount: schemaStatementCount(d.sql),
   }))
-  res.json(withAudit([...attached, ...scratch]).sort((x, y) => (y.ts || 0) - (x.ts || 0)))
+  res.json((await withAudit([...attached, ...scratch])).sort((x, y) => (y.ts || 0) - (x.ts || 0)))
 })
 
 // One draft by id, whichever kind it is — what the standalone schema editor
@@ -2346,13 +2365,13 @@ app.get('/api/workspaces/:id/schemas', (req, res) => {
 // filtering: membership to reach the workspace, then `userCanAccessConnection`
 // for a draft that targets a connection. A member who cannot open that database
 // gets 403 here, exactly as they would from the connection's own /saved route.
-app.get('/api/workspaces/:id/schemas/:draftId', (req, res) => {
-  const user = requireMember(req, res, req.params.id)
+app.get('/api/workspaces/:id/schemas/:draftId', async (req, res) => {
+  const user = await requireMember(req, res, req.params.id)
   if (!user) return
-  const scratch = getSchemaDraft(req.params.draftId)
+  const scratch = await getSchemaDraft(req.params.draftId)
   if (scratch && scratch.workspaceId === req.params.id) {
     return res.json(
-      withAuditOne({
+      await withAuditOne({
         id: scratch.id,
         name: scratch.name,
         sql: scratch.sql,
@@ -2367,18 +2386,14 @@ app.get('/api/workspaces/:id/schemas/:draftId', (req, res) => {
       })
     )
   }
-  const row = meta
-    .prepare(
-      "SELECT id, connection_id, name, sql, layout, created_by, updated_by, created_at, ts FROM saved_queries WHERE id = ? AND kind = 'schema'"
-    )
-    .get(req.params.draftId)
+  const row = await meta().saved_queries.findFirst({ where: { id: req.params.draftId, kind: 'schema' } })
   if (!row) return res.status(404).json({ error: 'Schema draft not found' })
-  const conn = getConnection(row.connection_id)
+  const conn = await getConnection(row.connection_id)
   if (!conn || conn.workspaceId !== req.params.id) return res.status(404).json({ error: 'Schema draft not found' })
-  if (!userCanAccessConnection(conn, user.id))
+  if (!(await userCanAccessConnection(conn, user.id)))
     return res.status(403).json({ error: 'You do not have access to this connection' })
   res.json(
-    withAuditOne({
+    await withAuditOne({
       id: row.id,
       name: row.name,
       sql: row.sql || '',
@@ -2397,7 +2412,7 @@ app.get('/api/workspaces/:id/schemas/:draftId', (req, res) => {
 // The engines a from-scratch schema can be designed for. Comes from the driver
 // registry (an engine reporting no column types is schemaless, so there is
 // nothing to draw) — never a hand-kept list in the UI.
-app.get('/api/schema-engines', (req, res) => {
+app.get('/api/schema-engines', async (req, res) => {
   if (!requireAuth(req, res)) return
   res.json(db.designableEngines())
 })
@@ -2406,15 +2421,15 @@ app.get('/api/schema-engines', (req, res) => {
 // the row carries the dialect its DDL is written for. Membership is the gate —
 // designing a schema is not a permission (see permissions-catalog.js: using a
 // database is per-connection access, and this one has no database at all).
-app.post('/api/workspaces/:id/schema-drafts', (req, res) => {
-  const user = requireMember(req, res, req.params.id)
+app.post('/api/workspaces/:id/schema-drafts', async (req, res) => {
+  const user = await requireMember(req, res, req.params.id)
   if (!user) return
   const { name, dbType } = req.body || {}
   if (!name?.trim()) return res.status(400).json({ error: 'A schema name is required' })
   const engine = db.designableEngines().find((e) => e.type === dbType)
   if (!engine) return res.status(400).json({ error: 'Pick a database type a schema can be designed for' })
   res.json(
-    createSchemaDraft({
+    await createSchemaDraft({
       workspaceId: req.params.id,
       name: name.trim(),
       dbType: engine.type,
@@ -2426,26 +2441,26 @@ app.post('/api/workspaces/:id/schema-drafts', (req, res) => {
 })
 
 // One draft, with its DDL — what the standalone editor loads.
-app.get('/api/workspaces/:id/schema-drafts/:draftId', (req, res) => {
-  const user = requireMember(req, res, req.params.id)
+app.get('/api/workspaces/:id/schema-drafts/:draftId', async (req, res) => {
+  const user = await requireMember(req, res, req.params.id)
   if (!user) return
-  const draft = getSchemaDraft(req.params.draftId)
+  const draft = await getSchemaDraft(req.params.draftId)
   if (!draft || draft.workspaceId !== req.params.id) return res.status(404).json({ error: 'Schema draft not found' })
   res.json(draft)
 })
 
 // Partial: `name`, `sql`, `layout`, or any combination — saving the editor
 // sends the DDL and the diagram arrangement together, a rename sends neither.
-app.put('/api/workspaces/:id/schema-drafts/:draftId', (req, res) => {
-  const user = requireMember(req, res, req.params.id)
+app.put('/api/workspaces/:id/schema-drafts/:draftId', async (req, res) => {
+  const user = await requireMember(req, res, req.params.id)
   if (!user) return
-  const draft = getSchemaDraft(req.params.draftId)
+  const draft = await getSchemaDraft(req.params.draftId)
   if (!draft || draft.workspaceId !== req.params.id) return res.status(404).json({ error: 'Schema draft not found' })
   const body = req.body || {}
   const { name, sql } = body
   if (name !== undefined && !String(name).trim()) return res.status(400).json({ error: 'A schema name is required' })
   res.json(
-    updateSchemaDraft(draft.id, {
+    await updateSchemaDraft(draft.id, {
       ...(name !== undefined && { name: String(name).trim() }),
       ...(sql !== undefined && { sql: String(sql) }),
       ...('layout' in body && { layout: schemaLayout(body.layout) }),
@@ -2455,44 +2470,44 @@ app.put('/api/workspaces/:id/schema-drafts/:draftId', (req, res) => {
   )
 })
 
-app.delete('/api/workspaces/:id/schema-drafts/:draftId', (req, res) => {
-  const user = requireMember(req, res, req.params.id)
+app.delete('/api/workspaces/:id/schema-drafts/:draftId', async (req, res) => {
+  const user = await requireMember(req, res, req.params.id)
   if (!user) return
-  const draft = getSchemaDraft(req.params.draftId)
+  const draft = await getSchemaDraft(req.params.draftId)
   if (!draft || draft.workspaceId !== req.params.id) return res.status(404).json({ error: 'Schema draft not found' })
-  deleteSchemaDraft(draft.id)
+  await deleteSchemaDraft(draft.id)
   res.json({ ok: true })
 })
 
-app.get('/api/connections/:id/dashboards', (req, res) => {
-  res.json(listDashboards(req.params.id))
+app.get('/api/connections/:id/dashboards', async (req, res) => {
+  res.json(await listDashboards(req.params.id))
 })
 
-app.post('/api/connections/:id/dashboards', (req, res) => {
+app.post('/api/connections/:id/dashboards', async (req, res) => {
   try {
-    res.json(createDashboard(req.params.id, req.body))
+    res.json(await createDashboard(req.params.id, req.body))
   } catch (error) {
     fail(res, error)
   }
 })
 
-app.get('/api/connections/:id/dashboards/:did', (req, res) => {
-  const dashboard = getDashboard(req.params.id, req.params.did)
+app.get('/api/connections/:id/dashboards/:did', async (req, res) => {
+  const dashboard = await getDashboard(req.params.id, req.params.did)
   if (!dashboard) return res.status(404).json({ error: 'Not found' })
   res.json(dashboard)
 })
 
-app.put('/api/connections/:id/dashboards/:did', (req, res) => {
+app.put('/api/connections/:id/dashboards/:did', async (req, res) => {
   try {
-    if (!updateDashboard(req.params.id, req.params.did, req.body)) return res.status(404).json({ error: 'Not found' })
+    if (!(await updateDashboard(req.params.id, req.params.did, req.body))) return res.status(404).json({ error: 'Not found' })
     res.json({ ok: true })
   } catch (error) {
     fail(res, error)
   }
 })
 
-app.delete('/api/connections/:id/dashboards/:did', (req, res) => {
-  if (!deleteDashboard(req.params.id, req.params.did)) return res.status(404).json({ error: 'Not found' })
+app.delete('/api/connections/:id/dashboards/:did', async (req, res) => {
+  if (!(await deleteDashboard(req.params.id, req.params.did))) return res.status(404).json({ error: 'Not found' })
   res.json({ ok: true })
 })
 
@@ -2502,64 +2517,64 @@ app.delete('/api/connections/:id/dashboards/:did', (req, res) => {
 // ============================================================================
 
 // Current backup schedule for this connection (null if none has been created yet).
-app.get('/api/connections/:id/backup/schedule', (req, res) => {
-  res.json({ schedule: getBackupSchedule(req.params.id) })
+app.get('/api/connections/:id/backup/schedule', async (req, res) => {
+  res.json({ schedule: await getBackupSchedule(req.params.id) })
 })
 
-app.post('/api/connections/:id/backup/schedule', (req, res) => {
-  const conn = getConnection(req.params.id)
+app.post('/api/connections/:id/backup/schedule', async (req, res) => {
+  const conn = await getConnection(req.params.id)
   if (!conn) return res.status(404).json({ error: 'Connection not found' })
   // An engine with no dump can't be scheduled for backup.
   if (!db.supports(conn, 'dump')) {
     return res.status(400).json({ error: `Backups are not supported for connection type: ${conn.type}` })
   }
-  if (getBackupScheduleRow(req.params.id)) return res.status(409).json({ error: 'This connection already has a backup schedule.' })
+  if (await getBackupScheduleRow(req.params.id)) return res.status(409).json({ error: 'This connection already has a backup schedule.' })
   const body = req.body || {}
-  const err = validateScheduleBody(conn, body.destinationIds, body.frequency)
+  const err = await validateScheduleBody(conn, body.destinationIds, body.frequency)
   if (err) return res.status(400).json({ error: err })
-  res.json({ schedule: createSchedule(req.params.id, body) })
+  res.json({ schedule: await createSchedule(req.params.id, body) })
 })
 
 // Update any subset of the schedule's fields (also how Active/Paused toggles
 // via a lightweight `{ enabled }` body).
-app.put('/api/connections/:id/backup/schedule', (req, res) => {
-  const conn = getConnection(req.params.id)
+app.put('/api/connections/:id/backup/schedule', async (req, res) => {
+  const conn = await getConnection(req.params.id)
   if (!conn) return res.status(404).json({ error: 'Connection not found' })
-  const row = getBackupScheduleRow(req.params.id)
+  const row = await getBackupScheduleRow(req.params.id)
   if (!row) return res.status(404).json({ error: 'No backup schedule exists for this connection.' })
   const body = req.body || {}
-  const err = validateScheduleBody(
+  const err = await validateScheduleBody(
     conn,
     body.destinationIds ?? safeJson(row.destination_ids) ?? [],
     body.frequency ?? row.frequency
   )
   if (err) return res.status(400).json({ error: err })
-  res.json({ schedule: updateSchedule(row, body) })
+  res.json({ schedule: await updateSchedule(row, body) })
 })
 
 // Run the connection's backup schedule immediately (no retry — same semantics
 // as today's "Run now").
 app.post('/api/connections/:id/backup/run', async (req, res) => {
-  const conn = getConnection(req.params.id)
+  const conn = await getConnection(req.params.id)
   if (!conn) return res.status(404).json({ error: 'Connection not found' })
-  const row = getBackupScheduleRow(req.params.id)
+  const row = await getBackupScheduleRow(req.params.id)
   if (!row) return res.status(404).json({ error: 'No backup schedule exists for this connection.' })
   res.json(await runBackupOnce(row, conn, 'manual'))
 })
 
 // Per-day run counts — feeds the GitHub-style calendar.
-app.get('/api/connections/:id/backup/calendar', (req, res) => {
+app.get('/api/connections/:id/backup/calendar', async (req, res) => {
   const days = Math.min(Math.max(parseInt(req.query.days, 10) || 365, 1), 366)
-  res.json({ days: backupCalendar(req.params.id, days) })
+  res.json({ days: await backupCalendar(req.params.id, days) })
 })
 
 // Paginated backup runs, with the uploaded-artifact info the version list
 // needs. Optional `date=YYYY-MM-DD` filters to one day (heatmap click).
-app.get('/api/connections/:id/backup/runs', (req, res) => {
+app.get('/api/connections/:id/backup/runs', async (req, res) => {
   const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 200)
   const offset = Math.max(0, parseInt(req.query.offset, 10) || 0)
   try {
-    res.json(listBackupRuns(req.params.id, { limit, offset, date: req.query.date && String(req.query.date) }))
+    res.json(await listBackupRuns(req.params.id, { limit, offset, date: req.query.date && String(req.query.date) }))
   } catch (error) {
     fail(res, error)
   }
@@ -2569,10 +2584,10 @@ app.get('/api/connections/:id/backup/runs', (req, res) => {
 // marks it `deleted` in the run's history rather than removing the row, so
 // the date/status stays visible but Restore/Download disappear.
 app.delete('/api/connections/:id/backup/runs/:runId/uploads/:destinationId', async (req, res) => {
-  const { run, uploads, upload } = findRunUpload(req.params.id, req.params.runId, req.params.destinationId)
+  const { run, uploads, upload } = await findRunUpload(req.params.id, req.params.runId, req.params.destinationId)
   if (!run) return res.status(404).json({ error: 'Backup run not found' })
   if (!upload?.key) return res.status(404).json({ error: 'No deletable upload found for this destination' })
-  const dest = getStorage(req.params.destinationId)
+  const dest = await getStorage(req.params.destinationId)
   if (!dest) return res.status(404).json({ error: 'Storage destination not found' })
   try {
     // The connection-config JSON (when the schedule ships one) belongs to the
@@ -2581,7 +2596,7 @@ app.delete('/api/connections/:id/backup/runs/:runId/uploads/:destinationId', asy
   } catch (err) {
     return res.status(500).json({ error: describeError(err) })
   }
-  markRunUploadDeleted(run, uploads, req.params.destinationId)
+  await markRunUploadDeleted(run, uploads, req.params.destinationId)
   res.json({ ok: true })
 })
 
@@ -2589,14 +2604,14 @@ app.delete('/api/connections/:id/backup/runs/:runId/uploads/:destinationId', asy
 // needed). `?artifact=config` fetches the connection JSON the run shipped
 // alongside the dump (only present when the schedule has includeConfig on).
 app.get('/api/connections/:id/backup/runs/:runId/uploads/:destinationId/download', async (req, res) => {
-  const { run, upload } = findRunUpload(req.params.id, req.params.runId, req.params.destinationId)
+  const { run, upload } = await findRunUpload(req.params.id, req.params.runId, req.params.destinationId)
   if (!run) return res.status(404).json({ error: 'Backup run not found' })
   const wantConfig = req.query.artifact === 'config'
   const objectKey = wantConfig ? upload?.configKey : upload?.key
   if (!objectKey) return res.status(404).json({ error: `No downloadable ${wantConfig ? 'configuration' : 'upload'} found for this destination` })
-  const dest = getStorage(req.params.destinationId)
+  const dest = await getStorage(req.params.destinationId)
   if (!dest) return res.status(404).json({ error: 'Storage destination not found' })
-  const conn = getConnection(req.params.id)
+  const conn = await getConnection(req.params.id)
 
   try {
     const encrypted = wantConfig ? upload.configEncrypted : upload.encrypted
@@ -2617,20 +2632,20 @@ app.get('/api/connections/:id/backup/runs/:runId/uploads/:destinationId/download
 // point at any other connection in the same workspace of the same type.
 // Gated by typing the *target* connection's name to confirm.
 app.post('/api/connections/:id/backup/restore', async (req, res) => {
-  const sourceConn = getConnection(req.params.id)
+  const sourceConn = await getConnection(req.params.id)
   if (!sourceConn) return res.status(404).json({ error: 'Connection not found' })
   const { runId, destinationId, confirmName, targetConnectionId } = req.body || {}
-  const targetConn = targetConnectionId ? getConnection(targetConnectionId) : sourceConn
+  const targetConn = targetConnectionId ? await getConnection(targetConnectionId) : sourceConn
   if (!targetConn) return res.status(404).json({ error: 'Target connection not found' })
   if (targetConn.workspaceId !== sourceConn.workspaceId) return res.status(400).json({ error: 'Target connection must be in the same workspace' })
   if (targetConn.type !== sourceConn.type) return res.status(400).json({ error: 'Target connection must be the same database type' })
   if (!canRestore(targetConn)) return res.status(400).json({ error: `Restore not supported for connection type: ${targetConn.type}` })
   if (confirmName !== targetConn.name) return res.status(400).json({ error: "Confirmation text doesn't match the target connection's name." })
 
-  const { run, upload } = findRunUpload(req.params.id, runId, destinationId)
+  const { run, upload } = await findRunUpload(req.params.id, runId, destinationId)
   if (!run) return res.status(404).json({ error: 'Backup run not found' })
   if (!upload?.key) return res.status(400).json({ error: 'No successful upload found for this destination' })
-  const dest = getStorage(destinationId)
+  const dest = await getStorage(destinationId)
   if (!dest) return res.status(404).json({ error: 'Storage destination not found' })
 
   try {
@@ -2649,9 +2664,9 @@ app.post('/api/connections/:id/backup/restore', async (req, res) => {
 
 // Browse a destination's stored files so the user can pick one to restore.
 app.get('/api/connections/:id/restore/storage-objects', async (req, res) => {
-  const conn = getConnection(req.params.id)
+  const conn = await getConnection(req.params.id)
   if (!conn) return res.status(404).json({ error: 'Connection not found' })
-  const dest = storageForRestore(conn, req.query.destinationId)
+  const dest = await storageForRestore(conn, req.query.destinationId)
   if (!dest) return res.status(404).json({ error: 'Storage destination not found' })
   try {
     res.json({ objects: await listStorageObjects(dest) })
@@ -2662,13 +2677,13 @@ app.get('/api/connections/:id/restore/storage-objects', async (req, res) => {
 
 // Restore from a picked storage object.
 app.post('/api/connections/:id/restore/from-storage', async (req, res) => {
-  const conn = getConnection(req.params.id)
+  const conn = await getConnection(req.params.id)
   if (!conn) return res.status(404).json({ error: 'Connection not found' })
   const { destinationId, key, confirmName } = req.body || {}
   if (!canRestore(conn)) return res.status(400).json({ error: `Restore not supported for connection type: ${conn.type}` })
   if (confirmName !== conn.name) return res.status(400).json({ error: "Confirmation text doesn't match the connection's name." })
   if (typeof key !== 'string' || !key) return res.status(400).json({ error: 'An object key is required' })
-  const dest = storageForRestore(conn, destinationId)
+  const dest = await storageForRestore(conn, destinationId)
   if (!dest) return res.status(404).json({ error: 'Storage destination not found' })
 
   try {
@@ -2686,7 +2701,7 @@ app.post('/api/connections/:id/restore/from-storage', async (req, res) => {
 const UPLOAD_RESTORE_MAX_BYTES = 2 * 1024 * 1024 * 1024 // 2 GB
 
 app.post('/api/connections/:id/restore/upload', async (req, res) => {
-  const conn = getConnection(req.params.id)
+  const conn = await getConnection(req.params.id)
   if (!conn) return res.status(404).json({ error: 'Connection not found' })
   if (!canRestore(conn)) return res.status(400).json({ error: `Restore not supported for connection type: ${conn.type}` })
   if (req.query.confirmName !== conn.name) return res.status(400).json({ error: "Confirmation text doesn't match the connection's name." })
@@ -2718,14 +2733,9 @@ app.post('/api/connections/:id/restore/upload', async (req, res) => {
 // Query history (per connection)
 // ============================================================================
 
-app.get('/api/connections/:id/history', (req, res) => {
+app.get('/api/connections/:id/history', async (req, res) => {
   const limit = Math.min(parseInt(req.query.limit) || 500, 5000)
-  const rows = meta
-    .prepare(
-      `SELECT id, table_name, query, status, latency, error, executor_id, executor_name, ts
-       FROM query_history WHERE connection_id = ? ORDER BY ts DESC LIMIT ?`
-    )
-    .all(req.params.id, limit)
+  const rows = await meta().query_history.findMany({ where: { connection_id: req.params.id }, orderBy: { ts: 'desc' }, take: limit })
   res.json(
     rows.map((r) => ({
       id: r.id,
@@ -2741,7 +2751,7 @@ app.get('/api/connections/:id/history', (req, res) => {
   )
 })
 
-app.post('/api/connections/:id/history', (req, res) => {
+app.post('/api/connections/:id/history', async (req, res) => {
   const { table, query, status, latency, error, executorId, executorName } = req.body || {}
   if (!query?.trim()) return res.status(400).json({ error: 'A query is required' })
   const entry = {
@@ -2755,36 +2765,30 @@ app.post('/api/connections/:id/history', (req, res) => {
     executorName: executorName || null,
     executedAt: Date.now(),
   }
-  meta
-    .prepare(
-      `INSERT INTO query_history
-       (id, connection_id, table_name, query, status, latency, error, executor_id, executor_name, ts)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-    .run(
-      entry.id,
-      req.params.id,
-      entry.table,
-      entry.query,
-      entry.status,
-      entry.latency,
-      entry.error,
-      entry.executorId,
-      entry.executorName,
-      entry.executedAt
-    )
+  await meta().query_history.create({
+    data: {
+      id: entry.id,
+      connection_id: req.params.id,
+      table_name: entry.table,
+      query: entry.query,
+      status: entry.status,
+      latency: entry.latency,
+      error: entry.error,
+      executor_id: entry.executorId,
+      executor_name: entry.executorName,
+      ts: entry.executedAt,
+    },
+  })
   res.json(entry)
 })
 
-app.delete('/api/connections/:id/history', (req, res) => {
+app.delete('/api/connections/:id/history', async (req, res) => {
   // With { ids: [...] } delete just those entries; otherwise clear everything.
   const ids = req.body?.ids
   if (Array.isArray(ids) && ids.length) {
-    const del = meta.prepare('DELETE FROM query_history WHERE id = ? AND connection_id = ?')
-    const tx = meta.transaction((list) => list.forEach((hid) => del.run(hid, req.params.id)))
-    tx(ids)
+    await meta().query_history.deleteMany({ where: { connection_id: req.params.id, id: { in: ids.map(String) } } })
   } else {
-    meta.prepare('DELETE FROM query_history WHERE connection_id = ?').run(req.params.id)
+    await meta().query_history.deleteMany({ where: { connection_id: req.params.id } })
   }
   res.json({ ok: true })
 })
@@ -2796,12 +2800,12 @@ app.delete('/api/connections/:id/history', (req, res) => {
 // per successful commitChanges() batch, bumping the connection's schema
 // version. Audit trail only; nothing here re-executes SQL.
 
-app.post('/api/connections/:id/schema/migrations', (req, res) => {
+app.post('/api/connections/:id/schema/migrations', async (req, res) => {
   const user = requireAuth(req, res)
   if (!user) return
   const statements = Array.isArray(req.body?.statements) ? req.body.statements : []
   if (!statements.length) return res.status(400).json({ error: 'At least one statement is required' })
-  const version = bumpSchemaVersion(req.params.id)
+  const version = await bumpSchemaVersion(req.params.id)
   const entry = {
     id: randomUUID(),
     connectionId: req.params.id,
@@ -2813,36 +2817,28 @@ app.post('/api/connections/:id/schema/migrations', (req, res) => {
     executorName: user.name || user.username,
     ts: Date.now(),
   }
-  meta
-    .prepare(
-      `INSERT INTO schema_migrations
-       (id, connection_id, version, forward_sql, rollback_sql, reversible, status, executor_id, executor_name, ts)
-       VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`
-    )
-    .run(
-      entry.id,
-      entry.connectionId,
-      entry.version,
-      JSON.stringify(entry.forwardSql),
-      JSON.stringify(entry.rollbackSql),
-      entry.reversible ? 1 : 0,
-      entry.executorId,
-      entry.executorName,
-      entry.ts
-    )
+  await meta().schema_migrations.create({
+    data: {
+      id: entry.id,
+      connection_id: entry.connectionId,
+      version: entry.version,
+      forward_sql: JSON.stringify(entry.forwardSql),
+      rollback_sql: JSON.stringify(entry.rollbackSql),
+      reversible: entry.reversible ? 1 : 0,
+      status: 'active',
+      executor_id: entry.executorId,
+      executor_name: entry.executorName,
+      ts: entry.ts,
+    },
+  })
   res.json({ version, migration: { ...entry, status: 'active' } })
 })
 
 // List a connection's schema migration history, newest first. `ORDER BY ts`
 // (not version) so rolled-back rows that share a reused version number keep
 // their real chronological order.
-app.get('/api/connections/:id/schema/migrations', (req, res) => {
-  const rows = meta
-    .prepare(
-      `SELECT id, version, forward_sql, rollback_sql, reversible, status, executor_id, executor_name, ts
-       FROM schema_migrations WHERE connection_id = ? ORDER BY ts DESC`
-    )
-    .all(req.params.id)
+app.get('/api/connections/:id/schema/migrations', async (req, res) => {
+  const rows = await meta().schema_migrations.findMany({ where: { connection_id: req.params.id }, orderBy: { ts: 'desc' } })
   res.json(
     rows.map((r) => ({
       id: r.id,
@@ -2867,7 +2863,7 @@ app.get('/api/connections/:id/schema/migrations', (req, res) => {
 app.post('/api/connections/:id/schema/rollback', async (req, res) => {
   const user = requireAuth(req, res)
   if (!user) return
-  const conn = getConnection(req.params.id)
+  const conn = await getConnection(req.params.id)
   if (!conn) return res.status(404).json({ error: 'Connection not found' })
 
   const toVersion = Number(req.body?.toVersion)
@@ -2876,14 +2872,11 @@ app.post('/api/connections/:id/schema/rollback', async (req, res) => {
   }
 
   // Still-active migrations newer than the target, newest first — these get undone.
-  const rows = meta
-    .prepare(
-      `SELECT id, version, forward_sql, rollback_sql, reversible
-       FROM schema_migrations
-       WHERE connection_id = ? AND version > ? AND COALESCE(status, 'active') = 'active'
-       ORDER BY version DESC`
-    )
-    .all(req.params.id, toVersion)
+  // A NULL status is a legacy row, and legacy rows are active.
+  const rows = await meta().schema_migrations.findMany({
+    where: { connection_id: req.params.id, version: { gt: toVersion }, OR: [{ status: null }, { status: 'active' }] },
+    orderBy: { version: 'desc' },
+  })
 
   if (!rows.length) return res.status(400).json({ error: 'Nothing to roll back for that version' })
   const irreversible = rows.find((r) => !r.reversible)
@@ -2908,10 +2901,10 @@ app.post('/api/connections/:id/schema/rollback', async (req, res) => {
     return res.status(500).json({ error: `Rollback failed: ${error.message}` })
   }
 
-  const markRolledBack = meta.prepare(`UPDATE schema_migrations SET status = 'rollbacked' WHERE id = ?`)
-  const tx = meta.transaction((list) => list.forEach((r) => markRolledBack.run(r.id)))
-  tx(rows)
-  setSchemaVersion(req.params.id, toVersion)
+  await transaction(async () => {
+    await meta().schema_migrations.updateMany({ where: { id: { in: rows.map((r) => r.id) } }, data: { status: 'rollbacked' } })
+    await setSchemaVersion(req.params.id, toVersion)
+  })
 
   res.json({ version: toVersion, rolledBack: rows.map((r) => r.version) })
 })
@@ -2924,8 +2917,8 @@ app.post('/api/connections/:id/schema/rollback', async (req, res) => {
 // a 400 naming the type (insert, analyze) — never `undefined`.
 
 // The connection this request is for; the /:id guard has already authorized it.
-const connOr404 = (req, res) => {
-  const conn = getConnection(req.params.id)
+const connOr404 = async (req, res) => {
+  const conn = await getConnection(req.params.id)
   if (!conn) {
     res.status(404).json({ error: 'Connection not found' })
     return null
@@ -2934,7 +2927,7 @@ const connOr404 = (req, res) => {
 }
 
 app.get('/api/connections/:id/tables', async (req, res) => {
-  const conn = connOr404(req, res)
+  const conn = await connOr404(req, res)
   if (!conn) return
   try {
     res.json(await db.listTables(conn, queryCtx(req)))
@@ -2945,7 +2938,7 @@ app.get('/api/connections/:id/tables', async (req, res) => {
 
 // Connectivity check — attempts to reach the database and reports { ok }.
 app.get('/api/connections/:id/ping', async (req, res) => {
-  const conn = getConnection(req.params.id)
+  const conn = await getConnection(req.params.id)
   if (!conn) return res.status(404).json({ ok: false, error: 'Connection not found' })
   try {
     res.json(await db.ping(conn, queryCtx(req)))
@@ -2959,7 +2952,7 @@ app.get('/api/connections/:id/ping', async (req, res) => {
 // hint } — see server/db/diagnose.js. Never throws, so the UI always has
 // something to show.
 app.get('/api/connections/:id/handshake', async (req, res) => {
-  const conn = connOr404(req, res)
+  const conn = await connOr404(req, res)
   if (!conn) return
   res.json(await db.handshake(conn, queryCtx(req)))
 })
@@ -2972,7 +2965,7 @@ app.get('/api/connections/:id/handshake', async (req, res) => {
 
 // Who's currently connected, and against what cap.
 app.get('/api/connections/:id/sessions', async (req, res) => {
-  const conn = connOr404(req, res)
+  const conn = await connOr404(req, res)
   if (!conn) return
   try {
     res.json(await connectionSessionStats(conn))
@@ -2985,13 +2978,13 @@ app.get('/api/connections/:id/sessions', async (req, res) => {
 // only drops the caller's participation; the handle is released once the last
 // participant is gone.
 app.delete('/api/connections/:id/sessions/:sessionId', async (req, res) => {
-  const conn = connOr404(req, res)
+  const conn = await connOr404(req, res)
   if (!conn) return
   const user = authUser(req)
   const force = ['1', 'true', 'yes'].includes(String(req.query.force || '').toLowerCase())
   // Asks for the capability, not the role name: an admin may have defined some
   // other role that manages the workspace, and it should close sessions too.
-  if (force && conn.workspaceId && !can(conn.workspaceId, user.id, 'workspace.manage')) {
+  if (force && conn.workspaceId && !(await can(conn.workspaceId, user.id, 'workspace.manage'))) {
     return res.status(403).json({ error: 'Only a workspace owner can close someone else’s session.' })
   }
   try {
@@ -3006,7 +2999,7 @@ app.delete('/api/connections/:id/sessions/:sessionId', async (req, res) => {
 // List all browsable database objects (tables, views, functions, …) as a
 // generic [{ name, type, ... }] list so any dialect can populate the browser.
 app.get('/api/connections/:id/objects', async (req, res) => {
-  const conn = connOr404(req, res)
+  const conn = await connOr404(req, res)
   if (!conn) return
   try {
     res.json(await db.listObjects(conn, queryCtx(req)))
@@ -3017,7 +3010,7 @@ app.get('/api/connections/:id/objects', async (req, res) => {
 
 // Function definition(s) for a named routine (empty for engines without them).
 app.get('/api/connections/:id/function/:name', async (req, res) => {
-  const conn = connOr404(req, res)
+  const conn = await connOr404(req, res)
   if (!conn) return
   try {
     res.json(await db.listFunctions(conn, queryCtx(req), req.params.name))
@@ -3027,7 +3020,7 @@ app.get('/api/connections/:id/function/:name', async (req, res) => {
 })
 
 app.get('/api/connections/:id/table/:table', async (req, res) => {
-  const conn = connOr404(req, res)
+  const conn = await connOr404(req, res)
   if (!conn) return
   try {
     res.json(await db.getTableData(conn, queryCtx(req), { table: req.params.table, limit: parseInt(req.query.limit) || 200 }))
@@ -3037,7 +3030,7 @@ app.get('/api/connections/:id/table/:table', async (req, res) => {
 })
 
 app.get('/api/connections/:id/columns/:table', async (req, res) => {
-  const conn = connOr404(req, res)
+  const conn = await connOr404(req, res)
   if (!conn) return
   try {
     res.json(await db.getColumns(conn, queryCtx(req), req.params.table))
@@ -3047,7 +3040,7 @@ app.get('/api/connections/:id/columns/:table', async (req, res) => {
 })
 
 app.get('/api/connections/:id/indexes/:table', async (req, res) => {
-  const conn = connOr404(req, res)
+  const conn = await connOr404(req, res)
   if (!conn) return
   try {
     res.json(await db.getIndexes(conn, queryCtx(req), req.params.table))
@@ -3058,7 +3051,7 @@ app.get('/api/connections/:id/indexes/:table', async (req, res) => {
 
 // Full schema (table -> column names) for editor autocomplete.
 app.get('/api/connections/:id/schema', async (req, res) => {
-  const conn = connOr404(req, res)
+  const conn = await connOr404(req, res)
   if (!conn) return
   try {
     res.json(await db.getSchemaMap(conn, queryCtx(req)))
@@ -3069,7 +3062,7 @@ app.get('/api/connections/:id/schema', async (req, res) => {
 
 // List databases + schemas available on a connection (for the breadcrumb).
 app.get('/api/connections/:id/namespaces', async (req, res) => {
-  const conn = connOr404(req, res)
+  const conn = await connOr404(req, res)
   if (!conn) return
   try {
     res.json(await db.namespaces(conn, queryCtx(req)))
@@ -3080,8 +3073,8 @@ app.get('/api/connections/:id/namespaces', async (req, res) => {
 
 // Column data types the schema editor offers. Schemaless engines (Redis)
 // report none — the schema designer is hidden for them.
-app.get('/api/connections/:id/types', (req, res) => {
-  const conn = connOr404(req, res)
+app.get('/api/connections/:id/types', async (req, res) => {
+  const conn = await connOr404(req, res)
   if (!conn) return
   res.json({ types: db.dataTypesFor(conn) })
 })
@@ -3090,7 +3083,7 @@ app.get('/api/connections/:id/types', (req, res) => {
 // `?tables=a,b,c` answers for just those tables, which is how the schema editor's
 // Sync walks a large schema in slices and reports progress as it goes.
 app.get('/api/connections/:id/diagram', async (req, res) => {
-  const conn = connOr404(req, res)
+  const conn = await connOr404(req, res)
   if (!conn) return
   const only = String(req.query.tables || '')
     .split(',')
@@ -3105,7 +3098,7 @@ app.get('/api/connections/:id/diagram', async (req, res) => {
 
 // Insert a row (parameterized).
 app.post('/api/connections/:id/insert', async (req, res) => {
-  const conn = connOr404(req, res)
+  const conn = await connOr404(req, res)
   if (!conn) return
   const { table, values } = req.body
   if (!table || Object.keys(values || {}).length === 0) {
@@ -3121,7 +3114,7 @@ app.post('/api/connections/:id/insert', async (req, res) => {
 // Analyze query performance — EXPLAIN-based, normalized across dialects.
 // Read-only SELECTs also run for real timings; writes are never executed.
 app.post('/api/connections/:id/analyze', async (req, res) => {
-  const conn = connOr404(req, res)
+  const conn = await connOr404(req, res)
   if (!conn) return
   const { sql } = req.body
   if (!sql || !sql.trim()) return res.status(400).json({ error: 'SQL query required' })
@@ -3142,7 +3135,7 @@ app.post('/api/connections/:id/analyze', async (req, res) => {
 
 // Execute a query (or, on a command-driven engine, a command buffer).
 app.post('/api/connections/:id/query', async (req, res) => {
-  const conn = connOr404(req, res)
+  const conn = await connOr404(req, res)
   if (!conn) return
   const { sql } = req.body
   if (!sql || !sql.trim()) return res.status(400).json({ error: 'SQL query required' })
@@ -3166,7 +3159,7 @@ app.post('/api/connections/:id/query', async (req, res) => {
 // they register their session — the gate the generic dispatchers apply for
 // every other route.
 const requireRedis = async (req, res) => {
-  const conn = getConnection(req.params.id)
+  const conn = await getConnection(req.params.id)
   if (!conn) {
     res.status(404).json({ error: 'Connection not found' })
     return null
@@ -3261,7 +3254,7 @@ app.put('/api/connections/:id/redis/ttl', async (req, res) => {
 // ============================================================================
 
 // The running app's identity — cheap; used by the wizard's verify-poll.
-app.get('/api/system/version', (req, res) => {
+app.get('/api/system/version', async (req, res) => {
   if (!requireAuth(req, res)) return
   res.json({ name: APP_NAME, version: APP_VERSION, sha: GIT_SHA, autoCheckUpdates: AUTO_CHECK_UPDATES })
 })
@@ -3280,15 +3273,15 @@ app.post('/api/system/backup', async (req, res) => {
     fs.mkdirSync(BACKUPS_DIR, { recursive: true })
     const file = `app-${APP_VERSION}-${Date.now()}.${META_DB_TYPE === 'postgresql' ? 'dump' : 'db'}`
     const dest = path.join(BACKUPS_DIR, file)
-    await meta.backup(dest)
-    res.json({ ok: true, file, sizeBytes: fs.statSync(dest).size, createdAt: Date.now() })
+    const sizeBytes = await backupMeta(dest)
+    res.json({ ok: true, file, sizeBytes, createdAt: Date.now() })
   } catch (e) {
     res.status(500).json({ error: e.message })
   }
 })
 
 // Download a previously-taken snapshot.
-app.get('/api/system/backup/:file/download', (req, res) => {
+app.get('/api/system/backup/:file/download', async (req, res) => {
   if (!requireSystemAdmin(req, res)) return
   const safe = path.basename(req.params.file)
   const full = path.join(BACKUPS_DIR, safe)
@@ -3299,12 +3292,12 @@ app.get('/api/system/backup/:file/download', (req, res) => {
 })
 
 // Pre-flight validation before applying an update.
-app.get('/api/system/preflight', (req, res) => {
+app.get('/api/system/preflight', async (req, res) => {
   if (!requireSystemAdmin(req, res)) return
   const checks = []
 
   try {
-    const r = META_DB_TYPE === 'postgresql' ? (meta.prepare('SELECT 1 AS ok').get()?.ok === 1 ? 'ok' : 'failed') : meta.pragma('integrity_check', { simple: true })
+    const r = await checkMetaIntegrity()
     checks.push({ id: 'integrity', label: 'Metadata database integrity', status: r === 'ok' ? 'pass' : 'fail', detail: r === 'ok' ? 'No corruption detected' : String(r) })
   } catch (e) {
     checks.push({ id: 'integrity', label: 'Metadata database integrity', status: 'fail', detail: e.message })
@@ -3313,7 +3306,7 @@ app.get('/api/system/preflight', (req, res) => {
   try {
     fs.mkdirSync(BACKUPS_DIR, { recursive: true })
     if (META_DB_TYPE === 'postgresql') {
-      const size = meta.prepare('SELECT pg_database_size(current_database()) AS bytes').get().bytes
+      const [{ bytes: size }] = await meta().$queryRaw`SELECT pg_database_size(current_database()) AS bytes`
       checks.push({ id: 'disk', label: 'Metadata snapshot', status: 'pass', detail: `PostgreSQL database: ${Math.round(size / 1e6)} MB; snapshot writes to local backup directory` })
     } else {
       const st = fs.statfsSync(BACKUPS_DIR)
@@ -3367,7 +3360,7 @@ app.post('/api/system/update/apply', async (req, res) => {
 })
 
 // Health check — also carries boot readiness + identity for the update flow.
-app.get('/api/health', (req, res) => {
+app.get('/api/health', async (req, res) => {
   res.json({ status: bootReady ? 'ok' : 'starting', ready: bootReady, version: APP_VERSION, sha: GIT_SHA })
 })
 
@@ -3386,10 +3379,12 @@ app.use((req, res) => {
   res.status(404).json({ error: 'Not found' })
 })
 
-// Error handler
+// Error handler. A module error carrying `status` (a 400 from validation, say)
+// keeps it, the same as `fail()` does in a route's own catch.
 app.use((error, req, res, next) => {
-  console.error(error)
-  res.status(500).json({ error: error.message })
+  if (!error.status || error.status >= 500) console.error(error)
+  if (res.headersSent) return next(error)
+  res.status(error.status || 500).json({ error: error.message })
 })
 
 // One tick drives both schedulers: workflows with a due Schedule trigger, and
@@ -3408,12 +3403,16 @@ cron.schedule('* * * * *', () => {
   sweepConnectionSessions().catch((e) => console.error('Session sweep error:', e.message))
 })
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`✅ Server running on http://localhost:${PORT}`)
   console.log(`📊 API available at http://localhost:${PORT}/api`)
   console.log(`🔑 Sessions: logins in ${META_DB_TYPE === 'postgresql' ? 'PostgreSQL metadata' : META_DB_PATH}, cached in ${sessionCache.kind}`)
   // Open what can be opened eagerly (SQLite files) so the first query is fast.
-  for (const conn of listConnections()) {
+  const connections = await listConnections().catch((error) => {
+    console.error('Listing connections to prewarm failed:', error.message)
+    return []
+  })
+  for (const conn of connections) {
     try {
       db.prewarmConnection(conn)
     } catch (error) {
@@ -3427,6 +3426,6 @@ process.on('SIGINT', async () => {
   console.log('\n🛑 Shutting down...')
   db.closeAllConnections()
   await closeSessionStore().catch(() => {})
-  meta.close()
+  await closeMeta().catch(() => {})
   process.exit(0)
 })

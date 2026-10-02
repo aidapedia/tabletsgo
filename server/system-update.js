@@ -151,6 +151,8 @@ export const cachedUpdateInfo = () => updateCache?.data
 // itself with no external tool: pull the new image, clone the running
 // container's resolved config, and hand the final stop/rename/start swap to a
 // tiny detached `docker:cli` helper (so the swap survives this process stopping).
+// The helper runs the new image's migrator between stopping us and starting the
+// new container, and rolls back to us if it fails.
 
 // Minimal Docker Engine API client over the unix socket. `raw` returns the body
 // as text (used for the streamed image-pull progress).
@@ -230,12 +232,39 @@ export async function dockerSelfUpdate() {
     HostConfig: inspect.HostConfig,
     NetworkingConfig: { EndpointsConfig },
   }
-  const created = await dockerApi('POST', `/containers/create?name=${encodeURIComponent(oldName)}-update-${Date.now()}`, { body: spec })
+  const stamp = Date.now()
+  const created = await dockerApi('POST', `/containers/create?name=${encodeURIComponent(oldName)}-update-${stamp}`, { body: spec })
   const newId = created.Id
 
-  // Hand the swap to a detached helper: it stops+removes us, takes our name, and
-  // starts the new container. AutoRemove cleans the helper up afterwards.
-  const script = `sleep 2; docker stop ${selfId}; docker rm -f ${selfId}; docker rename ${newId} ${oldName}; docker start ${newId}`
+  // The new image's migrations run in a one-shot container of their own (the
+  // app refuses to boot on a stale schema). Same env, volumes and networks so
+  // it reaches the same metadata DB — but no published ports, no restart
+  // policy, no compose labels and no network aliases: it is not the service.
+  const migrateSpec = {
+    ...spec,
+    Cmd: ['node', 'scripts/migrate.js'],
+    Labels: {},
+    ExposedPorts: undefined,
+    HostConfig: { ...inspect.HostConfig, PortBindings: {}, PublishAllPorts: false, RestartPolicy: { Name: 'no' } },
+    NetworkingConfig: { EndpointsConfig: Object.fromEntries(Object.keys(EndpointsConfig).map((net) => [net, {}])) },
+  }
+  const migrator = await dockerApi('POST', `/containers/create?name=${encodeURIComponent(oldName)}-migrate-${stamp}`, { body: migrateSpec })
+
+  // Hand the swap to a detached helper: it stops us (SQLite migrations need the
+  // file to themselves), runs the migrator, and only if that succeeds removes
+  // us and starts the new container under our name. A failed migration
+  // restarts us on the old image instead and leaves the migrate container for
+  // `docker logs`; the pre-migrate snapshot in data/backups/ covers the data.
+  // AutoRemove cleans the helper up afterwards.
+  const script = [
+    'sleep 2',
+    `docker stop ${selfId}`,
+    `if docker start -a ${migrator.Id}; then`,
+    `  docker rm ${migrator.Id}; docker rm -f ${selfId}; docker rename ${newId} ${oldName}; docker start ${newId}`,
+    'else',
+    `  docker rm -f ${newId}; docker start ${selfId}`,
+    'fi',
+  ].join('\n')
   const helperC = await dockerApi('POST', '/containers/create', {
     body: {
       Image: UPDATE_HELPER_IMAGE,

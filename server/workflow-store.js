@@ -2,16 +2,20 @@
  * and scheduling live in workflow.js; both use the same workflow rows. */
 
 import { randomUUID } from 'crypto'
-import { meta } from './meta.js'
+import { db } from './meta.js'
 import { safeJson } from './util.js'
 import { nextRunForGraph } from './workflow.js'
 
 const invalid = (message) => Object.assign(new Error(message), { status: 400 })
 
-export function listConnectionWorkflows(connectionId) {
-  return meta.prepare('SELECT id, name, ts, protected, schedule_enabled, folder_id FROM workflows WHERE connection_id = ? ORDER BY ts DESC')
-    .all(connectionId)
-    .map((row) => ({
+export async function listConnectionWorkflows(connectionId) {
+  return (
+    await db().workflows.findMany({
+      where: { connection_id: connectionId },
+      select: { id: true, name: true, ts: true, protected: true, schedule_enabled: true, folder_id: true },
+      orderBy: { ts: 'desc' },
+    })
+  ).map((row) => ({
       id: row.id,
       name: row.name,
       ts: row.ts,
@@ -21,7 +25,7 @@ export function listConnectionWorkflows(connectionId) {
     }))
 }
 
-export function createWorkflow(connectionId, body = {}) {
+export async function createWorkflow(connectionId, body = {}) {
   if (typeof body.name !== 'string' || !body.name.trim()) throw invalid('A workflow name is required')
   const entry = {
     id: randomUUID(),
@@ -30,14 +34,17 @@ export function createWorkflow(connectionId, body = {}) {
     folderId: body.folderId || null,
     ts: Date.now(),
   }
-  meta.prepare('INSERT INTO workflows (id, connection_id, name, graph, folder_id, ts) VALUES (?, ?, ?, ?, ?, ?)')
-    .run(entry.id, connectionId, entry.name, JSON.stringify(entry.graph), entry.folderId, entry.ts)
+  await db().workflows.create({
+    data: { id: entry.id, connection_id: connectionId, name: entry.name, graph: JSON.stringify(entry.graph), folder_id: entry.folderId, ts: entry.ts },
+  })
   return { ...entry, protected: false, scheduleEnabled: false }
 }
 
-export function getWorkflow(connectionId, workflowId) {
-  const row = meta.prepare('SELECT id, name, graph, protected, schedule_enabled FROM workflows WHERE id = ? AND connection_id = ?')
-    .get(workflowId, connectionId)
+export async function getWorkflow(connectionId, workflowId) {
+  const row = await db().workflows.findFirst({
+    where: { id: workflowId, connection_id: connectionId },
+    select: { id: true, name: true, graph: true, protected: true, schedule_enabled: true },
+  })
   return row && {
     id: row.id,
     name: row.name,
@@ -47,60 +54,56 @@ export function getWorkflow(connectionId, workflowId) {
   }
 }
 
-export function getWebhookWorkflow(workflowId) {
-  const row = meta.prepare('SELECT id, connection_id, graph FROM workflows WHERE id = ?').get(workflowId)
+export async function getWebhookWorkflow(workflowId) {
+  const row = workflowId
+    ? await db().workflows.findUnique({ where: { id: workflowId }, select: { id: true, connection_id: true, graph: true } })
+    : null
   return row && { id: row.id, connectionId: row.connection_id, graph: safeJson(row.graph) }
 }
 
-export function updateWorkflow(connectionId, workflowId, body = {}) {
-  const existing = meta.prepare('SELECT graph, schedule_enabled FROM workflows WHERE id = ? AND connection_id = ?')
-    .get(workflowId, connectionId)
+export async function updateWorkflow(connectionId, workflowId, body = {}) {
+  const existing = await db().workflows.findFirst({
+    where: { id: workflowId, connection_id: connectionId },
+    select: { graph: true, schedule_enabled: true },
+  })
   if (!existing) return false
-  const sets = []
-  const vals = []
+  const data = {}
   if (body.name != null) {
     if (typeof body.name !== 'string' || !body.name.trim()) throw invalid('A name is required')
-    sets.push('name = ?')
-    vals.push(body.name.trim())
+    data.name = body.name.trim()
   }
-  if (body.graph != null) {
-    sets.push('graph = ?')
-    vals.push(JSON.stringify(body.graph))
-  }
-  if (body.scheduleEnabled != null) {
-    sets.push('schedule_enabled = ?')
-    vals.push(body.scheduleEnabled ? 1 : 0)
-  }
-  if ('folderId' in body) {
-    sets.push('folder_id = ?')
-    vals.push(body.folderId || null)
-  }
-  if (!sets.length) throw invalid('Nothing to update')
+  if (body.graph != null) data.graph = JSON.stringify(body.graph)
+  if (body.scheduleEnabled != null) data.schedule_enabled = body.scheduleEnabled ? 1 : 0
+  if ('folderId' in body) data.folder_id = body.folderId || null
+  if (!Object.keys(data).length) throw invalid('Nothing to update')
   if (body.graph != null || body.scheduleEnabled != null) {
     const graph = body.graph != null ? body.graph : safeJson(existing.graph)
     const enabled = body.scheduleEnabled != null ? !!body.scheduleEnabled : !!existing.schedule_enabled
-    sets.push('next_run_at = ?')
-    vals.push(nextRunForGraph(graph, enabled))
+    data.next_run_at = nextRunForGraph(graph, enabled)
   }
-  return !!meta.prepare(`UPDATE workflows SET ${sets.join(', ')} WHERE id = ? AND connection_id = ?`)
-    .run(...vals, workflowId, connectionId).changes
+  return (await db().workflows.updateMany({ where: { id: workflowId, connection_id: connectionId }, data })).count > 0
 }
 
-export function deleteWorkflow(connectionId, workflowId) {
-  const row = meta.prepare('SELECT protected FROM workflows WHERE id = ? AND connection_id = ?').get(workflowId, connectionId)
+export async function deleteWorkflow(connectionId, workflowId) {
+  const row = await db().workflows.findFirst({ where: { id: workflowId, connection_id: connectionId }, select: { protected: true } })
   if (!row) return 'missing'
   if (row.protected) return 'protected'
-  meta.prepare('DELETE FROM workflows WHERE id = ? AND connection_id = ?').run(workflowId, connectionId)
+  await db().workflows.deleteMany({ where: { id: workflowId, connection_id: connectionId } })
   return 'deleted'
 }
 
-export function listWorkflowRuns(connectionId, workflowId, { limit = 50, offset = 0 } = {}) {
-  const workflow = meta.prepare('SELECT 1 FROM workflows WHERE id = ? AND connection_id = ?').get(workflowId, connectionId)
+export async function listWorkflowRuns(connectionId, workflowId, { limit = 50, offset = 0 } = {}) {
+  const workflow = await db().workflows.findFirst({ where: { id: workflowId, connection_id: connectionId }, select: { id: true } })
   if (!workflow) return null
-  return meta.prepare(
-    `SELECT id, trigger_kind, status, error, started_at, finished_at
-     FROM workflow_runs WHERE workflow_id = ? ORDER BY started_at DESC LIMIT ? OFFSET ?`
-  ).all(workflowId, limit, offset).map((row) => ({
+  return (
+    await db().workflow_runs.findMany({
+      where: { workflow_id: workflowId },
+      select: { id: true, trigger_kind: true, status: true, error: true, started_at: true, finished_at: true },
+      orderBy: { started_at: 'desc' },
+      take: limit,
+      skip: offset,
+    })
+  ).map((row) => ({
     id: row.id,
     triggerKind: row.trigger_kind,
     status: row.status,
@@ -111,11 +114,11 @@ export function listWorkflowRuns(connectionId, workflowId, { limit = 50, offset 
   }))
 }
 
-export function getWorkflowRun(connectionId, workflowId, runId) {
-  const row = meta.prepare(
-    `SELECT id, trigger_kind, status, log, error, started_at, finished_at
-     FROM workflow_runs WHERE id = ? AND workflow_id = ? AND connection_id = ?`
-  ).get(runId, workflowId, connectionId)
+export async function getWorkflowRun(connectionId, workflowId, runId) {
+  const row = await db().workflow_runs.findFirst({
+    where: { id: runId, workflow_id: workflowId, connection_id: connectionId },
+    select: { id: true, trigger_kind: true, status: true, log: true, error: true, started_at: true, finished_at: true },
+  })
   return row && {
     id: row.id,
     triggerKind: row.trigger_kind,

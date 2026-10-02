@@ -2,29 +2,33 @@
  * document: widgets may query any engine supported by the database layer. */
 
 import { randomUUID } from 'crypto'
-import { meta } from './meta.js'
+import { db } from './meta.js'
 import { safeJson } from './util.js'
 
 const invalid = (message) => Object.assign(new Error(message), { status: 400 })
 const emptyConfig = () => ({ variables: [], widgets: [] })
 
-const validFolder = (connectionId, folderId) =>
-  !folderId || !!meta.prepare("SELECT 1 FROM folders WHERE id = ? AND connection_id = ? AND type = 'dashboard'").get(folderId, connectionId)
+const validFolder = async (connectionId, folderId) =>
+  !folderId || !!(await db().folders.findFirst({ where: { id: folderId, connection_id: connectionId, type: 'dashboard' }, select: { id: true } }))
 
-export function listDashboards(connectionId) {
-  return meta.prepare('SELECT id, name, folder_id, ts FROM dashboards WHERE connection_id = ? ORDER BY ts DESC')
-    .all(connectionId)
-    .map((r) => ({ id: r.id, name: r.name, folderId: r.folder_id || null, ts: r.ts }))
+export async function listDashboards(connectionId) {
+  return (
+    await db().dashboards.findMany({
+      where: { connection_id: connectionId },
+      select: { id: true, name: true, folder_id: true, ts: true },
+      orderBy: { ts: 'desc' },
+    })
+  ).map((r) => ({ id: r.id, name: r.name, folderId: r.folder_id || null, ts: r.ts }))
 }
 
-export function listDashboardsForConnections(connections) {
+export async function listDashboardsForConnections(connections) {
   if (!connections.length) return []
   const byId = new Map(connections.map((conn) => [conn.id, conn]))
-  const ids = [...byId.keys()]
-  const rows = meta.prepare(
-    `SELECT id, connection_id, name, config, folder_id, ts FROM dashboards
-     WHERE connection_id IN (${ids.map(() => '?').join(', ')}) ORDER BY ts DESC`
-  ).all(...ids)
+  const rows = await db().dashboards.findMany({
+    where: { connection_id: { in: [...byId.keys()] } },
+    select: { id: true, connection_id: true, name: true, config: true, folder_id: true, ts: true },
+    orderBy: { ts: 'desc' },
+  })
   return rows.map((row) => {
     const conn = byId.get(row.connection_id)
     const config = safeJson(row.config) || {}
@@ -42,9 +46,9 @@ export function listDashboardsForConnections(connections) {
   })
 }
 
-export function createDashboard(connectionId, body = {}) {
+export async function createDashboard(connectionId, body = {}) {
   if (typeof body.name !== 'string' || !body.name.trim()) throw invalid('A dashboard name is required')
-  if (!validFolder(connectionId, body.folderId)) throw invalid('Folder not found')
+  if (!(await validFolder(connectionId, body.folderId))) throw invalid('Folder not found')
   const entry = {
     id: randomUUID(),
     name: body.name.trim(),
@@ -52,42 +56,39 @@ export function createDashboard(connectionId, body = {}) {
     folderId: body.folderId || null,
     ts: Date.now(),
   }
-  meta.prepare('INSERT INTO dashboards (id, connection_id, name, config, folder_id, ts) VALUES (?, ?, ?, ?, ?, ?)')
-    .run(entry.id, connectionId, entry.name, JSON.stringify(entry.config), entry.folderId, entry.ts)
+  await db().dashboards.create({
+    data: { id: entry.id, connection_id: connectionId, name: entry.name, config: JSON.stringify(entry.config), folder_id: entry.folderId, ts: entry.ts },
+  })
   return entry
 }
 
-export function getDashboard(connectionId, dashboardId) {
-  const row = meta.prepare('SELECT id, name, config, ts FROM dashboards WHERE id = ? AND connection_id = ?')
-    .get(dashboardId, connectionId)
+export async function getDashboard(connectionId, dashboardId) {
+  const row = await db().dashboards.findFirst({
+    where: { id: dashboardId, connection_id: connectionId },
+    select: { id: true, name: true, config: true, ts: true },
+  })
   return row && { id: row.id, name: row.name, ts: row.ts, config: safeJson(row.config) || emptyConfig() }
 }
 
-export function updateDashboard(connectionId, dashboardId, body = {}) {
-  const sets = []
-  const vals = []
+export async function updateDashboard(connectionId, dashboardId, body = {}) {
+  const data = {}
   if (body.name != null) {
     if (typeof body.name !== 'string' || !body.name.trim()) throw invalid('A name is required')
-    sets.push('name = ?')
-    vals.push(body.name.trim())
+    data.name = body.name.trim()
   }
   if (body.config != null) {
     if (typeof body.config !== 'object') throw invalid('config must be an object')
-    sets.push('config = ?')
-    vals.push(JSON.stringify(body.config))
+    data.config = JSON.stringify(body.config)
   }
   if ('folderId' in body) {
     const folderId = body.folderId || null
-    if (!validFolder(connectionId, folderId)) throw invalid('Folder not found')
-    sets.push('folder_id = ?')
-    vals.push(folderId)
+    if (!(await validFolder(connectionId, folderId))) throw invalid('Folder not found')
+    data.folder_id = folderId
   }
-  if (!sets.length) throw invalid('Nothing to update')
-  return !!meta.prepare(`UPDATE dashboards SET ${sets.join(', ')} WHERE id = ? AND connection_id = ?`)
-    .run(...vals, dashboardId, connectionId).changes
+  if (!Object.keys(data).length) throw invalid('Nothing to update')
+  return (await db().dashboards.updateMany({ where: { id: dashboardId, connection_id: connectionId }, data })).count > 0
 }
 
-export function deleteDashboard(connectionId, dashboardId) {
-  return !!meta.prepare('DELETE FROM dashboards WHERE id = ? AND connection_id = ?')
-    .run(dashboardId, connectionId).changes
+export async function deleteDashboard(connectionId, dashboardId) {
+  return (await db().dashboards.deleteMany({ where: { id: dashboardId, connection_id: connectionId } })).count > 0
 }

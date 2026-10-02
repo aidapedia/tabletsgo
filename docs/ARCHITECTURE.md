@@ -451,6 +451,11 @@ they talk to each other.
 under `server/`.
 
 ```
+prisma.config.mjs         # Prisma CLI config: META_DB_TYPE picks prisma/<engine>/ (paths from server/config.js)
+prisma/
+├── sqlite/               # schema.prisma + migrations/ (0_baseline = legacy v22) — Prisma Migrate's
+└── postgresql/           #   history is provider-locked, so one per engine; both declare the same models
+scripts/migrate.js        # `npm run migrate [-- --status]` — the migrator CLI (compose `migrate` service)
 server.js                 # express app: 108 routes, static frontend, schedulers, shutdown
 server/
 ├── config.js             # every env var + filesystem path, resolved once (imports nothing app-level)
@@ -458,25 +463,38 @@ server/
 ├── crypto.js             # AES-256-GCM: encryptSecret/decryptSecret + streamed file encryption.
 │                         #   One scrypt-derived key per namespace (connections | storage | backup files |
 │                         #   app settings | ssh)
-├── meta.js               # selects SQLite or PostgreSQL for app metadata, initMetaDb(), snapshotMetaSync()
-├── postgres-meta.js      # synchronous PostgreSQL adapter, v20 bootstrap + its own steps past it
+├── meta-connection.js    # openMeta() (SQLite or PostgreSQL, the one place that picks) + snapshotMeta()
+├── meta.js               # Prisma Client for the app's store: db() (the open transaction's client, or
+│                         #   the shared one), transaction(fn) (nested calls join), backupMeta(),
+│                         #   checkMetaIntegrity(), seedAdminFromEnv(). BIGINTs come back as numbers;
+│                         #   on SQLite a gate keeps other requests out of an open transaction. Never migrates
+├── postgres-meta.js      # synchronous PostgreSQL handle — only the migrator uses it now
 ├── postgres-sql.js       # metadata placeholder and conflict syntax translation
-├── postgres-metadata-schema.sql # PostgreSQL baseline matching SQLite migration v20
-├── migrations.js         # versioned, append-only meta-schema steps (see the `meta-schema` skill)
+├── migrator/             # ★ the migration service (see the `meta-schema` skill). Runs as its own
+│   │                     #   process — `npm run migrate`, the compose `migrate` service, the
+│   │                     #   updater's one-shot container — never inside the app
+│   ├── index.js          # runMigrations(): empty → Prisma baseline + seed; pre-Prisma → legacy
+│   │                     #   steps to v22, record 0_baseline applied; then `prisma migrate deploy`.
+│   │                     #   metaSchemaStatus()/assertMetaSchemaCurrent() (the app's boot check)
+│   └── legacy/           # FROZEN pre-Prisma history, only for upgrading old installs to v22
+│       ├── sqlite.js     #   v1–v22 stepped migrations + DEPRECATED_TABLES
+│       ├── postgresql.js #   PostgreSQL v20 bootstrap + v21–v22
+│       └── postgresql-v20.sql
 ├── dashboards.js         # dashboard metadata CRUD and workspace summaries
 ├── workflow-store.js     # workflow metadata CRUD and run-history reads
 ├── auth.js               # the guards — requireAuth, requireSystemAdmin (system role),
 │                         #   requirePermission/requireMember (workspace role) — plus the
 │                         #   connection-access rules. `sessionMiddleware` resolves the bearer
-│                         #   token once per request so the ~100 sync guards stay sync.
+│                         #   token once per request, so requireAuth stays a sync read; the
+│                         #   workspace guards are async — always awaited.
 │                         #   `permissionsIn`/`can` resolve through resource-tree.js; membership
 │                         #   is what still gates *opening* a database
 ├── permissions-catalog.js # leaf: the closed set of permission keys (each with the node type it
 │                         #   is meaningful at), the node types the resource tree is built from,
 │                         #   and the seeded builtin roles. Imports nothing, so permissions.js,
-│                         #   resource-tree.js and migrations.js can all use it
+│                         #   resource-tree.js and the migrator can all use it
 ├── permissions.js        # ★ the role catalog: `roles` + `role_permissions`, an in-memory policy
-│                         #   cache (the guards are sync), and a role's requirement criteria —
+│                         #   cache (loaded at boot, reloaded on write), and a role's requirement criteria —
 │                         #   `roleGrantableOn(slug, nodeType)`. Roles are instance-wide, admin-defined
 ├── resource-tree.js      # ★ the hierarchy everything hangs off, and where a role is granted:
 │                         #   application → workspace → group → {connection, storage} →

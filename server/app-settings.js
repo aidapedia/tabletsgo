@@ -13,29 +13,25 @@
  * the UI a `hasPassword` flag instead).
  */
 
-import { meta } from './meta.js'
+import { db } from './meta.js'
 import { safeJson } from './util.js'
 import { APP_SETTINGS_KEY, decryptSecret, encryptSecret } from './crypto.js'
 
 // ---- Generic key/value ----
 
-export const getSetting = (key) => {
-  const row = meta.prepare('SELECT value FROM app_settings WHERE key = ?').get(key)
+export const getSetting = async (key) => {
+  const row = await db().app_settings.findUnique({ where: { key } })
   return row ? safeJson(row.value) : {}
 }
 
-export const setSetting = (key, value) => {
-  meta
-    .prepare(
-      `INSERT INTO app_settings (key, value, updated_at) VALUES (?, ?, ?)
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
-    )
-    .run(key, JSON.stringify(value || {}), Date.now())
+export const setSetting = async (key, value) => {
+  const stored = { value: JSON.stringify(value || {}), updated_at: Date.now() }
+  await db().app_settings.upsert({ where: { key }, create: { key, ...stored }, update: stored })
   return value
 }
 
-export const clearSetting = (key) => {
-  meta.prepare('DELETE FROM app_settings WHERE key = ?').run(key)
+export const clearSetting = async (key) => {
+  await db().app_settings.deleteMany({ where: { key } })
 }
 
 // ---- SMTP ----
@@ -58,8 +54,8 @@ const decodePass = (stored) => {
  * The global SMTP config with its password in the clear, or null when no host
  * is configured. Server-side only — never send this to a client.
  */
-export const globalSmtp = () => {
-  const s = getSetting(SMTP_KEY)
+export const globalSmtp = async () => {
+  const s = await getSetting(SMTP_KEY)
   if (!s.host) return null
   return {
     host: s.host,
@@ -72,8 +68,8 @@ export const globalSmtp = () => {
 }
 
 /** The same config, password-masked — this is what the admin UI gets. */
-export const publicGlobalSmtp = () => {
-  const s = getSetting(SMTP_KEY)
+export const publicGlobalSmtp = async () => {
+  const s = await getSetting(SMTP_KEY)
   return {
     host: s.host || '',
     port: s.port || '',
@@ -89,8 +85,8 @@ export const publicGlobalSmtp = () => {
  * stored value; an omitted/blank `pass` keeps the stored password (a save must
  * never silently wipe it), while `pass: null` clears it explicitly.
  */
-export const saveGlobalSmtp = (patch = {}) => {
-  const prev = getSetting(SMTP_KEY)
+export const saveGlobalSmtp = async (patch = {}) => {
+  const prev = await getSetting(SMTP_KEY)
   const next = {
     host: String(patch.host ?? prev.host ?? '').trim(),
     port: patch.port ?? prev.port ?? '',
@@ -99,9 +95,9 @@ export const saveGlobalSmtp = (patch = {}) => {
     from: patch.from ?? prev.from ?? '',
     pass: patch.pass === null ? '' : patch.pass ? encryptSecret(patch.pass, APP_SETTINGS_KEY) : prev.pass || '',
   }
-  setSetting(SMTP_KEY, next)
+  await setSetting(SMTP_KEY, next)
   return publicGlobalSmtp()
 }
 
 /** Drop the global config entirely — the instance falls back to the env vars. */
-export const clearGlobalSmtp = () => clearSetting(SMTP_KEY)
+export const clearGlobalSmtp = async () => clearSetting(SMTP_KEY)

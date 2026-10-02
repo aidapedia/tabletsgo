@@ -18,7 +18,8 @@ Violating any of these breaks something silently. Load the named skill before
 working in that area — it has the reasoning and the full rules.
 
 - **No route branches on `conn.type`** — the db layer answers for every engine. → skill `db-engine`
-- **`requireAuth` is sync**, and stays sync — resolve tokens in `sessionMiddleware`. → skill `auth-sessions`
+- **`requireAuth` is sync**, and stays sync — resolve tokens in `sessionMiddleware`. The workspace guards are **async**: `if (!(await requirePermission(req, res, wsId, 'x'))) return` — a missing `await` is a silent authorization bypass (a Promise is truthy), and so is `list.filter(async …)`; use `filterAsync`. → skill `auth-sessions`
+- **Reach the metadata store through `db()`** (from `server/meta.js`), never a client you hold — `transaction(fn)` only composes because nested calls read `db()`. In `server.js` it is imported as `meta()`, since `db` there is the database layer. → skill `meta-schema`
 - **A route asks for a permission, never a role name** — `requirePermission(req, res, wsId, 'teams.manage')`. Workspace roles are admin-defined data; only the system tier (`users.role`) is hardcoded. → skill `auth-sessions`
 - **Permissions resolve through the resource tree, not a role column** — `server/resource-tree.js` walks a node's ancestors; ownership short-circuits to everything, `inherit` decides a grant's reach. Membership still gates *opening* a database. → skill `auth-sessions`
 - **A grant principal is a user or a group node** — there are no teams; a group is both a folder and a roster (`node_members`). Membership is flat, so **nesting a group never merges rosters**: re-filing a folder must not hand anyone access. → skill `auth-sessions`
@@ -33,7 +34,8 @@ working in that area — it has the reasoning and the full rules.
 - **A workspace never loses its last owner** — "owner" means *holds `workspace.manage`*; an instance admin never joins a workspace. → skill `auth-sessions`
 - **A permission exists because a route enforces it** — add the key to `server/permissions-catalog.js` and use it, or don't add it. → skill `auth-sessions`
 - **There is no external session store**, and adding one is not the answer to a new requirement. → skill `auth-sessions`
-- **Meta migrations are append-only and additive-only** — never edit a shipped step, never `DROP`/rename, never add `NOT NULL` without a default. → skill `meta-schema`
+- **Meta migrations are append-only and additive-only** — Prisma Migrate owns them (`prisma/<engine>/migrations`, one history per engine, edited together); never edit a shipped migration or the frozen legacy steps, never `DROP`/rename, never add `NOT NULL` without a default. → skill `meta-schema`
+- **The app never migrates** — `npm run migrate` (the compose `migrate` service) runs first; `server.js` only asserts the schema is current. → skill `meta-schema`
 - **`workspaces.settings.smtp` is dead data** — never read it. SMTP is instance-level. → skill `auth-sessions`
 - **`server/config.js` is the only place that reads `process.env`** for tunables. → skill `add-tunable`
 - **A new per-connection resource goes in the export bundle** and the `DELETE /api/connections/:id` cascade, together. → skill `connection-transfer`
@@ -86,15 +88,18 @@ under `server/`. A route should read as: **authorize → validate → call a mod
 respond**.
 
 ```
+prisma/<engine>/         # schema.prisma + migrations/ per engine (sqlite | postgresql) → skill meta-schema
+scripts/migrate.js       # `npm run migrate` — the migrator CLI the compose `migrate` service runs
 server.js                # express app: 108 routes, static frontend, schedulers, shutdown
 server/
 ├── config.js            # every env var + filesystem path, resolved once      → skill add-tunable
 ├── util.js  crypto.js   # helpers; AES-256-GCM secret + file encryption
-├── meta.js              # the app's own SQLite handle
-├── migrations.js        # versioned, append-only meta-schema steps            → skill meta-schema
+├── meta.js              # Prisma Client for the app's own store: db(), transaction(), backups → skill meta-schema
+├── meta-connection.js   # openMeta() + snapshotMeta(): the one place that picks the engine
+├── migrator/            # ★ the migration service: Prisma Migrate + frozen legacy v1–v22 → skill meta-schema
 ├── auth.js              # the guards + sessionMiddleware                      → skill auth-sessions
 ├── permissions-catalog.js  # leaf: permission keys + node types + builtin roles → skill auth-sessions
-├── permissions.js       # ★ the role catalog + requirement criteria, sync cache → skill auth-sessions
+├── permissions.js       # ★ the role catalog + requirement criteria, in-memory cache → skill auth-sessions
 ├── resource-tree.js     # ★ the node hierarchy + grants; resolves every permission → skill auth-sessions
 ├── sessions/            # ★ logins (durable) + connection sessions (cache)    → skill auth-sessions
 ├── login-guard.js       # sign-in brute-force blocking                        → skill auth-sessions
@@ -130,7 +135,7 @@ server/
 
 ### Backend
 - A module owns its table(s): if a route is writing raw SQL against `backup_schedules` or `storage_destinations`, that belongs in the module.
-- Dependencies point one way: `config → crypto → meta → sessions → permissions-catalog → permissions → resource-tree → {auth, workspaces, app-settings, connections, folders, storage} → ssh → mail → db → workflow/backup/transfer → server.js`. `resource-tree` owns `node_members` and exports `groupIdsFor`, which `auth.js` imports — never the other way round, because `auth.js` depends on it. No cycles — `sessions` never imports `db`; the db layer hands it a release callback instead (`setReleaseHandler`), which is what lets the sweeper close idle handles. Also `backup/schedule.js` is split out from the runner precisely so `connection-transfer.js` can read a schedule without importing the pipeline.
+- Dependencies point one way: `config → crypto → meta-connection → meta → sessions → permissions-catalog → permissions → resource-tree → {auth, workspaces, app-settings, connections, folders, storage} → ssh → mail → db → workflow/backup/transfer → server.js`; `migrator/` sits beside them on `config → crypto → meta-connection → permissions-catalog` and never imports `meta.js` (its handle would lock the SQLite file Prisma needs). `resource-tree` owns `node_members` and exports `groupIdsFor`, which `auth.js` imports — never the other way round, because `auth.js` depends on it. No cycles — `sessions` never imports `db`; the db layer hands it a release callback instead (`setReleaseHandler`), which is what lets the sweeper close idle handles. Also `backup/schedule.js` is split out from the runner precisely so `connection-transfer.js` can read a schedule without importing the pipeline.
 
 ## EXTRA ACTION
 - Every time you add endpoint on server, create a structure of request response and sample url on BACKEND_DOCUMENTATION.MD

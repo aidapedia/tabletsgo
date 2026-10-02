@@ -11,7 +11,7 @@
 import fs from 'fs'
 import vm from 'node:vm'
 import { createHash, createHmac, randomUUID, timingSafeEqual } from 'crypto'
-import { meta } from './meta.js'
+import { db } from './meta.js'
 import { getConnection } from './connections.js'
 import { computeNextRun, jsonPreview, safeJson } from './util.js'
 import { exportDatabaseToFile, runQueryOrThrow } from './db/index.js'
@@ -262,23 +262,20 @@ export async function runWorkflow(conn, graph, initialInput = null) {
 export async function executeAndRecord(workflowId, connectionId, conn, graph, triggerKind, input = null) {
   const startedAt = Date.now()
   const result = await runWorkflow(conn, graph, input)
-  meta
-    .prepare(
-      `INSERT INTO workflow_runs (id, workflow_id, connection_id, trigger_kind, status, log, error, started_at, finished_at, ts)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-    .run(
-      randomUUID(),
-      workflowId,
-      connectionId,
-      triggerKind,
-      result.ok ? 'success' : 'failed',
-      JSON.stringify(result.log || []),
-      result.error || null,
-      startedAt,
-      Date.now(),
-      startedAt
-    )
+  await db().workflow_runs.create({
+    data: {
+      id: randomUUID(),
+      workflow_id: workflowId,
+      connection_id: connectionId,
+      trigger_kind: triggerKind,
+      status: result.ok ? 'success' : 'failed',
+      log: JSON.stringify(result.log || []),
+      error: result.error || null,
+      started_at: startedAt,
+      finished_at: Date.now(),
+      ts: startedAt,
+    },
+  })
   return result
 }
 
@@ -295,17 +292,17 @@ export function nextRunForGraph(graph, enabled) {
 // each, and roll their next_run_at forward. Claiming next_run_at before the
 // run starts means a slow run can't get double-fired by the next tick.
 export async function runDueWorkflows() {
-  const due = meta.prepare('SELECT * FROM workflows WHERE schedule_enabled = 1 AND next_run_at <= ?').all(Date.now())
+  const due = await db().workflows.findMany({ where: { schedule_enabled: 1, next_run_at: { lte: Date.now() } } })
   for (const wf of due) {
     const graph = safeJson(wf.graph)
     const nextRun = nextRunForGraph(graph, true)
     if (!nextRun) {
       // Schedule node was edited away from hourly/daily — stop trying to fire it.
-      meta.prepare('UPDATE workflows SET schedule_enabled = 0, next_run_at = NULL WHERE id = ?').run(wf.id)
+      await db().workflows.updateMany({ where: { id: wf.id }, data: { schedule_enabled: 0, next_run_at: null } })
       continue
     }
-    meta.prepare('UPDATE workflows SET next_run_at = ? WHERE id = ?').run(nextRun, wf.id)
-    const conn = getConnection(wf.connection_id)
+    await db().workflows.updateMany({ where: { id: wf.id }, data: { next_run_at: nextRun } })
+    const conn = await getConnection(wf.connection_id)
     if (!conn) continue
     executeAndRecord(wf.id, wf.connection_id, conn, graph, 'schedule').catch((e) =>
       console.error(`Scheduled run failed for workflow ${wf.id}:`, e.message)
@@ -324,21 +321,28 @@ export async function runDueWorkflows() {
  * connection. It reads exactly the ids it is handed — deciding which connections
  * the caller may see stays with the route.
  */
-export function listWorkflowsForConnections(connectionIds) {
+export async function listWorkflowsForConnections(connectionIds) {
   if (!connectionIds.length) return []
-  const holes = connectionIds.map(() => '?').join(', ')
-  const rows = meta
-    .prepare(
-      `SELECT w.id, w.connection_id, w.name, w.ts, w.protected, w.schedule_enabled, w.next_run_at, w.folder_id,
-              r.status AS last_status, r.started_at AS last_run_at
-         FROM workflows w
-         LEFT JOIN workflow_runs r ON r.id = (
-           SELECT id FROM workflow_runs WHERE workflow_id = w.id ORDER BY started_at DESC LIMIT 1
-         )
-        WHERE w.connection_id IN (${holes})
-        ORDER BY w.ts DESC`
-    )
-    .all(...connectionIds)
+  const workflows = await db().workflows.findMany({
+    where: { connection_id: { in: connectionIds } },
+    select: { id: true, connection_id: true, name: true, ts: true, protected: true, schedule_enabled: true, next_run_at: true, folder_id: true },
+    orderBy: { ts: 'desc' },
+  })
+  // Each workflow's most recent run: newest first, one per workflow.
+  const lastRuns = workflows.length
+    ? await db().workflow_runs.findMany({
+        where: { workflow_id: { in: workflows.map((w) => w.id) } },
+        select: { workflow_id: true, status: true, started_at: true },
+        orderBy: { started_at: 'desc' },
+        distinct: ['workflow_id'],
+      })
+    : []
+  const lastRunOf = new Map(lastRuns.map((r) => [r.workflow_id, r]))
+  const rows = workflows.map((w) => ({
+    ...w,
+    last_status: lastRunOf.get(w.id)?.status ?? null,
+    last_run_at: lastRunOf.get(w.id)?.started_at ?? null,
+  }))
   return rows.map((r) => ({
     id: r.id,
     connectionId: r.connection_id,

@@ -23,14 +23,17 @@
  * the meta DB's `sessions` table, read through an in-process cache, so it
  * survives a restart and the store expires it on its own.
  *
- * The store is async while `requireAuth` is called synchronously by ~100 routes,
- * so the token is resolved once per request by `sessionMiddleware` and parked on
- * `req`. Everything downstream reads that — no route had to change.
+ * The token is resolved once per request by `sessionMiddleware` and parked on
+ * `req`, so `requireAuth` (and `requireSystemAdmin`) stay synchronous reads of
+ * it. The workspace-tier guards — `requirePermission`, `requireMember` — are
+ * async, because answering them reads the resource tree:
+ * `if (!(await requirePermission(req, res, wsId, 'x'))) return`. Forgetting the
+ * `await` there is a silent authorization bypass (a Promise is truthy).
  */
 
 import { randomUUID } from 'crypto'
 import { createAuthSession, destroyAuthSession, readAuthSession } from './sessions/index.js'
-import { meta } from './meta.js'
+import { db, transaction } from './meta.js'
 import { OWNER_PERMISSION } from './permissions.js'
 import {
   groupIdsFor,
@@ -52,8 +55,9 @@ export const bearerToken = (req) => {
   return h.startsWith('Bearer ') ? h.slice(7) : null
 }
 
-export const userRow = (id) =>
-  meta.prepare('SELECT id, username, name, role, status FROM users WHERE id = ?').get(id) || null
+const USER_FIELDS = { id: true, username: true, name: true, role: true, status: true }
+
+export const userRow = async (id) => (id ? await db().users.findUnique({ where: { id }, select: USER_FIELDS }) : null)
 
 export async function userFromToken(token) {
   const session = await readAuthSession(token)
@@ -115,10 +119,10 @@ export const requireSystemAdmin = (req, res) => {
  * 'admin' is the pre-v8 spelling of 'owner'; normalizing here means a DB that
  * has been rolled back and forward again never exposes a mixed vocabulary.
  */
-export const isMember = (workspaceId, userId) => {
+export const isMember = async (workspaceId, userId) => {
   if (!workspaceId || !userId) return false
-  const node = nodeFor('workspace', workspaceId)
-  return !!node && isNodeMember(node.id, userId)
+  const node = await nodeFor('workspace', workspaceId)
+  return !!node && (await isNodeMember(node.id, userId))
 }
 
 /**
@@ -130,10 +134,10 @@ export const isMember = (workspaceId, userId) => {
  * answers "do they belong"** — a member holding no grant is a real state (sees
  * everything, may do nothing) and would read as `null` here.
  */
-export const memberRole = (workspaceId, userId) => {
-  const node = nodeFor('workspace', workspaceId)
-  if (!node || !isNodeMember(node.id, userId)) return null
-  const slug = principalGrantRole(node.id, 'user', userId)
+export const memberRole = async (workspaceId, userId) => {
+  const node = await nodeFor('workspace', workspaceId)
+  if (!node || !(await isNodeMember(node.id, userId))) return null
+  const slug = await principalGrantRole(node.id, 'user', userId)
   return slug === 'admin' ? 'owner' : slug
 }
 
@@ -147,11 +151,11 @@ export const memberRole = (workspaceId, userId) => {
  * membership is mirrored into a grant on that node — while a grant made higher up
  * or lower down now counts too, which is the whole point of the tree.
  */
-export const permissionsIn = (workspaceId, userId) => (workspaceId ? permissionsInWorkspace(workspaceId, userId) : new Set())
+export const permissionsIn = async (workspaceId, userId) => (workspaceId ? permissionsInWorkspace(workspaceId, userId) : new Set())
 
 // The permission check. `workspaceId` null/undefined ⇒ false, so a resource with
 // no workspace never accidentally authorizes anyone.
-export const can = (workspaceId, userId, permission) => permissionsIn(workspaceId, userId).has(permission)
+export const can = async (workspaceId, userId, permission) => (await permissionsIn(workspaceId, userId)).has(permission)
 
 /**
  * "Owner" is no longer a role name, it's a capability: whoever holds
@@ -159,11 +163,11 @@ export const can = (workspaceId, userId, permission) => permissionsIn(workspaceI
  * renamed or custom role satisfy the last-owner invariant just like the built-in
  * `owner` does.
  */
-export const isWorkspaceOwner = (workspaceId, userId) => can(workspaceId, userId, OWNER_PERMISSION)
+export const isWorkspaceOwner = async (workspaceId, userId) => can(workspaceId, userId, OWNER_PERMISSION)
 
 /**
  * The workspace-tier guard. Routes read
- * `if (!requirePermission(req, res, id, 'teams.manage')) return` — a route asks
+ * `if (!(await requirePermission(req, res, id, 'teams.manage'))) return` — a route asks
  * for the capability it needs and never compares a role name, so redefining what
  * a role grants changes who may call it without touching the route.
  *
@@ -171,15 +175,15 @@ export const isWorkspaceOwner = (workspaceId, userId) => can(workspaceId, userId
  * "you're not in this workspace at all", which is what the UI needs to tell a
  * member to ask an owner versus telling them the workspace doesn't exist.
  */
-export const requirePermission = (req, res, workspaceId, permission) => {
+export const requirePermission = async (req, res, workspaceId, permission) => {
   const user = requireAuth(req, res)
   if (!user) return null
-  if (!permissionsIn(workspaceId, user.id).has(permission)) {
+  if (!(await permissionsIn(workspaceId, user.id)).has(permission)) {
     // The membership is what distinguishes "you're in this workspace but may not
     // do this" from "you're not in this workspace at all" — the tree can grant
     // someone a permission here without making them a member, and either way the
     // first message is the one that tells them to go ask an owner.
-    const inside = isMember(workspaceId, user.id)
+    const inside = await isMember(workspaceId, user.id)
     res.status(403).json({ error: inside ? 'You do not have permission to do that.' : 'Forbidden', permission })
     return null
   }
@@ -187,10 +191,10 @@ export const requirePermission = (req, res, workspaceId, permission) => {
 }
 
 // Guard for anything any member of the workspace may do.
-export const requireMember = (req, res, workspaceId) => {
+export const requireMember = async (req, res, workspaceId) => {
   const user = requireAuth(req, res)
   if (!user) return null
-  if (!isMember(workspaceId, user.id)) {
+  if (!(await isMember(workspaceId, user.id))) {
     res.status(403).json({ error: 'Forbidden' })
     return null
   }
@@ -202,18 +206,17 @@ export const requireMember = (req, res, workspaceId) => {
  * can hide what the caller can't do from one payload instead of re-deriving the
  * rules — the server still enforces every one of them.
  */
-export const workspaceForUser = (id, userId) => {
-  const role = memberRole(id, userId)
+export const workspaceForUser = async (id, userId) => {
+  const role = await memberRole(id, userId)
   if (!role) return null
-  const w = meta.prepare('SELECT id, name, created_at FROM workspaces WHERE id = ?').get(id)
+  const w = await db().workspaces.findUnique({ where: { id }, select: { id: true, name: true, created_at: true } })
   // `role` is still the membership's role — what the members UI shows — but
   // `permissions` is the resolved answer, which may be wider if the tree grants
   // them something above or beside their membership.
-  return w ? { id: w.id, name: w.name, role, permissions: [...permissionsIn(id, userId)], createdAt: w.created_at } : null
+  return w ? { id: w.id, name: w.name, role, permissions: [...(await permissionsIn(id, userId))], createdAt: w.created_at } : null
 }
 
-export const getUserByEmail = (email) =>
-  meta.prepare('SELECT id, username, name, role, status FROM users WHERE username = ?').get(email)
+export const getUserByEmail = async (email) => (email ? await db().users.findUnique({ where: { username: email }, select: USER_FIELDS }) : null)
 
 // ---- Connection-access helpers ----
 //
@@ -223,8 +226,11 @@ export const getUserByEmail = (email) =>
 // per-resource question, so there is no `connections.query`-shaped key.
 
 // Assigned principals for a connection, split into group/user id arrays.
-export const connectionAccess = (connectionId) => {
-  const rows = meta.prepare('SELECT principal_type, principal_id FROM connection_access WHERE connection_id = ?').all(connectionId)
+export const connectionAccess = async (connectionId) => {
+  const rows = await db().connection_access.findMany({
+    where: { connection_id: connectionId },
+    select: { principal_type: true, principal_id: true },
+  })
   return {
     groups: rows.filter((r) => r.principal_type === 'node').map((r) => r.principal_id),
     users: rows.filter((r) => r.principal_type === 'user').map((r) => r.principal_id),
@@ -232,15 +238,23 @@ export const connectionAccess = (connectionId) => {
 }
 
 // Replace a connection's access list atomically. Empty arrays => open to all members.
-export const setConnectionAccess = (connectionId, { groups = [], users = [] }) => {
+export const setConnectionAccess = async (connectionId, { groups = [], users = [] }) => {
   const now = Date.now()
-  const tx = meta.transaction(() => {
-    meta.prepare('DELETE FROM connection_access WHERE connection_id = ?').run(connectionId)
-    const ins = meta.prepare('INSERT OR IGNORE INTO connection_access (id, connection_id, principal_type, principal_id, created_at) VALUES (?, ?, ?, ?, ?)')
-    for (const g of groups) ins.run(randomUUID(), connectionId, 'node', g, now)
-    for (const u of users) ins.run(randomUUID(), connectionId, 'user', u, now)
+  // Empty ids are skipped, not stored — the old INSERT OR IGNORE dropped them too.
+  const rows = [
+    ...[...new Set(groups)].filter(Boolean).map((id) => ['node', id]),
+    ...[...new Set(users)].filter(Boolean).map((id) => ['user', id]),
+  ].map(([principalType, principalId]) => ({
+    id: randomUUID(),
+    connection_id: connectionId,
+    principal_type: principalType,
+    principal_id: principalId,
+    created_at: now,
+  }))
+  await transaction(async () => {
+    await db().connection_access.deleteMany({ where: { connection_id: connectionId } })
+    if (rows.length) await db().connection_access.createMany({ data: rows })
   })
-  tx()
 }
 
 // Can this user open the connection? Membership in the workspace is the floor —
@@ -249,7 +263,7 @@ export const setConnectionAccess = (connectionId, { groups = [], users = [] }) =
 // sitting on the roster of a group it is filed under, or being named on its
 // access list (as a person, or through a group listed there). An empty access
 // list is not "everyone" — with none of the four, the answer is no.
-export const userCanAccessConnection = (conn, userId) => {
+export const userCanAccessConnection = async (conn, userId) => {
   if (!conn) return false
   if (!conn.workspaceId) return true
   // Membership gates data access, and deliberately still does after the resource
@@ -258,10 +272,10 @@ export const userCanAccessConnection = (conn, userId) => {
   // membership, and instance administration is meant to carry no data access
   // (CLAUDE.md "AUTH MODEL"). Removing this line is what would hand every admin a
   // key to every database.
-  if (!isMember(conn.workspaceId, userId)) return false
+  if (!(await isMember(conn.workspaceId, userId))) return false
   // Resolved through the tree, so `connections.manage` granted on this one
   // connection's node opens this one connection — not the whole workspace.
-  if (permissionsAtResource('connection', conn.id, userId).has('connections.manage')) return true
+  if ((await permissionsAtResource('connection', conn.id, userId)).has('connections.manage')) return true
   if (conn.ownerId && conn.ownerId === userId) return true
   // Where a connection is filed is itself a statement about who may use it: the
   // people on the roster of a group it sits under can open it, without a row in
@@ -269,19 +283,19 @@ export const userCanAccessConnection = (conn, userId) => {
   // Promotions and Team Orders, each staffed differently, and the connections
   // filed under a team are the team's. Only a `group` ancestor counts, never the
   // workspace node (whose roster is everyone) — see `memberOfGroupAbove`.
-  if (memberOfGroupAbove(nodeFor('connection', conn.id), userId)) return true
+  if (await memberOfGroupAbove(await nodeFor('connection', conn.id), userId)) return true
   // An empty list means nobody — not everybody. Seeing a connection and being
   // able to open it are different questions: every member sees every connection
   // in their workspace (their membership grant reaches the whole subtree), and
   // opening one is granted per connection. Meta migration v16 wrote today's
   // implicit "open to all members" down explicitly first, as the workspace node,
   // so no existing connection lost access when the default flipped.
-  const { groups, users } = connectionAccess(conn.id)
+  const { groups, users } = await connectionAccess(conn.id)
   if (users.includes(userId)) return true
   if (!groups.length) return false
   // A group principal may be the workspace node itself, which names exactly
   // "everyone in this workspace" — the roster lookup answers both the same way.
-  const mine = new Set(groupIdsFor(userId))
+  const mine = new Set(await groupIdsFor(userId))
   return groups.some((g) => mine.has(g))
 }
 

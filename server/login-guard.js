@@ -33,17 +33,16 @@ import {
   LOGIN_LOCKOUT_MS,
   LOGIN_MAX_ATTEMPTS,
 } from './config.js'
-import { meta } from './meta.js'
+import { db } from './meta.js'
 
-// Columns every caller needs; kept here so the SELECTs stay in step.
-export const LOCK_COLUMNS = 'failed_logins, last_failed_at, locked_at, locked_until'
+// Fields every caller needs; spread into a `select` so the reads stay in step.
+export const LOCK_FIELDS = { failed_logins: true, last_failed_at: true, locked_at: true, locked_until: true }
 
 const isAdmin = (row) => row?.role === 'admin'
 
-const clearRow = (id) =>
-  meta
-    .prepare('UPDATE users SET failed_logins = 0, last_failed_at = NULL, locked_at = NULL, locked_until = NULL WHERE id = ?')
-    .run(id)
+const clearRow = async (id) => {
+  await db().users.updateMany({ where: { id }, data: { failed_logins: 0, last_failed_at: null, locked_at: null, locked_until: null } })
+}
 
 const humanDuration = (ms) => {
   const mins = Math.max(1, Math.ceil(ms / 60000))
@@ -58,10 +57,10 @@ const humanDuration = (ms) => {
  * An expired lock is cleared here rather than by a sweeper: it is only ever
  * observed on the sign-in path, so the next attempt is what un-expires it.
  */
-export function activeLock(row, now = Date.now()) {
+export async function activeLock(row, now = Date.now()) {
   if (!row?.locked_at) return null
   if (row.locked_until && row.locked_until <= now) {
-    clearRow(row.id)
+    await clearRow(row.id)
     return null
   }
   return {
@@ -79,8 +78,8 @@ export function activeLock(row, now = Date.now()) {
  * Checked *before* the password is verified, so a locked account can't be
  * probed and a correct password doesn't quietly bypass the block.
  */
-export function loginRefusal(row) {
-  const lock = activeLock(row)
+export async function loginRefusal(row) {
+  const lock = await activeLock(row)
   if (!lock) return null
   return {
     status: 423, // Locked
@@ -99,7 +98,7 @@ export function loginRefusal(row) {
  * is reached. Returns the lock it created, or null if the account is still
  * within its allowance.
  */
-export function recordFailure(row) {
+export async function recordFailure(row) {
   if (!row || !LOGIN_MAX_ATTEMPTS) return null
   // An admin with no cooldown configured is never throttled — don't keep a
   // counter that can never fire.
@@ -110,16 +109,17 @@ export function recordFailure(row) {
   const attempts = (withinWindow ? row.failed_logins || 0 : 0) + 1
 
   if (attempts < LOGIN_MAX_ATTEMPTS) {
-    meta.prepare('UPDATE users SET failed_logins = ?, last_failed_at = ? WHERE id = ?').run(attempts, now, row.id)
+    await db().users.updateMany({ where: { id: row.id }, data: { failed_logins: attempts, last_failed_at: now } })
     return null
   }
 
   // Threshold reached. An admin's lock always expires; everyone else's lasts
   // until an admin lifts it, unless the operator configured an expiry.
   const until = isAdmin(row) ? now + LOGIN_ADMIN_COOLDOWN_MS : LOGIN_LOCKOUT_MS ? now + LOGIN_LOCKOUT_MS : null
-  meta
-    .prepare('UPDATE users SET failed_logins = ?, last_failed_at = ?, locked_at = ?, locked_until = ? WHERE id = ?')
-    .run(attempts, now, now, until, row.id)
+  await db().users.updateMany({
+    where: { id: row.id },
+    data: { failed_logins: attempts, last_failed_at: now, locked_at: now, locked_until: until },
+  })
   console.warn(
     `🔒 ${row.username} ${until ? `throttled until ${new Date(until).toISOString()}` : 'blocked'} after ${attempts} failed sign-in attempts`
   )
@@ -127,11 +127,11 @@ export function recordFailure(row) {
 }
 
 // A successful sign-in (or a password change) wipes the slate.
-export const clearFailures = (userId) => clearRow(userId)
+export const clearFailures = async (userId) => clearRow(userId)
 
 // Lift a block. Used by the admin route; also the right call after any change
 // that hands the account back to its owner.
-export const unlockUser = (userId) => clearRow(userId)
+export const unlockUser = async (userId) => clearRow(userId)
 
 // The lock fields as the API reports them (see users.js `toPublic`).
 export function lockStatus(row, now = Date.now()) {

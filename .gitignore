@@ -9,3 +9,5 @@ demo.db
 data/*
 graphify-out
 .github/copilot-instructions.md
+# Prisma clients — `npm run prisma:generate`
+server/generated/

@@ -150,7 +150,7 @@ export async function touchConnectionSession(conn, ctx = {}, actor = null) {
 
   const existing = await store.get(ns, id)
   if (!existing) {
-    const { max, source } = resolveMaxSessions(conn)
+    const { max, source } = await resolveMaxSessions(conn)
     if (max) {
       const active = await store.count(ns)
       if (active >= max) {
@@ -192,7 +192,7 @@ export const listConnectionSessions = async (connectionId) =>
  * where that cap comes from.
  */
 export async function connectionSessionStats(conn) {
-  const { max, source } = resolveMaxSessions(conn)
+  const { max, source } = await resolveMaxSessions(conn)
   const sessions = await listConnectionSessions(conn.id)
   return { active: sessions.length, max, source, sessions }
 }

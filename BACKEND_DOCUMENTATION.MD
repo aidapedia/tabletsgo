@@ -220,21 +220,30 @@ sole `INTEGER PRIMARY KEY` on a rowid table). A column is safe to omit from an
 
 ## Metadata database (SQLite or PostgreSQL)
 
-SQLite uses `META_DB` (`data/app.db` by default). PostgreSQL uses `META_DATABASE_URL` and initializes a dedicated empty schema on first boot. The metadata adapter preserves the synchronous store contract used by permissions and sessions. The SQLite migration history stays append-only; PostgreSQL has its own version marker and baseline at SQLite schema version 20. PostgreSQL deployments require `libpq` and `pg_dump` (included in the Docker image). The metadata store is separate from the databases users open in the console.
+SQLite uses `META_DB` (`data/app.db` by default). PostgreSQL uses `META_DATABASE_URL` and needs a dedicated empty database (or schema) for a new install. The server reads and writes it through Prisma Client (`server/meta.js`); both engines declare the same models, so no route branches on the engine. PostgreSQL deployments require `libpq` and `pg_dump` (included in the Docker image). The metadata store is separate from the databases users open in the console.
 
 The server keeps its own SQLite DB (separate from user connections) with these
 tables.
 
-**Schema versioning:** the meta schema is managed by versioned, stepped
-migrations in `server/migrations.js`. `PRAGMA user_version` records the last
-applied step; on boot, every pending step runs in its own transaction (oldest
-first) and stamps `user_version` as it goes. Before the first pending step
-touches an existing install, the DB file is snapshotted to
-`data/backups/pre-migrate-v{N}-{ts}.db` so a bad upgrade can be rolled back by
-restoring the file. Steps are **append-only** (never edit a shipped step) and
-**additive-only** (no drops/renames), so an older image can still open a newer
-DB. To change the meta schema, append a new step to the `MIGRATIONS` array —
-don't edit the `CREATE TABLE` baseline (it only applies to fresh installs).
+**Schema versioning:** the meta schema is managed by **Prisma Migrate**, one
+history per engine (`prisma/sqlite/`, `prisma/postgresql/` — each a
+`schema.prisma` plus `migrations/`). Migrations run in a **separate migrator
+process**, never on app boot: `npm run migrate` (`node scripts/migrate.js`), the
+one-shot `migrate` service in `docker-compose.yml`, or the one-shot container the
+in-app Docker updater runs before swapping containers. The app only checks the
+schema is current at startup and exits with an instruction to run the migrator
+otherwise. `npm run migrate -- --status` prints what is applied and pending
+(exit code 2 when something is pending).
+
+A brand-new database is built from `0_baseline` and seeded (built-in roles, the
+resource-tree root). An install made before Prisma is first brought to v22 by the
+frozen legacy steps in `server/migrator/legacy/`, then `0_baseline` (which *is*
+v22) is recorded as applied. Before anything changes on an existing install, the
+DB is snapshotted to `data/backups/pre-migrate-{label}-{ts}.db` so a bad upgrade
+can be rolled back by restoring it. Migrations are **append-only** (never edit a
+shipped migration) and **additive-only** (no drops/renames), so an older image
+can still open a newer DB. To change the meta schema, edit both `schema.prisma`
+files and create a migration for each engine (see the `meta-schema` skill).
 
 ```sql
 CREATE TABLE users (
@@ -300,7 +309,7 @@ CREATE TABLE role_permissions (
 --
 -- `path` is materialized ('/root/<id>/<id>') so "everything under here" is one
 -- indexed prefix match and walking to the root costs a single query — which
--- matters because the route guards are synchronous and resolve through this.
+-- matters because every route guard resolves through this.
 CREATE TABLE resource_nodes (
   id TEXT PRIMARY KEY,          -- the application root is literally 'root'
   parent_id TEXT,               -- NULL only for the application root
@@ -1504,9 +1513,13 @@ The response includes the resolved `ownerName` / `ownerEmail`.
 ### PUT `/api/connections/:id`
 Update a connection (manage-or-own, see above). Merges body into the existing
 record; drops cached pools/handles so the next query reconnects with new settings.
+The database `type` is fixed at creation — omit it, or send the current value.
+Switching between a direct connection and an SSH tunnel is `sshGatewayId`
+(`""` for direct, a gateway id of the same workspace for a tunnel).
 
 - **Body:** partial or full connection fields to change
 - **200:** the updated connection
+- **400:** `{ "error": "A connection’s database type cannot be changed. Create a new connection instead." }` when `type` differs from the stored one
 - **404:** `{ "error": "Connection not found" }`
 - **Example:** `PUT http://localhost:3000/api/connections/demo-sqlite`
 

@@ -1,8 +1,35 @@
 services:
+  # One-shot: brings the metadata DB to the latest schema (Prisma Migrate), then
+  # exits. `tabletsgo` starts only after it succeeds — the app itself never
+  # migrates and refuses to boot on a stale schema. Every `up` re-runs it; with
+  # nothing pending it is a no-op. Same image, meta env and volume as the app;
+  # if you switch the app to the `build:` block below, give this one the same.
+  migrate:
+    image: ghcr.io/aidapedia/tabletsgo:${TABLETSGO_TAG:-latest}
+    command: ["node", "scripts/migrate.js"]
+    depends_on:
+      # Only when the `postgresql` profile is enabled; ignored otherwise.
+      metadata-postgres:
+        condition: service_healthy
+        required: false
+    environment:
+      - NODE_ENV=production
+      - META_DB=/app/data/app.db
+      - META_DB_TYPE=${META_DB_TYPE:-sqlite}
+      - META_DATABASE_URL=${META_DATABASE_URL:-}
+      # Needed by the legacy steps that seal plaintext secrets on old installs.
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY:-}
+    volumes:
+      - tabletsgo-data:/app/data
+    restart: "no"
+
   tabletsgo:
     # Run the published image so `docker compose pull && up -d` upgrades in place
     # (this is what the in-app update flow drives). Pin a version with TABLETSGO_TAG.
     image: ghcr.io/aidapedia/tabletsgo:${TABLETSGO_TAG:-latest}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
     # For local development against your working tree, comment out `image:` above
     # and uncomment this build block instead:
     # build:

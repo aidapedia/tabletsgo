@@ -12,9 +12,16 @@ localStorage (`dbm.token`) and attached as `Authorization: Bearer` by
 `shared/api/request.ts`. Server-side the token's source of truth is the meta DB's
 `sessions` table, read through a cache.
 
-> **Never make `requireAuth` async.** The store is async while `requireAuth` is
-> called synchronously by ~100 routes, so `sessionMiddleware` resolves the token
-> once per request onto `req.authUser`. Resolve in middleware; keep the guards sync.
+> **Never make `requireAuth` async.** `sessionMiddleware` resolves the token once
+> per request onto `req.authUser`, and `requireAuth` / `requireSystemAdmin` are
+> synchronous reads of it.
+>
+> **The workspace guards are async** — `requirePermission`, `requireMember`,
+> `isMember`, `can`, `userCanAccessConnection` all read the resource tree through
+> Prisma. Always `await` them: `if (!(await requirePermission(req, res, id, 'x'))) return`.
+> A forgotten `await` is a silent bypass — a Promise is truthy — and so is
+> `list.filter((c) => userCanAccessConnection(c, uid))`; filter with
+> `filterAsync` (server/util.js) instead.
 
 ### Roles are two independent tiers. Don't collapse them.
 
@@ -37,9 +44,11 @@ The guards live in `server/auth.js`: `requireSystemAdmin` (system),
 
 `server/permissions-catalog.js` is a **leaf module** (imports nothing) holding the
 closed set of permission keys plus the seeded builtins — leaf so that both
-`permissions.js` and `migrations.js` can use it without a dependency cycle.
+`permissions.js` and `server/migrator/` can use it without a dependency cycle.
 `server/permissions.js` owns `roles` + `role_permissions` and caches the whole
-policy in memory, because the guards are sync and must stay sync.
+policy in memory: `loadPolicy()` reads it at boot and again after each role write,
+so `getRole`/`permissionsForRole`/`roleGrantableOn` stay synchronous reads on the
+hot path of every permission check.
 
 Twelve keys today: `workspace.manage`, `workspace.delete`, `members.manage`,
 `teams.manage`, `notifications.manage`, `storage.manage`, `ssh.manage`,

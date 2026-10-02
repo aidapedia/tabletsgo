@@ -6,12 +6,12 @@
  */
 
 import { randomUUID } from 'crypto'
-import { meta } from '../meta.js'
+import { db } from '../meta.js'
 import { computeNextRun, safeJson } from '../util.js'
 import { LOCAL_STORAGE_ID, getStorage } from '../storage.js'
 
-export const getBackupScheduleRow = (connectionId) =>
-  meta.prepare('SELECT * FROM backup_schedules WHERE connection_id = ?').get(connectionId)
+export const getBackupScheduleRow = async (connectionId) =>
+  connectionId ? db().backup_schedules.findUnique({ where: { connection_id: connectionId } }) : null
 
 export const rowToBackupSchedule = (row) =>
   row && {
@@ -27,7 +27,7 @@ export const rowToBackupSchedule = (row) =>
     enabled: !!row.enabled,
   }
 
-export const getBackupSchedule = (connectionId) => rowToBackupSchedule(getBackupScheduleRow(connectionId))
+export const getBackupSchedule = async (connectionId) => rowToBackupSchedule(await getBackupScheduleRow(connectionId))
 
 // Field clamps shared by create and update, so a hand-crafted body (or an
 // imported document) can't widen the retry/retention bounds.
@@ -38,7 +38,7 @@ const clampRetention = (v) => Math.max(0, parseInt(v) || 0)
 // Validates the parts of a schedule body that depend on the connection: the
 // frequency and the storage destinations it may write to. Returns an error
 // message, or null when the body is acceptable.
-export function validateScheduleBody(conn, destinationIds, frequency) {
+export async function validateScheduleBody(conn, destinationIds, frequency) {
   if (!['hourly', 'daily'].includes(frequency)) return 'Frequency must be hourly or daily'
   if (!Array.isArray(destinationIds)) return 'destinationIds must be an array'
   // An empty list is allowed: the backup falls back to the local server disk
@@ -46,7 +46,7 @@ export function validateScheduleBody(conn, destinationIds, frequency) {
   // must be a real S3 destination in this connection's workspace.
   for (const did of destinationIds) {
     if (did === LOCAL_STORAGE_ID) continue
-    if (getStorage(did)?.workspaceId !== conn.workspaceId) return 'One or more storage destinations are invalid'
+    if ((await getStorage(did))?.workspaceId !== conn.workspaceId) return 'One or more storage destinations are invalid'
   }
   return null
 }
@@ -54,39 +54,35 @@ export function validateScheduleBody(conn, destinationIds, frequency) {
 // Create the connection's schedule. `paused` forces it inactive regardless of
 // the body — an import must not start firing jobs at a database nobody has
 // verified yet.
-export function createSchedule(connectionId, body, { paused = false } = {}) {
+export async function createSchedule(connectionId, body, { paused = false } = {}) {
   const now = Date.now()
   const frequency = body.frequency
   const hourOfDay = body.hourOfDay ?? 0
   const enabled = paused ? false : body.enabled !== false
-  meta
-    .prepare(
-      `INSERT INTO backup_schedules
-       (id, connection_id, frequency, hour_of_day, destination_ids, retry_limit, retry_delay_sec, retention_days, encrypt, include_config, enabled, next_run_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-    .run(
-      randomUUID(),
-      connectionId,
+  await db().backup_schedules.create({
+    data: {
+      id: randomUUID(),
+      connection_id: connectionId,
       frequency,
-      hourOfDay,
-      JSON.stringify(body.destinationIds || []),
-      clampRetryLimit(body.retryLimit),
-      clampRetryDelay(body.retryDelaySec),
-      clampRetention(body.retentionDays),
-      body.encrypt ? 1 : 0,
-      body.includeConfig ? 1 : 0,
-      enabled ? 1 : 0,
-      enabled ? computeNextRun(frequency, hourOfDay) : null,
-      now,
-      now
-    )
+      hour_of_day: hourOfDay,
+      destination_ids: JSON.stringify(body.destinationIds || []),
+      retry_limit: clampRetryLimit(body.retryLimit),
+      retry_delay_sec: clampRetryDelay(body.retryDelaySec),
+      retention_days: clampRetention(body.retentionDays),
+      encrypt: body.encrypt ? 1 : 0,
+      include_config: body.includeConfig ? 1 : 0,
+      enabled: enabled ? 1 : 0,
+      next_run_at: enabled ? computeNextRun(frequency, hourOfDay) : null,
+      created_at: now,
+      updated_at: now,
+    },
+  })
   return getBackupSchedule(connectionId)
 }
 
 // Update any subset of the schedule's fields (also how Active/Paused toggles,
 // via a lightweight `{ enabled }` body). `row` is the existing schedule row.
-export function updateSchedule(row, body) {
+export async function updateSchedule(row, body) {
   const frequency = body.frequency ?? row.frequency
   const hourOfDay = body.hourOfDay ?? row.hour_of_day ?? 0
   const destinationIds = body.destinationIds ?? safeJson(row.destination_ids) ?? []
@@ -97,24 +93,21 @@ export function updateSchedule(row, body) {
   const includeConfig = body.includeConfig != null ? !!body.includeConfig : !!row.include_config
   const enabled = body.enabled != null ? !!body.enabled : !!row.enabled
 
-  meta
-    .prepare(
-      `UPDATE backup_schedules SET frequency = ?, hour_of_day = ?, destination_ids = ?, retry_limit = ?, retry_delay_sec = ?,
-       retention_days = ?, encrypt = ?, include_config = ?, enabled = ?, next_run_at = ?, updated_at = ? WHERE id = ?`
-    )
-    .run(
+  await db().backup_schedules.updateMany({
+    where: { id: row.id },
+    data: {
       frequency,
-      hourOfDay,
-      JSON.stringify(destinationIds),
-      retryLimit,
-      retryDelaySec,
-      retentionDays,
-      encrypt ? 1 : 0,
-      includeConfig ? 1 : 0,
-      enabled ? 1 : 0,
-      enabled ? computeNextRun(frequency, hourOfDay) : null,
-      Date.now(),
-      row.id
-    )
+      hour_of_day: hourOfDay,
+      destination_ids: JSON.stringify(destinationIds),
+      retry_limit: retryLimit,
+      retry_delay_sec: retryDelaySec,
+      retention_days: retentionDays,
+      encrypt: encrypt ? 1 : 0,
+      include_config: includeConfig ? 1 : 0,
+      enabled: enabled ? 1 : 0,
+      next_run_at: enabled ? computeNextRun(frequency, hourOfDay) : null,
+      updated_at: Date.now(),
+    },
+  })
   return getBackupSchedule(row.connection_id)
 }

@@ -15,7 +15,7 @@
  */
 
 import { randomUUID } from 'crypto'
-import { meta } from './meta.js'
+import { db } from './meta.js'
 import { safeJson } from './util.js'
 
 const row = (r) =>
@@ -58,18 +58,15 @@ export const statementCount = (sql) =>
 export const schemaLayout = (value) =>
   value && typeof value === 'object' && !Array.isArray(value) ? value : null
 
-export function listDrafts(workspaceId) {
-  return meta
-    .prepare('SELECT * FROM schema_drafts WHERE workspace_id = ? ORDER BY ts DESC')
-    .all(workspaceId)
-    .map(row)
+export async function listDrafts(workspaceId) {
+  return (await db().schema_drafts.findMany({ where: { workspace_id: workspaceId }, orderBy: { ts: 'desc' } })).map(row)
 }
 
-export function getDraft(id) {
-  return row(meta.prepare('SELECT * FROM schema_drafts WHERE id = ?').get(id))
+export async function getDraft(id) {
+  return id ? row(await db().schema_drafts.findUnique({ where: { id } })) : null
 }
 
-export function createDraft({ workspaceId, name, dbType, sql = '', layout = null, createdBy = null }) {
+export async function createDraft({ workspaceId, name, dbType, sql = '', layout = null, createdBy = null }) {
   const at = Date.now()
   const entry = {
     id: randomUUID(),
@@ -86,22 +83,20 @@ export function createDraft({ workspaceId, name, dbType, sql = '', layout = null
     createdAt: at,
     ts: at,
   }
-  meta
-    .prepare(
-      'INSERT INTO schema_drafts (id, workspace_id, name, db_type, sql, layout, created_by, updated_by, created_at, ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-    )
-    .run(
-      entry.id,
-      entry.workspaceId,
-      entry.name,
-      entry.dbType,
-      entry.sql,
-      entry.layout ? JSON.stringify(entry.layout) : null,
-      entry.createdBy,
-      entry.updatedBy,
-      entry.createdAt,
-      entry.ts
-    )
+  await db().schema_drafts.create({
+    data: {
+      id: entry.id,
+      workspace_id: entry.workspaceId,
+      name: entry.name,
+      db_type: entry.dbType,
+      sql: entry.sql,
+      layout: entry.layout ? JSON.stringify(entry.layout) : null,
+      created_by: entry.createdBy,
+      updated_by: entry.updatedBy,
+      created_at: entry.createdAt,
+      ts: entry.ts,
+    },
+  })
   return entry
 }
 
@@ -112,41 +107,29 @@ export function createDraft({ workspaceId, name, dbType, sql = '', layout = null
 // write that changes something, and a call that changes nothing stamps neither.
 // That is what keeps "last updated" and "last updated by" the same event —
 // a name that moved without its timestamp would be a worse answer than none.
-export function updateDraft(id, fields = {}) {
-  const sets = []
-  const values = []
-  if (typeof fields.name === 'string') {
-    sets.push('name = ?')
-    values.push(fields.name)
-  }
-  if (typeof fields.sql === 'string') {
-    sets.push('sql = ?')
-    values.push(fields.sql)
-  }
+export async function updateDraft(id, fields = {}) {
+  const data = {}
+  if (typeof fields.name === 'string') data.name = fields.name
+  if (typeof fields.sql === 'string') data.sql = fields.sql
   // `layout` travels with the diagram, not with the DDL: saving the editor
   // sends both, a rename sends neither. An explicit null clears it.
   if (fields.layout !== undefined) {
-    sets.push('layout = ?')
     const layout = schemaLayout(fields.layout)
-    values.push(layout ? JSON.stringify(layout) : null)
+    data.layout = layout ? JSON.stringify(layout) : null
   }
-  if (!sets.length) return getDraft(id)
-  sets.push('ts = ?')
-  values.push(Date.now())
-  if (fields.updatedBy) {
-    sets.push('updated_by = ?')
-    values.push(fields.updatedBy)
-  }
-  meta.prepare(`UPDATE schema_drafts SET ${sets.join(', ')} WHERE id = ?`).run(...values, id)
+  if (!Object.keys(data).length) return getDraft(id)
+  data.ts = Date.now()
+  if (fields.updatedBy) data.updated_by = fields.updatedBy
+  await db().schema_drafts.updateMany({ where: { id }, data })
   return getDraft(id)
 }
 
-export function deleteDraft(id) {
-  meta.prepare('DELETE FROM schema_drafts WHERE id = ?').run(id)
+export async function deleteDraft(id) {
+  await db().schema_drafts.deleteMany({ where: { id } })
 }
 
 // Every workspace draft dies with the workspace — nothing else points at these
 // rows, so there is no orphan to reparent.
-export function deleteDraftsForWorkspace(workspaceId) {
-  meta.prepare('DELETE FROM schema_drafts WHERE workspace_id = ?').run(workspaceId)
+export async function deleteDraftsForWorkspace(workspaceId) {
+  await db().schema_drafts.deleteMany({ where: { workspace_id: workspaceId } })
 }

@@ -1,7 +1,9 @@
 allowBuilds:
+  '@prisma/engines': set this to true or false
   better-sqlite3: true
   cpu-features: false
   libpq: true
+  prisma: set this to true or false
   ssh2: false
 minimumReleaseAgeExclude:
   - pg-native@3.9.1

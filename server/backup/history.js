@@ -1,5 +1,5 @@
 /** Reads and updates recorded backup runs. Routes handle authorization and storage IO. */
-import { meta } from '../meta.js'
+import { db } from '../meta.js'
 import { safeJson } from '../util.js'
 
 const uploadList = (raw) => {
@@ -7,35 +7,49 @@ const uploadList = (raw) => {
   return Array.isArray(parsed) ? parsed : []
 }
 
-export function backupCalendar(connectionId, days) {
-  const from = Date.now() - days * 86400000
-  return meta.prepare(
-    `SELECT started_at / 86400000 AS day_index, COUNT(*) AS runs,
-            SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success,
-            SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS failed
-     FROM backup_runs WHERE connection_id = ? AND started_at >= ? GROUP BY day_index ORDER BY day_index`
-  ).all(connectionId, from).map(({ day_index, ...counts }) => ({
-    day: new Date(Number(day_index) * 86400000).toISOString().slice(0, 10),
-    ...counts,
-  }))
+const DAY_MS = 86400000
+
+// Runs per UTC day, oldest first. Bucketed here rather than in SQL: integer
+// division of a timestamp is spelled differently per engine, and a window of
+// days holds at most a few thousand runs.
+export async function backupCalendar(connectionId, days) {
+  const rows = await db().backup_runs.findMany({
+    where: { connection_id: connectionId, started_at: { gte: Date.now() - days * DAY_MS } },
+    select: { started_at: true, status: true },
+  })
+  const byDay = new Map()
+  for (const { started_at: startedAt, status } of rows) {
+    const index = Math.floor(startedAt / DAY_MS)
+    const counts = byDay.get(index) || { runs: 0, success: 0, failed: 0 }
+    counts.runs += 1
+    if (status === 'success') counts.success += 1
+    if (status === 'failed') counts.failed += 1
+    byDay.set(index, counts)
+  }
+  return [...byDay.entries()]
+    .sort(([a], [b]) => a - b)
+    .map(([index, counts]) => ({ day: new Date(index * DAY_MS).toISOString().slice(0, 10), ...counts }))
 }
 
-export function listBackupRuns(connectionId, { limit, offset, date }) {
-  let where = 'connection_id = ?'
-  const params = [connectionId]
+export async function listBackupRuns(connectionId, { limit, offset, date }) {
+  const where = { connection_id: connectionId }
   if (date) {
     const start = /^\d{4}-\d{2}-\d{2}$/.test(date) ? Date.parse(`${date}T00:00:00Z`) : NaN
     if (!Number.isFinite(start) || new Date(start).toISOString().slice(0, 10) !== date) {
       throw Object.assign(new Error('Invalid date'), { status: 400 })
     }
-    where += ' AND started_at >= ? AND started_at < ?'
-    params.push(start, start + 86400000)
+    where.started_at = { gte: start, lt: start + DAY_MS }
   }
-  const total = meta.prepare(`SELECT COUNT(*) AS c FROM backup_runs WHERE ${where}`).get(...params).c
-  const rows = meta.prepare(
-    `SELECT id, trigger_kind, status, error, started_at, finished_at, uploads
-     FROM backup_runs WHERE ${where} ORDER BY started_at DESC LIMIT ? OFFSET ?`
-  ).all(...params, limit, offset)
+  const [total, rows] = await Promise.all([
+    db().backup_runs.count({ where }),
+    db().backup_runs.findMany({
+      where,
+      select: { id: true, trigger_kind: true, status: true, error: true, started_at: true, finished_at: true, uploads: true },
+      orderBy: { started_at: 'desc' },
+      take: limit,
+      skip: offset,
+    }),
+  ])
   return {
     total,
     runs: rows.map((row) => ({
@@ -50,14 +64,14 @@ export function listBackupRuns(connectionId, { limit, offset, date }) {
   }
 }
 
-export function findRunUpload(connectionId, runId, destinationId) {
-  const run = meta.prepare('SELECT * FROM backup_runs WHERE id = ? AND connection_id = ?').get(runId, connectionId)
+export async function findRunUpload(connectionId, runId, destinationId) {
+  const run = await db().backup_runs.findFirst({ where: { id: runId, connection_id: connectionId } })
   if (!run) return { run: null, uploads: [], upload: null }
   const uploads = uploadList(run.uploads)
   return { run, uploads, upload: uploads.find((u) => u.destinationId === destinationId && u.ok && !u.deleted) || null }
 }
 
-export function markRunUploadDeleted(run, uploads, destinationId) {
+export async function markRunUploadDeleted(run, uploads, destinationId) {
   const next = uploads.map((upload) => upload.destinationId === destinationId ? { ...upload, deleted: true } : upload)
-  meta.prepare('UPDATE backup_runs SET uploads = ? WHERE id = ?').run(JSON.stringify(next), run.id)
+  await db().backup_runs.updateMany({ where: { id: run.id }, data: { uploads: JSON.stringify(next) } })
 }

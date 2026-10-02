@@ -12,6 +12,14 @@ export const safeJson = (s) => {
   }
 }
 
+// `filter` for an async predicate. `list.filter(async …)` would keep every
+// item — a Promise is truthy — which on an access check means letting
+// everyone through.
+export const filterAsync = async (list, predicate) => {
+  const keep = await Promise.all(list.map(predicate))
+  return list.filter((_, i) => keep[i])
+}
+
 // Bound a value for a JSON response: keep it structured when small, else a
 // truncated string.
 export function jsonPreview(v, max = 800) {

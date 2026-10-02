@@ -1,4 +1,10 @@
 /**
+ * FROZEN — the pre-Prisma SQLite metadata history (v1–v22). It exists only to
+ * bring an install made before Prisma Migrate up to v22, the shape
+ * prisma/sqlite/migrations/0_baseline starts from; server/migrator/index.js
+ * runs it and then hands the database to Prisma. Never add a step here — new
+ * schema changes are Prisma migrations (see the meta-schema skill).
+ *
  * Stepped, versioned migrations for the app metadata DB (SQLite).
  *
  * How it works
@@ -21,7 +27,7 @@
  */
 
 import { randomUUID } from 'crypto'
-import { BUILTIN_ROLES } from './permissions-catalog.js'
+import { BUILTIN_ROLES } from '../../permissions-catalog.js'
 
 // ---- Shared helpers (used by the v1/v2 catch-up steps only) ----
 

@@ -14,7 +14,7 @@
  */
 
 import { MAX_SESSIONS_PER_CONNECTION } from '../config.js'
-import { meta } from '../meta.js'
+import { db } from '../meta.js'
 import { safeJson } from '../util.js'
 
 const positive = (v) => {
@@ -23,9 +23,9 @@ const positive = (v) => {
 }
 
 // The workspace-wide default, or 0 when the workspace doesn't set one.
-export function workspaceMaxSessions(workspaceId) {
+export async function workspaceMaxSessions(workspaceId) {
   if (!workspaceId) return 0
-  const row = meta.prepare('SELECT settings FROM workspaces WHERE id = ?').get(workspaceId)
+  const row = await db().workspaces.findUnique({ where: { id: workspaceId }, select: { settings: true } })
   return positive(safeJson(row?.settings).sessions?.maxPerConnection)
 }
 
@@ -34,8 +34,8 @@ export function workspaceMaxSessions(workspaceId) {
  * unlimited. `source` is what the UI shows next to the number so a user can
  * tell which level the limit came from.
  */
-export function resolveMaxSessions(conn) {
-  const ws = workspaceMaxSessions(conn?.workspaceId)
+export async function resolveMaxSessions(conn) {
+  const ws = await workspaceMaxSessions(conn?.workspaceId)
   if (ws) return { max: ws, source: 'workspace' }
   const instance = positive(MAX_SESSIONS_PER_CONNECTION)
   if (instance) return { max: instance, source: 'instance' }

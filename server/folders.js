@@ -14,7 +14,7 @@
  * currently the only fact.
  */
 
-import { meta } from './meta.js'
+import { db } from './meta.js'
 
 export const FOLDER_TYPES = {
   query: { itemTable: 'saved_queries', maxDepth: Infinity },
@@ -28,17 +28,14 @@ export const FOLDER_TYPES = {
 export const folderTypeOf = (t) => (t && FOLDER_TYPES[t] ? t : 'query')
 
 // parent_id lookup for one connection's folders of a given type.
-export function folderParents(connectionId, type) {
-  return new Map(
-    meta
-      .prepare('SELECT id, parent_id FROM folders WHERE connection_id = ? AND type = ?')
-      .all(connectionId, type)
-      .map((r) => [r.id, r.parent_id || null])
-  )
+export async function folderParents(connectionId, type) {
+  const rows = await db().folders.findMany({ where: { connection_id: connectionId, type }, select: { id: true, parent_id: true } })
+  return new Map(rows.map((r) => [r.id, r.parent_id || null]))
 }
 
 // Levels from the root down to `folderId` (root folder = 1, NULL = 0).
-export function folderDepth(connectionId, type, folderId, parentOf = folderParents(connectionId, type)) {
+export async function folderDepth(connectionId, type, folderId, parentOf = null) {
+  parentOf ??= await folderParents(connectionId, type)
   let depth = 0
   let cur = folderId
   const seen = new Set()
@@ -51,9 +48,9 @@ export function folderDepth(connectionId, type, folderId, parentOf = folderParen
 }
 
 // Height of the subtree rooted at `folderId` (the folder itself = 1).
-export function folderHeight(connectionId, type, folderId) {
+export async function folderHeight(connectionId, type, folderId) {
   const children = new Map()
-  for (const r of meta.prepare('SELECT id, parent_id FROM folders WHERE connection_id = ? AND type = ?').all(connectionId, type)) {
+  for (const r of await db().folders.findMany({ where: { connection_id: connectionId, type }, select: { id: true, parent_id: true } })) {
     const p = r.parent_id || null
     if (!children.has(p)) children.set(p, [])
     children.get(p).push(r.id)
@@ -64,7 +61,8 @@ export function folderHeight(connectionId, type, folderId) {
 
 // True if `folderId` is `candidateAncestor` or nested somewhere beneath it —
 // used to reject reparenting a folder into its own subtree (a cycle).
-export function folderHasAncestor(connectionId, type, folderId, candidateAncestor, parentOf = folderParents(connectionId, type)) {
+export async function folderHasAncestor(connectionId, type, folderId, candidateAncestor, parentOf = null) {
+  parentOf ??= await folderParents(connectionId, type)
   let cur = folderId
   const seen = new Set()
   while (cur && !seen.has(cur)) {
@@ -77,19 +75,22 @@ export function folderHasAncestor(connectionId, type, folderId, candidateAncesto
 
 // Table names grouped under a 'table' folder (empty for every other type —
 // those items carry their own folder_id and are listed by their own endpoint).
-export const folderTables = (connectionId, folderId) =>
-  meta
-    .prepare('SELECT table_name FROM connection_tables WHERE connection_id = ? AND folder_id = ? ORDER BY table_name ASC')
-    .all(connectionId, folderId)
-    .map((r) => r.table_name)
+export const folderTables = async (connectionId, folderId) =>
+  (
+    await db().connection_tables.findMany({
+      where: { connection_id: connectionId, folder_id: folderId },
+      select: { table_name: true },
+      orderBy: { table_name: 'asc' },
+    })
+  ).map((r) => r.table_name)
 
 // API shape for one folder row.
-export const folderRow = (connectionId, type, r) => ({
+export const folderRow = async (connectionId, type, r) => ({
   id: r.id,
   name: r.name,
   color: r.color || null,
   parentId: r.parent_id || null,
   type,
   ts: r.ts,
-  ...(type === 'table' ? { tables: folderTables(connectionId, r.id) } : null),
+  ...(type === 'table' ? { tables: await folderTables(connectionId, r.id) } : null),
 })

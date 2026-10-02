@@ -23,7 +23,7 @@ import {
   DeleteObjectsCommand,
 } from '@aws-sdk/client-s3'
 import { LOCAL_BACKUP_DIR } from './config.js'
-import { meta } from './meta.js'
+import { db } from './meta.js'
 import { STORAGE_CRED_KEY, decryptSecret, encryptFileToFile, encryptSecret } from './crypto.js'
 import { describeError, safeJson, sanitizeForKey } from './util.js'
 
@@ -70,13 +70,11 @@ const localStorageDest = () => ({
   secretAccessKey: '',
 })
 
-export const getStorage = (id) =>
-  id === LOCAL_STORAGE_ID
-    ? localStorageDest()
-    : rowToStorage(meta.prepare('SELECT * FROM storage_destinations WHERE id = ?').get(id))
+export const getStorage = async (id) =>
+  id === LOCAL_STORAGE_ID ? localStorageDest() : id ? rowToStorage(await db().storage_destinations.findUnique({ where: { id } })) : null
 
-export const listStorageRows = (workspaceId) =>
-  meta.prepare('SELECT * FROM storage_destinations WHERE workspace_id = ? ORDER BY created_at').all(workspaceId).map(rowToStorage)
+export const listStorageRows = async (workspaceId) =>
+  (await db().storage_destinations.findMany({ where: { workspace_id: workspaceId }, orderBy: { created_at: 'asc' } })).map(rowToStorage)
 
 const packCredentials = (dest) =>
   encryptSecret(
@@ -84,68 +82,46 @@ const packCredentials = (dest) =>
     STORAGE_CRED_KEY
   )
 
-export function createStorage(workspaceId, body) {
+// The columns a destination's settings map to — shared by create and update.
+const storageColumns = (dest) => ({
+  name: dest.name.trim(),
+  endpoint: dest.endpoint?.trim() || null,
+  region: dest.region?.trim() || null,
+  bucket: dest.bucket.trim(),
+  path_prefix: dest.pathPrefix?.trim() || null,
+  force_path_style: dest.forcePathStyle ? 1 : 0,
+  credentials: packCredentials(dest),
+})
+
+export async function createStorage(workspaceId, body) {
   const id = randomUUID()
   const now = Date.now()
-  meta
-    .prepare(
-      `INSERT INTO storage_destinations
-       (id, workspace_id, name, endpoint, region, bucket, path_prefix, force_path_style, credentials, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-    .run(
-      id,
-      workspaceId,
-      body.name.trim(),
-      body.endpoint?.trim() || null,
-      body.region?.trim() || null,
-      body.bucket.trim(),
-      body.pathPrefix?.trim() || null,
-      body.forcePathStyle ? 1 : 0,
-      packCredentials(body),
-      now,
-      now
-    )
+  await db().storage_destinations.create({
+    data: { id, workspace_id: workspaceId, ...storageColumns(body), created_at: now, updated_at: now },
+  })
   return getStorage(id)
 }
 
 // `merged` is the existing destination with the request body layered on top, so
 // a partial update keeps the fields it didn't mention.
-export function updateStorage(id, merged) {
-  meta
-    .prepare(
-      `UPDATE storage_destinations
-       SET name = ?, endpoint = ?, region = ?, bucket = ?, path_prefix = ?, force_path_style = ?, credentials = ?, updated_at = ?
-       WHERE id = ?`
-    )
-    .run(
-      merged.name.trim(),
-      merged.endpoint?.trim() || null,
-      merged.region?.trim() || null,
-      merged.bucket.trim(),
-      merged.pathPrefix?.trim() || null,
-      merged.forcePathStyle ? 1 : 0,
-      packCredentials(merged),
-      Date.now(),
-      id
-    )
+export async function updateStorage(id, merged) {
+  await db().storage_destinations.updateMany({ where: { id }, data: { ...storageColumns(merged), updated_at: Date.now() } })
   forgetS3Client(id) // credentials/endpoint may have changed
   return getStorage(id)
 }
 
-export function deleteStorage(id) {
-  meta.prepare('DELETE FROM storage_destinations WHERE id = ?').run(id)
+export async function deleteStorage(id) {
+  await db().storage_destinations.deleteMany({ where: { id } })
   forgetS3Client(id)
 }
 
 // True when a workflow's graph still references this destination from a
 // `storage` node — deleting it out from under a scheduled backup would fail
 // silently at run time otherwise.
-export const isStorageInUse = (id) =>
-  meta
-    .prepare('SELECT graph FROM workflows')
-    .all()
-    .some((w) => (safeJson(w.graph)?.nodes || []).some((n) => n.type === 'storage' && (n.data?.destinationIds || []).includes(id)))
+export const isStorageInUse = async (id) =>
+  (await db().workflows.findMany({ select: { graph: true } })).some((w) =>
+    (safeJson(w.graph)?.nodes || []).some((n) => n.type === 'storage' && (n.data?.destinationIds || []).includes(id))
+  )
 
 // S3 client per destination id, so repeated uploads (e.g. within one backup run)
 // reuse the same client. Dropped when the destination's config changes.
@@ -209,7 +185,7 @@ export async function storeFile(conn, input, destinationIds, opts = {}) {
   }
   try {
     for (const destId of destinationIds) {
-      const dest = getStorage(destId)
+      const dest = await getStorage(destId)
       if (!dest) {
         uploaded.push({ destinationId: destId, ok: false, error: 'Storage destination not found' })
         continue

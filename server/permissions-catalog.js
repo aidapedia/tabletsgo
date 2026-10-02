@@ -4,7 +4,7 @@
  *
  * A leaf module on purpose — it imports nothing, so `server/permissions.js`
  * (which reads and writes the role rows), `server/resource-tree.js` (which
- * validates nodes and grants) and `server/migrations.js` (which seeds them) can
+ * validates nodes and grants) and `server/migrator/` (which seeds them) can
  * all use it without the dependency graph growing a cycle.
  *
  * **The catalog is code, the grants are data.** A permission exists here because

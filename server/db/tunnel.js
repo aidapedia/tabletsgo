@@ -122,8 +122,8 @@ function openTunnel(gateway, target) {
 // A gateway edit or a new target makes the old tunnel wrong.
 const signatureOf = (gateway, target) => `${gateway.id}:${gateway.updatedAt}:${target.host}:${target.port}`
 
-function gatewayFor(conn) {
-  const gateway = getSshGateway(conn.sshGatewayId)
+async function gatewayFor(conn) {
+  const gateway = await getSshGateway(conn.sshGatewayId)
   if (!gateway) throw Object.assign(new Error('The SSH host this connection uses no longer exists.'), { sshReason: true, hint: 'Edit the connection and pick another SSH host, or none.' })
   return gateway
 }
@@ -139,7 +139,7 @@ function gatewayFor(conn) {
  */
 export async function reach(conn, defaultPort, onStale) {
   if (!conn?.sshGatewayId || !defaultPort) return conn
-  const gateway = gatewayFor(conn)
+  const gateway = await gatewayFor(conn)
   const target = targetOf(conn, defaultPort)
   const signature = signatureOf(gateway, target)
   let tunnel = tunnels.get(conn.id)
@@ -173,7 +173,7 @@ export async function reach(conn, defaultPort, onStale) {
  */
 export async function withTunnel(conn, defaultPort, fn) {
   if (!conn?.sshGatewayId || !defaultPort) return fn(conn)
-  const gateway = gatewayFor(conn)
+  const gateway = await gatewayFor(conn)
   const target = targetOf(conn, defaultPort)
   const tunnel = openTunnel(gateway, target)
   try {

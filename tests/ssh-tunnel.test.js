@@ -1,13 +1,18 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import net from 'node:net'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import ssh2 from 'ssh2'
 
-// The meta handle is imported by every module below; give it an isolated DB.
+// The meta handle is imported by every module below; give it an isolated DB,
+// migrated before anything opens it (Prisma needs the file to itself).
 process.env.ENCRYPTION_KEY = 'ssh-tunnel-test-key'
-process.env.META_DB = ':memory:'
-const { meta, initMetaDb } = await import('../server/meta.js')
-initMetaDb()
+process.env.META_DB = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'tabletsgo-ssh-')), 'app.db')
+const { runMigrations } = await import('../server/migrator/index.js')
+runMigrations({ log: () => {} })
+const { db: meta } = await import('../server/meta.js')
 const ssh = await import('../server/ssh.js')
 const db = await import('../server/db/index.js')
 const { saveConnection } = await import('../server/connections.js')
@@ -66,31 +71,30 @@ function fakeGateway(acceptedPublicKey) {
   return { server, stats }
 }
 
-test('a generated key exposes its public half and fingerprint, never the private key', () => {
-  const key = ssh.createSshKey(WS, { name: 'Deploy key', mode: 'generate' }, 'u1')
+test('a generated key exposes its public half and fingerprint, never the private key', async () => {
+  const key = await ssh.createSshKey(WS, { name: 'Deploy key', mode: 'generate' }, 'u1')
   assert.match(key.publicKey, /^ssh-ed25519 AAAA\S+ Deploy-key$/)
   assert.match(key.fingerprint, /^SHA256:/)
   assert.equal(key.privateKey, undefined)
-  assert.ok(ssh.listSshKeys(WS).some((k) => k.id === key.id))
+  assert.ok((await ssh.listSshKeys(WS)).some((k) => k.id === key.id))
 })
 
-test('importing a private key derives the same public key; a public key is refused', () => {
+test('importing a private key derives the same public key; a public key is refused', async () => {
   const pair = ssh2.utils.generateKeyPairSync('ed25519')
-  const imported = ssh.createSshKey(WS, { name: 'laptop', mode: 'import', privateKey: pair.private }, 'u1')
+  const imported = await ssh.createSshKey(WS, { name: 'laptop', mode: 'import', privateKey: pair.private }, 'u1')
   assert.equal(imported.publicKey.split(' ')[1], pair.public.split(' ')[1])
-  assert.throws(() => ssh.createSshKey(WS, { name: 'x', mode: 'import', privateKey: pair.public }), /public key/)
+  await assert.rejects(() => ssh.createSshKey(WS, { name: 'x', mode: 'import', privateKey: pair.public }), /public key/)
 })
 
-test('a gateway refuses a key from another workspace', () => {
-  const foreign = ssh.createSshKey('ws-other', { name: 'theirs' }, 'u2')
-  assert.throws(
-    () => ssh.createSshGateway(WS, { name: 'g', host: 'h', username: 'u', auth: 'key', keyId: foreign.id }),
+test('a gateway refuses a key from another workspace', async () => {
+  const foreign = await ssh.createSshKey('ws-other', { name: 'theirs' }, 'u2')
+  await assert.rejects(() => ssh.createSshGateway(WS, { name: 'g', host: 'h', username: 'u', auth: 'key', keyId: foreign.id }),
     /this workspace's SSH keys/
   )
 })
 
 test('a connection is reached through its SSH gateway', async (t) => {
-  const key = ssh.createSshKey(WS, { name: 'bastion' }, 'u1')
+  const key = await ssh.createSshKey(WS, { name: 'bastion' }, 'u1')
   const { server: gw, stats } = fakeGateway(key.publicKey)
   const target = fakeRedis()
   const gwPort = await listen(gw)
@@ -101,12 +105,12 @@ test('a connection is reached through its SSH gateway', async (t) => {
     target.close()
   })
 
-  const gateway = ssh.createSshGateway(WS, { name: 'Bastion', host: '127.0.0.1', port: gwPort, username: 'deploy', auth: 'key', keyId: key.id })
+  const gateway = await ssh.createSshGateway(WS, { name: 'Bastion', host: '127.0.0.1', port: gwPort, username: 'deploy', auth: 'key', keyId: key.id })
 
   // The gateway's own test logs in and pins the host key on first contact.
   const probe = await ssh.testSshGateway(gateway)
   assert.equal(probe.ok, true, probe.message)
-  assert.match(ssh.getSshGateway(gateway.id).hostFingerprint, /^SHA256:/)
+  assert.match((await ssh.getSshGateway(gateway.id)).hostFingerprint, /^SHA256:/)
 
   const conn = { id: 'c1', type: 'redis', name: 'r', workspaceId: WS, host: '127.0.0.1', port: String(targetPort), auth: 'none', sshGatewayId: gateway.id }
 
@@ -115,7 +119,7 @@ test('a connection is reached through its SSH gateway', async (t) => {
   assert.equal(tested.ok, true, tested.message)
 
   // Saved connection → the generic ops and the engine's own ops both dial through it.
-  saveConnection(conn)
+  await saveConnection(conn)
   const before = stats.forwards
   const shake = await db.handshake(conn, {})
   assert.equal(shake.ok, true, JSON.stringify(shake))
@@ -127,8 +131,8 @@ test('a connection is reached through its SSH gateway', async (t) => {
 })
 
 test('tunnel failures are diagnosed as SSH, not blamed on the database', async (t) => {
-  const key = ssh.createSshKey(WS, { name: 'k2' }, 'u1')
-  const other = ssh.createSshKey(WS, { name: 'not-authorized' }, 'u1')
+  const key = await ssh.createSshKey(WS, { name: 'k2' }, 'u1')
+  const other = await ssh.createSshKey(WS, { name: 'not-authorized' }, 'u1')
   const { server: gw } = fakeGateway(key.publicKey)
   const gwPort = await listen(gw)
   const closed = net.createServer()
@@ -140,32 +144,32 @@ test('tunnel failures are diagnosed as SSH, not blamed on the database', async (
   })
 
   // Wrong key: the gateway rejects the login.
-  const wrongKey = ssh.createSshGateway(WS, { name: 'wrong', host: '127.0.0.1', port: gwPort, username: 'deploy', auth: 'key', keyId: other.id })
+  const wrongKey = await ssh.createSshGateway(WS, { name: 'wrong', host: '127.0.0.1', port: gwPort, username: 'deploy', auth: 'key', keyId: other.id })
   const rejected = await db.handshake({ id: 'c2', type: 'redis', host: '127.0.0.1', port: '6379', sshGatewayId: wrongKey.id }, {})
   assert.equal(rejected.reason, 'ssh')
   assert.match(rejected.cause, /rejected user "deploy"/)
 
   // Right key, but the gateway can't reach the database.
-  const good = ssh.createSshGateway(WS, { name: 'good', host: '127.0.0.1', port: gwPort, username: 'deploy', auth: 'key', keyId: key.id })
+  const good = await ssh.createSshGateway(WS, { name: 'good', host: '127.0.0.1', port: gwPort, username: 'deploy', auth: 'key', keyId: key.id })
   const unreachable = await db.handshake({ id: 'c3', type: 'redis', host: '127.0.0.1', port: String(deadPort), sshGatewayId: good.id }, {})
   assert.equal(unreachable.reason, 'ssh')
   assert.match(unreachable.cause, /could not reach 127\.0\.0\.1:/)
 
   // A host key that no longer matches the pinned one is refused.
-  meta.prepare('UPDATE ssh_gateways SET host_fingerprint = ? WHERE id = ?').run('SHA256:not-the-real-one', good.id)
-  const swapped = await ssh.testSshGateway(ssh.getSshGateway(good.id))
+  await meta().ssh_gateways.update({ where: { id: good.id }, data: { host_fingerprint: 'SHA256:not-the-real-one' } })
+  const swapped = await ssh.testSshGateway(await ssh.getSshGateway(good.id))
   assert.equal(swapped.ok, false)
   assert.match(swapped.message, /different host key/)
 })
 
-test('a gateway in use reports the connections using it', () => {
-  const key = ssh.createSshKey(WS, { name: 'k3' }, 'u1')
-  const gw = ssh.createSshGateway(WS, { name: 'used', host: 'h', username: 'u', auth: 'key', keyId: key.id })
-  saveConnection({ id: 'c4', type: 'postgresql', name: 'pg', workspaceId: WS, host: 'db', port: '5432', sshGatewayId: gw.id })
-  assert.deepEqual(ssh.connectionsUsingGateway(gw.id).map((c) => c.id), ['c4'])
-  assert.deepEqual(ssh.sshKeyGateways(key.id).map((g) => g.id), [gw.id])
-  assert.equal(ssh.assertGatewayForWorkspace(gw.id, WS).id, gw.id)
-  assert.throws(() => ssh.assertGatewayForWorkspace(gw.id, 'ws-other'), /not part of this workspace/)
+test('a gateway in use reports the connections using it', async () => {
+  const key = await ssh.createSshKey(WS, { name: 'k3' }, 'u1')
+  const gw = await ssh.createSshGateway(WS, { name: 'used', host: 'h', username: 'u', auth: 'key', keyId: key.id })
+  await saveConnection({ id: 'c4', type: 'postgresql', name: 'pg', workspaceId: WS, host: 'db', port: '5432', sshGatewayId: gw.id })
+  assert.deepEqual((await ssh.connectionsUsingGateway(gw.id)).map((c) => c.id), ['c4'])
+  assert.deepEqual((await ssh.sshKeyGateways(key.id)).map((g) => g.id), [gw.id])
+  assert.equal((await ssh.assertGatewayForWorkspace(gw.id, WS)).id, gw.id)
+  await assert.rejects(() => ssh.assertGatewayForWorkspace(gw.id, 'ws-other'), /not part of this workspace/)
 })
 
 // ---- Cloudflare Access transport ----
@@ -201,7 +205,7 @@ function fakeAccessEdge(sshPort, token) {
   return server
 }
 
-test('an Access hostname becomes wss://; plaintext is refused off loopback', () => {
+test('an Access hostname becomes wss://; plaintext is refused off loopback', async () => {
   assert.equal(accessUrl('ssh.example.com'), 'wss://ssh.example.com/')
   assert.equal(accessUrl('https://ssh.example.com'), 'wss://ssh.example.com/')
   assert.equal(accessUrl('ws://127.0.0.1:9000'), 'ws://127.0.0.1:9000/')
@@ -209,7 +213,7 @@ test('an Access hostname becomes wss://; plaintext is refused off loopback', () 
 })
 
 test('a connection is reached through an SSH host behind Cloudflare Access', async (t) => {
-  const key = ssh.createSshKey(WS, { name: 'cf-key' }, 'u1')
+  const key = await ssh.createSshKey(WS, { name: 'cf-key' }, 'u1')
   const { server: gw, stats } = fakeGateway(key.publicKey)
   const target = fakeRedis()
   const gwPort = await listen(gw)
@@ -224,7 +228,7 @@ test('a connection is reached through an SSH host behind Cloudflare Access', asy
     edge.close()
   })
 
-  const host = ssh.createSshGateway(WS, {
+  const host = await ssh.createSshGateway(WS, {
     name: 'Behind CF', host: `ws://127.0.0.1:${edgePort}`, username: 'deploy', auth: 'key', keyId: key.id,
     transport: 'cloudflare', serviceTokenId: token.id, serviceTokenSecret: token.secret,
   })
@@ -237,19 +241,19 @@ test('a connection is reached through an SSH host behind Cloudflare Access', asy
   assert.equal(probe.ok, true, probe.message)
 
   const conn = { id: 'cf1', type: 'redis', name: 'r', workspaceId: WS, host: '127.0.0.1', port: String(targetPort), auth: 'none', sshGatewayId: host.id }
-  saveConnection(conn)
+  await saveConnection(conn)
   const shake = await db.handshake(conn, {})
   assert.equal(shake.ok, true, JSON.stringify(shake))
   assert.ok(stats.forwards > 0)
 
   // Renaming without re-entering the secret keeps it.
-  const renamed = ssh.updateSshGateway(host.id, { name: 'Behind CF (renamed)' })
+  const renamed = await ssh.updateSshGateway(host.id, { name: 'Behind CF (renamed)' })
   assert.equal(renamed.hasServiceToken, true)
   assert.equal((await ssh.testSshGateway(renamed)).ok, true)
 })
 
 test('Cloudflare Access refusals are explained as Cloudflare, not SSH or the database', async (t) => {
-  const key = ssh.createSshKey(WS, { name: 'cf-key-2' }, 'u1')
+  const key = await ssh.createSshKey(WS, { name: 'cf-key-2' }, 'u1')
   const { server: gw } = fakeGateway(key.publicKey)
   const gwPort = await listen(gw)
   const edge = fakeAccessEdge(gwPort, { id: 'good', secret: 'good' })
@@ -261,43 +265,42 @@ test('Cloudflare Access refusals are explained as Cloudflare, not SSH or the dat
   })
   const base = { host: `ws://127.0.0.1:${edgePort}`, username: 'deploy', auth: 'key', keyId: key.id, transport: 'cloudflare' }
 
-  const wrong = ssh.createSshGateway(WS, { ...base, name: 'wrong token', serviceTokenId: 'good', serviceTokenSecret: 'bad' })
+  const wrong = await ssh.createSshGateway(WS, { ...base, name: 'wrong token', serviceTokenId: 'good', serviceTokenSecret: 'bad' })
   const refused = await db.handshake({ id: 'cf2', type: 'redis', host: 'db', port: '6379', sshGatewayId: wrong.id }, {})
   assert.equal(refused.reason, 'ssh')
   assert.match(refused.cause, /Cloudflare Access refused .* \(HTTP 403\)/)
   assert.match(refused.hint, /service token/)
 
-  const none = ssh.createSshGateway(WS, { ...base, name: 'no token' })
+  const none = await ssh.createSshGateway(WS, { ...base, name: 'no token' })
   const login = await ssh.testSshGateway(none)
   assert.equal(login.ok, false)
   assert.match(login.message, /HTTP 302/)
   assert.match(login.hint, /did not accept a service token/)
 
-  assert.throws(() => ssh.createSshGateway(WS, { ...base, name: 'half', serviceTokenId: 'good' }), /service token secret/)
+  await assert.rejects(() => ssh.createSshGateway(WS, { ...base, name: 'half', serviceTokenId: 'good' }), /service token secret/)
 })
 
-test('a rejected login on Railway points at Railway, not authorized_keys', () => {
+test('a rejected login on Railway points at Railway, not authorized_keys', async () => {
   const { hint } = ssh.explainSshError({ level: 'client-authentication' }, { host: 'ssh.railway.com', port: 22, username: 'app.up.railway.app', auth: 'key', keyName: 'k' })
   assert.match(hint, /Railway/)
 })
 
-test("a stored service token secret stays with its own ID", () => {
-  const key = ssh.createSshKey(WS, { name: 'cf-key-3' }, 'u1')
-  const host = ssh.createSshGateway(WS, { name: 'cf', host: 'ssh.example.com', username: 'u', auth: 'key', keyId: key.id, transport: 'cloudflare', serviceTokenId: 'one', serviceTokenSecret: 'x' })
-  assert.equal(ssh.updateSshGateway(host.id, { serviceTokenId: 'one' }).hasServiceToken, true)
-  assert.throws(() => ssh.updateSshGateway(host.id, { serviceTokenId: 'two' }), /service token secret/)
+test("a stored service token secret stays with its own ID", async () => {
+  const key = await ssh.createSshKey(WS, { name: 'cf-key-3' }, 'u1')
+  const host = await ssh.createSshGateway(WS, { name: 'cf', host: 'ssh.example.com', username: 'u', auth: 'key', keyId: key.id, transport: 'cloudflare', serviceTokenId: 'one', serviceTokenSecret: 'x' })
+  assert.equal((await ssh.updateSshGateway(host.id, { serviceTokenId: 'one' })).hasServiceToken, true)
+  await assert.rejects(() => ssh.updateSshGateway(host.id, { serviceTokenId: 'two' }), /service token secret/)
   // Back to direct TCP drops the token and forgets the pinned host key.
-  meta.prepare('UPDATE ssh_gateways SET host_fingerprint = ? WHERE id = ?').run('SHA256:pinned', host.id)
-  const direct = ssh.updateSshGateway(host.id, { transport: 'tcp' })
+  await meta().ssh_gateways.update({ where: { id: host.id }, data: { host_fingerprint: 'SHA256:pinned' } })
+  const direct = await ssh.updateSshGateway(host.id, { transport: 'tcp' })
   assert.equal(direct.hasServiceToken, false)
   assert.equal(direct.hostFingerprint, null)
 })
 
 
-test('Railway: a private-network username is refused, and its dev.new refusal is explained', () => {
-  const key = ssh.createSshKey(WS, { name: 'railway' }, 'u1')
-  assert.throws(
-    () => ssh.createSshGateway(WS, { name: 'rw', host: 'ssh.railway.com', username: 'postgres-cxbl.railway.internal', auth: 'key', keyId: key.id }),
+test('Railway: a private-network username is refused, and its dev.new refusal is explained', async () => {
+  const key = await ssh.createSshKey(WS, { name: 'railway' }, 'u1')
+  await assert.rejects(() => ssh.createSshGateway(WS, { name: 'rw', host: 'ssh.railway.com', username: 'postgres-cxbl.railway.internal', auth: 'key', keyId: key.id }),
     /Copy Service Instance ID/
   )
   const gw = { host: 'ssh.railway.com', port: 22, username: 'postgres-cxbl.railway.internal', auth: 'key' }

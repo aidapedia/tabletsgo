@@ -20,8 +20,8 @@ export const canRestore = (conn) => supports(conn, 'restore')
 
 // A storage destination this connection may restore from: the built-in local
 // disk, or an S3 destination belonging to the connection's workspace.
-export function storageForRestore(conn, destinationId) {
-  const dest = destinationId ? getStorage(destinationId) : null
+export async function storageForRestore(conn, destinationId) {
+  const dest = destinationId ? await getStorage(destinationId) : null
   if (!dest) return null
   if (!dest.local && dest.workspaceId !== conn.workspaceId) return null
   return dest
