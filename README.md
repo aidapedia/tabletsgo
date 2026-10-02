@@ -5,7 +5,7 @@
 # Tabletsgo
 
 **A self‑hosted, team‑friendly database console.**
-Browse data, write queries, design schemas visually, automate workflows, and back up to S3 — all from one clean, keyboard‑friendly web app you run yourself.
+Browse data, write queries, design schemas, automate workflows and back up to S3 — from one web app you run yourself.
 
 [![Version](https://img.shields.io/badge/version-0.25.0-6FCF6A)](package.json)
 [![Docker](https://img.shields.io/badge/deploy-Docker-2496ED?logo=docker&logoColor=white)](#-installation)
@@ -18,194 +18,98 @@ Browse data, write queries, design schemas visually, automate workflows, and bac
   <img src="docs/screenshots/hero-console.png" alt="Tabletsgo database console" width="880" />
 </p>
 
----
-
-## Introduction
-
-**Tabletsgo** is an open, self‑hosted database management platform for teams. Think of it as a modern web console that lives next to your databases: connect to a Postgres, SQLite or Redis instance, explore and edit rows in a fast data grid, run and save SQL, browse a Redis keyspace, and design your schema on a visual ERD — without leaving the browser.
-
-It's built for **teams**, not just a single power user. Everything is organized into **workspaces** with per‑workspace members and roles, so you can share a set of connections with your team, invite people by email, and keep environments (dev / staging / prod) tidy in one place.
-
-What makes Tabletsgo more than a query tool:
-
-- 🎨 **Visual schema designer** — model tables and relationships on a React Flow canvas, annotate it with notes, review the DDL it stages, then **release** it to its database in one confirmed step (which re-reads that database first, and says what the design no longer agrees with) (a from‑scratch design links to a connection first); the layout you arrange is saved with the draft and travels in the design export. It has its own full‑screen page, one click from the console's Schema icon.
-- ⚙️ **Workflow automations** — chain nodes (schedule/webhook → query → HTTP → JavaScript → export) to automate recurring database tasks, triggered on a schedule or by an inbound webhook.
-- 💾 **Scheduled backups to S3** — point a connection at any S3‑compatible bucket and let it export & upload on a schedule, with a calendar heatmap of runs and one‑click restore.
-- 🚇 **SSH tunnels** — reach PostgreSQL and Redis on a private network through an SSH bastion. Generate a key in the app, paste its public key into the server's `authorized_keys`, and pick the SSH host on the connection.
-- 🔐 **Credentials encrypted at rest** — connection secrets are stored AES‑256‑GCM encrypted; the server refuses to boot without an encryption key.
-
-Self‑hosted, single Docker image, your data stays yours.
-
----
-
 ## Features
 
-| | Feature | What it does |
-|---|---|---|
-| 🗂️ | **Connections** | Organize databases by environment, folder, and tags. Credentials encrypted at rest. Per‑connection access control. **Connect handshakes first** — the database is probed before the console opens, and a failure tells you the likely root cause (host unreachable, wrong password, missing database, TLS mismatch…) with what to change, instead of dropping you into a broken workspace. **JSON export/import** moves a whole connection between instances — its settings plus every folder, saved query, workflow, dashboard and backup schedule, re‑wired to fresh ids on import (the password is left out unless you ask for it; schedules arrive paused). |
-| 🚇 | **SSH tunnels** | The sidebar's **Infrastructure** group has two SSH pages: **SSH Host** (the SSH hosts / bastions connections tunnel through) and **SSH Key**. Generate an Ed25519/ECDSA/RSA key on the server (the private half never leaves it) or import an existing private key, then copy its public key into the bastion's `~/.ssh/authorized_keys`. An SSH host is an address, port, user, and either a key or a password; **Test** logs in, and its host key is pinned on first contact so a swapped server is refused. Presets cover a plain **SSH server**, **Railway** (`ssh.railway.com`, logging in as the service's domain, so connections can use private addresses like `postgres.railway.internal`) and **Cloudflare Access** (an SSH server behind a Cloudflare Tunnel — SSH is carried over Cloudflare with an Access service token, no `cloudflared` binary needed). Pick the SSH host on any PostgreSQL or Redis connection and everything — the console, workflows, dashboards and `pg_dump`/`pg_restore` backups — goes through the tunnel, with TLS still verifying the real database host. If a tunnel fails, the connect dialog tells you which part failed: SSH host unreachable, login rejected, host key changed, or the SSH host can't reach the database. |
-| 📊 | **Data browser** | Fast, spreadsheet‑style data grid — filter, multi‑column sort (click a header, Shift+click to add), edit rows inline, insert & delete, with a staged **Changes** panel before you commit. Drag (or Shift+click) across cells to select a block, then `⌘/Ctrl+C` to copy it as TSV or right‑click for copy as CSV/JSON, set NULL/EMPTY/DEFAULT, and duplicate/delete the rows it spans. |
-| 📁 | **Table folders** | Group a connection's tables into colored, nestable folders (up to 3 levels) — create one inline from the Tables sidebar header, drag tables (and folders) between them, and click a folder's icon to pick its color. The schema designer clusters each folder's tables into its own region on the ERD, where the region can be renamed, recolored or deleted and a table moved between folders from its node menu. |
-| 🧮 | **SQL editor** | CodeMirror‑powered editor with SQL highlighting, formatting, query history, and reusable **saved queries**. |
-| 📤 | **Data export / import** | The **Export / Import** button beside Query history opens one tab with an Export/Import switch. Export: tick tables, pick **CSV**, **JSON** or **SQL** (optionally **Include schema** — the `CREATE TABLE`/index DDL), preview the first 50 rows per table, and download; multi‑table exports are ordered parents‑first by foreign key so they replay cleanly, and a multi‑table CSV saves one file per table. Import: just drop a CSV, JSON or SQL file — the file says the rest. The format comes from its extension (or its content), a CSV goes into the table named after the file (`users.csv` → `users`), a JSON export brings its own tables, and a SQL file runs as a script. A table that doesn't exist yet is created — from the schema in the file when it has one, otherwise with column types inferred from the rows. A dry‑run preview shows exactly that (each table, its row count, existing or new, and the `CREATE TABLE` a new one gets) before anything is written. Each table imports in one transaction, and a SQL script runs in one. Works on SQLite and PostgreSQL; hidden for Redis. |
-| 🔑 | **Redis keyspace & console** | On a Redis connection the sidebar becomes a **key tree** built from the `:` namespacing convention — paged with `SCAN` (never `KEYS`), filtered by a real match pattern, with per‑key type and TTL badges. Click a key to inspect its value (strings, lists, sets, sorted sets, hashes and streams, paged), set or clear its expiry, or delete it. The editor tab becomes a **command console**: every Redis command with autocomplete and argument hints, one command per line, run the whole buffer at once and see each command's reply. |
-| 🎨 | **Schema designer** | Visual ERD (React Flow) to create/edit tables and columns; staged DDL with a **schema version** audit trail and best‑effort rollback SQL. **Notes** pin free text to the canvas (right‑click → Add note; drag, resize, recolor) for the "why" a diagram can't show, and the whole **arrangement is saved with the draft** — every table, group region and note goes back exactly where you left it instead of being re‑arranged on open. **Column order is draggable** — in the Create/Edit Table panel, by the grip on each column card. Creating a table (or reopening a staged one), the order you drop the cards in is the order the `CREATE TABLE` below the form is written with. Editing a table that already exists, it's the order the *diagram draws* it in, saved with the design like a table's position or a note — because no engine can move a column of an existing table with `ALTER` (not PostgreSQL, not SQLite), and a reorder is worth saving without pretending otherwise; that save needs no other change to be a real one. The **Create Table** and **Edit Table** panels each have three views — **Columns**, **Indexes** and **SQL** — toggled at the top, so a table's indexes are one click away instead of a scroll below its columns. Columns is the form. **Indexes** edits that same table's indexes: the ones it already has — read by **Sync**, along with the tables and relationships, and stored with the design like everything else the canvas draws — are listed with their columns, uniqueness, access method (PostgreSQL) and partial-index predicate, and are editable in place — no engine can `ALTER` an index, so a change stages a `DROP INDEX` and a fresh `CREATE INDEX`, and a drop's rollback is read from the live definition before it runs. Pick the columns in the order the index should lead with; leave the name blank and one is generated from the table and those columns. An index a `PRIMARY KEY` or `UNIQUE` constraint owns is shown but not editable — it belongs to the constraint, not to a `CREATE INDEX`. SQL shows the exact DDL the form built (the `CREATE TABLE` plus its indexes, or the `ALTER` batch), editable by hand for what a form can't express — a `CHECK` constraint, an expression index, a SQLite table rebuild — and stages it verbatim. The form is the source of truth, so opening SQL always rebuilds it from the form and nothing is parsed back; switching away asks before discarding hand-written SQL. In SQL the table name comes from the statement, so renaming it there re-files the staged change. Reopening a staged `CREATE TABLE` is the one case that starts on SQL: if the statement isn't what the form would have written, the form's reading of it is lossy, and showing it would quietly drop the rest on the next save. Hovering a table on the canvas reveals two icons in its header: **focus** (a crosshair — zooms the view to that table, revealing it first if it was hidden) and **edit**. **Design export/import** (`Export → Design (JSON)`) carries the staged DDL *and* that arrangement, so a diagram moves between drafts and instances intact — the PNG/JPG/SVG exports beside it are pictures, this one comes back. A connection‑linked draft **stores the schema it draws**: the tables and relationships it shows are saved with it, and nothing re‑reads the database on its own — **Sync schema**, beside Unlink in the header, is what pulls the current tables, their indexes and their relationships in — walked a few tables at a time behind a progress dialog that says how far along it is (tables read, indexes found, and which tables it is on), because a large schema is otherwise a long wait with nothing to show for it. The dialog holds the page until the read lands and closes itself — a sync replaces the schema the canvas draws, so editing a diagram that is about to be redrawn under you is work you'd lose — and the header says how long ago that last happened, or that it never has. So a diagram opens exactly as you left it, and still draws when its database is unreachable. (A release syncs on both sides of itself: before it asks, so the confirmation is true of the schema that is there, and after it runs, since it just changed that schema.) The diagram is **not** a console tab: it has its own full‑screen page, and the console's Schema icon opens *that connection's* editor there — resuming its most recent draft, or starting a fresh canvas for it if it has none. The home area's **Schema Editor** section lists every schema draft in the workspace, each opening at its own address. Its rows also act on a draft without opening it: **delete** it (a confirmation names what goes — the target database keeps its tables, schema version and history, because a draft is DDL that hasn't run), **unlink** it from its connection, or jump to that connection's **schema version history** — a tab on the connection's own detail page (`/connections/:id/schema`), beside Access and Backup, listing every DDL commit with who ran it, its Up/Down SQL and a **Rollback** to any reversible version. It's a question about the database, so it needs no session on it; a schemaless engine (Redis) has no such tab. Unlink from a row opens the editor with the unlink question already up, so the tables it offers to carry out are on screen behind it — one implementation of the move, not two. Both are disabled on a from‑scratch row, which has no database behind it to leave or to have a history. Every draft is **attributed**: that list has a *Created by* column, searchable by name, beside how long ago the draft was last saved, and the editor's header says who saved the design last and when, with the exact start and save times on hover. So a shared diagram answers “whose is this, and who moved it?”. That section is also where a new one starts: name it, then **from a connection** to design against that database (Sync draws its tables in, staged DDL runs against them), or **from scratch** — pick a database type and get an empty canvas for a database that doesn't exist yet, exported as SQL. Either kind opens on the same schema editor page, which draws a connection-linked draft for anyone with access to that connection — no need to open the whole console. **Release** runs the staged DDL against the draft's database from there, as a **two‑step dialog**: step 1 reads the database — the same read as the Sync button, with its progress inside the dialog and the Release button disabled (“Reading schema…”) until it lands — and step 2 is the confirmation that read makes true, listing every statement in the order it will run, the down SQL resolved from the definitions it is about to overwrite, the database receiving them and when that schema was read. So the question and the evidence for it arrive in the same window, and there is no moment where Release is live over a schema nobody has checked. If that read finds the design out of step with the database — a table it stages a `CREATE` for that already exists, a column it drops that is already gone, a table it alters that isn't there any more — the dialog says so, in the words of each statement that would fail, above the SQL and while it can still be cancelled. It is a warning and not a block: which of the two is wrong is a decision, not a repair. A failed read leaves the dialog on step 1 with the reason and a **Try again**, and nothing runs — releasing without that read would run DDL against a database nobody could see. What ran is then recorded as one schema version on that connection — so a draft applies to its own database without a detour through the console. A from‑scratch design has no database yet, so Release stays disabled until you **link it to a connection** of the same engine: the design moves onto that connection, **Sync schema** draws that database's tables under the staged ones, and it releases from then on like any other draft. **Unlink** takes it back out — and offers to carry the tables it draws with it as CREATE TABLE statements, so the diagram survives becoming a from‑scratch design again. Neither direction runs anything against the database. The type picker comes from the driver registry, so a schemaless engine (Redis) never appears in it. |
-| ⚙️ | **Workflows** | Drag‑and‑drop automation builder: `Manual`/`Schedule`/`Webhook` triggers → `Run query`, `HTTP Request`, `Run JavaScript`, `Switch`, `Loop`, `Export SQL`, `Store to Storage`. Real hourly/daily scheduling, a public **webhook** trigger URL, **folders** to organize them (drag into nested folders), JSON export/import (share or version‑control a workflow's graph — webhook tokens are stripped on export and re‑minted on import), and an **Activity** trail of past runs (every trigger). The JavaScript node has a built‑in `crypto` helper for HMAC/hash signing (e.g. signed HTTP headers). Runs can carry an input payload; query nodes inline it as `{{input.field}}`. A workflow is built inside its connection, but **Workspace → Workflow** lists every one in the workspace in a sortable, searchable table — what's scheduled, when it fires next, and how it last ran — and a row opens that workflow in its own console. |
-| 📈 | **Dashboards** | Per‑connection query dashboards with dynamic `{{variables}}` (single‑ or **multi‑select** with "select all" — multi values expand to a SQL list for `IN (…)`, shown as glanceable filter chips), drag/resize grid, JSON export/import, **auto‑refresh** (10s–5m with a "last updated" indicator) and a fullscreen **kiosk mode** (auto‑hiding toolbar for wall displays). Table widgets support server‑side pagination and per‑row **action buttons** that run a workflow with the clicked row as its input. The home area's **Dashboard** section lists every dashboard in the workspace across its connections, and a row opens it in that connection's console. |
-| 🧩 | **Templates** | Browse built‑in dashboard/workflow templates, filtered by database type, and apply one with a click to instantly create the bundled dashboard(s) and workflow(s) on your connection — e.g. a PostgreSQL health dashboard wired to a one‑click **Vacuum** workflow. |
-| 💾 | **Backups & restore** | S3‑compatible storage destinations + per‑connection scheduled backups. Calendar heatmap of runs and point‑in‑time restore — from a tracked backup version, any file browsed out of a storage destination, or a backup file uploaded from your computer. Turn on **Include connection configuration** and every run also stores the connection's JSON export (settings, folders, saved queries, workflows, dashboards — never the password) next to the dump, so a lost connection can be rebuilt with Import. |
-| 🔗 | **Connection sessions** | Every open connection to a database is a tracked session — see who's connected to what, and cap how many the app keeps open at once, per connection or as a workspace‑wide default. Logins are held in the metadata DB, so they survive a restart with no extra infrastructure to run. Idle connections are released automatically and reopened on demand. |
-| 👥 | **Workspaces & groups** | Multi‑workspace (org/tenant) model with members, groups and email invites. Belonging to a workspace lets you *see* everything in it; *doing* anything needs a role granted on a node, and opening a database needs access on that connection (SMTP optional — always get a copyable link). Roles come in two tiers: an **instance admin** manages which workspaces exist and who runs them (and deliberately has no data access of their own), while inside a workspace people hold a **configurable role**. |
-| 🌳 | **Resource tree** | One hierarchy of everything on the instance, under **Browse → Resource Tree**: **Application** at the root, workspaces under it, then your own **groups**, and the connections, storage destinations, dashboards and workflows filed inside them. It's not just navigation — it's where access lives. Pick any node to see who owns it, who's been granted a role on it, and exactly what *you* can do there. On a **connection** that list is who can actually *open* it — a role granted on the workspace reaches every connection inside it, but opening one is granted per connection, so anyone holding permissions here with no way in is stated separately underneath instead of sitting in the list as if they had access. Make a group like "Production" by right‑clicking wherever it belongs in the tree, move connections into it (right‑click → **Move…**, or the move button in the node panel — the picker only offers places that can hold it and that you may file into), and grant someone a role on that group alone. Moving re‑files no *grant*: the node simply starts inheriting whatever is granted on its new parent. A group is also a set of **people**, and that's the point of filing things into one — **everyone on a group's roster can open the connections filed under it**, no per‑connection setup. So "Company A" can hold *Team Promotions* and *Team Orders*, each staffed differently, each using only its own databases; and when one person needs both, put them in a *Team Database Admin* group and list that group on each connection's **Access** tab — one row per connection covers the whole roster. Every grant made to a group reaches all of them too, so access is granted once, not per person. (Nesting a group under another only files resources; it never merges who's in them. And because placement is access, re‑filing a *connection* needs you to own or manage it, not just to be allowed to organise the tree.) |
-| 🛡️ | **Roles & permissions (RBAC)** | Workspace access is permission‑based, not hardcoded: every route asks for a capability — manage the workspace, delete it, manage members, group rosters, notifications, storage destinations, add connections, manage all connections, transfer connection ownership, organise resources, grant access — and a role is a named set of those. Those roles are granted **on nodes of the resource tree**, so the same `Analyst` role can mean one connection for one person and a whole workspace for another; a grant either applies to just that node or cascades to everything inside it. **Owning a node means you can do anything under it.** `Owner` and `Member` ship built‑in, and a workspace always keeps at least one member who can manage it. A role can also declare *where* it may be granted, and a role granting workspace‑level powers is refused on a single connection rather than stored as a promise nothing can keep. The catalog is instance‑wide and admin‑owned — custom roles are created through the API (`/api/admin/roles`), there's no screen for it yet. Separately, **every connection has an owner**: whoever owns one can edit, back up and delete it whatever their role, and ownership can be handed to another member. |
-| ✉️ | **Email (SMTP)** | One mail server for the whole instance, configured by an admin under **Administration → Email** — no redeploy to change it. It sends invites, password resets and backup notifications for every workspace; workspace owners don't configure mail (they just see which server is in effect). The `SMTP_*` env vars remain the fallback underneath, so an env‑configured instance keeps working and the form pre‑fills from them. Test‑send from the same screen; the password is encrypted at rest and never sent back. |
-| 🔑 | **Auth & security** | First‑run setup wizard (creates the instance admin; workspaces come after), token‑based auth, two‑tier roles, and membership‑guarded connection routes. Logins are stored in the metadata DB and read through an in‑process cache, so a restart doesn't sign anyone out. Everyone manages their own account under **Setting → Account**: rename yourself and change your password (the current one is required; a change signs you out on every other device). Your email is your sign‑in identity, so only an admin can change it. |
-| ⬆️ | **In‑app updates** | Checks GitHub for newer releases and guides admins through a safe update — backup → pre‑flight checks → apply → verify. One‑click self‑update when the Docker socket is mounted, otherwise a copyable `docker compose pull` command. |
-| 🪟 | **Split view** | Work on two tabs at once: split the editor **right** or **down** from the tab bar, the tab's right‑click menu or `⌘/Ctrl+\`, then drag tabs between the two groups. Each group keeps its own tab strip and its own close/close‑others menu, the divider between them is draggable, and closing the last tab in the second group folds the split away — nothing is lost, since tabs move rather than close. |
-| ⌨️ | **Keyboard‑first** | Configurable keymap and shortcuts throughout the console. |
-| 🌗 | **Theming** | Light / dark theme, clean and distraction‑free. |
+- **Data browser** — spreadsheet‑style grid: filter, sort, edit inline, review staged changes before commit.
+- **SQL editor** — highlighting, formatting, history and saved queries.
+- **Schema designer** — visual ERD; stage DDL, release it in one confirmed step, roll back by version.
+- **Workflows** — schedule/webhook triggers → query → HTTP → JavaScript → export.
+- **Dashboards** — query widgets with variables, auto‑refresh and a kiosk mode.
+- **Backups** — scheduled dumps to any S3‑compatible bucket, with one‑click restore.
+- **Data export / import** — CSV, JSON or SQL, with a dry‑run preview.
+- **SSH tunnels** — reach private databases through a bastion (plain SSH, Railway, Cloudflare Access).
+- **Teams** — workspaces, groups, email invites and permission‑based roles on a resource tree.
+- **Secure by default** — credentials encrypted at rest (AES‑256‑GCM), brute‑force login protection.
+- **In‑app updates**, split view, configurable keymap, light/dark theme.
 
----
-
-## Screenshots
+Every feature in detail: **[docs/FEATURES.md](docs/FEATURES.md)**.
 
 <table>
   <tr>
-    <td width="50%">
-      <img src="docs/screenshots/connections.png" alt="Connections list with environment and tag filters" width="100%" />
-      <p align="center"><sub><b>Connections</b> — filter by environment, folder & tags</sub></p>
-    </td>
-    <td width="50%">
-      <img src="docs/screenshots/data-grid.png" alt="Data grid browsing table rows" width="100%" />
-      <p align="center"><sub><b>Data browser</b> — edit rows inline, stage changes</sub></p>
-    </td>
+    <td width="33%"><img src="docs/screenshots/connections.png" alt="Connections" width="100%" /><p align="center"><sub>Connections</sub></p></td>
+    <td width="33%"><img src="docs/screenshots/data-grid.png" alt="Data browser" width="100%" /><p align="center"><sub>Data browser</sub></p></td>
+    <td width="33%"><img src="docs/screenshots/query-editor.png" alt="SQL editor" width="100%" /><p align="center"><sub>SQL editor</sub></p></td>
   </tr>
   <tr>
-    <td width="50%">
-      <img src="docs/screenshots/query-editor.png" alt="SQL query editor with results" width="100%" />
-      <p align="center"><sub><b>SQL editor</b> — history & saved queries</sub></p>
-    </td>
-    <td width="50%">
-      <img src="docs/screenshots/schema-designer.png" alt="Visual ERD schema designer" width="100%" />
-      <p align="center"><sub><b>Schema designer</b> — visual ERD, staged DDL</sub></p>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%">
-      <img src="docs/screenshots/workflows.png" alt="Workflow automation builder" width="100%" />
-      <p align="center"><sub><b>Workflows</b> — drag-and-drop automation builder</sub></p>
-    </td>
-    <td width="50%">
-      <img src="docs/screenshots/backups.png" alt="Backup schedule with calendar heatmap" width="100%" />
-      <p align="center"><sub><b>Backups</b> — scheduled runs & calendar heatmap</sub></p>
-    </td>
+    <td width="33%"><img src="docs/screenshots/schema-designer.png" alt="Schema designer" width="100%" /><p align="center"><sub>Schema designer</sub></p></td>
+    <td width="33%"><img src="docs/screenshots/workflows.png" alt="Workflows" width="100%" /><p align="center"><sub>Workflows</sub></p></td>
+    <td width="33%"><img src="docs/screenshots/backups.png" alt="Backups" width="100%" /><p align="center"><sub>Backups</sub></p></td>
   </tr>
 </table>
 
-
----
-
-## Database compatibility
-
-Tabletsgo speaks a **dialect‑agnostic** connection contract, so support grows without breaking the API.
-
 | Database | Status |
 |---|:---:|
-| **PostgreSQL** | ✅ Supported |
-| **SQLite** | ✅ Supported |
-| **Redis** | ✅ Supported |
-| MySQL | 🚧 Planned |
-| MariaDB | 🚧 Planned |
-| MongoDB | 🚧 Planned |
+| PostgreSQL, SQLite, Redis | ✅ Supported |
+| MySQL, MariaDB, MongoDB | 🚧 Planned |
 
-Redis is a key‑value store, not a relational database, so the console adapts: the sidebar shows a **keyspace tree** instead of a table list, and the editor tab is a **command console** rather than a SQL editor. Everything that isn't SQL‑specific still works — saved queries (commands), query history, workflows and dashboards all run against it, because the server normalizes every Redis reply into the same rows/message shape the SQL engines return. What Redis connections don't get: the schema designer, the schema‑version audit trail, row‑level grid editing, query analysis (`EXPLAIN`) and scheduled backups — none of which have a Redis equivalent.
-
----
-
-## Try it in 60 seconds
-
-The fastest way to kick the tires — one command, no external database required. SQLite is the default metadata store; PostgreSQL is available for deployments that prefer a database server.
+## Quick start
 
 ```bash
 git clone https://github.com/aidapedia/tabletsgo.git
 cd tabletsgo
-
-# 1. Create your env (generates a required encryption key)
 cp .env.example .env
 node -e "console.log('ENCRYPTION_KEY='+require('crypto').randomBytes(32).toString('hex'))" >> .env
-
-# 2. Run it
 docker compose up -d
 ```
 
-Open **http://localhost:3000** and complete the quick **first‑run setup wizard** — it creates the **instance administrator**, and only that. An admin holds no data access of their own, so sign in and create your first workspace (naming its owner) from **Administration → Workspaces**; that owner adds the connections. 🎉
+Open **http://localhost:3000** and finish the setup wizard. It creates the **instance admin**, who then creates the first workspace (and names its owner) under **Administration → Workspaces**. The owner adds connections.
 
-> The wizard runs until the instance *has* an administrator, not just until it has users — so an older install that ended up with no admin can still set one up. In that case the wizard asks for the credentials of an **existing** account and promotes it, rather than letting anyone create an admin from nothing.
+> Keep `ENCRYPTION_KEY` safe — losing or changing it makes saved credentials unreadable.
 
-### PostgreSQL for app metadata
+**Upgrading:** `docker compose pull && docker compose up -d`. A one‑shot `migrate` service updates the metadata schema before the app starts.
 
-To store accounts, workspaces, saved connections, and login sessions in PostgreSQL, set these in `.env` and start the optional database service:
+**PostgreSQL instead of SQLite** for the app's own metadata: set `META_DB_TYPE=postgresql` and `META_DATABASE_URL`, then `docker compose --profile postgresql up -d`. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md#postgresql-for-app-metadata).
 
-```dotenv
-META_DB_TYPE=postgresql
-META_POSTGRES_PASSWORD=choose-a-strong-password
-META_DATABASE_URL=postgresql://tabletsgo:choose-a-strong-password@metadata-postgres:5432/tabletsgo
-```
+## System requirements
 
-```bash
-docker compose --profile postgresql up -d
-```
+**A 1 vCPU / 1 GB RAM server with Docker is enough for a team.**
 
-For an external PostgreSQL server, set `META_DATABASE_URL` to its connection URL and run `docker compose up -d` without the profile. Use a dedicated, empty database or schema for a new PostgreSQL deployment. Switching `META_DB_TYPE` selects a different store; it does **not** copy data from an existing SQLite file. Keep the same `ENCRYPTION_KEY` if you move encrypted connection records between installations. Metadata snapshots from PostgreSQL are `pg_dump` custom-format `.dump` files in the app's backup directory. Source installations using PostgreSQL need `libpq` development files (`pg_config`) when installing packages and `pg_dump` on `PATH`; the Docker image includes both.
+| | Minimum | Recommended |
+|---|---|---|
+| CPU | 0.5 vCPU | 1 vCPU |
+| RAM | 512 MB | 1 GB |
+| Disk | 2 GB | 5 GB + backups |
 
-Run one Tabletsgo app instance for either metadata store. The permission cache and workflow scheduler are process-local. The app queries its metadata through Prisma Client over a connection pool; keep PostgreSQL close to the app, since every permission check reads it.
-
-### Schema migrations
-
-The metadata schema is migrated by a separate one-shot **migrator** (Prisma Migrate), not by the app. `docker compose up` runs it as the `migrate` service and starts the app only after it succeeds; with nothing pending it is a no-op, and existing installs are upgraded in place (a snapshot is written to `data/backups/` first). The app refuses to start on an out-of-date schema and tells you to run the migrator.
-
-- **Without compose**, run it with the same env and volume before starting the container: `docker run --rm --env-file .env -v tabletsgo-data:/app/data ghcr.io/aidapedia/tabletsgo node scripts/migrate.js`.
-- **From source**, `npm run server` runs `npm run migrate` first; `npm run migrate -- --status` shows what is applied and pending.
-- **One‑click in‑app updates** run the new image's migrator before switching over, and keep the old version running if it fails.
-
----
+Tabletsgo itself uses ~150–250 MB of RAM; the rest is for the OS and Docker. More CPU makes it faster; more RAM doesn't. Details: [docs/BENCHMARK.md](docs/BENCHMARK.md).
 
 ## Configuration
 
-All configuration is via environment variables (see [`.env.example`](.env.example)):
+Set these in `.env`. Everything else is optional.
 
-| Variable | Required | Description |
-|---|:---:|---|
-| `ENCRYPTION_KEY` | ✅ | AES‑256‑GCM key encrypting connection credentials at rest. The server won't start without it. **Changing/losing it makes existing credentials unreadable.** |
-| `PORT` | | Host port to expose (container listens on `3000`). |
-| `META_DB` | | Path to the metadata SQLite DB (default `/app/data/app.db`). |
-| `META_DB_TYPE` | | Metadata store: `sqlite` (default) or `postgresql`. This is separate from the databases users connect to. |
-| `META_DATABASE_URL` | PostgreSQL only | PostgreSQL connection URL for app metadata. Use a dedicated, empty database or schema on first boot. |
-| `META_POSTGRES_PASSWORD` | Bundled PostgreSQL only | Password for the optional `metadata-postgres` Compose service. |
-| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | | Optional **instance admin** pre‑seed — the admin account only, no workspace. Leave unset to use the in‑browser setup wizard. The seeded account administers the instance and holds no workspace access, so create the first workspace (naming its owner) from Administration → Workspaces before anyone can add connections. |
-| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` / `SMTP_SECURE` | | Optional SMTP for invite/reset emails, and the **fallback** under the mail server an admin sets in Administration → Email (which wins, and changes without a redeploy). Invites always return a copyable link even without SMTP. |
-| `VITE_API_URL` | | Frontend API base, **baked at build time** (default `/api`). Set to an absolute URL only for a split frontend/backend deploy. |
-| `WORKFLOW_SCHEDULER_ENABLED` | | Set `false` to disable the minutely cron tick (useful for local/CI). |
-| `HANDSHAKE_TIMEOUT_MS` | | How long the pre‑flight connection handshake waits for a database before reporting a timeout (default `8000`). Raise only for databases behind a slow tunnel/VPN. |
-| `SESSION_TTL_MS` / `SESSION_IDLE_TTL_MS` | | Sliding login lifetime (default 30 days) and how long an idle database connection stays open before it's released (default 15 min). |
-| `MAX_SESSIONS_PER_CONNECTION` | | Instance‑wide default cap on concurrent sessions per connection (`0` = unlimited). A workspace (Workspace → General) can override it; individual connections cannot. A session tracks a database handle the process holds, so with more than one replica the cap applies per replica. |
-| `LOGIN_MAX_ATTEMPTS` / `LOGIN_ATTEMPT_WINDOW_MS` / `LOGIN_LOCKOUT_MS` | | Brute‑force protection: consecutive failed sign‑ins that block an account (default `5`, `0` disables), how close together they must be (default 15 min — an older failure restarts the counter), and how long the block lasts (default `0` = until an admin unblocks it in Administration → Users). |
-| `LOGIN_ADMIN_COOLDOWN_MS` | | An instance admin is never blocked indefinitely (nobody could unblock them) — they get this self‑expiring cooldown instead (default 15 min; `0` leaves admin sign‑ins unthrottled). |
-| `TABLETSGO_TAG` | | Published image tag `docker compose` runs and pulls on self‑update (default `latest`). One‑click self‑update works best on a moving tag. |
-| `UPDATE_IMAGE` / `UPDATE_REPO` / `UPDATE_HELPER_IMAGE` | | In‑app update checker — default to the official image/repo; override only for a fork. Mount the Docker socket (see `docker-compose.yml`) to enable one‑click self‑update via `UPDATE_HELPER_IMAGE` (default `docker:cli`); otherwise the wizard shows a manual pull command. |
+| Variable | Description |
+|---|---|
+| `ENCRYPTION_KEY` | **Required.** Encrypts connection credentials at rest. |
+| `PORT` | Host port (default `3000`). |
+| `META_DB_TYPE` / `META_DATABASE_URL` | Metadata store: `sqlite` (default) or `postgresql` + its URL. |
+| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | Pre‑seed the instance admin instead of using the wizard. |
+| `SMTP_*` | Fallback mail server for invites and resets (admins can set one in the UI). |
 
----
+Full list: [docs/CONFIGURATION.md](docs/CONFIGURATION.md) and [`.env.example`](.env.example).
+
+## Development
+
+```bash
+npm install
+npm run dev:all     # Vite frontend + API server (runs migrations first)
+npm test
+```
+
+Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · API: [BACKEND_DOCUMENTATION.MD](BACKEND_DOCUMENTATION.MD) · Contributing: [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ## Donation
 
-To stay completely free and open-source, with no feature behind the paywall and evolve the project, we need your help. If you like Tabletsgo, please consider donating to help us fund the project's future development.
-
----
+Tabletsgo is free and open source with nothing behind a paywall. If it helps you, please consider donating to fund its development.
 
 ## License
 
-This project is licensed under the [Apache License 2.0](LICENSE).
-
-<div align="center">
-<sub>Built with ☕ and SQL. Self‑host it, own your data.</sub>
-</div>
+[Apache License 2.0](LICENSE)
