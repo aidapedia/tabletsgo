@@ -310,7 +310,7 @@ export default function ConnectionsPage() {
                   }}
                 />
                 <Button size="lg" icon={UploadIcon} onClick={() => importFileRef.current?.click()}>
-                  Import
+                  Restore
                 </Button>
                 <Button variant="primary" size="lg" icon={PlusIcon} onClick={() => setPicker(true)}>
                   New connection
