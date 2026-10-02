@@ -1980,12 +1980,14 @@ export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUp
             statement and want the draft to record that — and with Save disabled
             at zero there was no way to persist it, so the draft kept the
             statement you had just deleted. Only creating the first draft still
-            needs something in it; an unnamed, empty new draft is nothing. */}
+            needs something in it; an unnamed, empty new draft is nothing. A
+            synced schema counts as something: on the unsaved canvas a Sync
+            reads the tables into memory only, and Save is what keeps them. */}
         <Button
           variant="ghost"
           size="sm"
           onClick={() => (draftId ? onUpdateDraft?.(draftId, pending, currentLayout()) : setNaming(true))}
-          disabled={pending.length === 0 && !draftId}
+          disabled={pending.length === 0 && !draftId && !syncedAt}
         >
           Save
         </Button>

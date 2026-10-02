@@ -2,7 +2,7 @@ import { useNavigate } from 'react-router-dom'
 import { useWorkspaces } from '@/features/workspaces'
 import { WorkspaceDashboardList, type WorkspaceDashboard } from '@/features/dashboard'
 import LoadingState from '@/shared/ui/feedback/LoadingState'
-import { PageHeader } from './ui'
+import { Section } from './ui'
 
 // Dashboard — every query dashboard in the current workspace, across its
 // connections. Building and reading one still belongs to the console (that is
@@ -18,15 +18,11 @@ export default function DashboardsPage() {
     navigate(`/connection/${dashboard.connectionId}?dashboard=${dashboard.id}`)
 
   return (
-    <div className="w-full">
-      <PageHeader
-        title="Dashboard"
-        desc="Every dashboard in this workspace — which connection it reads, and how big it is."
-      />
-
-      <div className="mt-6">
-        {current ? <WorkspaceDashboardList workspaceId={current.id} onOpen={open} /> : <LoadingState className="" />}
-      </div>
-    </div>
+    <Section
+      title="Dashboard"
+      desc="Every dashboard in this workspace — which connection it reads, and how big it is."
+    >
+      {current ? <WorkspaceDashboardList workspaceId={current.id} onOpen={open} /> : <LoadingState className="" />}
+    </Section>
   )
 }

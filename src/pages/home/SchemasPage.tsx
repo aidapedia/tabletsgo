@@ -11,7 +11,7 @@ import Button from '@/shared/ui/buttons/Button'
 import LoadingState from '@/shared/ui/feedback/LoadingState'
 import { useToast } from '@/shared/ui/feedback/Toast'
 import { PlusIcon } from '@/shared/ui/icons'
-import { PageHeader } from './ui'
+import { Section } from './ui'
 
 // Schema — every schema draft in the current workspace, across its connections
 // plus the ones designed from scratch. The console has no diagram of its own:
@@ -74,30 +74,26 @@ export default function SchemasPage() {
   }
 
   return (
-    <div className="w-full">
-      <PageHeader
-        title="Schema Editor"
-        desc="Every schema draft in this workspace — which database it targets, and how much is staged."
-        action={
-          <Button variant="primary" size="sm" icon={PlusIcon} onClick={() => setCreating(true)} disabled={!current}>
-            New schema
-          </Button>
-        }
-      />
-
-      <div className="mt-6">
-        {current ? (
-          <WorkspaceSchemaList
-            key={reloadKey}
-            workspaceId={current.id}
-            onOpen={open}
-            onUnlink={unlink}
-            onShowHistory={showHistory}
-          />
-        ) : (
-          <LoadingState className="" />
-        )}
-      </div>
+    <Section
+      title="Schema Editor"
+      desc="Every schema draft in this workspace — which database it targets, and how much is staged."
+      action={
+        <Button variant="primary" size="lg" icon={PlusIcon} onClick={() => setCreating(true)} disabled={!current}>
+          New schema
+        </Button>
+      }
+    >
+      {current ? (
+        <WorkspaceSchemaList
+          key={reloadKey}
+          workspaceId={current.id}
+          onOpen={open}
+          onUnlink={unlink}
+          onShowHistory={showHistory}
+        />
+      ) : (
+        <LoadingState className="" />
+      )}
 
       {creating && (
         <NewSchemaDialog
@@ -107,6 +103,6 @@ export default function SchemasPage() {
           onFromScratch={fromScratch}
         />
       )}
-    </div>
+    </Section>
   )
 }

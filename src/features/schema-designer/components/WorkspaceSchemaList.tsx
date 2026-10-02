@@ -12,7 +12,6 @@ import {
   DatabaseIcon,
   DbLogo,
   DiagramIcon,
-  ExternalLinkIcon,
   HistoryIcon,
   TrashIcon,
   UnlinkIcon,
@@ -243,20 +242,14 @@ export default function WorkspaceSchemaList({
     {
       key: 'actions',
       header: '',
-      width: 160,
+      width: 120,
       align: 'right' as const,
-      // Four actions, and two of them only mean something with a database
-      // behind the draft — so a from-scratch row keeps them disabled with the
-      // reason rather than dropping them, which is what stops the column
-      // reshuffling from row to row (see RowAction).
+      // No "open" action: the row itself opens the draft. Two of the three only
+      // mean something with a database behind the draft — so a from-scratch row
+      // keeps them disabled with the reason rather than dropping them, which is
+      // what stops the column reshuffling from row to row (see RowAction).
       render: (row) => (
         <RowActions>
-          <RowAction
-            icon={ExternalLinkIcon}
-            label="Open in the schema editor"
-            aria={`Open ${row.name}`}
-            onClick={() => onOpen(row)}
-          />
           <RowAction
             icon={HistoryIcon}
             label={`Schema version history of ${row.connectionName}`}

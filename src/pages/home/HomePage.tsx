@@ -52,7 +52,7 @@ export default function HomePage() {
         desc={`Here's an overview of ${current?.name || 'your workspace'}.`}
       />
 
-      <div className="mt-7 grid grid-cols-4 gap-4 max-[1000px]:grid-cols-2 max-[560px]:grid-cols-1">
+      <div className="mt-6 grid grid-cols-4 gap-4 max-[1000px]:grid-cols-2 max-[560px]:grid-cols-1">
         <StatCard
           Icon={DatabaseIcon}
           label="Connections"
