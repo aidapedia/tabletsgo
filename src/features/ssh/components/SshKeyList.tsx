@@ -9,6 +9,8 @@ import DataTable from '@/shared/ui/table/DataTable'
 import type { Column } from '@/shared/ui/table/DataTable'
 import { RowActions, RowMenu } from '@/shared/ui/table/RowActions'
 import useDataTable from '@/shared/ui/table/useDataTable'
+import useListView from '@/shared/ui/table/useListView'
+import ViewToggle from '@/shared/ui/table/ViewToggle'
 import { CopyIcon, EditIcon, KeyIcon, PlusIcon, TrashIcon } from '@/shared/ui/icons'
 import { deleteSshKey, listSshKeys } from '../lib/api'
 import type { SshKey } from '../types'
@@ -125,7 +127,8 @@ const SshKeyList = forwardRef<SshListHandle, { workspaceId: string; canManage?: 
     [canManage],
   )
 
-  const table = useDataTable({ rows: filtered, columns, pageSize: 10, resetKey: query })
+  const [view, setView] = useListView('ssh-keys')
+  const table = useDataTable({ rows: filtered, columns, pageSize: 10, resetKey: query, view })
 
   const handleSaved = (k: SshKey) =>
     setKeys((prev) => (prev.some((x) => x.id === k.id) ? prev.map((x) => (x.id === k.id ? k : x)) : [...prev, k]))
@@ -144,8 +147,9 @@ const SshKeyList = forwardRef<SshListHandle, { workspaceId: string; canManage?: 
 
   return (
     <>
-      <div className="mb-4">
-        <SearchInput placeholder="Search SSH keys…" value={query} onChange={(e) => setQuery(e.target.value)} />
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <SearchInput className="min-w-[220px] flex-1" placeholder="Search SSH keys…" value={query} onChange={(e) => setQuery(e.target.value)} />
+        <ViewToggle value={view} onChange={setView} />
       </div>
 
       <DataTable

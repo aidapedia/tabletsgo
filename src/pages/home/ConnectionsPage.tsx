@@ -4,7 +4,7 @@ import {
   useConnections, DbTypePickerModal,
   ConnectionExportModal, ConnectionImportModal, readConnectionExportFile,
   ConnectHandshakeDialog, useConnectHandshake,
-  StatusBadge, connectionUrl, TYPE_LABEL, EnvBadge,
+  StatusBadge, connectionUrl, TYPE_LABEL, EnvBadge, ConnectionCard,
 } from '@/features/connections'
 import type { ConnectionExport } from '@/features/connections'
 import { useWorkspaces, can } from '@/features/workspaces'
@@ -34,6 +34,8 @@ import DataTable from '@/shared/ui/table/DataTable'
 import type { Column } from '@/shared/ui/table/DataTable'
 import { RowActions, RowMenu } from '@/shared/ui/table/RowActions'
 import useDataTable from '@/shared/ui/table/useDataTable'
+import useListView from '@/shared/ui/table/useListView'
+import ViewToggle from '@/shared/ui/table/ViewToggle'
 import { PageHeader } from './ui'
 
 // ---- `/connections`: the list. Detail and the create/edit form are their own
@@ -59,6 +61,7 @@ export default function ConnectionsPage() {
   const [activeFolder, setActiveFolder] = useState('all')
   const [activeType, setActiveType] = useState('all')
   const [activeStatus, setActiveStatus] = useState('all')
+  const [view, setView] = useListView('connections')
   const [picker, setPicker] = useState(false) // db-type picker open
   const [deleting, setDeleting] = useState<any>(null) // connection pending delete confirmation
   const [exporting, setExporting] = useState<any>(null) // connection whose JSON bundle is being downloaded
@@ -162,6 +165,63 @@ export default function ConnectionsPage() {
     setActiveStatus('all')
   }
 
+  // The last-backup cell and the action strip, shared by the table and the grid.
+  const renderBackup = (c) => {
+    const backup = backups[c.id]
+    if (!backup) return <span className="text-ink-faint">Never</span>
+    return (
+      <span className="flex items-center gap-1.5">
+        {relativeTime(backup.ts)}
+        <span className={backup.ok ? 'text-green' : 'text-red'}>
+          <CheckIcon width={13} height={13} />
+        </span>
+      </span>
+    )
+  }
+
+  const renderActions = (c) => (
+    <RowActions>
+      {/* The one action worth a word — everything else lives in the menu. */}
+      <Button
+        variant="primary"
+        size="sm"
+        disabled={connectingId === c.id}
+        onClick={() => connect(c)}
+      >
+        {connectingId === c.id ? 'Connecting…' : 'Connect'}
+      </Button>
+      <RowMenu label={`Actions for ${c.name}`}>
+        {({ close }) => (
+          <div className="p-1">
+            <MenuItem onClick={() => { close(); openDetail(c) }}>
+              <InfoIcon width={14} height={14} /> Details
+            </MenuItem>
+            {/* Changing the connection *record* — whoever manages every
+                connection here, or whoever owns this one. */}
+            {canManageConn(c) && (
+              <MenuItem onClick={() => { close(); openEdit(c) }}>
+                <EditIcon width={14} height={14} /> Edit
+              </MenuItem>
+            )}
+            <MenuItem onClick={() => { close(); copyUrl(c) }}>
+              <CopyIcon width={14} height={14} /> Copy as URL
+            </MenuItem>
+            {canManageConn(c) && (
+              <MenuItem onClick={() => { close(); setExporting(c) }}>
+                <DownloadIcon width={14} height={14} /> Export as JSON
+              </MenuItem>
+            )}
+            {canManageConn(c) && (
+              <MenuItem danger onClick={() => { close(); setDeleting(c) }}>
+                <TrashIcon width={14} height={14} /> Delete
+              </MenuItem>
+            )}
+          </div>
+        )}
+      </RowMenu>
+    </RowActions>
+  )
+
   // Table columns. Everything the row shows is derived here so the table itself
   // stays generic; sorting uses `sortValue` wherever the cell isn't plain text.
   const columns = useMemo<Column<any>[]>(
@@ -216,66 +276,14 @@ export default function ConnectionsPage() {
         sortValue: (c) => backups[c.id]?.ts ?? 0,
         width: 150,
         className: 'max-[900px]:hidden',
-        render: (c) => {
-          const backup = backups[c.id]
-          if (!backup) return <span className="text-ink-faint">Never</span>
-          return (
-            <span className="flex items-center gap-1.5">
-              {relativeTime(backup.ts)}
-              <span className={backup.ok ? 'text-green' : 'text-red'}>
-                <CheckIcon width={13} height={13} />
-              </span>
-            </span>
-          )
-        },
+        render: renderBackup,
       },
       {
         key: 'actions',
         header: '',
         align: 'right',
         width: 190,
-        render: (c) => (
-          <RowActions>
-            {/* The one action worth a word — everything else lives in the menu. */}
-            <Button
-              variant="primary"
-              size="sm"
-              disabled={connectingId === c.id}
-              onClick={() => connect(c)}
-            >
-              {connectingId === c.id ? 'Connecting…' : 'Connect'}
-            </Button>
-            <RowMenu label={`Actions for ${c.name}`}>
-              {({ close }) => (
-                <div className="p-1">
-                  <MenuItem onClick={() => { close(); openDetail(c) }}>
-                    <InfoIcon width={14} height={14} /> Details
-                  </MenuItem>
-                  {/* Changing the connection *record* — whoever manages every
-                      connection here, or whoever owns this one. */}
-                  {canManageConn(c) && (
-                    <MenuItem onClick={() => { close(); openEdit(c) }}>
-                      <EditIcon width={14} height={14} /> Edit
-                    </MenuItem>
-                  )}
-                  <MenuItem onClick={() => { close(); copyUrl(c) }}>
-                    <CopyIcon width={14} height={14} /> Copy as URL
-                  </MenuItem>
-                  {canManageConn(c) && (
-                    <MenuItem onClick={() => { close(); setExporting(c) }}>
-                      <DownloadIcon width={14} height={14} /> Export as JSON
-                    </MenuItem>
-                  )}
-                  {canManageConn(c) && (
-                    <MenuItem danger onClick={() => { close(); setDeleting(c) }}>
-                      <TrashIcon width={14} height={14} /> Delete
-                    </MenuItem>
-                  )}
-                </div>
-              )}
-            </RowMenu>
-          </RowActions>
-        ),
+        render: renderActions,
       },
     ],
     [statuses, backups, connectingId, canManageAll, user?.id],
@@ -287,6 +295,7 @@ export default function ConnectionsPage() {
     columns,
     pageSize: 10,
     resetKey: `${query}|${activeEnv}|${activeFolder}|${activeType}|${activeStatus}`,
+    view,
   })
 
   return (
@@ -363,14 +372,23 @@ export default function ConnectionsPage() {
               Clear
             </Button>
           )}
+          <ViewToggle value={view} onChange={setView} />
         </div>
 
-        {/* Table */}
         <DataTable
           columns={columns}
           rowKey={(c) => c.id}
           onRowClick={openDetail}
           loading={loading}
+          renderCard={(c) => (
+            <ConnectionCard
+              conn={c}
+              status={statuses[c.id]}
+              lastBackup={renderBackup(c)}
+              actions={renderActions(c)}
+              onClick={() => openDetail(c)}
+            />
+          )}
           empty={
             hasFilters ? (
               'No connections match your search.'
