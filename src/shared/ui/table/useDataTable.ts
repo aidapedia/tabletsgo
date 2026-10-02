@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import type { Column, Sort } from './DataTable'
+import type { ListView } from './useListView'
 
 /**
  * Client-side sorting + pagination state for `DataTable`.
@@ -13,6 +14,10 @@ import type { Column, Sort } from './DataTable'
  * `resetKey` is any value describing the current filters — when it changes the
  * table jumps back to page 1 (otherwise you'd land on an empty page 4).
  * For server-side paging, skip the hook and pass the props yourself.
+ *
+ * `view` (from `useListView`) is handed through to `DataTable`. Each view keeps
+ * its own page size — the grid pages in multiples of three so a page is whole
+ * rows of cards — and switching view goes back to page 1.
  */
 export type UseDataTableOptions<T> = {
   rows: T[]
@@ -20,7 +25,10 @@ export type UseDataTableOptions<T> = {
   pageSize?: number
   initialSort?: Sort | null
   resetKey?: unknown
+  view?: ListView
 }
+
+const GRID_PAGE_SIZES = [12, 24, 48, 96]
 
 const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' })
 
@@ -39,16 +47,20 @@ export default function useDataTable<T>({
   pageSize: initialPageSize = 10,
   initialSort = null,
   resetKey,
+  view = 'list',
 }: UseDataTableOptions<T>) {
   const [sort, setSort] = useState<Sort | null>(initialSort)
-  const [pageSize, setPageSize] = useState(initialPageSize)
+  const [pageSizes, setPageSizes] = useState({ list: initialPageSize, grid: GRID_PAGE_SIZES[0] })
+  const pageSize = pageSizes[view]
   const [page, setPage] = useState(1)
   const [lastReset, setLastReset] = useState(resetKey)
+  const [lastView, setLastView] = useState(view)
 
-  // Filters changed ⇒ back to page 1. Done during render (not in an effect) so
-  // the table never paints one frame of the stale page.
-  if (resetKey !== lastReset) {
+  // Filters (or the view) changed ⇒ back to page 1. Done during render (not in
+  // an effect) so the table never paints one frame of the stale page.
+  if (resetKey !== lastReset || view !== lastView) {
     setLastReset(resetKey)
+    setLastView(view)
     setPage(1)
   }
 
@@ -76,9 +88,11 @@ export default function useDataTable<T>({
     pageCount,
     total,
     pageSize,
+    pageSizeOptions: view === 'grid' ? GRID_PAGE_SIZES : undefined,
+    view,
     onPageChange: setPage,
     onPageSizeChange: (n: number) => {
-      setPageSize(n)
+      setPageSizes((sizes) => ({ ...sizes, [view]: n }))
       setPage(1)
     },
   }

@@ -11,6 +11,16 @@ const VARIANTS = {
   subtle: 'text-ink-dim hover:bg-elevated hover:text-ink',
 }
 
+// The pressed look (e.g. while its menu is open): the variant's hover state held
+// on, so the button keeps its shape — a ghost button keeps its border.
+const ACTIVE = {
+  primary: 'bg-green-bright text-white',
+  ghost: 'border border-edge-strong bg-card-hover text-ink',
+  danger: 'border border-red/30 bg-red/10 text-red',
+  toolbar: 'bg-elevated text-ink',
+  subtle: 'bg-elevated text-ink',
+}
+
 const SIZES = {
   sm: 'px-2.5 py-1.5 text-[11px] gap-1.5',
   md: 'px-3 py-2 text-xs gap-2',
@@ -45,7 +55,7 @@ export default function Button({
 }: ButtonProps) {
   const base =
     'inline-flex items-center justify-center whitespace-nowrap rounded-soft font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed'
-  const look = active ? 'bg-elevated text-ink' : VARIANTS[variant]
+  const look = active ? ACTIVE[variant] : VARIANTS[variant]
   return (
     <button className={`${base} ${SIZES[size]} ${look} ${className}`} {...props}>
       {Icon && <Icon width={15} height={15} className="shrink-0" />}

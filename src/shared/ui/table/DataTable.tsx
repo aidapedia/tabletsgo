@@ -3,6 +3,7 @@ import EmptyState from '@/shared/ui/feedback/EmptyState'
 import LoadingState from '@/shared/ui/feedback/LoadingState'
 import { ChevronDown } from '@/shared/ui/icons'
 import Pagination from './Pagination'
+import type { ListView } from './useListView'
 
 /**
  * The shared table view: a bordered card with a sticky-styled header row,
@@ -17,6 +18,11 @@ import Pagination from './Pagination'
  *
  * A column renders `render(row)` when given, otherwise `row[key]`. Sorting uses
  * `sortValue(row)` when given, otherwise the same raw field.
+ *
+ * `view="grid"` draws the same rows as cards, three across where there's room.
+ * The card is built from the columns: the first is its title, a trailing
+ * column with an empty header is its action footer, and the rest are labelled
+ * fields. Pass `renderCard` when a list wants a card of its own.
  */
 export type Sort = { key: string; dir: 'asc' | 'desc' }
 
@@ -54,6 +60,9 @@ export type DataTableProps<T> = {
   pageSizeOptions?: number[]
   onPageChange?: (page: number) => void
   onPageSizeChange?: (size: number) => void
+  view?: ListView
+  /** Grid view only: draw this row's card yourself instead of the generic one. */
+  renderCard?: (row: T) => ReactNode
   className?: string
 }
 
@@ -83,11 +92,48 @@ export default function DataTable<T>({
   pageSizeOptions,
   onPageChange,
   onPageSizeChange,
+  view = 'list',
+  renderCard,
   className = '',
 }: DataTableProps<T>) {
   // Nothing to page through on an empty/loading table — the footer would just
   // read "0–0 of 0".
   const showPager = !!onPageChange && page != null && pageCount != null && (total ?? rows.length) > 0
+  const pager = showPager && (
+    <Pagination
+      className={view === 'grid' ? 'mt-3 rounded-card border border-edge bg-card' : 'border-t border-edge'}
+      page={page!}
+      pageCount={pageCount!}
+      total={total ?? rows.length}
+      pageSize={pageSize ?? rows.length}
+      pageSizeOptions={pageSizeOptions}
+      onPageChange={onPageChange!}
+      onPageSizeChange={onPageSizeChange}
+    />
+  )
+
+  if (view === 'grid') {
+    return (
+      // A container query, not a viewport one: three cards only when the list
+      // itself is wide enough, whatever panel it sits in.
+      <div className={`@container ${className}`}>
+        {loading || rows.length === 0 ? (
+          <div className="rounded-card border border-edge bg-card">
+            {loading ? <LoadingState className="py-10 text-center" /> : <EmptyState className="py-12">{empty}</EmptyState>}
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-3 @xl:grid-cols-2 @4xl:grid-cols-3">
+            {rows.map((row) => (
+              <div key={rowKey(row)} className="flex min-w-0">
+                {renderCard ? renderCard(row) : <RowCard row={row} columns={columns} onClick={onRowClick} />}
+              </div>
+            ))}
+          </div>
+        )}
+        {!loading && pager}
+      </div>
+    )
+  }
 
   return (
     // The card itself must not clip (the footer's rows-per-page menu drops out
@@ -158,17 +204,47 @@ export default function DataTable<T>({
       {loading && <LoadingState className="py-10 text-center" />}
       {!loading && rows.length === 0 && <EmptyState className="py-12">{empty}</EmptyState>}
 
-      {showPager && (
-        <Pagination
-          className="border-t border-edge"
-          page={page!}
-          pageCount={pageCount!}
-          total={total ?? rows.length}
-          pageSize={pageSize ?? rows.length}
-          pageSizeOptions={pageSizeOptions}
-          onPageChange={onPageChange!}
-          onPageSizeChange={onPageSizeChange}
-        />
+      {pager}
+    </div>
+  )
+}
+
+const cell = <T,>(col: Column<T>, row: T) => (col.render ? col.render(row) : ((row as any)[col.key] ?? '—'))
+
+// The generic card for grid view. Column `className`s are left off on purpose:
+// they carry table-only rules like `max-[900px]:hidden`, and a card has room for
+// every field.
+function RowCard<T>({ row, columns, onClick }: { row: T; columns: Column<T>[]; onClick?: (row: T) => void }) {
+  const [title, ...rest] = columns
+  const last = rest[rest.length - 1]
+  const actions = last && last.header === '' ? last : null
+  const fields = actions ? rest.slice(0, -1) : rest
+
+  return (
+    <div
+      onClick={onClick ? () => onClick(row) : undefined}
+      className={`flex w-full min-w-0 flex-col rounded-card border border-edge bg-card p-4 text-[13px] transition-colors ${
+        onClick ? 'cursor-pointer hover:bg-card-hover' : ''
+      }`}
+    >
+      {title && <div className="min-w-0">{cell(title, row)}</div>}
+      {fields.length > 0 && (
+        <dl className="mt-4 grid grid-cols-2 gap-x-3 gap-y-3 text-[12px]">
+          {fields.map((col) => (
+            <div key={col.key} className="min-w-0">
+              <dt className="text-[10px] font-semibold uppercase tracking-wide text-ink-faint">{col.header}</dt>
+              <dd className="mt-0.5 min-w-0 text-ink-dim">{cell(col, row)}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+      {actions && (
+        // `flex-1` spacer pins the footer to the bottom, so the action strips
+        // line up across a row of cards of different heights.
+        <>
+          <div className="flex-1" />
+          <div className="mt-4 flex justify-end border-t border-edge/60 pt-3">{cell(actions, row)}</div>
+        </>
       )}
     </div>
   )

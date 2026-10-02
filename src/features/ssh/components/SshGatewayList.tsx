@@ -9,6 +9,8 @@ import DataTable from '@/shared/ui/table/DataTable'
 import type { Column } from '@/shared/ui/table/DataTable'
 import { RowActions, RowMenu } from '@/shared/ui/table/RowActions'
 import useDataTable from '@/shared/ui/table/useDataTable'
+import useListView from '@/shared/ui/table/useListView'
+import ViewToggle from '@/shared/ui/table/ViewToggle'
 import { EditIcon, PlusIcon, TerminalIcon, TrashIcon } from '@/shared/ui/icons'
 import { deleteSshGateway, listSshGateways, listSshKeys } from '../lib/api'
 import { PROVIDER_LABEL, addressOf, providerOf } from '../lib/providers'
@@ -130,7 +132,8 @@ const SshGatewayList = forwardRef<SshListHandle, { workspaceId: string; canManag
     [canManage],
   )
 
-  const table = useDataTable({ rows: filtered, columns, pageSize: 10, resetKey: query })
+  const [view, setView] = useListView('ssh-hosts')
+  const table = useDataTable({ rows: filtered, columns, pageSize: 10, resetKey: query, view })
 
   const handleSaved = (g: SshGateway) =>
     setGateways((prev) => (prev.some((x) => x.id === g.id) ? prev.map((x) => (x.id === g.id ? g : x)) : [...prev, g]))
@@ -149,8 +152,9 @@ const SshGatewayList = forwardRef<SshListHandle, { workspaceId: string; canManag
 
   return (
     <>
-      <div className="mb-4">
-        <SearchInput placeholder="Search SSH hosts…" value={query} onChange={(e) => setQuery(e.target.value)} />
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <SearchInput className="min-w-[220px] flex-1" placeholder="Search SSH hosts…" value={query} onChange={(e) => setQuery(e.target.value)} />
+        <ViewToggle value={view} onChange={setView} />
       </div>
 
       <DataTable

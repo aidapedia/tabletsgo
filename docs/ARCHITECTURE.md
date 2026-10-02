@@ -45,7 +45,10 @@ src/
 │   │   │                         #     sort/paging state — spread its result into DataTable; pass the
 │   │   │                         #     props yourself for server-side paging), RowActions/RowAction/RowMenu
 │   │   │                         #     (the action cell — every table's row buttons come from here so they
-│   │   │                         #     share one look; the strip stops the click reaching the row)
+│   │   │                         #     share one look; the strip stops the click reaching the row),
+│   │   │                         #     useListView + ViewToggle (the per-list List / Grid switch,
+│   │   │                         #     remembered in localStorage; `view="grid"` makes DataTable draw
+│   │   │                         #     the rows as cards built from its columns, or `renderCard`'s own)
 │   │   └── (root)                #   Avatar, Badge, PersonRow, RowLabel, DragHandle (the grip a
 │   │                             #     reorderable list grabs by — pair with useDragReorder),
 │   │                             #     SaveQueryPanel, SqlEditor, JsonEditor, icons — no group yet

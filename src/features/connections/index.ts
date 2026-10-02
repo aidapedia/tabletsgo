@@ -6,6 +6,7 @@ export { default as ConnectionDetail, detailTabs, StatusBadge, connectionUrl } f
 export { default as DbTypePickerModal, TYPE_LABEL } from './components/DbTypePickerModal'
 export { default as ConnectionSwitcherModal } from './components/ConnectionSwitcherModal'
 export { default as EnvBadge, ENV_TONE } from './components/EnvBadge'
+export { default as ConnectionCard } from './components/ConnectionCard'
 export { default as ConnectHandshakeDialog } from './components/ConnectHandshakeDialog'
 export { useConnectHandshake } from './hooks/useConnectHandshake'
 export type { HandshakeFailure } from './hooks/useConnectHandshake'
