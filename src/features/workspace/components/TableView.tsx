@@ -626,10 +626,6 @@ export default function TableView({ conn, table, onChange, onOpenReference, filt
               table,
             })
             stagedInfo('Added update to changes — commit to apply.')
-            // Must close explicitly: useSlideOver runs this commit *instead of*
-            // onClose, so the invisible overlay would stay mounted and swallow
-            // every click.
-            setInspecting(null)
           }}
         />
       )}

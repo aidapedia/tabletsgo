@@ -91,7 +91,7 @@ export default function SlideOverPanel({
   return (
     <div
       className={`fixed inset-0 ${zClassName} flex justify-end bg-black/50 transition-opacity duration-200 ${
-        show ? 'opacity-100' : 'opacity-0'
+        show ? 'opacity-100' : 'opacity-0 pointer-events-none'
       }`}
       onMouseDown={() => close()}
     >

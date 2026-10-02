@@ -35,7 +35,6 @@ export default function TableFolderEditPanel({
     if (!trimmed) return
     close(() => {
       if (trimmed !== folder.name || color !== folder.color) onSave({ name: trimmed, color })
-      onClose()
     })
   }
 
@@ -108,10 +107,7 @@ export default function TableFolderEditPanel({
           danger
           onConfirm={() => {
             setConfirmDelete(false)
-            close(() => {
-              onDelete()
-              onClose()
-            })
+            close(onDelete)
           }}
           onCancel={() => setConfirmDelete(false)}
         />

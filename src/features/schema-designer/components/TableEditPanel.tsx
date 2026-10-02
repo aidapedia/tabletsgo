@@ -209,14 +209,11 @@ export default function TableEditPanel({ table, dialect, types, tableNames = [],
   const staged = mode === 'sql' ? sqlStatements : statements
   const save = () => {
     if (!staged.length && !orderChanged) return
-    // Run the stage action AND close the panel — otherwise the invisible
-    // slide-over overlay stays mounted and blocks clicks (e.g. the Changes button).
     close(() => {
       if (staged.length) onStage(staged, table.name, 'edit')
       // Order is design, not DDL — it is saved with the diagram whether or not
       // this save also stages statements.
       if (orderChanged) onReorderColumns?.(drawnOrder())
-      onClose()
     })
   }
 
