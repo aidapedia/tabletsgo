@@ -143,8 +143,8 @@ export function AppRoutes() {
             here instead of bouncing to the dashboard. */}
         <Route path="/notifications/:sub" element={<NotificationsPage />} />
         <Route path="/storage" element={<StoragePage />} />
-        {/* SSH is a sidebar group, not a page: its two rows are the
-            addresses, and the bare group path lands on the first. */}
+        {/* SSH has no page of its own: its two sidebar rows are the
+            addresses, and the bare path lands on the first. */}
         <Route path="/ssh" element={<Navigate to="/ssh/hosts" replace />} />
         <Route path="/ssh/hosts" element={<SshHostsPage />} />
         <Route path="/ssh/keys" element={<SshKeysPage />} />

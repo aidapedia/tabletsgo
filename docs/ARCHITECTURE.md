@@ -364,8 +364,8 @@ src/
         ├── ConnectionFormPage    #   /connections/new (engine in ?type=) and /connections/:id/edit/:tab —
         │                         #   both modes of features/connections' ConnectionForm
         ├── StoragePage           # /storage → S3 storage destinations (StorageList), top-level sidebar item
-        ├── SshHostsPage          # /ssh/hosts → sidebar SSH → Host (SshGatewayList; "gateway" in code/API)
-        ├── SshKeysPage           # /ssh/keys → sidebar SSH → Key (SshKeyList); /ssh redirects
+        ├── SshHostsPage          # /ssh/hosts → sidebar Infrastructure → SSH Host (SshGatewayList; "gateway" in code/API)
+        ├── SshKeysPage           # /ssh/keys → sidebar Infrastructure → SSH Key (SshKeyList); /ssh redirects
         │                         #   to /ssh/hosts
         ├── WorkflowsPage         # /workflows → every workflow in the workspace, across its connections
         │                         #   (features/workflow's WorkspaceWorkflowList); a row navigates to
