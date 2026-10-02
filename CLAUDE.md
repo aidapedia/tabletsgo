@@ -113,6 +113,7 @@ server/
 ├── db/                  # ★ the engine-agnostic database layer                → skill db-engine
 ├── workflow.js          # the node-graph executor + scheduler
 ├── connection-transfer.js  # the portable connection bundle          → skill connection-transfer
+├── data-transfer.js     # table rows out/in as CSV/JSON/SQL (console Export / Import tab) → skill db-engine
 ├── backup/              # schedule.js / runner.js / restore.js
 └── system-update.js     # GitHub release checking + Docker-socket self-update
 ```

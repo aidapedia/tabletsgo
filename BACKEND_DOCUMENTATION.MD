@@ -2924,7 +2924,7 @@ Empty for engines without listable functions (e.g. SQLite).
 ### GET `/api/connections/:id/table/:table`
 Read rows from a table (capped by `limit`).
 
-- **Query:** `limit` (default `200`), plus optional `database`, `schema`
+- **Query:** `limit` (default `200`), `offset` (default `0`), plus optional `database`, `schema`
 - **200:** `{ "columns": ["id", "name"], "rows": [ {…} ] }`
   - On a DB error the body is `{ "columns": [], "rows": [], "error": "<msg>" }` (HTTP 200)
 - **Row order:** ordered by primary key when the table has one. Postgres writes a
@@ -3120,6 +3120,133 @@ against the table's existing indexes.
   `{ "error": "Query analysis is not supported for <type> connections." }`, or a driver error message
 - **404:** `{ "error": "Connection not found" }`
 - **Example:** `POST http://localhost:3000/api/connections/demo-sqlite/analyze`
+
+---
+
+## Table data export / import (per connection)
+
+The console's **Export / Import** tab: table rows out to a file and back in, as
+CSV, JSON or SQL. Engine-agnostic (`server/data-transfer.js` over the db layer's
+`getTableData` / `insertRows` / `runScript` / `tableDdl`), so it works the same on
+SQLite and PostgreSQL and on any engine that implements those ops. A tableless
+engine (Redis) has no tables to export and answers an import with a `400` naming
+its type. Not to be confused with `GET /api/connections/:id/export`, which moves the
+connection's *configuration*.
+
+**Formats**
+
+| Format | Holds | Notes |
+|---|---|---|
+| `csv`  | one table | header row + one line per row; an empty cell is `NULL` both ways |
+| `json` | any number of tables | the `tabletsgo.data` document below; on import a bare array of row objects (into the table named after the file) or a `{ "<table>": [rows] }` map also works |
+| `sql`  | any number of tables | `CREATE TABLE/INDEX IF NOT EXISTS` (with `includeSchema`) then one `INSERT` per row; table names unqualified so the script replays into whichever schema it is imported into |
+
+Bytes are written as `\x…` hex text in CSV/JSON (as an engine-specific literal in
+SQL). Multi-table exports are ordered parents-first by foreign key, so a replay
+never inserts a row before the row it references.
+
+```json
+{
+  "format": "tabletsgo.data",
+  "version": 1,
+  "exportedAt": "2026-10-02T08:00:00.000Z",
+  "source": { "type": "postgresql" },
+  "tables": [
+    {
+      "name": "users",
+      "ddl": ["CREATE TABLE IF NOT EXISTS \"users\" (…);"],
+      "columns": ["id", "name"],
+      "rows": [{ "id": 1, "name": "Ada" }]
+    }
+  ]
+}
+```
+
+`ddl` is present only when exported with `includeSchema`.
+
+### GET `/api/connections/:id/data/export`
+Stream an export file (`Content-Disposition: attachment`).
+
+- **Query:**
+  - `tables` — comma-separated table names (required; must be tables the database reports)
+  - `format` — `csv` | `json` | `sql` (required; `csv` takes exactly one table)
+  - `includeSchema` — `1` to include the DDL (`json`/`sql` only)
+  - `limit` — rows per table (optional; the panel's preview uses `50`); omitted = every row
+  - `database`, `schema` — the namespace, as everywhere else
+- **200:** the file — `text/csv`, `application/json` or `application/sql`, named
+  `<table or connection>-<YYYY-MM-DD>.<ext>`
+- **400:** `{ "error": "Unknown table: nope" }`, `{ "error": "A CSV file holds one table — export the tables one at a time." }`,
+  `{ "error": "Unknown export format \"xml\" — use csv, json or sql." }`, `{ "error": "Pick at least one table to export." }`
+- **Example:** `GET http://localhost:3000/api/connections/demo-sqlite/data/export?tables=users,orders&format=sql&includeSchema=1`
+- **Example (SQL body):**
+  ```sql
+  -- tabletsgo.data v1 · sqlite · 2026-10-02T08:00:00.000Z
+
+  -- Schema: users
+  CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
+
+  -- Data: users
+  INSERT INTO "users" ("id", "name") VALUES (1, 'Ada');
+  ```
+
+### POST `/api/connections/:id/data/import`
+Import a file. The file is the **raw request body** (`Content-Type: text/plain`),
+not JSON-wrapped — up to 50 MB. **The file name is all it needs**; everything else
+is read from the file:
+
+- **Format:** from the extension (`.csv` / `.json` / `.sql`), else sniffed from the
+  content — a leading `[`/`{` is JSON, a leading SQL keyword or comment is SQL,
+  anything else CSV.
+- **Target table:** a CSV or a bare JSON array goes into the table named after the
+  file, minus the extension and an export's date stamp (`users-2026-10-02.csv` →
+  `users`). A `tabletsgo.data` JSON or a `{ "<table>": [rows] }` map names its own
+  tables. An existing table matching a name in any letter case is the one used.
+- **Missing tables are created**: from the file's own `ddl` when it is a
+  `tabletsgo.data` export from the **same engine**, otherwise with column types
+  inferred from the rows — `INTEGER`/`BIGINT`, `DOUBLE PRECISION`, `BOOLEAN`, else
+  `TEXT` (portable names every engine reads; a CSV number with a leading zero, like a
+  zip code, stays `TEXT`). CSV values are converted to those types for a table the
+  import creates; for an existing table they go in as text and the database casts.
+- **SQL** runs as a script.
+
+- **Query:**
+  - `filename` — the uploaded file's name (what the format and target table come from)
+  - `dryRun` — `1` to parse and report without writing anything
+  - `format` — override the detected format (`csv` | `json` | `sql`)
+  - `table` — override the target table for a CSV / bare JSON array
+  - `createTables` — `0` to refuse instead of creating missing tables (default: create)
+  - `database`, `schema` — the namespace
+- **Body:** the file's text
+- **200 (`dryRun=1`, rows):**
+  ```json
+  { "format": "csv", "kind": "rows", "tables": [
+    { "table": "products", "columns": ["id","price","active","zip"], "total": 2,
+      "rows": [ /* first 50 */ ], "exists": false, "schemaFrom": "inferred",
+      "types": { "id": "INTEGER", "price": "DOUBLE PRECISION", "active": "BOOLEAN", "zip": "TEXT" },
+      "ddl": ["CREATE TABLE IF NOT EXISTS \"products\" (…);"] },
+    { "table": "users", "columns": ["id","name"], "total": 2500, "rows": [ /* … */ ], "exists": true } ] }
+  ```
+  `schemaFrom` / `ddl` / `types` appear only on a table the import will create
+  (`types` is `null` when the schema comes from the file).
+- **200 (`dryRun=1`, SQL):** `{ "format": "sql", "kind": "script", "statements": 12, "sample": "-- first 8000 characters…" }`
+- **200 (rows):** `{ "format": "json", "kind": "rows", "created": ["posts"], "tables": [{ "table": "users", "inserted": 2500 }, { "table": "posts", "inserted": 1 }] }`
+- **200 (SQL):** `{ "format": "sql", "kind": "script", "statements": 12 }`
+- **Atomicity:** missing tables are created first; then rows land table by table,
+  each table in one transaction — a failure rolls that table back and stops the
+  import (the error names the tables already imported). A SQL script runs whole in
+  one transaction, unless it opens its own (`BEGIN`/`COMMIT`).
+- **400:** `{ "error": "The file is not valid JSON: …" }`, `{ "error": "The file is empty." }`,
+  `{ "error": "Importing \"users\" failed: UNIQUE constraint failed: users.id" }`,
+  `{ "error": "No such table: posts — create it first." }` (with `createTables=0`),
+  `{ "error": "Data import is not supported for redis connections." }`
+- **413:** `{ "error": "The file is larger than the 50 MB import limit." }`
+- **Example:** `POST http://localhost:3000/api/connections/demo-sqlite/data/import?filename=users.csv&dryRun=1`
+  with body
+  ```
+  id,name
+  1,Ada
+  2,"Lovelace, A."
+  ```
 
 ---
 
@@ -3401,6 +3528,8 @@ Liveness probe. Also reports boot readiness and the running identity.
 | POST   | `/api/connections/:id/insert`             | Insert a row                    |
 | POST   | `/api/connections/:id/query`              | Execute SQL / a Redis command   |
 | POST   | `/api/connections/:id/analyze`            | Analyze query performance       |
+| GET    | `/api/connections/:id/data/export`        | Export tables as CSV/JSON/SQL   |
+| POST   | `/api/connections/:id/data/import`        | Import a CSV/JSON/SQL file      |
 | GET    | `/api/connections/:id/redis/keys`         | SCAN one page of the keyspace   |
 | GET    | `/api/connections/:id/redis/overview`     | Redis db / key count / version  |
 | GET    | `/api/connections/:id/redis/key`          | Read one key's value (paged)    |

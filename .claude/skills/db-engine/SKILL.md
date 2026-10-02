@@ -33,7 +33,11 @@ what that means at the API edge:
 - **optional** ops answer with the empty result (`listTables` → `[]`,
   `getDiagram` → `{tables:[],foreignKeys:[]}`), so Redis just shows nothing.
 - **required** ops throw `UnsupportedError` (status 400) naming the type —
-  `insertRow`, `analyze`, `runQuery`, `dump`, `restore`.
+  `insertRow`, `insertRows`, `runScript`, `analyze`, `runQuery`, `dump`, `restore`.
+  (`tableDdl` is optional → `[]`; `insertRows`/`runScript`/`tableDdl` plus
+  `getTableData`'s `offset` are what `server/data-transfer.js` — the console's
+  Export / Import tab — is built on, so a new engine gets that tab by
+  implementing them.)
 
 Use `db.requireCapability(conn, op)` to fail *before* unrelated work (that's how
 `/analyze` tells a Redis user about Redis instead of about SQL syntax), and

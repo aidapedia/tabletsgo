@@ -4,6 +4,7 @@ import SchemaView from './SchemaView'
 import FunctionView from './FunctionView'
 import QueryHistoryView from './QueryHistoryView'
 import SchemaHistoryView from './SchemaHistoryView'
+import DataTransferView, { type TransferMode } from './DataTransferView'
 import { RedisKeyView } from '@/features/redis'
 import { TemplateDetailView, TEMPLATES } from '@/features/templates'
 import { DIALECT } from '../lib/dialect'
@@ -31,6 +32,8 @@ type Props = {
   nsConn: any
   connectionId: string
   isRedis: boolean
+  /** The connected database's tables, for the Export / Import tab. */
+  tables: string[]
   /** Bumped whenever a commit changed data underneath — re-keys the data views. */
   dataVersion: number
   /** Bumped whenever a Redis write invalidated the keyspace. */
@@ -50,6 +53,8 @@ type Props = {
   onKeyDeleted: (key: string) => void
   onDashboardRenamed: (id: string, name: string) => void
   onTemplateApplied: (res: any) => void
+  onTransferModeChange: (mode: TransferMode) => void
+  onDataImported: () => void
 }
 
 /**
@@ -66,6 +71,7 @@ export default function TabContent({
   nsConn,
   connectionId,
   isRedis,
+  tables,
   dataVersion,
   keyspaceVersion,
   queryState,
@@ -83,6 +89,8 @@ export default function TabContent({
   onKeyDeleted,
   onDashboardRenamed,
   onTemplateApplied,
+  onTransferModeChange,
+  onDataImported,
 }: Props) {
   if (!conn || !t) return null
   const nsKey = `${nsConn?.ns?.database}:${nsConn?.ns?.schema}`
@@ -163,6 +171,17 @@ export default function TabContent({
           dialect={DIALECT[conn.type]}
           onRefresh={schemaHistory.onRefresh}
           onRollback={schemaHistory.onRollback}
+        />
+      )
+    case 'transfer':
+      return (
+        <DataTransferView
+          key={nsKey}
+          conn={nsConn}
+          tables={tables}
+          mode={t.mode === 'import' ? 'import' : 'export'}
+          onModeChange={onTransferModeChange}
+          onImported={onDataImported}
         />
       )
     case 'workflow':

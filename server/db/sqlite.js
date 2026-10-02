@@ -12,6 +12,9 @@ import Database from 'better-sqlite3'
 import {
   ROW_ID_COLUMN,
   extractQueryColumns,
+  hasOwnTransaction,
+  ifNotExists,
+  insertBatches,
   makeIndexSuggestion,
   queryLevelSuggestions,
   quoteIdent,
@@ -132,8 +135,9 @@ export const sqliteDriver = {
       .all()
       .map((r) => ({ name: r.name, type: r.type })),
 
-  getTableData(conn, ctx, { table, limit = 200 }) {
+  getTableData(conn, ctx, { table, limit = 200, offset = 0 }) {
     const db = dbFor(conn)
+    const page = `LIMIT ${parseInt(limit) || 200} OFFSET ${parseInt(offset) || 0}`
     try {
       const columns = db.prepare(`PRAGMA table_info("${table}")`).all()
       const columnNames = columns.map((c) => c.name)
@@ -142,12 +146,12 @@ export const sqliteDriver = {
       if (!columns.some((c) => c.pk)) {
         // WITHOUT ROWID tables and views have no rowid — fall through to a plain read.
         try {
-          rows = db.prepare(`SELECT rowid AS "${ROW_ID_COLUMN}", * FROM "${table}" LIMIT ${limit}`).all()
+          rows = db.prepare(`SELECT rowid AS "${ROW_ID_COLUMN}", * FROM "${table}" ORDER BY rowid ${page}`).all()
         } catch {
           rows = null
         }
       }
-      if (!rows) rows = db.prepare(`SELECT * FROM "${table}" LIMIT ${limit}`).all()
+      if (!rows) rows = db.prepare(`SELECT * FROM "${table}" ${page}`).all()
       return { columns: columnNames, rows }
     } catch (error) {
       return { columns: [], rows: [], error: error.message }
@@ -187,14 +191,39 @@ export const sqliteDriver = {
     const cols = Object.keys(values)
     const colList = cols.map((c) => `"${c}"`).join(', ')
     const sql = `INSERT INTO "${table}" (${colList}) VALUES (${cols.map(() => '?').join(', ')})`
-    // better-sqlite3 can only bind numbers/strings/bigints/buffers/null.
-    const params = cols.map((c) => {
-      const v = values[c]
-      if (typeof v === 'boolean') return v ? 1 : 0
-      return v === undefined ? null : v
-    })
+    const params = cols.map((c) => bindable(values[c]))
     const info = dbFor(conn).prepare(sql).run(...params)
     return { ok: true, changes: info.changes, lastInsertRowid: info.lastInsertRowid }
+  },
+
+  // Every batch in one transaction: an import lands whole or not at all.
+  insertRows(conn, ctx, { table, rows }) {
+    const db = dbFor(conn)
+    const columns = [...new Set(rows.flatMap((r) => Object.keys(r)))]
+    if (!columns.length) return { ok: true, inserted: 0 }
+    const batches = insertBatches(quoteIdent(table), columns, rows)
+    db.transaction(() => {
+      for (const b of batches) db.prepare(b.sql).run(...b.params.map(bindable))
+    })()
+    return { ok: true, inserted: rows.length }
+  },
+
+  // A multi-statement script (a .sql import). Wrapped in a transaction unless
+  // the script opens its own — SQLite can't nest them.
+  runScript(conn, ctx, sql) {
+    const db = dbFor(conn)
+    if (hasOwnTransaction(sql)) db.exec(sql)
+    else db.transaction(() => db.exec(sql))()
+    return { ok: true }
+  },
+
+  // SQLite keeps each object's original statement, so the export replays
+  // exactly what created the table and its indexes.
+  tableDdl(conn, ctx, table) {
+    return dbFor(conn)
+      .prepare(`SELECT sql FROM sqlite_master WHERE tbl_name = ? AND type IN ('table', 'index') AND sql IS NOT NULL ORDER BY type = 'index', name`)
+      .all(table)
+      .map((r) => `${ifNotExists(r.sql)};`)
   },
 
   runQuery: (conn, ctx, sql) => runQuery(dbFor(conn), sql),
@@ -289,6 +318,14 @@ function getIndexes(db, table) {
         constraint: idx.origin !== 'c',
       }
     })
+}
+
+// better-sqlite3 can only bind numbers/strings/bigints/buffers/null.
+function bindable(v) {
+  if (typeof v === 'boolean') return v ? 1 : 0
+  if (v === undefined) return null
+  if (v !== null && typeof v === 'object' && !Buffer.isBuffer(v)) return JSON.stringify(v)
+  return v
 }
 
 function runQuery(db, sql) {

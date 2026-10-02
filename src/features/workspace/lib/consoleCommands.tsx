@@ -4,6 +4,7 @@ import {
   CodeIcon,
   DatabaseIcon,
   DiagramIcon,
+  DownloadIcon,
   EditIcon,
   GridIcon,
   HistoryIcon,
@@ -14,6 +15,7 @@ import {
   TableIcon,
   TagIcon,
   TerminalIcon,
+  UploadIcon,
   WandIcon,
   WorkflowIcon,
 } from '@/shared/ui/icons'
@@ -28,6 +30,7 @@ type Actions = {
   switchConnection: () => void
   openHistory: () => void
   openSchemaHistory: () => void
+  openTransfer: (mode: 'export' | 'import') => void
   openChanges: () => void
   toggleSplit: (dir: 'vertical' | 'horizontal') => void
 }
@@ -80,7 +83,11 @@ export function buildConsoleCommands({
     { id: 'view-history', group: 'View', label: isRedis ? 'Command history' : 'Query history', keywords: 'recent past', icon: <HistoryIcon width={15} height={15} />, run: a.openHistory },
     ...(isRedis
       ? []
-      : [{ id: 'view-schema-history', group: 'View', label: `Schema version history (v${schemaVersion})`, keywords: 'migrations audit', icon: <TagIcon width={15} height={15} />, run: a.openSchemaHistory }]),
+      : [
+          { id: 'view-schema-history', group: 'View', label: `Schema version history (v${schemaVersion})`, keywords: 'migrations audit', icon: <TagIcon width={15} height={15} />, run: a.openSchemaHistory },
+          { id: 'export-data', group: 'View', label: 'Export data', keywords: 'download csv json sql dump tables', icon: <DownloadIcon width={15} height={15} />, run: () => a.openTransfer('export') },
+          { id: 'import-data', group: 'View', label: 'Import data', keywords: 'upload csv json sql load tables', icon: <UploadIcon width={15} height={15} />, run: () => a.openTransfer('import') },
+        ]),
     { id: 'view-changes', group: 'View', label: 'View staged changes', keywords: 'commit diff pending', icon: <EditIcon width={15} height={15} />, run: a.openChanges },
     { id: 'split-vertical', group: 'View', label: splitDir === 'vertical' ? 'Unsplit editor' : 'Split editor right', keywords: 'split pane side by side group', icon: <SplitVerticalIcon width={15} height={15} />, hint: hint('workspace.splitEditor'), run: () => a.toggleSplit('vertical') },
     { id: 'split-horizontal', group: 'View', label: splitDir === 'horizontal' ? 'Unsplit editor' : 'Split editor down', keywords: 'split pane stacked group', icon: <SplitHorizontalIcon width={15} height={15} />, run: () => a.toggleSplit('horizontal') },

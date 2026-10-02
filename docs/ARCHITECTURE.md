@@ -172,6 +172,9 @@ src/
 │   │   │                         #     NULL/EMPTY/DEFAULT, duplicate/delete the spanned rows),
 │   │   │                         #   SchemaView, QueryEditor, FunctionView,
 │   │   │                         #   QueryHistoryView, InsertRowPanel, ChangesPanel, SavedQueriesPanel,
+│   │   │                         #   DataTransferView (the Export / Import tab the toolbar's button beside
+│   │   │                         #     Query history open; DataExportPane + DataImportPane in a shared
+│   │   │                         #     TransferLayout; hidden on Redis),
 │   │   │                         #   IconRail (its DB logo at the top opens the ConnectionSwitcherModal via
 │   │   │                         #     onBrowseConnections — no inline connection popover anymore. Every
 │   │   │                         #     entry selects a sidebar panel except Schema, which *leaves* the
@@ -212,7 +215,7 @@ src/
 │   │   │                         #     so they are one hook parameterized, not two copies),
 │   │   │                         #   useSavedQueries (not a library: a saved query seeds a tab rather than
 │   │   │                         #     being edited in place, and saving from its tab updates it)
-│   │   └── lib/                  #   savedQueries, queryHistory (backend calls), dialect, consoleCommands
+│   │   └── lib/                  #   savedQueries, queryHistory, dataTransfer (backend calls), dialect, consoleCommands
 │   │                             #     (the ⌘K entries — engine-aware, hints mirror the live keymap)
 │   ├── schema-designer/          # visual schema design (React Flow ERD + table/column editors; tables
 │   │   │                         #   sharing a folder are clustered into a draggable, editable region;
@@ -549,6 +552,9 @@ server/
 ├── workflow.js           # the node-graph executor (vm sandbox, {{input.x}} substitution),
 │                         #   executeAndRecord, nextRunForGraph, runDueWorkflows
 ├── connection-transfer.js  # the portable connection export/import bundle (see that skill)
+├── data-transfer.js      # table rows out/in as CSV/JSON/SQL (the console's Export / Import tab):
+│                         #   planExport streams pages of getTableData; previewImport/runImport go
+│                         #   through insertRows/runScript/tableDdl — engine-agnostic
 ├── backup/
 │   ├── index.js          #   barrel — what the routes import
 │   ├── schedule.js       #   the backup_schedules row store, clamps and validation

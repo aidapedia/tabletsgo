@@ -170,3 +170,69 @@ export function queryLevelSuggestions(sql, plan, primaryTableColumnCount) {
   }
   return out
 }
+
+// ---- Data export ------------------------------------------------------------
+// Shared by the SQL drivers' `tableDdl` and server/data-transfer.js's SQL export.
+
+// A JS value as an inline SQL literal. Bytes are SQLite's X'…' form — a driver
+// whose engine spells them differently exposes its own `sqlLiteral`.
+export function sqlLiteral(v) {
+  if (v === null || v === undefined) return 'NULL'
+  if (typeof v === 'number') return Number.isFinite(v) ? String(v) : 'NULL'
+  if (typeof v === 'bigint') return String(v)
+  if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE'
+  if (Buffer.isBuffer(v)) return `X'${v.toString('hex')}'`
+  if (v instanceof Date) return `'${v.toISOString()}'`
+  const s = typeof v === 'object' ? JSON.stringify(v) : String(v)
+  return `'${s.replace(/'/g, "''")}'`
+}
+
+// Make a CREATE TABLE / CREATE INDEX idempotent, so an exported schema can be
+// replayed into a database that already has some of it.
+export const ifNotExists = (ddl) =>
+  ddl
+    .replace(/^\s*CREATE\s+TABLE\s+(IF\s+NOT\s+EXISTS\s+)?/i, 'CREATE TABLE IF NOT EXISTS ')
+    .replace(/^\s*CREATE\s+(UNIQUE\s+)?INDEX\s+(CONCURRENTLY\s+)?(IF\s+NOT\s+EXISTS\s+)?/i, (_, u = '') => `CREATE ${u}INDEX IF NOT EXISTS `)
+
+// Reconstruct CREATE TABLE from a getColumns() list, for engines that don't
+// keep the original statement. `serial` maps an auto-increment integer type to
+// the engine's own spelling (and drops the sequence default it replaces).
+export function buildCreateTableSql(table, columns, { serial = {} } = {}) {
+  const pks = columns.filter((c) => c.pk)
+  const composite = pks.length > 1
+  const lines = columns.map((c) => {
+    const auto = c.autoIncrement && serial[String(c.type).toLowerCase()]
+    let d = `${quoteIdent(c.name)} ${auto || c.type || 'TEXT'}`
+    if (c.pk && !composite) d += ' PRIMARY KEY'
+    else if (c.notnull) d += ' NOT NULL'
+    if (!auto && c.default != null && String(c.default).trim()) d += ` DEFAULT ${c.default}`
+    if (c.references?.table && c.references?.column) {
+      d += ` REFERENCES ${quoteIdent(c.references.table)}(${quoteIdent(c.references.column)})`
+    }
+    return d
+  })
+  if (composite) lines.push(`PRIMARY KEY (${pks.map((c) => quoteIdent(c.name)).join(', ')})`)
+  return `CREATE TABLE IF NOT EXISTS ${quoteIdent(table)} (\n  ${lines.join(',\n  ')}\n);`
+}
+
+// Multi-row INSERTs for `insertRows`, sized so no statement passes `maxParams`
+// bind parameters. `placeholder(n)` spells the n-th (1-based) parameter.
+export function insertBatches(target, columns, rows, { placeholder = () => '?', maxParams = 999, maxRows = 500 } = {}) {
+  const per = Math.max(1, Math.min(maxRows, Math.floor(maxParams / Math.max(1, columns.length))))
+  const colList = columns.map(quoteIdent).join(', ')
+  const batches = []
+  for (let i = 0; i < rows.length; i += per) {
+    const chunk = rows.slice(i, i + per)
+    let n = 0
+    const values = chunk.map(() => `(${columns.map(() => placeholder(++n)).join(', ')})`).join(', ')
+    batches.push({
+      sql: `INSERT INTO ${target} (${colList}) VALUES ${values}`,
+      params: chunk.flatMap((r) => columns.map((c) => r[c] ?? null)),
+      count: chunk.length,
+    })
+  }
+  return batches
+}
+
+// True when a script manages its own transaction, so the runner must not wrap it.
+export const hasOwnTransaction = (sql) => /^\s*(BEGIN|START\s+TRANSACTION|COMMIT|END)\b/im.test(stripSqlComments(sql))

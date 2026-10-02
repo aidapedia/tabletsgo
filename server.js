@@ -26,7 +26,7 @@ import fs from 'fs'
 import path from 'path'
 import { randomUUID, timingSafeEqual } from 'crypto'
 import { pipeline } from 'stream/promises'
-import { Transform } from 'stream'
+import { Readable, Transform } from 'stream'
 import cron from 'node-cron'
 
 import {
@@ -223,6 +223,7 @@ import {
 } from './server/backup/index.js'
 import { backupCalendar, findRunUpload, listBackupRuns, markRunUploadDeleted } from './server/backup/history.js'
 import { buildConnectionExport, importConnectionDoc } from './server/connection-transfer.js'
+import { IMPORT_MAX_BYTES, planExport, previewImport, runImport } from './server/data-transfer.js'
 import {
   createDraft as createSchemaDraft,
   deleteDraft as deleteSchemaDraft,
@@ -3143,6 +3144,74 @@ app.post('/api/connections/:id/query', async (req, res) => {
     res.json(await db.runQuery(conn, bodyCtx(req), sql))
   } catch (error) {
     fail(res, error)
+  }
+})
+
+// ============================================================================
+// Table data export / import (the console's Export and Import panel)
+// ============================================================================
+// Rows in and out of the connected database's tables as CSV, JSON or SQL — see
+// server/data-transfer.js. Engine-agnostic: an engine without tables (Redis)
+// lists none to export and refuses an import with a 400 naming its type.
+
+const truthy = (v) => ['1', 'true', 'yes'].includes(String(v || '').toLowerCase())
+
+// Stream an export file. `?tables=a,b&format=csv|json|sql&includeSchema=1`, plus
+// `limit` (rows per table — the panel's preview) and the usual namespace params.
+app.get('/api/connections/:id/data/export', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  const tables = String(req.query.tables || '')
+    .split(',')
+    .map((t) => t.trim())
+    .filter(Boolean)
+  try {
+    const plan = await planExport(conn, queryCtx(req), {
+      tables,
+      format: String(req.query.format || ''),
+      includeSchema: truthy(req.query.includeSchema),
+      limit: req.query.limit,
+    })
+    res.setHeader('Content-Type', plan.mime)
+    res.setHeader('Content-Disposition', `attachment; filename="${plan.filename}"`)
+    await pipeline(Readable.from(plan.chunks), res)
+  } catch (error) {
+    // Once streaming has started the status is already sent — cut the
+    // download short so it can't be mistaken for a complete file.
+    if (res.headersSent) res.destroy(error)
+    else fail(res, error)
+  }
+})
+
+// The file arrives as the raw text body (not JSON-wrapped), up to IMPORT_MAX_BYTES.
+const importBody = express.text({ type: () => true, limit: IMPORT_MAX_BYTES })
+const readImportBody = (req, res, next) =>
+  importBody(req, res, (err) => {
+    if (!err) return next()
+    const tooLarge = err.type === 'entity.too.large'
+    res.status(tooLarge ? 413 : 400).json({
+      error: tooLarge ? `The file is larger than the ${IMPORT_MAX_BYTES / 1024 / 1024} MB import limit.` : err.message,
+    })
+  })
+
+// Import a file. `?filename=users.csv` is all it needs — the format, the target
+// table and any missing table's schema all come from the file (see
+// server/data-transfer.js parseImport). `format`, `table` and `createTables=0`
+// override that; `dryRun=1` writes nothing and answers with what would happen.
+app.post('/api/connections/:id/data/import', readImportBody, async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  const opts = {
+    text: typeof req.body === 'string' ? req.body : '',
+    filename: String(req.query.filename || ''),
+    format: req.query.format ? String(req.query.format) : null,
+    table: req.query.table ? String(req.query.table) : null,
+    createTables: !['0', 'false', 'no'].includes(String(req.query.createTables ?? '').toLowerCase()),
+  }
+  try {
+    res.json(truthy(req.query.dryRun) ? await previewImport(conn, queryCtx(req), opts) : await runImport(conn, queryCtx(req), opts))
+  } catch (error) {
+    fail(res, error, 400)
   }
 })
 

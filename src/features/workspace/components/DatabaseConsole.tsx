@@ -269,6 +269,14 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
 
   const openHistory = () => tabs.openTab({ key: 'history', kind: 'history', title: 'Query history' })
 
+  // One Export / Import tab. Given a mode (the palette's entries, the tab's own
+  // switch) it opens in that mode; without one (the toolbar button) an open tab
+  // keeps the mode it was left in, and a new one starts on Export.
+  const openTransfer = (mode?: 'export' | 'import') =>
+    tabs.openTab(
+      { key: 'transfer', kind: 'transfer', title: 'Export / Import', mode: mode || 'export' },
+      mode ? { mode } : undefined
+    )
   const openSchemaHistory = () =>
     tabs.openTab({ key: 'schema-history', kind: 'schemaHistory', title: 'Schema history' })
 
@@ -386,6 +394,7 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
       switchConnection: () => setSwitcherOpen(true),
       openHistory,
       openSchemaHistory,
+      openTransfer,
       openChanges: () => changes.setChangesOpen(true),
       toggleSplit: tabs.toggleSplit,
     },
@@ -532,6 +541,7 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
           onNewDashboard={() => dashboards.create()}
           onOpenPalette={() => setPaletteOpen(true)}
           onOpenHistory={openHistory}
+          onOpenTransfer={() => openTransfer()}
           onOpenSchemaEditor={openSchemaEditorPage}
           onOpenSchemaHistory={openSchemaHistory}
           onOpenChanges={() => changes.setChangesOpen(true)}
@@ -584,6 +594,7 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
               nsConn={nsConn}
               connectionId={id}
               isRedis={isRedis}
+              tables={tables}
               dataVersion={dataVersion}
               keyspaceVersion={keyspaceVersion}
               queryState={tabs.queryState}
@@ -615,6 +626,11 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
               }}
               onDashboardRenamed={dashboards.renamedExternally}
               onTemplateApplied={onTemplateApplied}
+              onTransferModeChange={openTransfer}
+              onDataImported={() => {
+                setDataVersion((v) => v + 1)
+                loadTables() // an import may have created tables
+              }}
             />
           )}
         />

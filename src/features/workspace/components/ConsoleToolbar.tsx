@@ -16,6 +16,7 @@ import {
   TableIcon,
   TagIcon,
   TerminalIcon,
+  TransferIcon,
   WorkflowIcon,
 } from '@/shared/ui/icons'
 
@@ -31,6 +32,7 @@ type Props = {
   onNewDashboard: () => void
   onOpenPalette: () => void
   onOpenHistory: () => void
+  onOpenTransfer: () => void
   onOpenSchemaEditor: () => void
   onOpenSchemaHistory: () => void
   onOpenChanges: () => void
@@ -59,6 +61,7 @@ export default function ConsoleToolbar({
   onNewDashboard,
   onOpenPalette,
   onOpenHistory,
+  onOpenTransfer,
   onOpenSchemaEditor,
   onOpenSchemaHistory,
   onOpenChanges,
@@ -128,6 +131,16 @@ export default function ConsoleToolbar({
               <HistoryIcon width={16} height={16} />
             </IconButton>
           </Tooltip>
+          {/* Table rows out to / in from CSV, JSON or SQL files — one tab, its
+              own Export/Import switch. Tableless engines (Redis) have no rows
+              to move, so it hides. */}
+          {!isRedis && (
+            <Tooltip label="Export / Import" placement="bottom">
+              <IconButton size="toolbar" onClick={onOpenTransfer} aria-label="Export / Import">
+                <TransferIcon width={16} height={16} />
+              </IconButton>
+            </Tooltip>
+          )}
           {/* Leaves the console for the Schema Editor page, so unlike the panel
               buttons there is no active state to mark. Schemaless engines
               (Redis) have no diagram to draw, so it hides. */}
@@ -140,7 +153,7 @@ export default function ConsoleToolbar({
           )}
         </div>
 
-        {/* Mobile overflow: the history/schema entries hidden above. */}
+        {/* Mobile overflow: the history/transfer/schema entries hidden above. */}
         <div className="hidden max-[720px]:block">
           <Popover
             align="right"
@@ -156,6 +169,11 @@ export default function ConsoleToolbar({
                 <MenuItem onClick={() => { onOpenHistory(); close() }}>
                   <HistoryIcon width={14} height={14} /> Query history
                 </MenuItem>
+                {!isRedis && (
+                  <MenuItem onClick={() => { onOpenTransfer(); close() }}>
+                    <TransferIcon width={14} height={14} /> Export / Import
+                  </MenuItem>
+                )}
                 {!isRedis && (
                   <MenuItem onClick={() => { onOpenSchemaEditor(); close() }}>
                     <DiagramIcon width={14} height={14} /> Schema editor
