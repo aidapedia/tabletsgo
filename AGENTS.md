@@ -35,7 +35,7 @@ working in that area — it has the reasoning and the full rules.
 - **A permission exists because a route enforces it** — add the key to `server/permissions-catalog.js` and use it, or don't add it. → skill `auth-sessions`
 - **There is no external session store**, and adding one is not the answer to a new requirement. → skill `auth-sessions`
 - **Meta migrations are append-only and additive-only** — Prisma Migrate owns them (`prisma/<engine>/migrations`, one history per engine, edited together); never edit a shipped migration or the frozen legacy steps, never `DROP`/rename, never add `NOT NULL` without a default. → skill `meta-schema`
-- **The app never migrates** — `npm run migrate` (the compose `migrate` service) runs first; `server.js` only asserts the schema is current. → skill `meta-schema`
+- **The app migrates on boot, before anything opens the meta DB** — `import './server/migrator/boot.js'` stays the *first* import of `server.js`. On SQLite Prisma Migrate can't work on a file another connection holds, and `server/meta.js` opens its client the moment it is evaluated; never migrate from anywhere that runs after it. → skill `meta-schema`
 - **`workspaces.settings.smtp` is dead data** — never read it. SMTP is instance-level. → skill `auth-sessions`
 - **`server/config.js` is the only place that reads `process.env`** for tunables. → skill `add-tunable`
 - **A new per-connection resource goes in the export bundle** and the `DELETE /api/connections/:id` cascade, together. → skill `connection-transfer`
@@ -90,7 +90,7 @@ respond**.
 
 ```
 prisma/<engine>/         # schema.prisma + migrations/ per engine (sqlite | postgresql) → skill meta-schema
-scripts/migrate.js       # `npm run migrate` — the migrator CLI the compose `migrate` service runs
+scripts/migrate.js       # `npm run migrate [-- --status]` — the migrator by hand (the app runs it on boot; the updater's one-shot container runs this)
 server.js                # express app: 108 routes, static frontend, schedulers, shutdown
 server/
 ├── config.js            # every env var + filesystem path, resolved once      → skill add-tunable
@@ -99,7 +99,7 @@ server/
 ├── meta-connection.js   # openMeta() + snapshotMeta(): the one place that picks the engine
 ├── postgres-meta.js     # sync PostgreSQL handle — only the migrator uses it (legacy steps, status)
 ├── postgres-sql.js      # metadata SQL placeholder/conflict translation
-├── migrator/            # ★ the migration service: Prisma Migrate + frozen legacy v1–v22 → skill meta-schema
+├── migrator/            # ★ the migrator, run on boot (boot.js): Prisma Migrate + frozen legacy v1–v22 → skill meta-schema
 ├── auth.js              # the guards + sessionMiddleware                      → skill auth-sessions
 ├── permissions-catalog.js  # leaf: permission keys + node types + builtin roles → skill auth-sessions
 ├── permissions.js       # ★ the role catalog + requirement criteria, in-memory cache → skill auth-sessions

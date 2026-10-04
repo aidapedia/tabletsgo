@@ -1,13 +1,13 @@
 /**
  * The metadata migrator — brings the app's own database to the latest schema.
  *
- * It runs as its own process before the app starts: `npm run migrate`, the
- * compose `migrate` service, or the one-shot container the in-app updater runs
- * ahead of the swap. The app never migrates; it calls assertMetaSchemaCurrent()
- * on boot and refuses to start on a stale schema. On SQLite it must also run
- * while the app is stopped — Prisma Migrate cannot work on a file another
- * connection holds open, which is why every phase here opens its own handle and
- * closes it before Prisma runs.
+ * The app runs it on boot (server/migrator/boot.js, the first import of
+ * server.js), before server/meta.js opens its connection. `npm run migrate`
+ * runs the same thing by hand, and the in-app updater runs it in a one-shot
+ * container ahead of the swap so a failure can restart the old image. On SQLite
+ * nothing else may hold the file open — Prisma Migrate cannot work on a file
+ * another connection holds — which is why every phase here opens its own handle
+ * and closes it before Prisma runs.
  *
  * Prisma Migrate owns the history (prisma/<engine>/migrations, one folder per
  * engine because a Prisma history is locked to one provider). A database is in
@@ -76,13 +76,6 @@ export function metaSchemaStatus() {
     const done = new Set(applied)
     return { engine: META_DB_TYPE, state, applied, pending: migrationNames().filter((name) => !done.has(name)) }
   })
-}
-
-export function assertMetaSchemaCurrent() {
-  const { pending } = metaSchemaStatus()
-  if (pending.length) {
-    throw new Error(`The metadata schema is not up to date (pending: ${pending.join(', ')}). Run \`npm run migrate\` — or the compose \`migrate\` service — before starting the app.`)
-  }
 }
 
 function prisma(...args) {

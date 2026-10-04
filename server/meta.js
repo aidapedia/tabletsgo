@@ -11,8 +11,7 @@
  * beside it.
  *
  * The schema itself is not this module's job: server/migrator brings it up to
- * date (`npm run migrate`, or the compose `migrate` service) before the app
- * starts, and the app only checks it is current (assertMetaSchemaCurrent).
+ * date on boot (server/migrator/boot.js), before this module is evaluated.
  */
 
 import fs from 'fs'

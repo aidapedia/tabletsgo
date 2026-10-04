@@ -1,6 +1,6 @@
 ---
 name: meta-schema
-description: Evolving the app's own metadata schema (SQLite or PostgreSQL) with Prisma Migrate — prisma/<engine>/schema.prisma + migrations, the migrator service in server/migrator/ (npm run migrate, the compose migrate service, the frozen legacy v1–v22 steps, DEPRECATED_TABLES) — and the per-connection schema versioning trail (schema_migrations, schema_version, DDL rollback). Use this skill when adding or changing a table or column in the app's meta DB, when writing a migration, when a route needs a new metadata table, when touching prisma/, prisma.config.mjs, server/migrator/*, server/meta.js or server/meta-connection.js, when the app refuses to boot over a pending migration, or when working on the schema designer's commit/rollback flow, schema_version, or POST /api/connections/:id/schema/migrations and .../schema/rollback.
+description: Evolving the app's own metadata schema (SQLite or PostgreSQL) with Prisma Migrate — prisma/<engine>/schema.prisma + migrations, the migrator in server/migrator/ (run on boot by boot.js, npm run migrate, the frozen legacy v1–v22 steps, DEPRECATED_TABLES) — and the per-connection schema versioning trail (schema_migrations, schema_version, DDL rollback). Use this skill when adding or changing a table or column in the app's meta DB, when writing a migration, when a route needs a new metadata table, when touching prisma/, prisma.config.mjs, server/migrator/*, server/meta.js or server/meta-connection.js, when a migration fails on boot, or when working on the schema designer's commit/rollback flow, schema_version, or POST /api/connections/:id/schema/migrations and .../schema/rollback.
 ---
 
 # Schema evolution
@@ -17,20 +17,26 @@ Two unrelated things both called "migrations" — keep them straight:
 
 ### Who runs them
 
-The **migrator is a service, not part of the app.** It runs as its own process
-before the app starts:
+**The app migrates on boot.** `server/migrator/boot.js` is the *first* import
+of `server.js` and calls `runMigrations()` synchronously (`prisma migrate deploy`
+in a child process), so a new image upgrades the store the first time it starts.
+A failed run logs the Prisma error and exits; nothing is served.
 
-- `npm run migrate` locally (`npm run server` runs it first);
-- the one-shot `migrate` service in `docker-compose.yml` (`tabletsgo` waits on it
-  with `service_completed_successfully`);
+**It must stay the first import.** ES modules evaluate imports in order, and
+`server/meta.js` opens its Prisma Client the moment it is evaluated. On SQLite
+Prisma's schema engine needs the file to itself (`database is locked`
+otherwise), so migrating from anywhere that runs after `meta.js` is loaded — the
+body of `server.js`, a route, a scheduler — cannot work. Same reason the
+migrator opens short-lived handles via `meta-connection.js` and never imports
+`meta.js`.
+
+The same `runMigrations()` also runs:
+
+- `npm run migrate` — by hand (`-- --status` to look without changing anything);
 - the one-shot container the in-app Docker updater runs between stopping the old
-  container and starting the new one (a failed run restarts the old one).
-
-`server.js` only calls `assertMetaSchemaCurrent()` and exits with
-"run `npm run migrate`" on a pending migration. **Don't add migrating back into
-boot.** On SQLite it also *can't* work there: Prisma's schema engine needs the
-file to itself (`database is locked` otherwise) — which is why the migrator
-opens short-lived handles via `meta-connection.js` and never imports `meta.js`.
+  container and starting the new one. The new app would migrate on boot anyway,
+  but by then the old container is gone; running it first is what lets a failed
+  run restart the old one. With nothing pending, the new app's boot run is a no-op.
 
 `npm run migrate -- --status` prints engine/state/applied/pending (exit 2 when
 something is pending).
@@ -43,7 +49,8 @@ prisma/sqlite/schema.prisma        # the models — identical in both files exce
 prisma/sqlite/migrations/          # 0_baseline/, then one folder per change
 prisma/postgresql/schema.prisma
 prisma/postgresql/migrations/
-server/migrator/index.js           # runMigrations(), metaSchemaStatus(), assertMetaSchemaCurrent()
+server/migrator/index.js           # runMigrations(), metaSchemaStatus()
+server/migrator/boot.js            # runs runMigrations() on boot — server.js's first import
 server/migrator/legacy/            # FROZEN pre-Prisma steps v1–v22 (sqlite.js, postgresql.js + v20 SQL)
 ```
 

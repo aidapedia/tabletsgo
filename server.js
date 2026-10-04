@@ -20,6 +20,9 @@
  * No route branches on `conn.type`; the db layer answers for every engine.
  */
 
+// Must stay the first import: it migrates the metadata DB before server/meta.js
+// opens its connection (see server/migrator/boot.js).
+import './server/migrator/boot.js'
 import express from 'express'
 import cors from 'cors'
 import fs from 'fs'
@@ -44,7 +47,6 @@ import {
   SCHEDULER_ENABLED,
 } from './server/config.js'
 import { backupMeta, checkMetaIntegrity, closeMeta, db as meta, seedAdminFromEnv, transaction } from './server/meta.js'
-import { assertMetaSchemaCurrent } from './server/migrator/index.js'
 import { sha256 } from './server/crypto.js'
 import { describeError, filterAsync, safeJson, sanitizeForKey } from './server/util.js'
 import {
@@ -290,16 +292,10 @@ app.use(express.json({ limit: '10mb' }))
 // `requireAuth` stays a synchronous read (see server/auth.js).
 app.use(sessionMiddleware)
 
-// Boot readiness — flipped true once the meta DB is known to be current. The
-// app never migrates: `npm run migrate` (the compose `migrate` service) runs
-// first, and a stale schema stops the boot here with that instruction.
+// Boot readiness — flipped true once the policy is loaded. The meta DB is
+// already current: server/migrator/boot.js migrated it before any import here
+// opened it.
 let bootReady = false
-try {
-  assertMetaSchemaCurrent()
-} catch (e) {
-  console.error(`❌ ${e.message}`)
-  process.exit(1)
-}
 // The role policy is read once here; every permission check reads it from memory.
 await loadPolicy()
 await seedAdminFromEnv()

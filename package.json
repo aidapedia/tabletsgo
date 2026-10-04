@@ -9,7 +9,7 @@
   ],
   "scripts": {
     "dev": "vite",
-    "server": "npm run prisma:generate && npm run migrate && node --env-file-if-exists=.env server.js",
+    "server": "npm run prisma:generate && node --env-file-if-exists=.env server.js",
     "migrate": "node --env-file-if-exists=.env scripts/migrate.js",
     "prisma": "node --env-file-if-exists=.env node_modules/prisma/build/index.js",
     "prisma:generate": "prisma generate --schema prisma/sqlite/schema.prisma --config prisma/generate.config.mjs && prisma generate --schema prisma/postgresql/schema.prisma --config prisma/generate.config.mjs",

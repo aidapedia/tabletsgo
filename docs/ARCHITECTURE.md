@@ -461,7 +461,7 @@ prisma.config.mjs         # Prisma CLI config: META_DB_TYPE picks prisma/<engine
 prisma/
 ├── sqlite/               # schema.prisma + migrations/ (0_baseline = legacy v22) — Prisma Migrate's
 └── postgresql/           #   history is provider-locked, so one per engine; both declare the same models
-scripts/migrate.js        # `npm run migrate [-- --status]` — the migrator CLI (compose `migrate` service)
+scripts/migrate.js        # `npm run migrate [-- --status]` — the migrator by hand (also the updater's one-shot container)
 server.js                 # express app: 108 routes, static frontend, schedulers, shutdown
 server/
 ├── config.js             # every env var + filesystem path, resolved once (imports nothing app-level)
@@ -473,15 +473,17 @@ server/
 ├── meta.js               # Prisma Client for the app's store: db() (the open transaction's client, or
 │                         #   the shared one), transaction(fn) (nested calls join), backupMeta(),
 │                         #   checkMetaIntegrity(), seedAdminFromEnv(). BIGINTs come back as numbers;
-│                         #   on SQLite a gate keeps other requests out of an open transaction. Never migrates
+│                         #   on SQLite a gate keeps other requests out of an open transaction. Never migrates —
+│                         #   boot.js has already, before this module is evaluated
 ├── postgres-meta.js      # synchronous PostgreSQL handle — only the migrator uses it now
 ├── postgres-sql.js       # metadata placeholder and conflict syntax translation
-├── migrator/             # ★ the migration service (see the `meta-schema` skill). Runs as its own
-│   │                     #   process — `npm run migrate`, the compose `migrate` service, the
-│   │                     #   updater's one-shot container — never inside the app
+├── migrator/             # ★ the migrator (see the `meta-schema` skill). Runs on boot, before the
+│   │                     #   app opens its store; also `npm run migrate` and the updater's
+│   │                     #   one-shot container
 │   ├── index.js          # runMigrations(): empty → Prisma baseline + seed; pre-Prisma → legacy
 │   │                     #   steps to v22, record 0_baseline applied; then `prisma migrate deploy`.
-│   │                     #   metaSchemaStatus()/assertMetaSchemaCurrent() (the app's boot check)
+│   │                     #   metaSchemaStatus() (what is applied / pending)
+│   ├── boot.js           # server.js's FIRST import: runMigrations() before meta.js opens the store
 │   └── legacy/           # FROZEN pre-Prisma history, only for upgrading old installs to v22
 │       ├── sqlite.js     #   v1–v22 stepped migrations + DEPRECATED_TABLES
 │       ├── postgresql.js #   PostgreSQL v20 bootstrap + v21–v22

@@ -59,8 +59,6 @@ ENV META_DB=/app/data/app.db
 # update checker (Docker-socket self-update). See .env.example.
 
 EXPOSE 3000
-# The app checks the metadata schema is current and refuses to start otherwise;
-# run the migrator first with the same env and volume:
-#   docker run --rm … <image> node scripts/migrate.js
-# (docker-compose.yml does this with its one-shot `migrate` service.)
+# The app migrates the metadata schema on boot (server/migrator/boot.js), so a
+# new image upgrades the store the first time it starts.
 CMD ["node", "server.js"]
