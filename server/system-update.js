@@ -236,10 +236,12 @@ export async function dockerSelfUpdate() {
   const created = await dockerApi('POST', `/containers/create?name=${encodeURIComponent(oldName)}-update-${stamp}`, { body: spec })
   const newId = created.Id
 
-  // The new image's migrations run in a one-shot container of their own (the
-  // app refuses to boot on a stale schema). Same env, volumes and networks so
-  // it reaches the same metadata DB — but no published ports, no restart
-  // policy, no compose labels and no network aliases: it is not the service.
+  // The new image's migrations run in a one-shot container of their own
+  // before the swap. The new app would migrate on boot anyway, but by then the
+  // old container is gone; running them first is what lets a failure restart
+  // it instead. Same env, volumes and networks so it reaches the same metadata
+  // DB — but no published ports, no restart policy, no compose labels and no
+  // network aliases: it is not the service.
   const migrateSpec = {
     ...spec,
     Cmd: ['node', 'scripts/migrate.js'],

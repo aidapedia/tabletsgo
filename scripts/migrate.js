@@ -1,7 +1,7 @@
 /**
  * `npm run migrate` — bring the metadata database to the latest schema, then
- * exit. This is the compose `migrate` service's command; the app itself only
- * checks the schema is current and refuses to start otherwise.
+ * exit. The app does the same on boot; this is for running it by hand, and it
+ * is what the in-app updater's one-shot migrate container runs.
  *
  *   npm run migrate              apply everything pending
  *   npm run migrate -- --status  print what is applied / pending, change nothing

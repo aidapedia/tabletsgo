@@ -66,7 +66,7 @@ Open **http://localhost:3000** and finish the setup wizard. It creates the **ins
 
 > Keep `ENCRYPTION_KEY` safe — losing or changing it makes saved credentials unreadable.
 
-**Upgrading:** `docker compose pull && docker compose up -d`. A one‑shot `migrate` service updates the metadata schema before the app starts.
+**Upgrading:** `docker compose pull && docker compose up -d`. The app migrates its metadata schema on startup, so a new image upgrades it the first time it runs.
 
 **PostgreSQL instead of SQLite** for the app's own metadata: set `META_DB_TYPE=postgresql` and `META_DATABASE_URL`, then `docker compose --profile postgresql up -d`. See [docs/CONFIGURATION.md](docs/CONFIGURATION.md#postgresql-for-app-metadata).
 

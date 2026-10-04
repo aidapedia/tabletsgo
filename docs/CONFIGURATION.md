@@ -25,8 +25,7 @@ Run one Tabletsgo app instance for either metadata store. The permission cache a
 
 ## Schema migrations
 
-The metadata schema is migrated by a separate one-shot **migrator** (Prisma Migrate), not by the app. `docker compose up` runs it as the `migrate` service and starts the app only after it succeeds; with nothing pending it is a no-op, and existing installs are upgraded in place (a snapshot is written to `data/backups/` first). The app refuses to start on an out-of-date schema and tells you to run the migrator.
+The app migrates the metadata schema (Prisma Migrate) **on startup**, before it serves anything, so a new image upgrades the store the first time it starts — whether it was pulled by `docker compose`, the in‑app updater, an orchestrator or `docker run`. With nothing pending it is a no-op, and existing installs are upgraded in place (a snapshot is written to `data/backups/` first). If a migration fails, the app logs the error and exits.
 
-- **Without compose**, run it with the same env and volume before starting the container: `docker run --rm --env-file .env -v tabletsgo-data:/app/data ghcr.io/aidapedia/tabletsgo node scripts/migrate.js`.
-- **From source**, `npm run server` runs `npm run migrate` first; `npm run migrate -- --status` shows what is applied and pending.
+- **To look without changing anything**, `npm run migrate -- --status` (or `docker run --rm --env-file .env -v tabletsgo-data:/app/data ghcr.io/aidapedia/tabletsgo node scripts/migrate.js --status`) shows what is applied and pending.
 - **One‑click in‑app updates** run the new image's migrator before switching over, and keep the old version running if it fails.

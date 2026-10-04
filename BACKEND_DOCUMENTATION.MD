@@ -227,13 +227,13 @@ tables.
 
 **Schema versioning:** the meta schema is managed by **Prisma Migrate**, one
 history per engine (`prisma/sqlite/`, `prisma/postgresql/` — each a
-`schema.prisma` plus `migrations/`). Migrations run in a **separate migrator
-process**, never on app boot: `npm run migrate` (`node scripts/migrate.js`), the
-one-shot `migrate` service in `docker-compose.yml`, or the one-shot container the
-in-app Docker updater runs before swapping containers. The app only checks the
-schema is current at startup and exits with an instruction to run the migrator
-otherwise. `npm run migrate -- --status` prints what is applied and pending
-(exit code 2 when something is pending).
+`schema.prisma` plus `migrations/`). The app **migrates on boot**, before it
+opens the store (`server/migrator/boot.js`), so a new image upgrades the schema
+the first time it starts; a failed migration stops the boot. The same migrator
+runs by hand with `npm run migrate` (`node scripts/migrate.js`), and the in-app
+Docker updater runs it in a one-shot container before swapping containers, so a
+failure keeps the old one. `npm run migrate -- --status` prints what is applied
+and pending (exit code 2 when something is pending).
 
 A brand-new database is built from `0_baseline` and seeded (built-in roles, the
 resource-tree root). An install made before Prisma is first brought to v22 by the
