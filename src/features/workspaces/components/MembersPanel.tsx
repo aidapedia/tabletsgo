@@ -15,6 +15,8 @@ import { useToast } from '@/shared/ui/feedback/Toast'
 import DataTable, { type Column } from '@/shared/ui/table/DataTable'
 import { RowAction, RowActions } from '@/shared/ui/table/RowActions'
 import useDataTable from '@/shared/ui/table/useDataTable'
+import useListView from '@/shared/ui/table/useListView'
+import ViewToggle from '@/shared/ui/table/ViewToggle'
 import { CopyIcon, TrashIcon } from '@/shared/ui/icons'
 import { listMembers, inviteMember, listRoles, removeMember, setMemberRole, Member, Role } from '@/features/workspaces/api'
 
@@ -183,7 +185,8 @@ export default function MembersPanel({
       : []),
   ]
 
-  const table = useDataTable({ rows: filtered, columns, pageSize: 10, resetKey: query })
+  const [view, setView] = useListView('members')
+  const table = useDataTable({ rows: filtered, columns, pageSize: 10, resetKey: query, view })
 
   return (
     <div>
@@ -194,6 +197,7 @@ export default function MembersPanel({
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search by name or email…"
         />
+        <ViewToggle value={view} onChange={setView} />
       </div>
 
       <DataTable

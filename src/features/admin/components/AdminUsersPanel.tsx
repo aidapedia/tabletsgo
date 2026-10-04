@@ -17,6 +17,8 @@ import Modal from '@/shared/ui/overlay/Modal'
 import DataTable, { type Column } from '@/shared/ui/table/DataTable'
 import { RowAction, RowActions } from '@/shared/ui/table/RowActions'
 import useDataTable from '@/shared/ui/table/useDataTable'
+import useListView from '@/shared/ui/table/useListView'
+import ViewToggle from '@/shared/ui/table/ViewToggle'
 import { CopyIcon, KeyIcon, PlusIcon, TrashIcon, UnlockIcon } from '@/shared/ui/icons'
 import { useAuth } from '@/features/auth'
 import { createUser, deleteUser, listUsers, unblockUser, updateUser, type AdminUser, type SystemRole } from '../api'
@@ -227,11 +229,13 @@ export default function AdminUsersPanel({
     },
   ]
 
+  const [view, setView] = useListView('admin-users')
   const table = useDataTable({
     rows: filtered,
     columns,
     pageSize: 10,
     resetKey: query,
+    view,
   })
 
   return (
@@ -244,6 +248,7 @@ export default function AdminUsersPanel({
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search by name or email…"
         />
+        <ViewToggle value={view} onChange={setView} />
       </div>
 
       <DataTable

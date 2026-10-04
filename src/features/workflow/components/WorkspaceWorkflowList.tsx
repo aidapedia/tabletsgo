@@ -5,6 +5,8 @@ import EmptyState from '@/shared/ui/feedback/EmptyState'
 import DataTable, { type Column } from '@/shared/ui/table/DataTable'
 import { RowAction, RowActions } from '@/shared/ui/table/RowActions'
 import useDataTable from '@/shared/ui/table/useDataTable'
+import useListView from '@/shared/ui/table/useListView'
+import ViewToggle from '@/shared/ui/table/ViewToggle'
 import { DatabaseIcon, ExternalLinkIcon, WorkflowIcon } from '@/shared/ui/icons'
 import { relativeTime } from '@/shared/lib/recents'
 import { listWorkspaceWorkflows, type WorkspaceWorkflow } from '../lib/api'
@@ -134,7 +136,8 @@ export default function WorkspaceWorkflowList({
     },
   ]
 
-  const table = useDataTable({ rows: filtered, columns, pageSize: 10, resetKey: filter })
+  const [view, setView] = useListView('workflows')
+  const table = useDataTable({ rows: filtered, columns, pageSize: 10, resetKey: filter, view })
 
   return (
     <div>
@@ -148,6 +151,7 @@ export default function WorkspaceWorkflowList({
           onChange={(e: any) => setFilter(e.target.value)}
           placeholder="Search workflows or connections…"
         />
+        <ViewToggle value={view} onChange={setView} />
       </div>
 
       <DataTable

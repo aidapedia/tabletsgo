@@ -14,6 +14,8 @@ import Modal from '@/shared/ui/overlay/Modal'
 import DataTable, { type Column } from '@/shared/ui/table/DataTable'
 import { RowAction, RowActions } from '@/shared/ui/table/RowActions'
 import useDataTable from '@/shared/ui/table/useDataTable'
+import useListView from '@/shared/ui/table/useListView'
+import ViewToggle from '@/shared/ui/table/ViewToggle'
 import { PlusIcon, TrashIcon } from '@/shared/ui/icons'
 import { listRoles, type Role } from '@/features/workspaces'
 import {
@@ -130,7 +132,8 @@ export default function AdminWorkspacesPanel({
     },
   ]
 
-  const table = useDataTable({ rows: filtered, columns, pageSize: 10, resetKey: query })
+  const [view, setView] = useListView('admin-workspaces')
+  const table = useDataTable({ rows: filtered, columns, pageSize: 10, resetKey: query, view })
 
   return (
     <div>
@@ -142,6 +145,7 @@ export default function AdminWorkspacesPanel({
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search workspaces…"
         />
+        <ViewToggle value={view} onChange={setView} />
       </div>
 
       <DataTable

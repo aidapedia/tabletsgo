@@ -5,6 +5,8 @@ import EmptyState from '@/shared/ui/feedback/EmptyState'
 import DataTable, { type Column } from '@/shared/ui/table/DataTable'
 import { RowAction, RowActions } from '@/shared/ui/table/RowActions'
 import useDataTable from '@/shared/ui/table/useDataTable'
+import useListView from '@/shared/ui/table/useListView'
+import ViewToggle from '@/shared/ui/table/ViewToggle'
 import { DatabaseIcon, ExternalLinkIcon, GridIcon } from '@/shared/ui/icons'
 import { relativeTime } from '@/shared/lib/recents'
 import { listWorkspaceDashboards } from '../lib/api'
@@ -128,7 +130,8 @@ export default function WorkspaceDashboardList({
     },
   ]
 
-  const table = useDataTable({ rows: filtered, columns, pageSize: 10, resetKey: filter })
+  const [view, setView] = useListView('dashboards')
+  const table = useDataTable({ rows: filtered, columns, pageSize: 10, resetKey: filter, view })
 
   return (
     <div>
@@ -142,6 +145,7 @@ export default function WorkspaceDashboardList({
           onChange={(e: any) => setFilter(e.target.value)}
           placeholder="Search dashboards or connections…"
         />
+        <ViewToggle value={view} onChange={setView} />
       </div>
 
       <DataTable

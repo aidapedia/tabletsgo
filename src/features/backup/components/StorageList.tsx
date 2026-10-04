@@ -9,6 +9,8 @@ import DataTable from '@/shared/ui/table/DataTable'
 import type { Column } from '@/shared/ui/table/DataTable'
 import { RowActions, RowMenu } from '@/shared/ui/table/RowActions'
 import useDataTable from '@/shared/ui/table/useDataTable'
+import useListView from '@/shared/ui/table/useListView'
+import ViewToggle from '@/shared/ui/table/ViewToggle'
 import { CloudIcon, EditIcon, PlusIcon, TrashIcon } from '@/shared/ui/icons'
 import { listStorages, deleteStorage } from '@/features/backup/lib/api'
 import type { StorageDestination } from '@/features/backup/lib/types'
@@ -157,7 +159,8 @@ const StorageList = forwardRef<StorageListHandle, { workspaceId: string; canMana
   )
 
   // Client-side sort + paging; changing the search sends the table back to page 1.
-  const table = useDataTable({ rows: filtered, columns, pageSize: 10, resetKey: query })
+  const [view, setView] = useListView('storage')
+  const table = useDataTable({ rows: filtered, columns, pageSize: 10, resetKey: query, view })
 
   const handleSaved = (s: StorageDestination) => {
     setStorages((prev) => (prev.some((x) => x.id === s.id) ? prev.map((x) => (x.id === s.id ? s : x)) : [...prev, s]))
@@ -178,12 +181,14 @@ const StorageList = forwardRef<StorageListHandle, { workspaceId: string; canMana
 
   return (
     <>
-      <div className="mb-4">
+      <div className="mb-4 flex flex-wrap items-center gap-2">
         <SearchInput
+          className="min-w-[220px] flex-1"
           placeholder="Search storage destinations…"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
+        <ViewToggle value={view} onChange={setView} />
       </div>
 
       <DataTable
