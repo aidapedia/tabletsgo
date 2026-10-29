@@ -5,6 +5,7 @@ import { useConnections, ConnectionSwitcherModal } from '@/features/connections'
 import { useSettings } from '@/features/settings'
 import { useKeymap, useShortcut } from '@/features/keymap'
 import { RedisKeyTree } from '@/features/redis'
+import { KafkaSidebar, type TopicSubView } from '@/features/kafka'
 import CreateTablePanel from '@/features/schema-designer/components/CreateTablePanel'
 import { TemplatesPanel } from '@/features/templates'
 import {
@@ -38,7 +39,8 @@ import ConfirmDialog from '@/shared/ui/feedback/ConfirmDialog'
 import CommandPalette from '@/shared/ui/overlay/CommandPalette'
 import SaveQueryPanel from '@/shared/ui/SaveQueryPanel'
 import { useToast } from '@/shared/ui/feedback/Toast'
-import { KeyIcon } from '@/shared/ui/icons'
+import { KeyIcon, TopicIcon } from '@/shared/ui/icons'
+import { consoleKindOf } from '@/shared/config/databaseTypes'
 
 import IconRail from './IconRail'
 import StatusBar from './StatusBar'
@@ -98,10 +100,12 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
   const conn = connections.find((c: any) => c.id === id)
   const { bindings } = useKeymap()
 
-  // Redis is schemaless and tableless: no tables/views/functions browser, no
-  // schema designer, no table folders — the sidebar shows its keyspace instead,
-  // and every write goes through the command console.
-  const isRedis = conn?.type === 'redis'
+  // The console's shape. Redis and Kafka are schemaless and tableless: no
+  // tables/views/functions browser, no schema designer, no table folders — the
+  // sidebar shows the keyspace or the topics instead, and the query tab is a
+  // command console.
+  const kind = consoleKindOf(conn?.type)
+  const tableless = kind !== 'sql'
 
   const [sidebarOpen, setSidebarOpen] = useState(false) // mobile drawer
   const [tablesVisible, setTablesVisible] = useState(true) // left panel visible
@@ -114,7 +118,7 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
   const [analyzeSql, setAnalyzeSql] = useState<string | null>(null)
   const [analyzeFolder, setAnalyzeFolder] = useState<any>(null) // { name, queries }
   const [dataVersion, setDataVersion] = useState(0) // bump to force table reloads
-  const [keyspaceVersion, setKeyspaceVersion] = useState(0) // bump to re-scan the Redis key tree
+  const [keyspaceVersion, setKeyspaceVersion] = useState(0) // bump to re-read the Redis key tree / Kafka topics
   const autoOpenedFor = useRef<string | null>(null) // connection we've already auto-opened a tab for
   // The import entries live in the sidebar panels but the hidden inputs they
   // drive are rendered up in the toolbar, so the refs are held here between them.
@@ -255,12 +259,21 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
   function openQuery(sql?: string) {
     queryCounter += 1
     const initialSql = typeof sql === 'string' ? sql : undefined
-    const title = `${isRedis ? 'Console' : 'Query'} ${queryCounter}`
+    const title = `${tableless ? 'Console' : 'Query'} ${queryCounter}`
     tabs.openTab({ key: `query:${queryCounter}`, kind: 'query', title, sql: initialSql })
   }
 
   const openRedisKey = (redisKey: string) =>
     tabs.openTab({ key: `rediskey:${redisKey}`, kind: 'redisKey', redisKey, title: redisKey })
+
+  // Kafka: a topic (on one of its views), a consumer group, a produce form.
+  const openTopic = (topic: string, view?: TopicSubView) =>
+    tabs.openTab({ key: `topic:${topic}`, kind: 'kafkaTopic', topic, title: topic, view }, view ? { view } : undefined)
+  const openGroup = (group: string) => tabs.openTab({ key: `group:${group}`, kind: 'kafkaGroup', group, title: group })
+  const openProduce = (topic?: string, draft?: any) => {
+    queryCounter += 1
+    tabs.openTab({ key: `produce:${queryCounter}`, kind: 'kafkaProduce', topic, draft, title: `Produce · ${topic || 'message'}` })
+  }
 
   const openSchema = (table: string) =>
     tabs.openTab({ key: `schema:${table}`, kind: 'schema', table, title: `${table} · schema` })
@@ -302,7 +315,7 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
   // is no diagram to leave for, so the rail hides the entry and this stops the
   // keyboard shortcut reaching it either.
   const openSchemaEditorPage = () => {
-    if (isRedis) return
+    if (tableless) return
     navigate(`/schemas/connection/${id}`)
   }
 
@@ -380,7 +393,7 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
   const schemaVersion = conn.schemaVersion ?? 1
 
   const commands = buildConsoleCommands({
-    isRedis,
+    kind,
     bindings,
     schemaVersion,
     splitDir: tabs.splitDir,
@@ -401,7 +414,18 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
   })
 
   const sidebarPanel =
-    panel === 'browser' && isRedis ? (
+    panel === 'browser' && kind === 'stream' ? (
+      <KafkaSidebar
+        key={`${id}:${keyspaceVersion}`}
+        conn={nsConn}
+        activeTopic={current?.kind === 'kafkaTopic' ? current.topic : null}
+        activeGroup={current?.kind === 'kafkaGroup' ? current.group : null}
+        onOpenTopic={(topic) => openTopic(topic)}
+        onOpenGroup={openGroup}
+        onProduce={(topic) => openProduce(topic)}
+        onRunCommand={openQuery}
+      />
+    ) : panel === 'browser' && kind === 'keyspace' ? (
       <RedisKeyTree
         key={`${id}:${ns.database}:${keyspaceVersion}`}
         conn={nsConn}
@@ -513,11 +537,11 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
           onTemplates={() => selectPanel('templates')}
           onHome={() => navigate('/')}
           onLogout={logout}
-          browserIcon={isRedis ? KeyIcon : undefined}
-          browserLabel={isRedis ? 'Keyspace' : undefined}
+          browserIcon={kind === 'keyspace' ? KeyIcon : kind === 'stream' ? TopicIcon : undefined}
+          browserLabel={kind === 'keyspace' ? 'Keyspace' : kind === 'stream' ? 'Topics' : undefined}
         />
         <ConsoleSidebar
-          isRedis={isRedis}
+          kind={kind}
           ns={ns}
           namespaces={namespaces}
           onDatabaseChange={browser.changeDatabase}
@@ -530,7 +554,7 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
 
       <main className="flex min-h-0 min-w-0 flex-1 flex-col">
         <ConsoleToolbar
-          isRedis={isRedis}
+          kind={kind}
           bindings={bindings}
           schemaVersion={schemaVersion}
           changeCount={changes.changes.length}
@@ -575,11 +599,11 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
 
         <EditorPanes
           tabs={tabs}
-          isRedis={isRedis}
+          tableless={tableless}
           onNewQuery={() => openQuery()}
           empty={
             <EmptyWorkspace
-              isRedis={isRedis}
+              kind={kind}
               tables={tables}
               bindings={bindings}
               onNewQuery={() => openQuery()}
@@ -593,7 +617,7 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
               conn={conn}
               nsConn={nsConn}
               connectionId={id}
-              isRedis={isRedis}
+              kind={kind}
               tables={tables}
               dataVersion={dataVersion}
               keyspaceVersion={keyspaceVersion}
@@ -622,6 +646,17 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
               onKeyspaceMutated={() => setKeyspaceVersion((v) => v + 1)}
               onKeyDeleted={(deletedKey) => {
                 tabs.dropTab(`rediskey:${deletedKey}`)
+                setKeyspaceVersion((v) => v + 1)
+              }}
+              onOpenTopic={openTopic}
+              onOpenGroup={openGroup}
+              onProduce={openProduce}
+              onTopicDeleted={(topic) => {
+                tabs.dropTab(`topic:${topic}`)
+                setKeyspaceVersion((v) => v + 1)
+              }}
+              onGroupDeleted={(group) => {
+                tabs.dropTab(`group:${group}`)
                 setKeyspaceVersion((v) => v + 1)
               }}
               onDashboardRenamed={dashboards.renamedExternally}

@@ -161,6 +161,46 @@ widgets work against Redis with no Redis-aware code in them.
   analysis, row-grid editing, and the S3 backup schedule (the driver has no
   `dump`, so `db.supports(conn, 'dump')` is false).
 
+## Kafka — the stream capability
+
+Kafka (`server/db/kafka.js`, grammar in `kafka-command.js`) is the second
+tableless engine and follows the Redis shape, with one difference worth copying:
+its browsing ops are **generic optional ops**, not engine-only ones. `listTopics`,
+`describeTopic`, `readMessages`, `produce`, `listGroups`, `describeGroup`,
+`resetOffsets`, … are listed in the contract in `index.js` and dispatched with
+`gatedRequired`, so the `/streams/*` routes carry no type guard at all — an engine
+without them answers 400 naming its type. Prefer this over a `/redis/*`-style
+`driverOps` + type guard for the next engine.
+
+- **Commands ride `/query`** like Redis (`TOPICS`, `CONSUME … WHERE …`, `LAG`, …);
+  every command returns rows, so workflows and dashboards need nothing new.
+- **Reads never join a consumer group or commit.** kafkajs's public Consumer can
+  only read by joining a group, so the fetch path uses its internal
+  `Cluster`/`Broker.fetch` — which is why `kafkajs` is pinned to an exact version.
+  Every read is bounded by `KAFKA_READ_MAX_MESSAGES` / `_BYTES` / `_TIMEOUT_MS`;
+  never add a long-lived consumer behind a request.
+- **kafkajs clients remember every topic they touched** and refresh metadata for
+  all of them; one that stops existing (deleted elsewhere, or a typo looked up)
+  makes every later call fail with `UNKNOWN_TOPIC_OR_PARTITION`. `withAdmin`
+  drops the connection's clients and retries once on that error — route new admin
+  calls through it.
+- **AlterConfigs replaces a topic's whole dynamic config**: `alterTopic` reads the
+  overrides and merges. Don't call `admin.alterConfigs` with a partial set.
+- **Offset resets** only apply to an empty group; the driver refuses a live one
+  (409 `group_active`) before the broker does, and always computes the dry run.
+- **SSH:** Kafka clients reconnect to the brokers' *advertised* addresses, so one
+  forwarded port isn't enough. `tunnel.js` hands the dialed connection
+  `forwardPort(host, port)` — a listener per extra address on the same SSH login —
+  and the driver's `socketFactory` uses it (TLS still verifies the broker's real
+  name). A single-host engine never calls it.
+- **Record:** `brokers` (the bootstrap list) is the one new field; `host`/`port`
+  mirror the first broker (what the tunnel probes and the handshake names),
+  `username`/`password` are SASL, `tls` is Redis's switch, plus `saslMechanism`,
+  `caCert`, `clientId`.
+- **Frontend:** `src/features/kafka`, swapped in on console kind `stream`
+  (`consoleKindOf` in `shared/config/databaseTypes`) — branch on the kind, not on
+  `conn.type`.
+
 ## Connection records
 
 The `connections` table stores dialect-agnostic fields (`type`, `name`,

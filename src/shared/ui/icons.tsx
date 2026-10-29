@@ -346,12 +346,46 @@ export const RedisLogo = (props) => (
   </svg>
 )
 
+// A generic event-log mark (brokers joined in a cluster), not the Apache logo.
+export const KafkaLogo = (props) => (
+  <svg viewBox="0 0 48 48" fill="none" {...props}>
+    <rect width="48" height="48" rx="11" fill="#1F1F1F" />
+    <g stroke="#fff" strokeWidth="2.2" strokeLinecap="round">
+      <path d="M24 15v5.5M24 27.5V33M27.3 22.2l5.4-3.2M27.3 25.8l5.4 3.2" />
+    </g>
+    <g stroke="#fff" strokeWidth="2.2" fill="none">
+      <circle cx="24" cy="11.5" r="3.5" />
+      <circle cx="24" cy="24" r="4.2" />
+      <circle cx="24" cy="36.5" r="3.5" />
+      <circle cx="35.5" cy="17.5" r="3" />
+      <circle cx="35.5" cy="30.5" r="3" />
+    </g>
+  </svg>
+)
+
 export function DbLogo({ type, ...props }) {
   if (type === 'postgresql') return <PostgresLogo {...props} />
   if (type === 'sqlite') return <SqliteLogo {...props} />
   if (type === 'redis') return <RedisLogo {...props} />
+  if (type === 'kafka') return <KafkaLogo {...props} />
   return <DatabaseIcon {...props} />
 }
+
+// Stream icons — a topic row (a log of lines) and producing a message.
+export const TopicIcon = (props) => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...props}>
+    <path d="M3 6h13M3 12h18M3 18h9" />
+  </svg>
+)
+
+export const SendIcon = (props) => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...props}>
+    <path d="M21 3 3 10.5l7.5 3L14 21z" />
+    <path d="m10.5 13.5 4-4" />
+  </svg>
+)
 
 // Keyspace icons — a Redis key row and the console/terminal tab.
 export const KeyIcon = (props) => (

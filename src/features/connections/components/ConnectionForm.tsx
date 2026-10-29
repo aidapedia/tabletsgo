@@ -12,7 +12,7 @@ import TextButton from '@/shared/ui/buttons/TextButton'
 import PageHeader from '@/shared/ui/page/PageHeader'
 import PageTabs from '@/shared/ui/page/PageTabs'
 import Narrow from '@/shared/ui/page/Narrow'
-import { controlClass, Input } from '@/shared/ui/form/Input'
+import { controlClass, Input, Textarea } from '@/shared/ui/form/Input'
 import PasswordInput from '@/shared/ui/form/PasswordInput'
 import { FormField } from '@/shared/ui/form/Form'
 
@@ -20,6 +20,7 @@ const DB_TYPES = [
   { id: 'sqlite', label: 'SQLite', desc: 'A database file on this server', defaultPort: '' },
   { id: 'postgresql', label: 'PostgreSQL', desc: 'Relational, over the network', defaultPort: '5432' },
   { id: 'redis', label: 'Redis', desc: 'Key-value, over the network', defaultPort: '6379' },
+  { id: 'kafka', label: 'Kafka', desc: 'Event streaming, over the network', defaultPort: '9092' },
 ]
 
 // How a network database is reached. Stored as `sshGatewayId` — empty means
@@ -43,6 +44,16 @@ const ENVIRONMENTS = ['development', 'staging', 'production', 'local']
 const AUTH_MODES = [
   { value: 'password', label: 'User & Password' },
   { value: 'none', label: 'No authentication' },
+]
+// Kafka's login: none, or SASL with the connection's username/password.
+const KAFKA_AUTH_MODES = [
+  { value: 'none', label: 'No authentication' },
+  { value: 'password', label: 'SASL (username & password)' },
+]
+const SASL_MECHANISMS = [
+  { value: 'scram-sha-512', label: 'SCRAM-SHA-512' },
+  { value: 'scram-sha-256', label: 'SCRAM-SHA-256' },
+  { value: 'plain', label: 'PLAIN' },
 ]
 const SSL_MODES = ['disable', 'allow', 'prefer', 'require', 'verify-full']
 // Redis's equivalent of sslmode — plain TCP, TLS, or TLS without cert checks.
@@ -100,7 +111,42 @@ const blankRedis = {
   tags: [],
 }
 
-const blankFor = (type) => (type === 'postgresql' ? blankPostgres : type === 'redis' ? blankRedis : blankSqlite)
+// Kafka reuses host/port (the first broker — what the SSH tunnel and the
+// handshake name), username/password (SASL) and `tls` (Redis's switch). The
+// bootstrap list itself has no counterpart, so it is its own field, `brokers`.
+const blankKafka = {
+  name: '',
+  type: 'kafka',
+  environment: 'development',
+  brokers: '',
+  host: '',
+  port: '9092',
+  auth: 'none',
+  saslMechanism: 'scram-sha-512',
+  username: '',
+  password: '',
+  tls: '',
+  caCert: '',
+  clientId: '',
+  keychain: false,
+  sshGatewayId: '',
+  folder: '',
+  tags: [],
+}
+
+const blankFor = (type) =>
+  type === 'postgresql' ? blankPostgres : type === 'redis' ? blankRedis : type === 'kafka' ? blankKafka : blankSqlite
+
+// The bootstrap list as typed (commas, spaces or newlines; an optional
+// kafka:// prefix) → "host:port,host:port".
+function normalizeBrokers(text) {
+  return String(text || '')
+    .split(/[\s,]+/)
+    .map((b) => b.trim().replace(/^[a-z+]+:\/\//i, '').replace(/\/+$/, ''))
+    .filter(Boolean)
+    .map((b) => (/:\d+$/.test(b) ? b : `${b}:9092`))
+    .join(',')
+}
 
 // A row of fields owns the gap below it — FormField drops its own margin inside
 // a grid (see `.form-field` in index.css).
@@ -217,6 +263,7 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
 
   const isSqlite = form.type === 'sqlite'
   const isRedis = form.type === 'redis'
+  const isKafka = form.type === 'kafka'
   const viaSsh = !isSqlite && via === 'ssh'
 
   // The gateways a network connection may tunnel through — this workspace's.
@@ -277,12 +324,23 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
     // 127.0.0.1 from there), so only a direct connection must name one.
     (isSqlite
       ? form.filepath.trim()
-      : form.port.trim() && (viaSsh ? form.sshGatewayId : form.host.trim()))
+      : isKafka
+        ? normalizeBrokers(form.brokers) && (!viaSsh || form.sshGatewayId)
+        : form.port.trim() && (viaSsh ? form.sshGatewayId : form.host.trim()))
+
+  // Kafka's host/port mirror the first bootstrap broker.
+  const withFirstBroker = (f) => {
+    if (f.type !== 'kafka') return f
+    const brokers = normalizeBrokers(f.brokers)
+    const first = brokers.split(',')[0] || ''
+    const at = first.lastIndexOf(':')
+    return { ...f, brokers, host: at > 0 ? first.slice(0, at) : first, port: at > 0 ? first.slice(at + 1) : '9092' }
+  }
 
   const runTest = async () => {
     if (!valid) return
     setTest('loading')
-    const result = await testConnection(form)
+    const result = await testConnection(withFirstBroker(form))
     setTest(result)
     if (result?.ok) toast.success(result.message || 'Connection successful!')
     else toast.error(result?.message || 'Connection failed')
@@ -291,12 +349,12 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
   const handleSave = async () => {
     if (!valid || saving) return
     const payload = {
-      ...form,
+      ...withFirstBroker(form),
       name: form.name.trim(),
       // Spell out the tunnel's default so the detail view and lists show where
       // it actually goes.
-      host: form.host?.trim() || (viaSsh ? '127.0.0.1' : ''),
-      port: form.port?.trim() || '',
+      host: withFirstBroker(form).host?.trim() || (viaSsh ? '127.0.0.1' : ''),
+      port: withFirstBroker(form).port?.trim() || '',
       filepath: form.filepath?.trim() || '',
       database: form.database?.trim() || '',
       folder: form.folder.trim(),
@@ -340,7 +398,7 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
             </span>
           </div>
         ) : (
-          <div className="mb-4 grid grid-cols-3 gap-3 max-[560px]:grid-cols-1">
+          <div className="mb-4 grid grid-cols-4 gap-3 max-[720px]:grid-cols-2 max-[560px]:grid-cols-1">
             {DB_TYPES.map((t) => (
               <OptionCard
                 key={t.id}
@@ -490,7 +548,9 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
           <FormSection
             title="Server"
             desc={
-              viaSsh ? (
+              isKafka ? (
+                'Where the cluster is reached first.'
+              ) : viaSsh ? (
                 <>
                   Dialed <span className="text-ink-dim">from the SSH host</span>. Leave the host empty when the database runs on the
                   SSH host itself; otherwise use the address it sees (a private IP or internal hostname).
@@ -500,64 +560,96 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
               )
             }
           >
-            <FormField label="Connection URI">
-              <Input
-                className="font-mono"
-                type="text"
-                placeholder={isRedis ? 'redis://user:password@host:6379/0' : 'postgresql://user:password@host:5432/database'}
-                value={form.uri || ''}
-                onChange={onUriChange}
-              />
-            </FormField>
-
-            <div className="mb-4 flex items-center gap-3 text-[11px] text-ink-faint">
-              <span className="h-px flex-1 bg-edge" /> or <span className="h-px flex-1 bg-edge" />
-            </div>
-
-            <div className={fieldRow}>
-              <FormField
-                label={
-                  viaSsh ? (
+            {isKafka ? (
+              <>
+                <FormField
+                  label="Bootstrap servers"
+                  hint={
+                    viaSsh
+                      ? 'As the SSH host sees them. Every broker the cluster advertises is tunneled through the same SSH login.'
+                      : 'host:port, separated by commas. The client discovers every other broker from these.'
+                  }
+                >
+                  <Textarea
+                    className="min-h-[64px] font-mono"
+                    placeholder="b-1.kafka.internal:9092, b-2.kafka.internal:9092"
+                    value={form.brokers || ''}
+                    onChange={set('brokers')}
+                  />
+                </FormField>
+                <FormField
+                  label={
                     <>
-                      Host <span className="text-ink-faint">(optional)</span>
+                      Client ID <span className="text-ink-faint">(optional)</span>
                     </>
-                  ) : (
-                    'Host'
-                  )
-                }
-              >
-                <Input
-                  type="text"
-                  placeholder={viaSsh ? '127.0.0.1 — the SSH host itself' : 'localhost'}
-                  value={form.host}
-                  onChange={set('host')}
-                  required={!viaSsh}
-                />
-              </FormField>
-              <FormField label="Port">
-                <Input type="text" placeholder={isRedis ? '6379' : '5432'} value={form.port} onChange={set('port')} required />
-              </FormField>
-            </div>
+                  }
+                  hint="Shown in broker logs and quotas. Defaults to tabletsgo."
+                >
+                  <Input className="font-mono" placeholder="tabletsgo" value={form.clientId || ''} onChange={set('clientId')} />
+                </FormField>
+              </>
+            ) : (
+              <>
+                <FormField label="Connection URI">
+                  <Input
+                    className="font-mono"
+                    type="text"
+                    placeholder={isRedis ? 'redis://user:password@host:6379/0' : 'postgresql://user:password@host:5432/database'}
+                    value={form.uri || ''}
+                    onChange={onUriChange}
+                  />
+                </FormField>
 
-            <FormField
-              label={
-                <>
-                  {isRedis ? 'Database index' : 'Database'} <span className="text-ink-faint">(optional)</span>
-                </>
-              }
-              hint={
-                isRedis
-                  ? 'The numeric database to open by default (0–15 on a stock server). You can switch databases from the console.'
-                  : undefined
-              }
-            >
-              <Input
-                type="text"
-                placeholder={isRedis ? '0' : 'Leave empty to select database after connecting'}
-                value={form.database}
-                onChange={set('database')}
-              />
-            </FormField>
+                <div className="mb-4 flex items-center gap-3 text-[11px] text-ink-faint">
+                  <span className="h-px flex-1 bg-edge" /> or <span className="h-px flex-1 bg-edge" />
+                </div>
+
+                <div className={fieldRow}>
+                  <FormField
+                    label={
+                      viaSsh ? (
+                        <>
+                          Host <span className="text-ink-faint">(optional)</span>
+                        </>
+                      ) : (
+                        'Host'
+                      )
+                    }
+                  >
+                    <Input
+                      type="text"
+                      placeholder={viaSsh ? '127.0.0.1 — the SSH host itself' : 'localhost'}
+                      value={form.host}
+                      onChange={set('host')}
+                      required={!viaSsh}
+                    />
+                  </FormField>
+                  <FormField label="Port">
+                    <Input type="text" placeholder={isRedis ? '6379' : '5432'} value={form.port} onChange={set('port')} required />
+                  </FormField>
+                </div>
+
+                <FormField
+                  label={
+                    <>
+                      {isRedis ? 'Database index' : 'Database'} <span className="text-ink-faint">(optional)</span>
+                    </>
+                  }
+                  hint={
+                    isRedis
+                      ? 'The numeric database to open by default (0–15 on a stock server). You can switch databases from the console.'
+                      : undefined
+                  }
+                >
+                  <Input
+                    type="text"
+                    placeholder={isRedis ? '0' : 'Leave empty to select database after connecting'}
+                    value={form.database}
+                    onChange={set('database')}
+                  />
+                </FormField>
+              </>
+            )}
           </FormSection>
 
           <FormSection title="Authentication">
@@ -566,9 +658,20 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
                 className={controlClass}
                 value={form.auth || 'password'}
                 onChange={(v) => setVal('auth', v)}
-                options={AUTH_MODES}
+                options={isKafka ? KAFKA_AUTH_MODES : AUTH_MODES}
               />
             </FormField>
+
+            {isKafka && (form.auth || 'password') === 'password' && (
+              <FormField label="SASL mechanism" hint="Managed clusters (MSK, Confluent Cloud, Aiven) usually want SCRAM or PLAIN over TLS — turn TLS on below.">
+                <Select
+                  className={controlClass}
+                  value={form.saslMechanism || 'scram-sha-512'}
+                  onChange={(v) => setVal('saslMechanism', v)}
+                  options={SASL_MECHANISMS}
+                />
+              </FormField>
+            )}
 
             {(form.auth || 'password') === 'password' && (
               <>
@@ -581,7 +684,7 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
                 >
                   <Input
                     type="text"
-                    placeholder={isRedis ? 'default' : 'postgres'}
+                    placeholder={isRedis ? 'default' : isKafka ? 'svc-tabletsgo' : 'postgres'}
                     value={form.username}
                     onChange={set('username')}
                   />
@@ -605,7 +708,33 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
           {/* Transport security between Tabletsgo (or the tunnel's end) and
               the database itself. */}
           <FormSection title="Security">
-            {isRedis ? (
+            {isKafka ? (
+              <>
+                <FormField
+                  label="TLS"
+                  hint="On for an SSL or SASL_SSL listener (every managed Kafka), off for PLAINTEXT. Only skip verification for a self-signed certificate you trust."
+                >
+                  <Select className={controlClass} value={form.tls || ''} onChange={(v) => setVal('tls', v)} options={TLS_MODES} />
+                </FormField>
+                {form.tls && (
+                  <FormField
+                    label={
+                      <>
+                        CA certificate <span className="text-ink-faint">(optional, PEM)</span>
+                      </>
+                    }
+                    hint="For brokers signed by a private CA."
+                  >
+                    <Textarea
+                      className="min-h-[72px] font-mono"
+                      placeholder="-----BEGIN CERTIFICATE-----"
+                      value={form.caCert || ''}
+                      onChange={set('caCert')}
+                    />
+                  </FormField>
+                )}
+              </>
+            ) : isRedis ? (
               <FormField
                 label="TLS"
                 hint={

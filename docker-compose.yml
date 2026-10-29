@@ -44,6 +44,11 @@ services:
       # How long (ms) the pre-flight connection handshake waits before it reports
       # a timeout. Raise only for databases behind a slow tunnel/VPN.
       - HANDSHAKE_TIMEOUT_MS=${HANDSHAKE_TIMEOUT_MS:-}
+      # Caps on one Kafka read (topic browser, CONSUME): rows returned, bytes
+      # fetched from the brokers, and time. Defaults 500 / 16 MiB / 8000 ms.
+      - KAFKA_READ_MAX_MESSAGES=${KAFKA_READ_MAX_MESSAGES:-}
+      - KAFKA_READ_MAX_BYTES=${KAFKA_READ_MAX_BYTES:-}
+      - KAFKA_READ_TIMEOUT_MS=${KAFKA_READ_TIMEOUT_MS:-}
       # Sessions need no infrastructure: logins live in the metadata DB above
       # (so they survive a restart) and open-connection sessions are held by the
       # process that owns the handle.

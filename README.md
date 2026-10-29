@@ -22,6 +22,7 @@ Browse data, write queries, design schemas, automate workflows and back up to S3
 
 - **Data browser** — spreadsheet‑style grid: filter, sort, edit inline, review staged changes before commit.
 - **SQL editor** — highlighting, formatting, history and saved queries.
+- **Kafka console** — browse topics and filter messages without joining a consumer group, produce, manage topic configs, and watch or reset consumer-group lag.
 - **Schema designer** — visual ERD; stage DDL, release it in one confirmed step, roll back by version.
 - **Workflows** — schedule/webhook triggers → query → HTTP → JavaScript → export.
 - **Dashboards** — query widgets with variables, auto‑refresh and a kiosk mode.
@@ -49,7 +50,7 @@ Every feature in detail: **[docs/FEATURES.md](docs/FEATURES.md)**.
 
 | Database | Status |
 |---|:---:|
-| PostgreSQL, SQLite, Redis | ✅ Supported |
+| PostgreSQL, SQLite, Redis, Kafka | ✅ Supported |
 | MySQL, MariaDB, MongoDB | 🚧 Planned |
 
 ## Quick start
@@ -93,6 +94,7 @@ Set these in `.env`. Everything else is optional.
 | `META_DB_TYPE` / `META_DATABASE_URL` | Metadata store: `sqlite` (default) or `postgresql` + its URL. |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | Pre‑seed the instance admin instead of using the wizard. |
 | `SMTP_*` | Fallback mail server for invites and resets (admins can set one in the UI). |
+| `KAFKA_READ_MAX_MESSAGES` / `_MAX_BYTES` / `_TIMEOUT_MS` | Caps on one Kafka read (defaults 500 rows / 16 MiB / 8000 ms). |
 
 Full list: [docs/CONFIGURATION.md](docs/CONFIGURATION.md) and [`.env.example`](.env.example).
 

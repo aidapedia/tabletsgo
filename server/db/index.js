@@ -58,6 +58,32 @@
  *   dump(conn, destPath)          write a restorable dump of the whole database
  *   restore(conn, dumpPath)       overwrite the live database with one
  *
+ * ### The stream capability (log-shaped engines: Kafka today)
+ *
+ * Optional as a set — an engine implements all of them or none, and
+ * `supports(conn, 'readMessages')` is how a caller asks. They are named for what
+ * they do rather than for Kafka, so another log-shaped engine (Redis Streams,
+ * Pulsar, …) reuses the /streams/* routes and the console UI unchanged.
+ *
+ *   streamOverview(conn, ctx)     → { clusterId, controller, brokers, topicCount, internalTopicCount }
+ *   listTopics(conn, ctx, { pattern, internal })
+ *                                 → [{ name, partitions, replication, underReplicated, internal }]
+ *   describeTopic(conn, ctx, t)   → { name, partitions, replication, underReplicated, messages,
+ *                                     partitionList: [{ partition, leader, replicas, isr, low, high, messages }],
+ *                                     configs: [{ name, value, isDefault, readOnly, sensitive }] }
+ *   createTopic(conn, ctx, { name, partitions, replication, configs, validateOnly })
+ *   alterTopic(conn, ctx, t, { configs, partitions })   configs merge into the overrides
+ *   deleteTopic(conn, ctx, t)
+ *   readMessages(conn, ctx, { topic, partition, from, limit, filter, decode })
+ *                                 → { type:'rows', columns, rows, scanned, matched, truncated, cappedBy, cursor }
+ *                                 (bounded: no group joined, nothing committed)
+ *   produce(conn, ctx, { topic, partition, key, value, headers }) → { topic, partition, offset, timestamp }
+ *   listGroups(conn, ctx)         → [{ id, state, members, topics, lag }]
+ *   describeGroup(conn, ctx, id)  → { id, state, members, offsets: [{ topic, partition, committed, end, lag, member }], lag }
+ *   resetOffsets(conn, ctx, id, { topic, partitions, strategy, value, dryRun })
+ *                                 → { offsets: [{ partition, current, target, delta }] }
+ *   deleteGroup(conn, ctx, id)
+ *
  * Every op that takes `ctx` is dispatched through `gatedRequired`/`gatedOptional`,
  * which register a *session* for the handle the call is about to use (see
  * server/sessions) and refuse to open a new one past the connection's resolved
@@ -94,11 +120,13 @@ import { sqlLiteral } from './sql.js'
 import { sqliteDriver } from './sqlite.js'
 import { postgresDriver } from './postgres.js'
 import { redisDriver } from './redis.js'
+import { kafkaDriver } from './kafka.js'
 
 export const drivers = {
   sqlite: sqliteDriver,
   postgresql: postgresDriver,
   redis: redisDriver,
+  kafka: kafkaDriver,
 }
 
 // Thrown when an engine can't answer at all. `status` lets routes reply with a
@@ -133,6 +161,14 @@ const UNSUPPORTED = {
   analyze: (conn) => `Query analysis is not supported for ${conn.type} connections.`,
   dump: (conn) => `Export not supported for connection type: ${conn.type}`,
   restore: (conn) => `Restore not supported for connection type: ${conn.type}`,
+  ...Object.fromEntries(
+    ['streamOverview', 'listTopics', 'describeTopic', 'createTopic', 'alterTopic', 'deleteTopic', 'readMessages', 'produce']
+      .map((op) => [op, (conn) => `Topics are not supported for ${conn.type} connections.`])
+  ),
+  ...Object.fromEntries(
+    ['listGroups', 'describeGroup', 'resetOffsets', 'deleteGroup']
+      .map((op) => [op, (conn) => `Consumer groups are not supported for ${conn.type} connections.`])
+  ),
 }
 
 // Assert an engine can do something *before* doing unrelated work — lets a
@@ -337,6 +373,22 @@ export async function runQueryOrThrow(conn, ctx, sql) {
   if (result?.error) throw new Error(result.error)
   return result
 }
+
+// ---- Streams: topics, messages, consumer groups ----
+// Required-style dispatch: an engine without the capability answers with a 400
+// naming its type, so the /streams/* routes need no engine check of their own.
+export const streamOverview = gatedRequired('streamOverview')
+export const listTopics = gatedRequired('listTopics')
+export const describeTopic = gatedRequired('describeTopic')
+export const createTopic = gatedRequired('createTopic')
+export const alterTopic = gatedRequired('alterTopic')
+export const deleteTopic = gatedRequired('deleteTopic')
+export const readMessages = gatedRequired('readMessages')
+export const produceMessage = gatedRequired('produce')
+export const listGroups = gatedRequired('listGroups')
+export const describeGroup = gatedRequired('describeGroup')
+export const resetOffsets = gatedRequired('resetOffsets')
+export const deleteGroup = gatedRequired('deleteGroup')
 
 // ---- Backup / restore ----
 // Dumps the connection's whole database to a staging file.

@@ -9,6 +9,7 @@ A detailed tour of what Tabletsgo does. The [README](../README.md) has the short
 - [SQL editor](#sql-editor)
 - [Data export / import](#data-export--import)
 - [Redis keyspace & console](#redis-keyspace--console)
+- [Kafka topics, messages & consumer groups](#kafka-topics-messages--consumer-groups)
 - [Schema designer](#schema-designer)
 - [Workflows](#workflows)
 - [Dashboards](#dashboards)
@@ -54,6 +55,21 @@ The **Export / Import** button beside Query history opens one tab with an Export
 ## Redis keyspace & console
 
 On a Redis connection the sidebar becomes a **key tree** built from the `:` namespacing convention — paged with `SCAN` (never `KEYS`), filtered by a real match pattern, with per‑key type and TTL badges. Click a key to inspect its value (strings, lists, sets, sorted sets, hashes and streams, paged), set or clear its expiry, or delete it. The editor tab becomes a **command console**: every Redis command with autocomplete and argument hints, one command per line, run the whole buffer at once and see each command's reply.
+
+## Kafka topics, messages & consumer groups
+
+A Kafka connection (Apache Kafka, Redpanda, Amazon MSK, Confluent Cloud, Aiven — anything speaking the Kafka protocol) takes a comma‑separated **bootstrap list**, optional **SASL** (PLAIN, SCRAM‑SHA‑256, SCRAM‑SHA‑512) and **TLS** with an optional private CA. Over an **SSH tunnel**, every broker the cluster advertises gets its own forward on the same SSH login, so private clusters work even though Kafka clients reconnect to advertised addresses. A failed connect says why — SASL rejected, an ACL refusal, TLS on the wrong listener, or the classic trap: the bootstrap broker answered but advertises an address this server can't reach.
+
+The sidebar switches between **Topics** (grouped by their dotted prefix, with partition counts and an under‑replicated marker) and **Consumer groups** (state and total lag, worst first). Opening a topic gives four views:
+
+- **Messages** — a bounded read: newest, oldest, from an offset or from a point in time, one partition or all, with a `WHERE` filter (`key = 'ord_1' AND value.amount > 100`, `header.source ~ 'checkout'`) and auto/string/hex/base64 decoding. The selected message opens beside the grid with its JSON pretty‑printed, its headers and metadata, and **Produce a copy** / **Open in console**. Reading never joins a consumer group and never commits, so browsing doesn't show up as lag anywhere; every read stops at a row, byte and time cap and says when it did.
+- **Partitions** — leader, replicas (in sync or lagging), earliest/latest offsets and each partition's share, with retained messages and a produce rate sampled from the end offsets every 10 s.
+- **Configuration** — overrides first, editable and resettable to the cluster default; changes merge into the existing overrides rather than resetting them.
+- **Consumers** — the groups reading it.
+
+A **consumer group** tab shows members and per‑partition committed offset, log end and lag. **Reset offsets** (earliest, latest, to a timestamp, to an offset, or shift by N) recomputes a before → after dry run as you choose, and only applies to an empty group with the group id typed back. **Produce** sends one message — key, headers, a JSON‑checked value or a tombstone — and on a production connection asks for the topic name first; **Save as command** keeps it as a saved query. **Create topic** sets partitions, replication, cleanup policy, retention and any config, or copies them from an existing topic.
+
+The editor tab becomes a **Kafka console**: `TOPICS`, `DESCRIBE`, `CONFIG`, `CONSUME … WHERE …`, `PRODUCE`, `GROUPS`, `LAG`, `CLUSTER`, `CREATE TOPIC` and `DROP TOPIC … CONFIRM`, with topic and group completion. Every command returns rows, so a saved command runs from a workflow's query node or charts on a dashboard (`LAG payments-service` is a lag widget).
 
 ## Schema designer
 

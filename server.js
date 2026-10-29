@@ -5,7 +5,7 @@
  * This file is routes and wiring only. Everything a route needs lives in a
  * module under server/:
  *
- *   db/           the engine-agnostic database layer (sqlite | postgres | redis)
+ *   db/           the engine-agnostic database layer (sqlite | postgres | redis | kafka)
  *   meta.js       the app's own SQLite/PostgreSQL store; migrator/ evolves its schema
  *   auth.js       sessions, guards, workspace/connection access rules
  *   connections.js  connection records (credentials encrypted at rest)
@@ -3311,6 +3311,177 @@ app.put('/api/connections/:id/redis/ttl', async (req, res) => {
     res.json(await redis.setTtl(conn, queryCtx(req), key, ttlMs))
   } catch (error) {
     res.status(400).json({ error: error.message })
+  }
+})
+
+// ============================================================================
+// Streams: topics, messages, consumer groups (Kafka today)
+// ============================================================================
+// A log-shaped engine's own browsing, beside the generic /query route its
+// console commands ride. Each op is a generic dispatcher in server/db: an engine
+// without the stream capability answers 400 naming its type, so there is no
+// engine check here — only authorize (the /api/connections/:id guard above) →
+// validate → call → respond. Deleting a topic or group, and applying an offset
+// reset, must echo the name back as `confirm`.
+
+const confirmed = (req, res, name) => {
+  if (req.body?.confirm === name) return true
+  res.status(400).json({ error: `Type "${name}" as "confirm" to go ahead — this cannot be undone.` })
+  return false
+}
+
+// Cluster summary for the sidebar header: id, brokers, controller, topic counts.
+app.get('/api/connections/:id/streams/overview', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  try {
+    res.json(await db.streamOverview(conn, queryCtx(req)))
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+// Topics for the sidebar tree. `?pattern=orders.*` (glob, or a substring), `&internal=1`.
+app.get('/api/connections/:id/streams/topics', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  try {
+    res.json(await db.listTopics(conn, queryCtx(req), { pattern: String(req.query.pattern || ''), internal: truthy(req.query.internal) }))
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+// Create a topic. Body: { name, partitions?, replication?, configs?, validateOnly? }.
+app.post('/api/connections/:id/streams/topics', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  const { name, partitions, replication, configs, validateOnly } = req.body || {}
+  if (!name) return res.status(400).json({ error: 'A topic name is required.' })
+  try {
+    res.json(await db.createTopic(conn, queryCtx(req), { name: String(name).trim(), partitions, replication, configs: configs || {}, validateOnly: Boolean(validateOnly) }))
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+// One topic: partitions (leader, replicas, ISR, offsets) and its configs.
+app.get('/api/connections/:id/streams/topics/:topic', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  try {
+    res.json(await db.describeTopic(conn, queryCtx(req), req.params.topic))
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+// Change a topic. Body: { configs?: { key: value | null }, partitions?: n } —
+// configs merge into the current overrides (null removes one); partitions only grow.
+app.patch('/api/connections/:id/streams/topics/:topic', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  const { configs, partitions } = req.body || {}
+  if (!configs && partitions == null) return res.status(400).json({ error: 'Nothing to change — send configs and/or partitions.' })
+  try {
+    res.json(await db.alterTopic(conn, queryCtx(req), req.params.topic, { configs, partitions }))
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+// Delete a topic and every message in it. Body: { confirm: <topic> }.
+app.delete('/api/connections/:id/streams/topics/:topic', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  if (!confirmed(req, res, req.params.topic)) return
+  try {
+    res.json(await db.deleteTopic(conn, queryCtx(req), req.params.topic))
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+// A bounded read: `?partition=&from=latest|earliest|-N|offset:N|ts:<ISO>&limit=&filter=&decode=auto|string|json|hex|base64`.
+// Joins no consumer group and commits nothing.
+app.get('/api/connections/:id/streams/topics/:topic/messages', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  try {
+    res.json(
+      await db.readMessages(conn, queryCtx(req), {
+        topic: req.params.topic,
+        partition: req.query.partition,
+        from: req.query.from ? String(req.query.from) : 'latest',
+        limit: req.query.limit,
+        filter: req.query.filter ? String(req.query.filter) : '',
+        decode: req.query.decode ? String(req.query.decode) : 'auto',
+      })
+    )
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+// Produce one message. Body: { key?, value, headers?, partition? } — value null is a tombstone.
+app.post('/api/connections/:id/streams/topics/:topic/messages', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  const { key, value, headers, partition } = req.body || {}
+  if (value === undefined) return res.status(400).json({ error: 'A value is required (null sends a tombstone).' })
+  try {
+    res.json(await db.produceMessage(conn, queryCtx(req), { topic: req.params.topic, key, value, headers, partition }))
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+// Consumer groups with state, member count, topics and total lag.
+app.get('/api/connections/:id/streams/groups', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  try {
+    res.json(await db.listGroups(conn, queryCtx(req)))
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+// One group: members and per-partition committed offset, log end and lag.
+app.get('/api/connections/:id/streams/groups/:group', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  try {
+    res.json(await db.describeGroup(conn, queryCtx(req), req.params.group))
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+// Reset a group's offsets on one topic. Body: { topic, strategy: earliest|latest|timestamp|offset|shift,
+// value?, partitions?, dryRun = true, confirm } — `confirm` (the group id) only when applying.
+app.put('/api/connections/:id/streams/groups/:group/offsets', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  const { topic, strategy, value, partitions } = req.body || {}
+  const dryRun = req.body?.dryRun !== false
+  if (!dryRun && !confirmed(req, res, req.params.group)) return
+  try {
+    res.json(await db.resetOffsets(conn, queryCtx(req), req.params.group, { topic, strategy, value, partitions, dryRun }))
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message, ...(error.reason ? { reason: error.reason } : {}) })
+  }
+})
+
+// Delete a consumer group (it must have no active members). Body: { confirm: <group> }.
+app.delete('/api/connections/:id/streams/groups/:group', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  if (!confirmed(req, res, req.params.group)) return
+  try {
+    res.json(await db.deleteGroup(conn, queryCtx(req), req.params.group))
+  } catch (error) {
+    fail(res, error)
   }
 })
 

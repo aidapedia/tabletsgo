@@ -67,7 +67,8 @@ src/
 | `workspaces` | org/tenant layer: current workspace, members (roster on the workspace node), notifications, general settings |
 | `workspace` | **the per-connection DB console** — DataGrid, TableView, QueryEditor, tabs, status bar |
 | `connections` | connection CRUD, access, type picker, switcher modal, export/import, connect handshake |
-| `redis` | the Redis-shaped console pieces: key tree sidebar + command console (swaps in on `type === 'redis'`) |
+| `redis` | the Redis-shaped console pieces: key tree sidebar + command console (console kind `keyspace`) |
+| `kafka` | the stream-shaped console pieces: topics/groups sidebar, topic/group/produce tabs, command console (console kind `stream`) |
 | `table-folders` | the connected DB's tables grouped by the generic folders tree (`type='table'`) |
 | `schema-designer` | React Flow ERD, table/column editors, schema history, DDL rollback |
 | `workflow` | node-graph automations: builder, scheduling, folders, JSON export/import |
@@ -90,7 +91,7 @@ respond**.
 ```
 prisma/<engine>/         # schema.prisma + migrations/ per engine (sqlite | postgresql) → skill meta-schema
 scripts/migrate.js       # `npm run migrate [-- --status]` — the migrator by hand (the app runs it on boot; the updater's one-shot container runs this)
-server.js                # express app: 108 routes, static frontend, schedulers, shutdown
+server.js                # express app: 172 routes, static frontend, schedulers, shutdown
 server/
 ├── config.js            # every env var + filesystem path, resolved once      → skill add-tunable
 ├── util.js  crypto.js   # helpers; AES-256-GCM secret + file encryption
@@ -110,7 +111,7 @@ server/
 ├── ssh.js               # SSH keys + gateways (bastions); host key pinning      → skill db-engine
 ├── cloudflare-access.js # SSH over Cloudflare Access (WebSocket + service token) → skill db-engine
 ├── storage.js           # storage destinations (S3 + local disk) and object ops
-├── db/                  # ★ the engine-agnostic database layer                → skill db-engine
+├── db/                  # ★ the engine-agnostic database layer (sqlite|postgres|redis|kafka) → skill db-engine
 ├── workflow.js          # the node-graph executor + scheduler
 ├── connection-transfer.js  # the portable connection bundle          → skill connection-transfer
 ├── data-transfer.js     # table rows out/in as CSV/JSON/SQL (console Export / Import tab) → skill db-engine

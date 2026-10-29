@@ -116,6 +116,19 @@ src/
 │   │   └── lib/                  #   api (/redis/* client), commands (command catalog for autocomplete
 │   │                             #     + argument hints), tree (buildKeyTree: split keys on ':' — one
 │   │                             #     folder level per segment, no chain folding; TTL/type formatting)
+│   ├── kafka/                    # everything stream-shaped in the console (console kind `stream`,
+│   │   │                         #   see shared/config/databaseTypes). Like Redis it swaps the browser
+│   │   │                         #   sidebar and the query tab, and adds three tab kinds.
+│   │   ├── components/           #   KafkaSidebar (Topics | Groups switch: topics grouped by dotted
+│   │   │                         #     prefix, groups sorted by lag; New topic), TopicView (a topic tab:
+│   │   │                         #     MessageBrowser / PartitionsPanel / TopicConfigPanel /
+│   │   │                         #     TopicConsumersPanel), GroupView + ResetOffsetsDialog (live dry
+│   │   │                         #     run; apply needs an empty group + the id typed back),
+│   │   │                         #     ProduceView (a produce tab; production asks for the topic name),
+│   │   │                         #     CreateTopicDialog, KafkaConsole + KafkaEditor (lazy, NOT in the
+│   │   │                         #     barrel — CodeMirror; commands + topic/group completion)
+│   │   └── lib/                  #   api (/streams/* client), commands (catalog for completion, hints
+│   │                             #     and the reference panel), format (topic tree, lag tones, JSON)
 │   ├── resource-tree/            # the instance-wide resource hierarchy and the access granted on it:
 │   │   │                         #   application → workspace → group → {connection, storage} →
 │   │   │                         #   {dashboard, workflow}. Ownership and grants cascade down it, so this
@@ -549,11 +562,16 @@ server/
 │   ├── diagnose.js       #   why a connection attempt failed: engine-agnostic transport
 │   │                     #     classification + the driver's own `explainError`
 │   ├── tunnel.js         #   SSH tunnels: a 127.0.0.1 listener per connection forwarding through its
-│   │                     #     gateway; every dispatcher dials through it, so drivers never know
+│   │                     #     gateway; every dispatcher dials through it, so drivers never know.
+│   │                     #     `forwardPort(host, port)` adds a listener per extra address on the same
+│   │                     #     SSH login, for engines redirected to other hosts (Kafka's brokers)
 │   ├── sql.js            #   dialect-agnostic SQL text utils shared by the SQL drivers
 │   ├── sqlite.js         #   one file per engine; each adapts itself to the contract
 │   ├── postgres.js
-│   └── redis.js
+│   ├── redis.js
+│   ├── kafka.js          #   Kafka: admin/producer/fetch clients per connection, the stream ops
+│   │                     #     (topics, bounded group-less reads, produce, groups, offset resets)
+│   └── kafka-command.js  #   pure parser: the console's command language + the WHERE filter
 ├── workflow.js           # the node-graph executor (vm sandbox, {{input.x}} substitution),
 │                         #   executeAndRecord, nextRunForGraph, runDueWorkflows
 ├── connection-transfer.js  # the portable connection export/import bundle (see that skill)

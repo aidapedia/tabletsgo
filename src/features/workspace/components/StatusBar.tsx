@@ -1,6 +1,7 @@
 import Tooltip from '@/shared/ui/overlay/Tooltip'
 import { DbLogo } from '@/shared/ui/icons'
 import { EnvBadge, TYPE_LABEL } from '@/features/connections'
+import { consoleKindOf } from '@/shared/config/databaseTypes'
 
 // Thin bar pinned to the bottom of the console's main area (the icon rail and
 // Tables sidebar run past it, full height): what you're connected to (database
@@ -27,10 +28,10 @@ export default function StatusBar({
       </span>
       <span className="text-edge-strong">|</span>
       <span className="truncate text-ink-dim">{conn.name}</span>
-      {/* Schemaless engines (Redis) never run DDL, so their schema version would
-          sit at v1 forever — show the current namespace there instead. */}
+      {/* Schemaless engines (Redis, Kafka) never run DDL, so their schema version
+          would sit at v1 forever — show the current namespace there instead. */}
       <div className="ml-auto flex shrink-0 items-center">
-        {conn.type === 'redis' ? (
+        {consoleKindOf(conn.type) !== 'sql' ? (
           <span className="px-1.5 py-0.5 font-medium">{namespace}</span>
         ) : (
           <Tooltip label="Schema version history" placement="top">

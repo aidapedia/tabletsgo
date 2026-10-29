@@ -4,6 +4,8 @@ import ConnectionAccessPanel from './ConnectionAccessPanel'
 import { TYPE_LABEL } from './DbTypePickerModal'
 import { BackupPanel } from '@/features/backup'
 import { addressOf, listSshGateways, type SshGateway } from '@/features/ssh'
+import { listTopics } from '@/features/kafka'
+import { consoleKindOf } from '@/shared/config/databaseTypes'
 // Deep import, not the `@/features/schema-designer` barrel: that barrel's
 // WorkspaceSchemaList reads TYPE_LABEL back out of *this* feature, so going
 // through it would make the two barrels a cycle. The panel itself depends on
@@ -49,7 +51,8 @@ export function detailTabs(type?: string) {
   return [
     { id: 'data', label: 'Data Connection' },
     { id: 'access', label: 'Access' },
-    ...(type === 'redis' ? [] : [{ id: 'schema', label: 'Schema history' }]),
+    // Schemaless engines (Redis, Kafka) never run DDL, so they have no history.
+    ...(consoleKindOf(type) !== 'sql' ? [] : [{ id: 'schema', label: 'Schema history' }]),
     { id: 'backup', label: 'Backup' },
   ]
 }
@@ -79,6 +82,10 @@ export function connectionUrl(c) {
   const cred = c.auth === 'none' ? '' : `${encodeURIComponent(c.username || '')}${c.password ? ':' + encodeURIComponent(c.password) : ''}`
   const auth = cred ? `${cred}@` : ''
   const db = c.database ? `/${c.database}` : ''
+  if (c.type === 'kafka') {
+    // Not a URI any client parses — just the bootstrap list in one copyable line.
+    return `kafka://${c.brokers || `${c.host || ''}${c.port ? ':' + c.port : ''}`}`
+  }
   if (c.type === 'redis') {
     // TLS is carried by the scheme (rediss://), not a query param.
     return `${c.tls ? 'rediss' : 'redis'}://${auth}${c.host || ''}${c.port ? ':' + c.port : ''}${db}`
@@ -121,7 +128,9 @@ export default function ConnectionDetail({ conn, onBack, onOpen, onEdit, onDelet
     pingConnection(conn).then((r) => {
       if (!alive) return
       setStatus(r.ok ? 'connected' : 'offline')
-      if (r.ok) listTables(conn).then((t) => alive && setTableCount(Array.isArray(t) ? t.length : 0))
+      // A stream engine counts topics where a SQL one counts tables.
+      const count = conn.type === 'kafka' ? listTopics(conn).catch(() => []) : listTables(conn)
+      if (r.ok) count.then((t) => alive && setTableCount(Array.isArray(t) ? t.length : 0))
       else setTableCount(0)
     })
     return () => {
@@ -203,7 +212,7 @@ export default function ConnectionDetail({ conn, onBack, onOpen, onEdit, onDelet
             {/* Main */}
             <div className="flex flex-col gap-5">
               <div className="grid grid-cols-3 gap-3 max-[560px]:grid-cols-1">
-                <MiniStat icon={TableIcon} label="Tables" value={tableCount ?? '—'} />
+                <MiniStat icon={TableIcon} label={conn.type === 'kafka' ? 'Topics' : 'Tables'} value={tableCount ?? '—'} />
                 <MiniStat icon={DatabaseIcon} label="Type" value={TYPE_LABEL[conn.type] || conn.type} />
                 <MiniStat icon={RefreshIcon} label="Status" value={STATUS[status].label} />
               </div>
@@ -213,6 +222,16 @@ export default function ConnectionDetail({ conn, onBack, onOpen, onEdit, onDelet
                 <div className="mt-2">
                   {conn.type === 'sqlite' ? (
                     <DetailRow label="File path" value={conn.filepath} />
+                  ) : conn.type === 'kafka' ? (
+                    <>
+                      <DetailRow label="Bootstrap servers" value={conn.brokers} />
+                      <DetailRow label="SASL" value={conn.auth === 'none' ? undefined : `${(conn.saslMechanism || '').toUpperCase()} · ${conn.username || ''}`} />
+                      <DetailRow label="TLS" value={conn.tls ? (conn.tls === 'insecure' ? 'enabled (unverified)' : 'enabled') : undefined} />
+                      <DetailRow label="Client ID" value={conn.clientId} />
+                      {conn.sshGatewayId && (
+                        <DetailRow label="SSH tunnel" value={gateway ? `${gateway.name} (${addressOf(gateway)})` : 'host missing'} />
+                      )}
+                    </>
                   ) : (
                     <>
                       <DetailRow label="Host" value={conn.host} />

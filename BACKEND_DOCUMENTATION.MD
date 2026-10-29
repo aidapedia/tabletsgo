@@ -3342,6 +3342,201 @@ positive runs `PEXPIRE`.
 
 ---
 
+## Streams: topics, messages, consumer groups (per connection)
+
+The browsing side of a log-shaped engine (Kafka today). The routes are named for
+the capability, not the engine: each calls a generic op in `server/db`, so an
+engine without the stream capability answers
+`400 { "error": "Topics are not supported for sqlite connections." }` (or
+`"Consumer groups are not supported…"`) and another log-shaped engine can implement
+the same ops without a route change. Running commands, workflow query nodes and
+dashboard widgets go through the shared `POST /api/connections/:id/query` route
+(see the Kafka command language under it below).
+
+Access is the usual per-connection guard — whoever can open the connection can use
+these. Deleting a topic or group, and applying an offset reset, must echo the name
+back as `confirm`. Broker errors carry a status: `404` unknown topic/group, `409`
+already exists / group not empty, `403` the cluster's ACLs refused, `400` invalid.
+
+Reads are bounded: no consumer group is joined and nothing is committed, and every
+read stops at `KAFKA_READ_MAX_MESSAGES` rows (default 500),
+`KAFKA_READ_MAX_BYTES` fetched (default 16 MiB) or `KAFKA_READ_TIMEOUT_MS`
+(default 8000).
+
+### GET `/api/connections/:id/streams/overview`
+Cluster summary for the sidebar header.
+
+- **200:**
+  ```json
+  {
+    "clusterId": "lkc-9x2q7",
+    "controller": 2,
+    "brokers": [{ "nodeId": 1, "host": "b-1.kafka.internal", "port": 9096 }],
+    "topicCount": 48,
+    "internalTopicCount": 3
+  }
+  ```
+- **Example:** `GET http://localhost:3000/api/connections/<id>/streams/overview`
+
+### GET `/api/connections/:id/streams/topics`
+Topics for the sidebar tree, sorted by name.
+
+- **Query:** `pattern` (a glob like `orders.*`, or a case-insensitive substring), `internal` (`1` to include `__consumer_offsets` & co.)
+- **200:**
+  ```json
+  [{ "name": "orders.paid", "internal": false, "partitions": 12, "replication": 3, "underReplicated": 1 }]
+  ```
+- **Example:** `GET http://localhost:3000/api/connections/<id>/streams/topics?pattern=orders.*`
+
+### POST `/api/connections/:id/streams/topics`
+Create a topic. `partitions`/`replication` default to the broker's defaults.
+
+- **Body:**
+  ```json
+  { "name": "orders.disputed", "partitions": 12, "replication": 3,
+    "configs": { "retention.ms": "604800000", "min.insync.replicas": "2" }, "validateOnly": false }
+  ```
+- **200:** `{ "ok": true, "name": "orders.disputed", "validateOnly": false }`
+- **400:** `{ "error": "A topic name uses letters, digits, \".\", \"_\" and \"-\" only, up to 249 characters." }`
+- **409:** `{ "error": "Topic \"orders.disputed\" already exists." }`
+- **Example:** `POST http://localhost:3000/api/connections/<id>/streams/topics`
+
+### GET `/api/connections/:id/streams/topics/:topic`
+One topic: per-partition leader, replicas, in-sync replicas and offsets, plus its configs.
+
+- **200:**
+  ```json
+  {
+    "name": "orders.paid", "internal": false, "partitions": 12, "replication": 3, "underReplicated": 0,
+    "messages": 48213004,
+    "partitionList": [
+      { "partition": 0, "leader": 1, "replicas": [1, 2, 3], "isr": [1, 2, 3], "offline": [], "low": 1180211, "high": 5201549, "messages": 4021338 }
+    ],
+    "configs": [{ "name": "retention.ms", "value": "604800000", "isDefault": false, "readOnly": false, "sensitive": false }]
+  }
+  ```
+- **404:** `{ "error": "Topic \"orders.paid\" does not exist." }`
+- **Example:** `GET http://localhost:3000/api/connections/<id>/streams/topics/orders.paid`
+
+### PATCH `/api/connections/:id/streams/topics/:topic`
+Change configs and/or grow the partition count. Configs **merge** into the topic's
+current overrides (Kafka's AlterConfigs would otherwise reset the rest); a `null`
+value removes an override. Partitions can only increase.
+
+- **Body:** `{ "configs": { "cleanup.policy": "compact", "retention.ms": null }, "partitions": 16 }`
+- **200:** `{ "ok": true }`
+- **400:** `{ "error": "Nothing to change — send configs and/or partitions." }` or the broker's refusal, e.g. `{ "error": "Number of partitions is invalid" }`
+- **Example:** `PATCH http://localhost:3000/api/connections/<id>/streams/topics/orders.paid`
+
+### DELETE `/api/connections/:id/streams/topics/:topic`
+Delete a topic and every message in it.
+
+- **Body:** `{ "confirm": "orders.paid" }`
+- **200:** `{ "ok": true }`
+- **400:** `{ "error": "Type \"orders.paid\" as \"confirm\" to go ahead — this cannot be undone." }`
+- **Example:** `DELETE http://localhost:3000/api/connections/<id>/streams/topics/orders.paid`
+
+### GET `/api/connections/:id/streams/topics/:topic/messages`
+A bounded read, returned in the grid shape every engine uses.
+
+- **Query:**
+  - `partition` — one partition (default: all)
+  - `from` — `latest` (default; the newest `limit` per partition), `earliest`, `-N` (the last N per partition), `offset:N`, `ts:<ISO time or epoch ms>`
+  - `limit` — rows returned (1–`KAFKA_READ_MAX_MESSAGES`, default 100)
+  - `filter` — a WHERE clause: `key`, `value`, `value.<json.path>`, `header.<name>`, `partition`, `offset`, `timestamp` compared with `= != > >= < <=` or `~` (case-insensitive contains), joined by `AND`. With a filter, newest-first reads walk back through the topic until they have `limit` matches or hit a cap.
+  - `decode` — `auto` (UTF-8, hex for binary, Schema Registry payloads labelled), `string`, `hex`, `base64`
+- **200:**
+  ```json
+  {
+    "type": "rows",
+    "columns": ["partition", "offset", "timestamp", "key", "value", "headers", "size"],
+    "rows": [
+      { "partition": 3, "offset": 1204861, "timestamp": "2026-10-29T09:41:07.211Z", "key": "ord_8f2k1",
+        "value": "{\"orderId\":\"ord_8f2k1\",\"amount\":129.5}", "headers": "{\"trace-id\":\"9a1f0c3e\"}", "size": 412 }
+    ],
+    "scanned": 1742, "matched": 20, "truncated": false, "cappedBy": null,
+    "cursor": { "3": 1204841 }, "elapsedMs": 380
+  }
+  ```
+  `value` is `null` for a tombstone; `cappedBy` is `"time"` or `"bytes"` when a cap
+  cut the read short; `cursor[p]` is the offset older messages of partition `p` end at.
+- **400:** a bad filter, e.g. `{ "error": "Unknown field \"nope\" in WHERE." }`
+- **Example:** `GET http://localhost:3000/api/connections/<id>/streams/topics/orders.paid/messages?partition=3&from=-20&limit=20&filter=value.amount%20%3E%20100`
+
+### POST `/api/connections/:id/streams/topics/:topic/messages`
+Produce one message (acks = all). An object `value` is sent as JSON.
+
+- **Body:** `{ "key": "ord_123", "value": { "orderId": "ord_123" }, "headers": { "source": "tabletsgo" }, "partition": null }` — `value: null` sends a tombstone; omit `partition` to hash the key.
+- **200:** `{ "topic": "orders.paid", "partition": 4, "offset": 4021377, "timestamp": 1793271234567 }`
+- **400:** `{ "error": "A value is required (null sends a tombstone)." }`
+- **Example:** `POST http://localhost:3000/api/connections/<id>/streams/topics/orders.paid/messages`
+
+### GET `/api/connections/:id/streams/groups`
+Consumer groups with state, member count, the topics they read and total lag.
+
+- **200:** `[{ "id": "payments-service", "state": "Stable", "protocol": "range", "members": 4, "topics": ["orders.paid"], "lag": 1284 }]`
+- **Example:** `GET http://localhost:3000/api/connections/<id>/streams/groups`
+
+### GET `/api/connections/:id/streams/groups/:group`
+One group: members (with their assignment) and per-partition committed offset, log end and lag.
+
+- **200:**
+  ```json
+  {
+    "id": "payments-service", "state": "Stable", "protocol": "range", "lag": 1284,
+    "members": [{ "memberId": "payments-7f9c-…", "clientId": "payments-7f9c", "host": "/10.0.4.12", "assignment": { "orders.paid": [0, 1, 2] } }],
+    "offsets": [{ "topic": "orders.paid", "partition": 0, "committed": 5200926, "end": 5201338, "lag": 412, "member": "payments-7f9c", "host": "/10.0.4.12" }]
+  }
+  ```
+  `committed` is `-1` (and `lag` `null`) for a partition assigned but never committed.
+- **404:** `{ "error": "Consumer group \"payments-service\" does not exist." }`
+- **Example:** `GET http://localhost:3000/api/connections/<id>/streams/groups/payments-service`
+
+### PUT `/api/connections/:id/streams/groups/:group/offsets`
+Move a group's committed offsets on one topic. A **dry run by default**: it returns
+the before → after table without changing anything. Applying needs
+`"dryRun": false` plus `confirm`, and an empty group — Kafka refuses a reset while
+members are connected.
+
+- **Body:** `{ "topic": "orders.paid", "strategy": "timestamp", "value": "2026-10-29T08:00:00Z", "partitions": [0, 1], "dryRun": true }`
+  — `strategy` is `earliest` | `latest` | `timestamp` (`value` = ISO or epoch ms) | `offset` (`value` = N) | `shift` (`value` = ±N); `partitions` defaults to all.
+  Applying adds `"dryRun": false, "confirm": "payments-service"`.
+- **200:** `{ "topic": "orders.paid", "strategy": "timestamp", "dryRun": true, "offsets": [{ "partition": 0, "current": 5200926, "target": 5100400, "delta": -100526 }] }`
+  (targets are clamped into each partition's retained range)
+- **409:** `{ "error": "Group \"payments-service\" is Stable with 4 member(s) (payments-7f9c, …). Stop the consumers first — Kafka only resets an empty group.", "reason": "group_active" }`
+- **Example:** `PUT http://localhost:3000/api/connections/<id>/streams/groups/payments-service/offsets`
+
+### DELETE `/api/connections/:id/streams/groups/:group`
+Delete a consumer group and its committed offsets (it must have no members).
+
+- **Body:** `{ "confirm": "payments-service" }`
+- **200:** `{ "ok": true }`
+- **409:** the broker's refusal while members are connected.
+- **Example:** `DELETE http://localhost:3000/api/connections/<id>/streams/groups/payments-service`
+
+### The Kafka command language (`POST /api/connections/:id/query`)
+On a Kafka connection the `sql` body field takes commands, one per line (`#` comments).
+One command returns its own result; several return one summary row per command
+(`#`, `command`, `status`, `reply`), so a failure in the middle is visible.
+
+| Command | Returns |
+| --- | --- |
+| `TOPICS [LIKE 'orders.*'] [INTERNAL]` | topic, partitions, replication, under_replicated |
+| `DESCRIBE <topic>` | per partition: leader, replicas, isr, earliest, latest, messages |
+| `CONFIG <topic> [SET key=value, …]` | config, value, default — or a message once changed |
+| `CONSUME <topic> [PARTITION n] [FROM earliest\|latest\|-N\|OFFSET n\|'ISO'] [LIMIT n] [DECODE fmt] [WHERE …]` | the message columns above |
+| `PRODUCE <topic> [PARTITION n] [KEY 'k'] [HEADERS {…}] VALUE <rest of line>` | message (`VALUE null` = tombstone) |
+| `GROUPS` | group, state, members, lag, topics |
+| `LAG <group>` (or `DESCRIBE GROUP <group>`) | topic, partition, committed, end, lag, member |
+| `CLUSTER` | node_id, host, port, controller, cluster_id |
+| `CREATE TOPIC <name> [PARTITIONS n] [REPLICATION r] [WITH key=value, …]` | message |
+| `DROP TOPIC <name> CONFIRM` | message — refused without `CONFIRM` |
+
+- **Example:** `POST http://localhost:3000/api/connections/<id>/query` with
+  `{ "sql": "CONSUME orders.paid FROM -50 LIMIT 20 WHERE value.method = 'card'" }`
+
+---
+
 ## System / Updates
 
 In-app update checking and the guided update flow. Detection compares the running
@@ -3535,6 +3730,18 @@ Liveness probe. Also reports boot readiness and the running identity.
 | GET    | `/api/connections/:id/redis/key`          | Read one key's value (paged)    |
 | DELETE | `/api/connections/:id/redis/keys`         | Delete keys                     |
 | PUT    | `/api/connections/:id/redis/ttl`          | Set / clear a key's expiry      |
+| GET    | `/api/connections/:id/streams/overview`   | Cluster id / brokers / topic count |
+| GET    | `/api/connections/:id/streams/topics`     | List topics                     |
+| POST   | `/api/connections/:id/streams/topics`     | Create a topic                  |
+| GET    | `/api/connections/:id/streams/topics/:topic` | Partitions, offsets, configs |
+| PATCH  | `/api/connections/:id/streams/topics/:topic` | Change configs / add partitions |
+| DELETE | `/api/connections/:id/streams/topics/:topic` | Delete a topic (confirm)     |
+| GET    | `/api/connections/:id/streams/topics/:topic/messages` | Bounded message read |
+| POST   | `/api/connections/:id/streams/topics/:topic/messages` | Produce one message  |
+| GET    | `/api/connections/:id/streams/groups`     | Consumer groups with lag        |
+| GET    | `/api/connections/:id/streams/groups/:group` | Members + per-partition lag  |
+| PUT    | `/api/connections/:id/streams/groups/:group/offsets` | Reset offsets (dry run by default) |
+| DELETE | `/api/connections/:id/streams/groups/:group` | Delete a group (confirm)     |
 | GET    | `/api/connections/:id/dashboards`         | List dashboards                 |
 | POST   | `/api/connections/:id/dashboards`         | Create dashboard (opt. config)  |
 | GET    | `/api/connections/:id/dashboards/:did`    | Fetch dashboard + config        |
