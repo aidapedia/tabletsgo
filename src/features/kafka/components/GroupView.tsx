@@ -94,7 +94,7 @@ export default function GroupView({
               Delete group
             </Button>
           </Tooltip>
-          <Tooltip label="Refresh" placement="bottom">
+          <Tooltip label="Refresh" placement="left">
             <IconButton size="toolbar" aria-label="Refresh group" onClick={load}>
               <RefreshIcon width={15} height={15} />
             </IconButton>

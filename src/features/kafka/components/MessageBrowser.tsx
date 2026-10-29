@@ -316,12 +316,12 @@ function MessageDetail({
           </p>
         </div>
         <div className="flex gap-0.5">
-          <Tooltip label="Copy value" placement="bottom">
+          <Tooltip label="Copy value" placement="left">
             <IconButton aria-label="Copy value" onClick={() => copy(m.value ?? 'null')}>
               <CopyIcon width={14} height={14} />
             </IconButton>
           </Tooltip>
-          <Tooltip label="Produce a copy" placement="bottom">
+          <Tooltip label="Produce a copy" placement="left">
             <IconButton aria-label="Produce a copy" onClick={onProduceCopy}>
               <SendIcon width={14} height={14} />
             </IconButton>

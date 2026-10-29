@@ -56,6 +56,9 @@ importers:
       ioredis:
         specifier: ^5.11.1
         version: 5.11.1(supports-color@8.1.1)
+      kafkajs:
+        specifier: 2.2.4
+        version: 2.2.4
       node-cron:
         specifier: ^4.5.0
         version: 4.6.0
@@ -1458,6 +1461,10 @@ packages:
 
   json-schema-traverse@1.0.0:
     resolution: {integrity: sha512-NM8/P9n3XjXhIZn1lLhkFaACTOURQXjWhV4BA/RnOv8xvgqtqpAX9IO4mRQxSx1Rlo4tqzeqb0sOlruaOy3dug==}
+
+  kafkajs@2.2.4:
+    resolution: {integrity: sha512-j/YeapB1vfPT2iOIUn/vxdyKEuhuY2PxMBvf5JWux6iSaukAccrMtXEY/Lb7OvavDhOWME589bpLrEdnVHjfjA==}
+    engines: {node: '>=14.0.0'}
 
   libpq@1.11.0:
     resolution: {integrity: sha512-mHoPlvMwYDMJV36bS2w3eSdFD4eDSm7P9FsvruUldQxzE23/W6qitT9VU/yD1+g2vpgpDktnk2iEYJyhy1RR5g==}
@@ -3818,6 +3825,8 @@ snapshots:
   js-tokens@4.0.0: {}
 
   json-schema-traverse@1.0.0: {}
+
+  kafkajs@2.2.4: {}
 
   libpq@1.11.0:
     dependencies:

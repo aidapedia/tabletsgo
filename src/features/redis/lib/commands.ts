@@ -192,6 +192,24 @@ export const REDIS_COMMANDS: RedisCommandSpec[] = [
 /** Every command name, uppercase — used for highlighting and lookups. */
 export const REDIS_COMMAND_NAMES = new Set(REDIS_COMMANDS.map((c) => c.name))
 
+/** Display names for `group`, in the order the console's command reference lists them. */
+export const REDIS_GROUP_LABELS: Record<string, string> = {
+  generic: 'Keys',
+  string: 'Strings',
+  hash: 'Hashes',
+  list: 'Lists',
+  set: 'Sets',
+  zset: 'Sorted sets',
+  stream: 'Streams',
+  bitmap: 'Bitmaps',
+  hyperloglog: 'HyperLogLog',
+  geo: 'Geo',
+  pubsub: 'Pub/sub',
+  scripting: 'Scripting & transactions',
+  server: 'Server',
+  connection: 'Connection',
+}
+
 const byName = new Map(REDIS_COMMANDS.map((c) => [c.name, c]))
 
 /** Spec for a command typed in any case, or undefined if it isn't in the catalog. */

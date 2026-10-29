@@ -2,13 +2,15 @@ import { useEffect, useRef, useState } from 'react'
 import { runQuery } from '@/shared/api/database'
 import DataGrid from '@/shared/ui/table/DataGrid'
 import Button from '@/shared/ui/buttons/Button'
+import IconButton from '@/shared/ui/buttons/IconButton'
+import SearchInput from '@/shared/ui/form/SearchInput'
 import Tooltip from '@/shared/ui/overlay/Tooltip'
 import { useToast } from '@/shared/ui/feedback/Toast'
-import { ChevronDown, SaveIcon } from '@/shared/ui/icons'
+import { ChevronDown, InfoIcon, SaveIcon } from '@/shared/ui/icons'
 import { formatCombo, useKeymap, useShortcut } from '@/features/keymap'
 import { useSettings } from '@/features/settings'
 import RedisEditor from './RedisEditor'
-import { commandAtCursor, findCommand } from '../lib/commands'
+import { commandAtCursor, findCommand, REDIS_COMMANDS, REDIS_GROUP_LABELS } from '../lib/commands'
 
 const MIN_PANE = 100 // px — floor for both the editor and results panes while dragging
 
@@ -54,6 +56,8 @@ export default function RedisConsole({
   const [error, setError] = useState(persisted?.error ?? null)
   const [loading, setLoading] = useState(false)
   const [elapsedMs, setElapsedMs] = useState(persisted?.elapsedMs ?? null)
+  const [reference, setReference] = useState(false)
+  const [referenceFilter, setReferenceFilter] = useState('')
 
   // Editor/results split — same drag-to-resize affordance as the SQL editor.
   const [editorHeight, setEditorHeight] = useState(280)
@@ -162,109 +166,169 @@ export default function RedisConsole({
   const hint = commandAtCursor(lastLine, lastLine.length) || findCommand(lastLine.trim().split(/\s+/)[0])
   const commandCount = command.split(/\r?\n/).filter((l) => l.trim() && !l.trim().startsWith('#')).length
 
+  // The reference panel's list: the catalog grouped by data type, narrowed by the filter.
+  const needle = referenceFilter.trim().toUpperCase()
+  const referenceGroups = Object.entries(REDIS_GROUP_LABELS)
+    .map(([group, label]) => ({
+      label,
+      commands: REDIS_COMMANDS.filter((c) => c.group === group && (!needle || c.name.includes(needle))),
+    }))
+    .filter((g) => g.commands.length)
+
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <div className="flex flex-wrap items-center gap-2 border-b border-edge px-3 py-2">
-        <Button variant="primary" size="sm" onClick={run} disabled={loading}>
-          {loading ? 'Running…' : `▶ Run${commandCount > 1 ? ` ${commandCount} commands` : ''}`}
-          <kbd className="rounded bg-black/20 px-1.5 py-px text-[10px] font-semibold">
-            {formatCombo(bindings['workspace.runQuery'])}
-          </kbd>
-        </Button>
-
-        <div className="mx-0.5 h-5 w-px bg-edge" />
-
-        <Tooltip label="Save command" placement="bottom">
-          <Button variant="subtle" size="sm" className="!px-2" onClick={() => onSave?.(command)} disabled={!command.trim()}>
-            <SaveIcon width={15} height={15} />
+    <div className="flex min-h-0 min-w-0 flex-1">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <div className="flex flex-wrap items-center gap-2 border-b border-edge px-3 py-2">
+          <Button variant="primary" size="sm" onClick={run} disabled={loading}>
+            {loading ? 'Running…' : `▶ Run${commandCount > 1 ? ` ${commandCount} commands` : ''}`}
+            <kbd className="rounded bg-black/20 px-1.5 py-px text-[10px] font-semibold">
+              {formatCombo(bindings['workspace.runQuery'])}
+            </kbd>
           </Button>
-        </Tooltip>
 
-        {/* redis.io-style argument template for the command being typed. */}
-        {hint && (
-          <span className="min-w-0 truncate font-mono text-[11px] text-ink-faint">
-            <span className="text-ink-dim">{hint.name}</span> {hint.args}
-          </span>
-        )}
+          <div className="mx-0.5 h-5 w-px bg-edge" />
 
-        <span className="ml-auto rounded-soft border border-edge bg-elevated px-3 py-1.5 text-[11px] font-semibold text-ink-dim">
-          Redis · {conn?.ns?.database || 'db0'}
-        </span>
-      </div>
-
-      <div ref={paneRef} className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <div
-          ref={editorWrapRef}
-          className={`min-h-0 shrink-0 bg-bg ${dragging ? '' : 'transition-[height] duration-300 ease-in-out'}`}
-          style={{ height: resultsCollapsed ? Math.max(paneHeight - 1, editorHeight) : editorHeight }}
-        >
-          <RedisEditor
-            value={command}
-            onChange={setCommand}
-            editable={!loading}
-            placeholder={`One command per line — press ${formatCombo(bindings['workspace.runQuery'])} to run…`}
-            minHeight={editorBoxHeight ? `${editorBoxHeight}px` : undefined}
-            maxHeight={editorBoxHeight ? `${editorBoxHeight}px` : undefined}
-          />
-        </div>
-
-        <div
-          className={`group relative h-px shrink-0 bg-edge ${resultsCollapsed ? '' : 'cursor-row-resize'}`}
-          onMouseDown={resultsCollapsed ? undefined : startResize}
-        >
-          <div className="absolute inset-x-0 -top-1.5 -bottom-1.5" />
-          <div className="absolute inset-0 group-hover:bg-green-dim" />
-          <Tooltip
-            label={resultsCollapsed ? 'Expand results' : 'Collapse results'}
-            placement={resultsCollapsed ? 'top' : 'bottom'}
-            wrapperClassName={`absolute left-1/2 top-1/2 -translate-x-1/2 ${resultsCollapsed ? '-translate-y-[calc(100%+8px)]' : '-translate-y-1/2'}`}
-          >
-            <button
-              type="button"
-              onClick={(e) => { e.stopPropagation(); setResultsCollapsed((c) => !c) }}
-              onMouseDown={(e) => e.stopPropagation()}
-              aria-label={resultsCollapsed ? 'Expand results' : 'Collapse results'}
-              className="flex h-5 w-9 items-center justify-center rounded-full border border-edge bg-panel text-ink-dim transition-colors hover:border-edge-strong hover:text-ink"
-            >
-              <ChevronDown width={13} height={13} className={`transition-transform ${resultsCollapsed ? 'rotate-180' : ''}`} />
-            </button>
+          <Tooltip label="Save command" placement="bottom">
+            <Button variant="subtle" size="sm" className="!px-2" onClick={() => onSave?.(command)} disabled={!command.trim()}>
+              <SaveIcon width={15} height={15} />
+            </Button>
           </Tooltip>
+
+          {/* redis.io-style argument template for the command being typed. */}
+          {hint && (
+            <span className="min-w-0 truncate font-mono text-[11px] text-ink-faint">
+              <span className="text-ink-dim">{hint.name}</span> {hint.args}
+            </span>
+          )}
+
+          <div className="ml-auto flex items-center gap-2">
+            <span className="rounded-soft border border-edge bg-elevated px-3 py-1.5 text-[11px] font-semibold text-ink-dim">
+              Redis · {conn?.ns?.database || 'db0'}
+            </span>
+            <Tooltip label={reference ? 'Hide command reference' : 'Show command reference'} placement="left">
+              <IconButton size="toolbar" active={reference} aria-label="Command reference" onClick={() => setReference((r) => !r)}>
+                <InfoIcon width={15} height={15} />
+              </IconButton>
+            </Tooltip>
+          </div>
         </div>
 
-        <div
-          className={`flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden transition-opacity duration-300 ease-in-out ${
-            resultsCollapsed ? 'pointer-events-none opacity-0' : 'opacity-100'
-          }`}
-          aria-hidden={resultsCollapsed}
-        >
-          {error && (
-            <div className="mx-[18px] my-4 rounded-[9px] border border-red/25 bg-red/10 px-3.5 py-3 font-mono text-[11px] text-[#ff9b9b]">
-              {error}
-            </div>
-          )}
-          {!error && result?.type === 'rows' && (
-            <>
-              <div className="border-b border-edge px-[18px] py-2 text-xs text-ink-dim">
-                {result.rows.length} row(s)
+        <div ref={paneRef} className="flex min-h-0 min-w-0 flex-1 flex-col">
+          <div
+            ref={editorWrapRef}
+            className={`min-h-0 shrink-0 bg-bg ${dragging ? '' : 'transition-[height] duration-300 ease-in-out'}`}
+            style={{ height: resultsCollapsed ? Math.max(paneHeight - 1, editorHeight) : editorHeight }}
+          >
+            <RedisEditor
+              value={command}
+              onChange={setCommand}
+              editable={!loading}
+              placeholder={`One command per line — press ${formatCombo(bindings['workspace.runQuery'])} to run…`}
+              minHeight={editorBoxHeight ? `${editorBoxHeight}px` : undefined}
+              maxHeight={editorBoxHeight ? `${editorBoxHeight}px` : undefined}
+            />
+          </div>
+
+          <div
+            className={`group relative h-px shrink-0 bg-edge ${resultsCollapsed ? '' : 'cursor-row-resize'}`}
+            onMouseDown={resultsCollapsed ? undefined : startResize}
+          >
+            <div className="absolute inset-x-0 -top-1.5 -bottom-1.5" />
+            <div className="absolute inset-0 group-hover:bg-green-dim" />
+            <Tooltip
+              label={resultsCollapsed ? 'Expand results' : 'Collapse results'}
+              placement={resultsCollapsed ? 'top' : 'bottom'}
+              wrapperClassName={`absolute left-1/2 top-1/2 -translate-x-1/2 ${resultsCollapsed ? '-translate-y-[calc(100%+8px)]' : '-translate-y-1/2'}`}
+            >
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); setResultsCollapsed((c) => !c) }}
+                onMouseDown={(e) => e.stopPropagation()}
+                aria-label={resultsCollapsed ? 'Expand results' : 'Collapse results'}
+                className="flex h-5 w-9 items-center justify-center rounded-full border border-edge bg-panel text-ink-dim transition-colors hover:border-edge-strong hover:text-ink"
+              >
+                <ChevronDown width={13} height={13} className={`transition-transform ${resultsCollapsed ? 'rotate-180' : ''}`} />
+              </button>
+            </Tooltip>
+          </div>
+
+          <div
+            className={`flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden transition-opacity duration-300 ease-in-out ${
+              resultsCollapsed ? 'pointer-events-none opacity-0' : 'opacity-100'
+            }`}
+            aria-hidden={resultsCollapsed}
+          >
+            {error && (
+              <div className="mx-[18px] my-4 rounded-[9px] border border-red/25 bg-red/10 px-3.5 py-3 font-mono text-[11px] text-[#ff9b9b]">
+                {error}
+              </div>
+            )}
+            {!error && result?.type === 'rows' && (
+              <>
+                <div className="border-b border-edge px-[18px] py-2 text-xs text-ink-dim">
+                  {result.rows.length} row(s)
+                  {elapsedMs != null && <span className="text-ink-faint"> · {elapsedMs} ms</span>}
+                </div>
+                <DataGrid columns={result.columns} rows={result.rows} />
+              </>
+            )}
+            {!error && result?.type === 'message' && (
+              <div className="mx-[18px] my-4 rounded-[9px] border border-green-dim bg-green/10 px-3.5 py-3 font-mono text-[11px] text-green-bright">
+                {result.message}
                 {elapsedMs != null && <span className="text-ink-faint"> · {elapsedMs} ms</span>}
               </div>
-              <DataGrid columns={result.columns} rows={result.rows} />
-            </>
-          )}
-          {!error && result?.type === 'message' && (
-            <div className="mx-[18px] my-4 rounded-[9px] border border-green-dim bg-green/10 px-3.5 py-3 font-mono text-[11px] text-green-bright">
-              {result.message}
-              {elapsedMs != null && <span className="text-ink-faint"> · {elapsedMs} ms</span>}
-            </div>
-          )}
-          {!error && !result && (
-            <div className="p-[30px] text-center text-xs text-ink-faint">
-              Run a command to see its reply here. Try <span className="font-mono text-ink-dim">INFO server</span> or{' '}
-              <span className="font-mono text-ink-dim">SCAN 0 COUNT 20</span>.
-            </div>
-          )}
+            )}
+            {!error && !result && (
+              <div className="p-[30px] text-center text-xs text-ink-faint">
+                Run a command to see its reply here. Try <span className="font-mono text-ink-dim">INFO server</span> or{' '}
+                <span className="font-mono text-ink-dim">SCAN 0 COUNT 20</span>.
+              </div>
+            )}
+          </div>
         </div>
       </div>
+
+      {reference && (
+        <aside aria-label="Command reference" className="flex w-[280px] shrink-0 flex-col border-l border-edge bg-panel max-[1100px]:hidden">
+          <div className="flex items-center justify-between border-b border-edge px-4 py-2.5">
+            <p className="text-xs font-semibold">Commands</p>
+            <span className="text-[10px] text-ink-faint">one per line · # comments</span>
+          </div>
+          <div className="border-b border-edge px-3 py-2">
+            <SearchInput
+              value={referenceFilter}
+              onChange={(e) => setReferenceFilter(e.target.value)}
+              placeholder="Filter commands…"
+              iconSize={13}
+              inputClassName="!py-1.5 !text-[11px]"
+            />
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
+            {referenceGroups.map((g) => (
+              <div key={g.label}>
+                <p className="pt-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-ink-faint">{g.label}</p>
+                {g.commands.map((c) => (
+                  <button
+                    key={c.name}
+                    type="button"
+                    onClick={() => setCommand((cur: string) => `${cur.trimEnd()}${cur.trim() ? '\n' : ''}${c.name} `)}
+                    className="block w-full border-b border-edge/60 py-1.5 text-left hover:bg-elevated/50"
+                  >
+                    <span className="block font-mono text-[11px]">
+                      <span className="text-[#c49bff]">{c.name}</span> <span className="text-ink-dim">{c.args}</span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            ))}
+            {!referenceGroups.length && <p className="py-6 text-center text-[11px] text-ink-faint">No command matches.</p>}
+            <p className="mt-3 rounded-soft border border-edge bg-elevated px-3 py-2.5 text-[11px] leading-relaxed text-ink-dim">
+              Not every Redis command is listed — anything missing still runs, it just isn't suggested. Use{' '}
+              <span className="font-mono">SCAN</span> over <span className="font-mono">KEYS</span> on a large keyspace.
+            </p>
+          </div>
+        </aside>
+      )}
     </div>
   )
 }

@@ -41,7 +41,7 @@ export default function KafkaConsole({ conn, initialCommand, tabKey, persisted, 
   const [error, setError] = useState(persisted?.error ?? null)
   const [loading, setLoading] = useState(false)
   const [elapsedMs, setElapsedMs] = useState(persisted?.elapsedMs ?? null)
-  const [reference, setReference] = useState(true)
+  const [reference, setReference] = useState(false)
   const [topics, setTopics] = useState<string[]>([])
   const [groups, setGroups] = useState<string[]>([])
 
@@ -167,7 +167,7 @@ export default function KafkaConsole({ conn, initialCommand, tabKey, persisted, 
           )}
           <div className="ml-auto flex items-center gap-2">
             <span className="rounded-soft border border-edge bg-elevated px-3 py-1.5 text-[11px] font-semibold text-ink-dim">Kafka · {conn?.name}</span>
-            <Tooltip label={reference ? 'Hide command reference' : 'Show command reference'} placement="bottom">
+            <Tooltip label={reference ? 'Hide command reference' : 'Show command reference'} placement="left">
               <IconButton size="toolbar" active={reference} aria-label="Command reference" onClick={() => setReference((r) => !r)}>
                 <InfoIcon width={15} height={15} />
               </IconButton>
