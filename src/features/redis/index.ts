@@ -8,10 +8,11 @@
 // tree), collapsing it back into the main bundle and defeating the code-split.
 export { default as RedisKeyTree } from '@/features/redis/components/RedisKeyTree'
 export { default as RedisKeyView } from '@/features/redis/components/RedisKeyView'
+export { default as useRedisVersion } from '@/features/redis/hooks/useRedisVersion'
 
 export { scanKeys, getOverview, readKey, deleteKeys, setKeyTtl } from '@/features/redis/lib/api'
 export type { RedisKeyMeta, RedisKeyType, RedisKeyValue, RedisScanPage } from '@/features/redis/lib/api'
-export { REDIS_COMMANDS, REDIS_COMMAND_NAMES, findCommand, commandAtCursor } from '@/features/redis/lib/commands'
+export { REDIS_COMMANDS, REDIS_COMMAND_NAMES, findCommand, commandAtCursor, isWriteCommand, meetsVersion } from '@/features/redis/lib/commands'
 export type { RedisCommandSpec } from '@/features/redis/lib/commands'
 export { buildKeyTree, formatTtl, TYPE_COLOR, TYPE_LABEL } from '@/features/redis/lib/tree'
 export type { RedisTreeNode } from '@/features/redis/lib/tree'

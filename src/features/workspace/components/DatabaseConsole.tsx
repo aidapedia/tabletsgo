@@ -4,7 +4,7 @@ import { useAuth } from '@/features/auth'
 import { useConnections, ConnectionSwitcherModal } from '@/features/connections'
 import { useSettings } from '@/features/settings'
 import { useKeymap, useShortcut } from '@/features/keymap'
-import { RedisKeyTree } from '@/features/redis'
+import { RedisKeyTree, useRedisVersion } from '@/features/redis'
 import { KafkaSidebar, type TopicSubView } from '@/features/kafka'
 import CreateTablePanel from '@/features/schema-designer/components/CreateTablePanel'
 import { TemplatesPanel } from '@/features/templates'
@@ -105,6 +105,8 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
   // sidebar shows the keyspace or the topics instead, and the query tab is a
   // command console.
   const kind = consoleKindOf(conn?.type)
+  // Shown in the status bar; only Redis reports one so far.
+  const serverVersion = useRedisVersion(kind === 'keyspace' ? conn : null)
   const tableless = kind !== 'sql'
 
   const [sidebarOpen, setSidebarOpen] = useState(false) // mobile drawer
@@ -672,7 +674,13 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
 
         {/* Status bar — bottom of the main area only; the rail and sidebar keep
             their full height. */}
-        <StatusBar conn={conn} database={ns.database} schema={ns.schema} onSchemaHistory={openSchemaHistory} />
+        <StatusBar
+          conn={conn}
+          serverVersion={serverVersion}
+          database={ns.database}
+          schema={ns.schema}
+          onSchemaHistory={openSchemaHistory}
+        />
       </main>
 
       {tabs.tabMenu && (

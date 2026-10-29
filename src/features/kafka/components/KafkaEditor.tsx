@@ -4,6 +4,7 @@ import { StreamLanguage, syntaxHighlighting } from '@codemirror/language'
 import { EditorView, tooltips } from '@codemirror/view'
 import { Prec } from '@codemirror/state'
 import { editorTheme, highlightStyle } from '@/shared/ui/SqlEditor'
+import { commandSignature, templateKeywords } from '@/shared/ui/commandSignature'
 import { findKafkaCommand, KAFKA_COMMANDS, KAFKA_COMMAND_NAMES, KAFKA_KEYWORDS } from '../lib/commands'
 
 /**
@@ -11,7 +12,8 @@ import { findKafkaCommand, KAFKA_COMMANDS, KAFKA_COMMAND_NAMES, KAFKA_KEYWORDS }
  * one command per line, `#` comments, quoted strings and inline JSON.
  *
  * Completion offers commands at the start of a line, then topic or group names
- * where the command takes one, so `CONSUME ord` completes to a real topic.
+ * where the command takes one, so `CONSUME ord` completes to a real topic, and
+ * the command's clause keywords (FROM, LIMIT, WHERE, …) everywhere else.
  */
 const kafkaLanguage = StreamLanguage.define({
   name: 'kafka',
@@ -93,18 +95,29 @@ export default function KafkaEditor({
       const typing = /\s$/.test(before) ? '' : tokens.pop() || ''
       const prev = (tokens[tokens.length - 1] || '').toUpperCase()
       const takes = tokens.length === 1 ? findKafkaCommand(tokens[0])?.takes : prev === 'TOPIC' ? 'topic' : prev === 'GROUP' ? 'group' : null
-      if (!takes) return null
-      const names = takes === 'topic' ? topics : groups
-      if (!names.length || (!typing && !context.explicit)) return null
+      if (!typing && !context.explicit) return null
+      const names = takes === 'topic' ? topics : takes === 'group' ? groups : []
+      if (names.length) {
+        return {
+          from,
+          options: names.map((n) => ({ label: n, type: takes === 'topic' ? 'class' : 'variable', detail: takes, apply: `${n} ` })),
+          validFor: /^[^\s'"]*$/,
+        }
+      }
+      const spec = findKafkaCommand(tokens[0])
+      const used = new Set(tokens.map((t: string) => t.toUpperCase()))
+      const keywords = spec ? templateKeywords(spec.args).filter((k) => !used.has(k)) : []
+      if (!keywords.length) return null
       return {
         from,
-        options: names.map((n) => ({ label: n, type: takes === 'topic' ? 'class' : 'variable', detail: takes, apply: `${n} ` })),
+        options: keywords.map((k) => ({ label: k, type: 'type', detail: 'clause', apply: `${k} ` })),
         validFor: /^[^\s'"]*$/,
       }
     }
     return [
       kafkaLanguage,
       kafkaLanguage.data.of({ autocomplete: complete }),
+      commandSignature(findKafkaCommand),
       Prec.highest(syntaxHighlighting(highlightStyle)),
       EditorView.lineWrapping,
       EditorView.theme({ '.cm-scroller': { minHeight, maxHeight, overflowY: 'auto', overflowX: 'hidden' } }),

@@ -51,7 +51,11 @@ src/
 │   │   │                         #     the rows as cards built from its columns, or `renderCard`'s own)
 │   │   └── (root)                #   Avatar, Badge, PersonRow, RowLabel, DragHandle (the grip a
 │   │                             #     reorderable list grabs by — pair with useDragReorder),
-│   │                             #     SaveQueryPanel, SqlEditor, JsonEditor, icons — no group yet
+│   │                             #     SaveQueryPanel, SqlEditor, JsonEditor, CommandReference (a command
+│   │                             #     console's side panel: catalog rows → insert, chevron → that command's
+│   │                             #     docs in place, Back → the list), CommandDocView + CommandDoc (one
+│   │                             #     command's docs, any engine),
+│   │                             #     icons — no group yet
 │   ├── hooks/                    # generic hooks (useSlideOver, useDragReorder — drag-to-reorder a
 │   │                             #   vertical list of cards: the grip starts it, the whole card is a
 │   │                             #   drop target, and the cards animate into their new places (FLIP:
@@ -113,8 +117,14 @@ src/
 │   │   │                         #     whole buffer; lazy-imported, NOT in the barrel — it pulls in
 │   │   │                         #     CodeMirror), RedisEditor (CodeMirror with a Redis StreamLanguage
 │   │   │                         #     + command autocomplete; reuses SqlEditor's exported theme)
+│   │   ├── hooks/                #   useRedisVersion (the server's version, one cached lookup per
+│   │   │                         #     connection — the status bar and the command reference share it)
 │   │   └── lib/                  #   api (/redis/* client), commands (command catalog for autocomplete
-│   │                             #     + argument hints), tree (buildKeyTree: split keys on ':' — one
+│   │                             #     + argument hints + `since` per command, isWriteCommand, meetsVersion), docs (redisCommandDoc: the
+│   │                             #     reference panel's static summary/returns/example responses;
+│   │                             #     liveRedisDoc merges the server's COMMAND DOCS over it — args,
+│   │                             #     complexity, history — + redis.io link), tree (buildKeyTree:
+│   │                             #     split keys on ':' — one
 │   │                             #     folder level per segment, no chain folding; TTL/type formatting)
 │   ├── kafka/                    # everything stream-shaped in the console (console kind `stream`,
 │   │   │                         #   see shared/config/databaseTypes). Like Redis it swaps the browser
@@ -128,7 +138,9 @@ src/
 │   │   │                         #     CreateTopicDialog, KafkaConsole + KafkaEditor (lazy, NOT in the
 │   │   │                         #     barrel — CodeMirror; commands + topic/group completion)
 │   │   └── lib/                  #   api (/streams/* client), commands (catalog for completion, hints
-│   │                             #     and the reference panel), format (topic tree, lag tones, JSON)
+│   │                             #     and the reference panel), docs (kafkaCommandDoc: the reference panel's
+│   │                             #     options/returns/examples — the only docs our grammar has),
+│   │                             #     format (topic tree, lag tones, JSON)
 │   ├── resource-tree/            # the instance-wide resource hierarchy and the access granted on it:
 │   │   │                         #   application → workspace → group → {connection, storage} →
 │   │   │                         #   {dashboard, workflow}. Ownership and grants cascade down it, so this

@@ -3,12 +3,14 @@ import { runQuery } from '@/shared/api/database'
 import DataGrid from '@/shared/ui/table/DataGrid'
 import Button from '@/shared/ui/buttons/Button'
 import IconButton from '@/shared/ui/buttons/IconButton'
+import CommandReference from '@/shared/ui/CommandReference'
 import Tooltip from '@/shared/ui/overlay/Tooltip'
 import { useToast } from '@/shared/ui/feedback/Toast'
 import { ChevronDown, InfoIcon, SaveIcon } from '@/shared/ui/icons'
 import { formatCombo, useKeymap, useShortcut } from '@/features/keymap'
 import { useSettings } from '@/features/settings'
 import KafkaEditor from './KafkaEditor'
+import { kafkaCommandDoc } from '../lib/docs'
 import { listGroups, listTopics } from '../lib/api'
 import { buffersWrites, findKafkaCommand, KAFKA_COMMANDS } from '../lib/commands'
 
@@ -104,15 +106,16 @@ export default function KafkaConsole({ conn, initialCommand, tabKey, persisted, 
   persistRef.current = () => onPersist?.(tabKey, snapshotRef.current)
   useEffect(() => () => persistRef.current?.(), [])
 
-  const run = async () => {
-    const trimmed = command.trim()
+  // Run `text` — the whole buffer, or one example from the command reference.
+  const runText = async (text: string) => {
+    const trimmed = text.trim()
     if (!trimmed || loading) return
     setError(null)
     setLoading(true)
     const startedAt = performance.now()
     const first = trimmed.split(/\r?\n/).find((l) => l.trim() && !l.trim().startsWith('#')) || trimmed
     try {
-      const res: any = await runQuery(conn, command, { timeoutMs: queryTimeout * 1000 })
+      const res: any = await runQuery(conn, text, { timeoutMs: queryTimeout * 1000 })
       const ms = Math.round(performance.now() - startedAt)
       setElapsedMs(ms)
       if (res.error) {
@@ -139,11 +142,12 @@ export default function KafkaConsole({ conn, initialCommand, tabKey, persisted, 
     }
   }
 
+  const run = () => runText(command)
+  const append = (text: string) => setCommand((cur: string) => `${cur.trimEnd()}${cur.trim() ? '\n' : ''}${text}`)
+
   useShortcut('workspace.runQuery', run)
   useShortcut('general.save', () => onSave?.(command))
 
-  const lastLine = command.split(/\r?\n/).filter((l: string) => l.trim()).pop() || ''
-  const hint = findKafkaCommand(lastLine.trim().split(/\s+/)[0])
   const commandCount = command.split(/\r?\n/).filter((l: string) => l.trim() && !l.trim().startsWith('#')).length
 
   return (
@@ -160,11 +164,6 @@ export default function KafkaConsole({ conn, initialCommand, tabKey, persisted, 
               <SaveIcon width={15} height={15} />
             </Button>
           </Tooltip>
-          {hint && (
-            <span className="min-w-0 truncate font-mono text-[11px] text-ink-faint">
-              <span className="text-ink-dim">{hint.name}</span> {hint.args}
-            </span>
-          )}
           <div className="ml-auto flex items-center gap-2">
             <span className="rounded-soft border border-edge bg-elevated px-3 py-1.5 text-[11px] font-semibold text-ink-dim">Kafka · {conn?.name}</span>
             <Tooltip label={reference ? 'Hide command reference' : 'Show command reference'} placement="left">
@@ -249,33 +248,23 @@ export default function KafkaConsole({ conn, initialCommand, tabKey, persisted, 
       </div>
 
       {reference && (
-        <aside aria-label="Command reference" className="flex w-[280px] shrink-0 flex-col border-l border-edge bg-panel max-[1100px]:hidden">
-          <div className="flex items-center justify-between border-b border-edge px-4 py-2.5">
-            <p className="text-xs font-semibold">Commands</p>
-            <span className="text-[10px] text-ink-faint">one per line · # comments</span>
-          </div>
-          <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
-            {KAFKA_COMMANDS.map((c) => (
-              <button
-                key={c.name}
-                type="button"
-                onClick={() => setCommand((cur: string) => `${cur.trimEnd()}${cur.trim() ? '\n' : ''}${c.name} `)}
-                className="block w-full border-b border-edge/60 py-2 text-left hover:bg-elevated/50"
-              >
-                <span className="block font-mono text-[11px]">
-                  <span className="text-[#c49bff]">{c.name}</span> <span className="text-ink-dim">{c.args}</span>
-                </span>
-                <span className="mt-0.5 block text-[11px] text-ink-faint">{c.desc}</span>
-              </button>
-            ))}
-            <p className="mt-3 rounded-soft border border-edge bg-elevated px-3 py-2.5 text-[11px] leading-relaxed text-ink-dim">
+        <CommandReference
+          groups={[{ commands: KAFKA_COMMANDS }]}
+          onInsert={append}
+          onRun={(text) => {
+            append(text)
+            runText(text)
+          }}
+          docFor={kafkaCommandDoc}
+          footer={
+            <>
               <span className="font-mono">WHERE</span> filters on <span className="font-mono">key</span>, <span className="font-mono">value</span>,{' '}
               <span className="font-mono">value.path</span>, <span className="font-mono">header.name</span>, <span className="font-mono">partition</span>,{' '}
               <span className="font-mono">offset</span> or <span className="font-mono">timestamp</span> with = != &gt; &lt; or ~ (contains), joined by AND.
               Every command returns rows, so it can be saved, run by a workflow or charted on a dashboard.
-            </p>
-          </div>
-        </aside>
+            </>
+          }
+        />
       )}
     </div>
   )

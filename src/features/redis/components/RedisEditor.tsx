@@ -4,7 +4,8 @@ import { StreamLanguage, syntaxHighlighting } from '@codemirror/language'
 import { EditorView, tooltips } from '@codemirror/view'
 import { Prec } from '@codemirror/state'
 import { editorTheme, highlightStyle } from '@/shared/ui/SqlEditor'
-import { REDIS_COMMANDS, REDIS_COMMAND_NAMES } from '../lib/commands'
+import { commandSignature, templateKeywords } from '@/shared/ui/commandSignature'
+import { findCommand, REDIS_COMMANDS, REDIS_COMMAND_NAMES } from '../lib/commands'
 
 /**
  * Redis command editor — the console's input. Same chrome as the SQL editor
@@ -59,15 +60,26 @@ const redisLanguage = StreamLanguage.define({
   },
 })
 
-// Command-name completion, offered only in the first token of a line — nothing
-// else on the line is a command, and suggesting one there would be noise.
+// Completion: command names in the first token of a line, then the command's
+// own option keywords (EX, NX, MATCH, COUNT, …) for the rest of it.
 function commandCompletionSource(context: any) {
   const line = context.state.doc.lineAt(context.pos)
   const before = line.text.slice(0, context.pos - line.from)
-  if (/\s/.test(before.trimStart())) return null // past the first token
-
   const word = context.matchBefore(/\S+/)
   if (!word && !context.explicit) return null
+
+  if (/\s/.test(before.trimStart())) {
+    const spec = findCommand(before.trimStart().split(/\s+/)[0])
+    const used = new Set(before.toUpperCase().split(/\s+/))
+    const keywords = spec ? templateKeywords(spec.args).filter((k) => !used.has(k)) : []
+    if (!keywords.length) return null
+    return {
+      from: word ? word.from : context.pos,
+      options: keywords.map((k) => ({ label: k, type: 'type', detail: 'option', apply: `${k} ` })),
+      validFor: /^\S*$/,
+    }
+  }
+
   return {
     from: word ? word.from : context.pos,
     options: REDIS_COMMANDS.map((c) => ({
@@ -100,6 +112,7 @@ export default function RedisEditor({
     () => [
       redisLanguage,
       redisLanguage.data.of({ autocomplete: commandCompletionSource }),
+      commandSignature(findCommand),
       Prec.highest(syntaxHighlighting(highlightStyle)),
       EditorView.lineWrapping,
       EditorView.theme({ '.cm-scroller': { minHeight, maxHeight, overflowY: 'auto', overflowX: 'hidden' } }),

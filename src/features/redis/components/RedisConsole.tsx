@@ -1,22 +1,32 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { runQuery } from '@/shared/api/database'
 import DataGrid from '@/shared/ui/table/DataGrid'
 import Button from '@/shared/ui/buttons/Button'
 import IconButton from '@/shared/ui/buttons/IconButton'
-import SearchInput from '@/shared/ui/form/SearchInput'
+import CommandReference from '@/shared/ui/CommandReference'
 import Tooltip from '@/shared/ui/overlay/Tooltip'
 import { useToast } from '@/shared/ui/feedback/Toast'
 import { ChevronDown, InfoIcon, SaveIcon } from '@/shared/ui/icons'
 import { formatCombo, useKeymap, useShortcut } from '@/features/keymap'
 import { useSettings } from '@/features/settings'
 import RedisEditor from './RedisEditor'
-import { commandAtCursor, findCommand, REDIS_COMMANDS, REDIS_GROUP_LABELS } from '../lib/commands'
+import { liveRedisDoc, redisCommandDoc } from '../lib/docs'
+import { isWriteCommand, meetsVersion, REDIS_COMMANDS, REDIS_GROUP_LABELS } from '../lib/commands'
+import useRedisVersion from '../hooks/useRedisVersion'
 
 const MIN_PANE = 100 // px — floor for both the editor and results panes while dragging
 
-// Commands that hand back a whole new picture of the keyspace — after one of
-// these the sidebar's key list is stale, so the console asks for a refresh.
-const MUTATING = /^(set|setex|psetex|setnx|getset|getdel|append|incr|incrby|incrbyfloat|decr|decrby|del|unlink|rename|renamenx|copy|restore|expire|pexpire|expireat|persist|[lrhsz]\w*(push|pop|add|set|rem|del|trim|insert|move|store)|xadd|xdel|xtrim|pfadd|pfmerge|geoadd|flushdb|flushall|migrate)$/i
+// The reference panel's list: the catalog grouped by data type, each command
+// tagged with the version it arrived in and flagged when this server predates it.
+const referenceGroups = (version: string | null) =>
+  Object.entries(REDIS_GROUP_LABELS).map(([group, label]) => ({
+    label,
+    commands: REDIS_COMMANDS.filter((c) => c.group === group).map((c) => ({
+      ...c,
+      tag: c.since.replace(/\.0$/, ''),
+      unavailable: meetsVersion(version, c.since) ? undefined : `Needs Redis ${c.since} — this server runs ${version}`,
+    })),
+  }))
 
 // Best-effort "which key did this command touch", for the history's table column.
 function primaryKey(command: string) {
@@ -57,7 +67,8 @@ export default function RedisConsole({
   const [loading, setLoading] = useState(false)
   const [elapsedMs, setElapsedMs] = useState(persisted?.elapsedMs ?? null)
   const [reference, setReference] = useState(false)
-  const [referenceFilter, setReferenceFilter] = useState('')
+  const version = useRedisVersion(conn)
+  const groups = useMemo(() => referenceGroups(version), [version])
 
   // Editor/results split — same drag-to-resize affordance as the SQL editor.
   const [editorHeight, setEditorHeight] = useState(280)
@@ -115,8 +126,9 @@ export default function RedisConsole({
   persistRef.current = () => onPersist?.(tabKey, snapshotRef.current)
   useEffect(() => () => persistRef.current?.(), [])
 
-  const run = async () => {
-    const trimmed = command.trim()
+  // Run `text` — the whole buffer, or one example from the command reference.
+  const runText = async (text: string) => {
+    const trimmed = text.trim()
     if (!trimmed || loading) return
     setError(null)
     setLoading(true)
@@ -124,7 +136,7 @@ export default function RedisConsole({
     try {
       // The server takes Redis command text on the same /query route the SQL
       // engines use, and answers in the same shape.
-      const res: any = await runQuery(conn, command, { timeoutMs: queryTimeout * 1000 })
+      const res: any = await runQuery(conn, text, { timeoutMs: queryTimeout * 1000 })
       const ms = Math.round(performance.now() - startedAt)
       setElapsedMs(ms)
       const first = trimmed.split(/\r?\n/).find((l) => l.trim() && !l.trim().startsWith('#')) || trimmed
@@ -143,7 +155,7 @@ export default function RedisConsole({
             : `${res.message} · ${ms} ms`
         )
         // Refresh the key tree when the buffer contained anything that writes.
-        if (trimmed.split(/\r?\n/).some((l) => MUTATING.test(l.trim().split(/\s+/)[0] || ''))) onMutated?.()
+        if (trimmed.split(/\r?\n/).some((l) => isWriteCommand(l.trim().split(/\s+/)[0] || ''))) onMutated?.()
       }
     } catch (e: any) {
       const ms = Math.round(performance.now() - startedAt)
@@ -157,23 +169,13 @@ export default function RedisConsole({
     }
   }
 
+  const run = () => runText(command)
+  const append = (text: string) => setCommand((cur: string) => `${cur.trimEnd()}${cur.trim() ? '\n' : ''}${text}`)
+
   useShortcut('workspace.runQuery', run)
   useShortcut('general.save', () => onSave?.(command))
 
-  // Argument hint for the command on the last non-empty line — the one the user
-  // is most likely still typing.
-  const lastLine = command.split(/\r?\n/).filter((l) => l.trim()).pop() || ''
-  const hint = commandAtCursor(lastLine, lastLine.length) || findCommand(lastLine.trim().split(/\s+/)[0])
   const commandCount = command.split(/\r?\n/).filter((l) => l.trim() && !l.trim().startsWith('#')).length
-
-  // The reference panel's list: the catalog grouped by data type, narrowed by the filter.
-  const needle = referenceFilter.trim().toUpperCase()
-  const referenceGroups = Object.entries(REDIS_GROUP_LABELS)
-    .map(([group, label]) => ({
-      label,
-      commands: REDIS_COMMANDS.filter((c) => c.group === group && (!needle || c.name.includes(needle))),
-    }))
-    .filter((g) => g.commands.length)
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1">
@@ -194,12 +196,6 @@ export default function RedisConsole({
             </Button>
           </Tooltip>
 
-          {/* redis.io-style argument template for the command being typed. */}
-          {hint && (
-            <span className="min-w-0 truncate font-mono text-[11px] text-ink-faint">
-              <span className="text-ink-dim">{hint.name}</span> {hint.args}
-            </span>
-          )}
 
           <div className="ml-auto flex items-center gap-2">
             <span className="rounded-soft border border-edge bg-elevated px-3 py-1.5 text-[11px] font-semibold text-ink-dim">
@@ -289,45 +285,23 @@ export default function RedisConsole({
       </div>
 
       {reference && (
-        <aside aria-label="Command reference" className="flex w-[280px] shrink-0 flex-col border-l border-edge bg-panel max-[1100px]:hidden">
-          <div className="flex items-center justify-between border-b border-edge px-4 py-2.5">
-            <p className="text-xs font-semibold">Commands</p>
-            <span className="text-[10px] text-ink-faint">one per line · # comments</span>
-          </div>
-          <div className="border-b border-edge px-3 py-2">
-            <SearchInput
-              value={referenceFilter}
-              onChange={(e) => setReferenceFilter(e.target.value)}
-              placeholder="Filter commands…"
-              iconSize={13}
-              inputClassName="!py-1.5 !text-[11px]"
-            />
-          </div>
-          <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
-            {referenceGroups.map((g) => (
-              <div key={g.label}>
-                <p className="pt-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-ink-faint">{g.label}</p>
-                {g.commands.map((c) => (
-                  <button
-                    key={c.name}
-                    type="button"
-                    onClick={() => setCommand((cur: string) => `${cur.trimEnd()}${cur.trim() ? '\n' : ''}${c.name} `)}
-                    className="block w-full border-b border-edge/60 py-1.5 text-left hover:bg-elevated/50"
-                  >
-                    <span className="block font-mono text-[11px]">
-                      <span className="text-[#c49bff]">{c.name}</span> <span className="text-ink-dim">{c.args}</span>
-                    </span>
-                  </button>
-                ))}
-              </div>
-            ))}
-            {!referenceGroups.length && <p className="py-6 text-center text-[11px] text-ink-faint">No command matches.</p>}
-            <p className="mt-3 rounded-soft border border-edge bg-elevated px-3 py-2.5 text-[11px] leading-relaxed text-ink-dim">
+        <CommandReference
+          groups={groups}
+          filterable
+          onInsert={append}
+          onRun={(text) => {
+            append(text)
+            runText(text)
+          }}
+          docFor={(name) => redisCommandDoc(name, version)}
+          loadDoc={(name) => liveRedisDoc(conn, name)}
+          footer={
+            <>
               Not every Redis command is listed — anything missing still runs, it just isn't suggested. Use{' '}
               <span className="font-mono">SCAN</span> over <span className="font-mono">KEYS</span> on a large keyspace.
-            </p>
-          </div>
-        </aside>
+            </>
+          }
+        />
       )}
     </div>
   )

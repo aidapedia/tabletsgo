@@ -80,3 +80,41 @@ export function setKeyTtl(conn: any, key: string, ttlMs: number | null) {
     body: { key, ttlMs },
   })
 }
+
+export type RedisDocArgument = {
+  name: string
+  type: string
+  display: string
+  token: string | null
+  since: string | null
+  optional: boolean
+  multiple: boolean
+  arguments: RedisDocArgument[]
+}
+
+export type RedisCommandDocs =
+  | {
+      available: true
+      version: string | null
+      name: string
+      summary: string | null
+      since: string | null
+      group: string | null
+      complexity: string | null
+      deprecatedSince: string | null
+      replacedBy: string | null
+      history: { version: string; change: string }[]
+      arguments: RedisDocArgument[]
+      subcommands: { name: string; summary: string | null; since: string | null }[]
+      flags: string[]
+      aclCategories: string[]
+    }
+  | { available: false; version: string | null; reason: string }
+
+/** The server's own COMMAND DOCS for one command. Degrades to "not available". */
+export function getCommandDocs(conn: any, name: string) {
+  return safeRequest<RedisCommandDocs>(
+    withDb(conn, `/connections/${conn.id}/redis/command-docs?name=${encodeURIComponent(name)}`),
+    { available: false, version: null, reason: 'Could not reach the server.' }
+  )
+}

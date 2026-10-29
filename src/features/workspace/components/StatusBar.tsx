@@ -5,15 +5,18 @@ import { consoleKindOf } from '@/shared/config/databaseTypes'
 
 // Thin bar pinned to the bottom of the console's main area (the icon rail and
 // Tables sidebar run past it, full height): what you're connected to (database
-// type + name + environment) on the left, the schema version on the right.
+// type + server version + name + environment) on the left, the schema version on the right.
 // The one place that answers "which database am I about to change?".
 export default function StatusBar({
   conn,
+  serverVersion,
   database,
   schema,
   onSchemaHistory,
 }: {
   conn: any
+  /** The server's version ("7.4.8"), when the engine reports one. */
+  serverVersion?: string | null
   database?: string
   schema?: string
   onSchemaHistory: () => void
@@ -25,6 +28,11 @@ export default function StatusBar({
       <span className="flex shrink-0 items-center gap-1.5">
         <DbLogo type={conn.type} className="h-3.5 w-3.5" />
         <span className="font-medium text-ink-dim">{TYPE_LABEL[conn.type] || conn.type}</span>
+        {serverVersion && (
+          <Tooltip label="Server version" placement="top">
+            <span className="font-mono">{serverVersion}</span>
+          </Tooltip>
+        )}
       </span>
       <span className="text-edge-strong">|</span>
       <span className="truncate text-ink-dim">{conn.name}</span>

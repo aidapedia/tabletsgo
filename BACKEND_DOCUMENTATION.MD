@@ -3292,6 +3292,48 @@ Keyspace summary for the sidebar header.
 - **200:** `{ "database": "db0", "keyCount": 128, "version": "7.4.2" }`
 - **Example:** `GET http://localhost:3000/api/connections/<id>/redis/overview`
 
+### GET `/api/connections/:id/redis/command-docs`
+The connected server's own reference for one command — the data redis.io renders,
+read from `COMMAND DOCS` (Redis 7+) and `COMMAND INFO`. Powers the details view of
+the console's command reference. Always `200`: on an older server, an ACL that
+forbids `COMMAND`, or an unknown name it answers `available: false` with the reason
+and the console falls back to its static docs.
+
+- **Query:** `name` (**required**, a command name such as `SET` or `CONFIG`), `database`
+- **200:**
+  ```json
+  {
+    "available": true,
+    "version": "7.4.8",
+    "name": "SET",
+    "summary": "Sets the string value of a key, ignoring its type. The key is created if it doesn't exist.",
+    "since": "1.0.0",
+    "group": "string",
+    "complexity": "O(1)",
+    "deprecatedSince": null,
+    "replacedBy": null,
+    "history": [{ "version": "6.0.0", "change": "Added the `KEEPTTL` option." }],
+    "arguments": [
+      { "name": "key", "type": "key", "display": "key", "token": null, "since": null, "optional": false, "multiple": false, "arguments": [] },
+      {
+        "name": "condition", "type": "oneof", "display": "condition", "token": null, "since": "2.6.12", "optional": true, "multiple": false,
+        "arguments": [
+          { "name": "nx", "type": "pure-token", "display": "nx", "token": "NX", "since": null, "optional": false, "multiple": false, "arguments": [] },
+          { "name": "xx", "type": "pure-token", "display": "xx", "token": "XX", "since": null, "optional": false, "multiple": false, "arguments": [] }
+        ]
+      }
+    ],
+    "subcommands": [],
+    "flags": ["write", "denyoom"],
+    "aclCategories": ["@write", "@string", "@slow"]
+  }
+  ```
+  `subcommands` is filled for container commands (`CONFIG`, `CLIENT`, `XINFO`, …):
+  `[{ "name": "CONFIG SET", "summary": "…", "since": "2.0.0" }]`.
+- **200 (no docs):** `{ "available": false, "version": "6.2.14", "reason": "ERR unknown subcommand 'DOCS'…" }`
+- **400:** `{ "error": "A command name is required." }`
+- **Example:** `GET http://localhost:3000/api/connections/<id>/redis/command-docs?name=SET`
+
 ### GET `/api/connections/:id/redis/key`
 One key's value as a generic `{ columns, rows }` page, plus its metadata. Every
 collection type is paged by `offset`/`limit` so a million-element list can still be
@@ -3727,6 +3769,7 @@ Liveness probe. Also reports boot readiness and the running identity.
 | POST   | `/api/connections/:id/data/import`        | Import a CSV/JSON/SQL file      |
 | GET    | `/api/connections/:id/redis/keys`         | SCAN one page of the keyspace   |
 | GET    | `/api/connections/:id/redis/overview`     | Redis db / key count / version  |
+| GET    | `/api/connections/:id/redis/command-docs` | A command's reference (COMMAND DOCS) |
 | GET    | `/api/connections/:id/redis/key`          | Read one key's value (paged)    |
 | DELETE | `/api/connections/:id/redis/keys`         | Delete keys                     |
 | PUT    | `/api/connections/:id/redis/ttl`          | Set / clear a key's expiry      |

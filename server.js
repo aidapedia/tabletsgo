@@ -3275,6 +3275,20 @@ app.get('/api/connections/:id/redis/overview', async (req, res) => {
   }
 })
 
+// The server's own reference for one command (COMMAND DOCS + COMMAND INFO), for
+// the console's command reference. Always 200 — `available: false` says why not.
+app.get('/api/connections/:id/redis/command-docs', async (req, res) => {
+  const conn = await requireRedis(req, res)
+  if (!conn) return
+  const name = String(req.query.name || '')
+  if (!/^[A-Za-z][\w-]*$/.test(name)) return res.status(400).json({ error: 'A command name is required.' })
+  try {
+    res.json(await redis.commandDocs(conn, queryCtx(req), name))
+  } catch (error) {
+    res.status(500).json({ error: error.message })
+  }
+})
+
 // One key's value as a generic { columns, rows } page (plus type/TTL/length).
 // Every collection type is paged by offset/limit.
 app.get('/api/connections/:id/redis/key', async (req, res) => {
