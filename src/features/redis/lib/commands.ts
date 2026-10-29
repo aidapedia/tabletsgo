@@ -206,14 +206,7 @@ const WRITES = new Set([
 ])
 const WRITE_PATTERN = /^[lrhsz]\w*(push|pop|add|set|rem|del|trim|insert|move|store)$/i
 
-/** Is `version` (e.g. "6.0.16") at least `since` (e.g. "6.2.0")? An unknown version passes. */
-export function meetsVersion(version: string | null | undefined, since: string) {
-  if (!version) return true
-  const a = version.split('.').map((p) => parseInt(p, 10) || 0)
-  const b = since.split('.').map((p) => parseInt(p, 10) || 0)
-  for (let i = 0; i < 3; i++) if ((a[i] || 0) !== (b[i] || 0)) return (a[i] || 0) > (b[i] || 0)
-  return true
-}
+export { meetsVersion } from '@/shared/lib/version'
 
 /** True when a command changes the keyspace — the console refreshes the key tree after one. */
 export const isWriteCommand = (name: string) => WRITES.has(String(name || '').toUpperCase()) || WRITE_PATTERN.test(name || '')

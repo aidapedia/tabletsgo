@@ -12,7 +12,7 @@ import { useSettings } from '@/features/settings'
 import RedisEditor from './RedisEditor'
 import { liveRedisDoc, redisCommandDoc } from '../lib/docs'
 import { isWriteCommand, meetsVersion, REDIS_COMMANDS, REDIS_GROUP_LABELS } from '../lib/commands'
-import useRedisVersion from '../hooks/useRedisVersion'
+import useServerVersion from '@/shared/hooks/useServerVersion'
 
 const MIN_PANE = 100 // px — floor for both the editor and results panes while dragging
 
@@ -67,7 +67,7 @@ export default function RedisConsole({
   const [loading, setLoading] = useState(false)
   const [elapsedMs, setElapsedMs] = useState(persisted?.elapsedMs ?? null)
   const [reference, setReference] = useState(false)
-  const version = useRedisVersion(conn)
+  const version = useServerVersion(conn)
   const groups = useMemo(() => referenceGroups(version), [version])
 
   // Editor/results split — same drag-to-resize affordance as the SQL editor.

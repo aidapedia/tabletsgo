@@ -116,6 +116,9 @@ export const sqliteDriver = {
     return { ok: true }
   },
 
+  // The library's bundled engine is the one running every query on the file.
+  serverVersion: (conn) => dbFor(conn).prepare('SELECT sqlite_version() AS v').get()?.v || null,
+
   namespaces(conn) {
     const name = path.basename(conn.filepath || 'database')
     return { databases: [name], schemas: ['main'], currentDatabase: name }

@@ -28,6 +28,10 @@
  *   release(conn)                 drop cached handles/pools for this connection
  *   closeAll()                    shutdown
  *   ping(conn, ctx)               → { ok: true } or throws
+ *   serverVersion(conn, ctx)      → the engine's release as dotted numbers ("16.4",
+ *                                   "3.45.1", "7.4.8"), or null when it can't say
+ *                                   (optional — the console shows it and dims commands
+ *                                   newer than it)
  *   namespaces(conn, ctx)         → { databases, schemas, currentDatabase }
  *   listTables(conn, ctx)         → string[]
  *   listObjects(conn, ctx)        → [{ name, type, … }]
@@ -332,6 +336,7 @@ export async function handshake(conn, ctx) {
     return { ok: false, latencyMs: Date.now() - started, ...base, ...failure }
   }
 }
+export const serverVersion = gatedOptional('serverVersion', null)
 export const namespaces = gatedRequired('namespaces')
 export const listTables = gatedOptional('listTables', [])
 export const listObjects = gatedOptional('listObjects', [])

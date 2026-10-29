@@ -56,13 +56,15 @@ src/
 │   │                             #     docs in place, Back → the list), CommandDocView + CommandDoc (one
 │   │                             #     command's docs, any engine),
 │   │                             #     icons — no group yet
-│   ├── hooks/                    # generic hooks (useSlideOver, useDragReorder — drag-to-reorder a
+│   ├── hooks/                    # generic hooks (useServerVersion — the connected server's release, one
+│   │                             #   cached lookup per connection, shared by the status bar and every
+│   │                             #   command reference; useSlideOver, useDragReorder — drag-to-reorder a
 │   │                             #   vertical list of cards: the grip starts it, the whole card is a
 │   │                             #   drop target, and the cards animate into their new places (FLIP:
 │   │                             #   measure on drop, play the delta with transforms). Native HTML5
 │   │                             #   drag, so keep it out of a React Flow canvas, whose own d3-drag
 │   │                             #   suppresses native drag events)
-│   ├── lib/                      # helpers: recents, schemaDraft, toggleId
+│   ├── lib/                      # helpers: recents, schemaDraft, toggleId, version (meetsVersion)
 │   ├── api/                      # backend client: request.ts (fetch wrapper) + database.ts
 │   ├── config/                   # runtime API_URL and shared database type catalog/labels
 │   └── types/                    # ambient/shared TS types (globals.d.ts)
@@ -117,10 +119,8 @@ src/
 │   │   │                         #     whole buffer; lazy-imported, NOT in the barrel — it pulls in
 │   │   │                         #     CodeMirror), RedisEditor (CodeMirror with a Redis StreamLanguage
 │   │   │                         #     + command autocomplete; reuses SqlEditor's exported theme)
-│   │   ├── hooks/                #   useRedisVersion (the server's version, one cached lookup per
-│   │   │                         #     connection — the status bar and the command reference share it)
 │   │   └── lib/                  #   api (/redis/* client), commands (command catalog for autocomplete
-│   │                             #     + argument hints + `since` per command, isWriteCommand, meetsVersion), docs (redisCommandDoc: the
+│   │                             #     + argument hints + `since` per command, isWriteCommand), docs (redisCommandDoc: the
 │   │                             #     reference panel's static summary/returns/example responses;
 │   │                             #     liveRedisDoc merges the server's COMMAND DOCS over it — args,
 │   │                             #     complexity, history — + redis.io link), tree (buildKeyTree:
@@ -244,7 +244,11 @@ src/
 │   │   │                         #   useSavedQueries (not a library: a saved query seeds a tab rather than
 │   │   │                         #     being edited in place, and saving from its tab updates it)
 │   │   └── lib/                  #   savedQueries, queryHistory, dataTransfer (backend calls), dialect, consoleCommands
-│   │                             #     (the ⌘K entries — engine-aware, hints mirror the live keymap)
+│   │                             #     (the ⌘K entries — engine-aware, hints mirror the live keymap),
+│   │                             #     sql-reference (the SQL editor's command reference: one catalog per
+│   │                             #     engine — sqlite, postgres — of statements, clauses and functions
+│   │                             #     with the release each arrived in; index turns an entry into a
+│   │                             #     CommandDoc and dims what the connected server predates)
 │   ├── schema-designer/          # visual schema design (React Flow ERD + table/column editors; tables
 │   │   │                         #   sharing a folder are clustered into a draggable, editable region;
 │   │   │                         #   sticky notes pinned to the canvas, and the whole arrangement —

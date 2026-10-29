@@ -2776,6 +2776,20 @@ engines; the client uses it to detect a dropped connection.
 - **Query:** optional `database`, `schema` (PG)
 - **Example:** `GET http://localhost:3000/api/connections/demo-pg/ping`
 
+### GET `/api/connections/:id/server-version`
+The engine's release, for the console's status bar and the SQL / Redis command
+reference (which dims commands newer than it). Generic across engines — each
+driver answers through its optional `serverVersion`: SQLite `sqlite_version()`,
+PostgreSQL `SHOW server_version` (distro suffix stripped), Redis `INFO server`,
+Kafka the brokers' `inter.broker.protocol.version` (3.x; Kafka 4 dropped it).
+Always `200`; `version` is `null` when the engine can't say or isn't reachable.
+
+- **Query:** optional `database`, `schema` (PG)
+- **200:** `{ "version": "16.4" }`
+- **200 (unknown):** `{ "version": null }` or `{ "version": null, "error": "<msg>" }`
+- **404:** `{ "error": "Connection not found" }`
+- **Example:** `GET http://localhost:3000/api/connections/demo-pg/server-version`
+
 ### GET `/api/connections/:id/handshake`
 Pre-flight connectivity check the console runs **before** it opens a connection
 (the "Connect" button on the connections list). Same probe as `/ping`, but a
@@ -3749,6 +3763,7 @@ Liveness probe. Also reports boot readiness and the running identity.
 | GET    | `/api/connections/:id/schema/migrations`  | List schema migration history   |
 | POST   | `/api/connections/:id/schema/rollback`    | Roll schema back to a version   |
 | GET    | `/api/connections/:id/ping`               | Connectivity check `{ ok }`     |
+| GET    | `/api/connections/:id/server-version`     | The engine's release `{ version }` |
 | GET    | `/api/connections/:id/handshake`          | Pre-flight check + root cause   |
 | GET    | `/api/connections/:id/sessions`           | Open sessions + the limit       |
 | DELETE | `/api/connections/:id/sessions/:sid`      | Leave (or owner-close) a session|

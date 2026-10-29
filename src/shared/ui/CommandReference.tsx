@@ -14,12 +14,14 @@ type Command = {
   tag?: string
   /** Why the connected server can't run it — dims the row and explains on hover. */
   unavailable?: string
+  /** What clicking it inserts, when that isn't `NAME ` (a SQL clause reads better as a template). */
+  insert?: string
 }
 type Group = { label?: string; commands: Command[] }
 
 /**
  * A command console's side panel: the catalog as a clickable list. Clicking a
- * row hands `NAME ` to `onInsert`; its trailing chevron swaps the list for that
+ * row hands `NAME ` (or its `insert`) to `onInsert`; its trailing chevron swaps the list for that
  * command's docs (from `docFor`, with `loadDoc`'s live additions merged over
  * them once they arrive), whose examples can be copied or run (`onRun`).
  * `filterable` adds a name filter for long catalogs.
@@ -55,6 +57,10 @@ export default function CommandReference({
       .then((extra) => setLive((l) => ({ ...l, [name]: extra })))
   }, [open, loadDoc, live])
 
+  const insertText = (name: string) => {
+    for (const g of groups) for (const c of g.commands) if (c.name === name) return c.insert ?? `${c.name} `
+    return `${name} `
+  }
   const extra = open ? live[open] : undefined
   const base = open && docFor ? docFor(open) : null
   const doc = base && extra && extra !== 'loading' ? { ...base, ...extra } : base
@@ -83,7 +89,7 @@ export default function CommandReference({
           <p className="min-w-0 flex-1 truncate font-mono text-xs font-semibold">{open}</p>
           <button
             type="button"
-            onClick={() => onInsert(`${open} `)}
+            onClick={() => onInsert(insertText(open))}
             className="rounded px-2 py-1 text-[11px] text-ink-dim hover:bg-elevated hover:text-ink"
           >
             Insert
@@ -126,7 +132,7 @@ export default function CommandReference({
                 key={c.name}
                 className={`group/row flex items-center border-b border-edge/60 hover:bg-elevated/50 ${c.unavailable ? 'opacity-55' : ''}`}
               >
-                <button type="button" onClick={() => onInsert(`${c.name} `)} className="min-w-0 flex-1 py-1.5 text-left">
+                <button type="button" onClick={() => onInsert(c.insert ?? `${c.name} `)} className="min-w-0 flex-1 py-1.5 text-left">
                   <span className="block font-mono text-[11px]">
                     <span className="text-[#c49bff]">{c.name}</span> <span className="text-ink-dim">{c.args}</span>
                   </span>

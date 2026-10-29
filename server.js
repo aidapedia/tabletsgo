@@ -2944,6 +2944,18 @@ app.get('/api/connections/:id/ping', async (req, res) => {
   }
 })
 
+// The engine's release ("16.4"), for the status bar and the command reference.
+// Always 200 — `version: null` when the engine can't say or isn't reachable.
+app.get('/api/connections/:id/server-version', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  try {
+    res.json({ version: (await db.serverVersion(conn, queryCtx(req))) || null })
+  } catch (error) {
+    res.json({ version: null, error: error.message })
+  }
+})
+
 // Pre-flight handshake the console runs before it opens a connection. Same
 // probe as /ping, but a failure explains itself: { ok:false, reason, cause,
 // hint } — see server/db/diagnose.js. Never throws, so the UI always has

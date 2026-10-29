@@ -643,6 +643,8 @@ export const redisDriver = {
     return { ok: true }
   },
 
+  serverVersion: async (conn, ctx) => (await redisOverview(await client(conn, ctx))).version,
+
   namespaces: async (conn, ctx) => redisNamespaces(await client(conn, ctx)),
 
   runQuery: async (conn, ctx, text) => runRedisCommand(await client(conn, ctx), text),

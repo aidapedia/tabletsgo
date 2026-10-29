@@ -21,7 +21,7 @@ Browse data, write queries, design schemas, automate workflows and back up to S3
 ## Features
 
 - **Data browser** — spreadsheet‑style grid: filter, sort, edit inline, review staged changes before commit.
-- **SQL editor** — highlighting, formatting, history and saved queries.
+- **SQL editor** — highlighting, formatting, history, saved queries, and a command reference that shows which SQLite / PostgreSQL release each statement arrived in.
 - **Kafka console** — browse topics and filter messages without joining a consumer group, produce, manage topic configs, and watch or reset consumer-group lag.
 - **Schema designer** — visual ERD; stage DDL, release it in one confirmed step, roll back by version.
 - **Workflows** — schedule/webhook triggers → query → HTTP → JavaScript → export.

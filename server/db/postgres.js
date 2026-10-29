@@ -167,6 +167,12 @@ export const postgresDriver = {
     return { ok: true }
   },
 
+  // `server_version` can carry a distro suffix ("16.4 (Debian 16.4-1.pgdg120+1)").
+  async serverVersion(conn, ctx) {
+    const { rows } = await poolFor(conn, ctx).query('SHOW server_version')
+    return /^\d+(\.\d+)*/.exec(rows[0]?.server_version || '')?.[0] || null
+  },
+
   async namespaces(conn, ctx) {
     const pool = poolFor(conn, ctx)
     const dbs = await pool.query(`SELECT datname FROM pg_database WHERE datistemplate = false AND datallowconn ORDER BY datname`)

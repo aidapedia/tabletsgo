@@ -993,6 +993,21 @@ export const kafkaDriver = {
     return { ok: true }
   },
 
+  // Kafka's protocol never states a release, but a 3.x broker reports the
+  // protocol version it speaks ("3.7-IV4") as inter.broker.protocol.version.
+  // Kafka 4 dropped that config, and an ACL may forbid DescribeConfigs — null then.
+  async serverVersion(conn) {
+    return withAdmin(conn, null, async (admin) => {
+      const { controller } = await admin.describeCluster()
+      const { resources } = await admin.describeConfigs({
+        includeSynonyms: false,
+        resources: [{ type: ConfigResourceTypes.BROKER, name: String(controller), configNames: ['inter.broker.protocol.version'] }],
+      })
+      const value = resources[0]?.configEntries?.[0]?.configValue || ''
+      return /^\d+\.\d+(\.\d+)?/.exec(value)?.[0] || null
+    }).catch(() => null)
+  },
+
   // No databases or schemas — the console hides its namespace picker.
   namespaces: () => ({ databases: [], schemas: [], currentDatabase: null }),
 

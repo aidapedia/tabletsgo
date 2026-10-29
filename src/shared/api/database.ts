@@ -135,6 +135,12 @@ export async function getSchema(conn) {
   return safeRequest(withNs(conn, `/connections/${conn.id}/schema`), {})
 }
 
+// The engine's release ("16.4"), or null when it can't say.
+export async function getServerVersion(conn): Promise<string | null> {
+  const res = await safeRequest<{ version: string | null }>(`/connections/${conn.id}/server-version`, { version: null })
+  return res.version || null
+}
+
 export async function getIndexes(conn, table) {
   return safeRequest(withNs(conn, `/connections/${conn.id}/indexes/${encodeURIComponent(table)}`), [])
 }
