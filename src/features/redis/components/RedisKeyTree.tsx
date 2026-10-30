@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import IconButton from '@/shared/ui/buttons/IconButton'
+import RefreshButton from '@/shared/ui/buttons/RefreshButton'
 import Button from '@/shared/ui/buttons/Button'
 import TextButton from '@/shared/ui/buttons/TextButton'
 import ListRow from '@/shared/ui/ListRow'
@@ -18,7 +19,6 @@ import {
   FolderOpenIcon,
   KeyIcon,
   MoreVerticalIcon,
-  RefreshIcon,
   SearchIcon,
   TrashIcon,
 } from '@/shared/ui/icons'
@@ -93,8 +93,7 @@ export default function RedisKeyTree({
 
   const reload = () => {
     setCollapsed(new Set())
-    loadPage('0', false)
-    getOverview(conn).then(setOverview)
+    return Promise.all([loadPage('0', false), getOverview(conn).then(setOverview)])
   }
 
   // Reload on connection/database change, and debounce pattern typing.
@@ -284,9 +283,7 @@ export default function RedisKeyTree({
         <span className="text-xs">Keys</span>
         <div className="flex gap-1">
           <Tooltip label="Refresh" placement="bottom">
-            <IconButton onClick={reload} aria-label="Refresh keys">
-              <RefreshIcon />
-            </IconButton>
+            <RefreshButton onRefresh={reload} busy={loading} aria-label="Refresh keys" />
           </Tooltip>
           <Tooltip label="Search keys" placement="bottom">
             <IconButton

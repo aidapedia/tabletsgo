@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import IconButton from '@/shared/ui/buttons/IconButton'
+import RefreshButton from '@/shared/ui/buttons/RefreshButton'
 import ListRow from '@/shared/ui/ListRow'
 import RowLabel from '@/shared/ui/RowLabel'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
@@ -15,14 +16,15 @@ import {
   FolderOpenIcon,
   MoreVerticalIcon,
   PlusIcon,
-  RefreshIcon,
   SearchIcon,
   SendIcon,
   TopicIcon,
+  TrashIcon,
 } from '@/shared/ui/icons'
 import { getOverview, listGroups, listTopics, type GroupSummary, type StreamOverview, type TopicSummary } from '../lib/api'
 import { buildTopicTree, compact, groupStateLook, lagTone } from '../lib/format'
 import CreateTopicDialog from './CreateTopicDialog'
+import DeleteTopicDialog from './DeleteTopicDialog'
 
 /**
  * The console's sidebar for a stream engine: the cluster's topics (grouped by
@@ -37,6 +39,7 @@ export default function KafkaSidebar({
   onOpenGroup,
   onProduce,
   onRunCommand,
+  onTopicDeleted,
 }: {
   conn: any
   activeTopic?: string | null
@@ -45,6 +48,7 @@ export default function KafkaSidebar({
   onOpenGroup: (group: string) => void
   onProduce: (topic: string) => void
   onRunCommand: (command: string) => void
+  onTopicDeleted: (topic: string) => void
 }) {
   const [view, setView] = useState<'topics' | 'groups'>('topics')
   const [filter, setFilter] = useState('')
@@ -56,6 +60,7 @@ export default function KafkaSidebar({
   const [error, setError] = useState<string | null>(null)
   const [collapsed, setCollapsed] = useState(() => new Set<string>())
   const [creating, setCreating] = useState(false)
+  const [deleting, setDeleting] = useState<TopicSummary | null>(null)
 
   const loadTopics = () =>
     listTopics(conn, { internal })
@@ -71,11 +76,8 @@ export default function KafkaSidebar({
         setError(null)
       })
       .catch((e) => setError(e.message))
-  const reload = () => {
-    getOverview(conn).then(setOverview).catch(() => {})
-    if (view === 'topics') loadTopics()
-    else loadGroups()
-  }
+  const reload = () =>
+    Promise.all([getOverview(conn).then(setOverview).catch(() => {}), view === 'topics' ? loadTopics() : loadGroups()])
 
   useEffect(() => {
     getOverview(conn).then(setOverview).catch(() => {})
@@ -143,6 +145,13 @@ export default function KafkaSidebar({
               <MenuItem onClick={() => { onRunCommand(`CONSUME ${t.name} FROM -20 LIMIT 20`); close() }}>
                 <CodeIcon width={14} height={14} /> Consume in console
               </MenuItem>
+              <MenuItem onClick={() => { onRunCommand(`DESCRIBE ${t.name}`); close() }}>
+                <CodeIcon width={14} height={14} /> Describe in console
+              </MenuItem>
+              <div className="my-1 h-px bg-edge" />
+              <MenuItem danger onClick={() => { setDeleting(t); close() }}>
+                <TrashIcon width={14} height={14} /> Delete topic…
+              </MenuItem>
             </div>
           )}
         </Popover>
@@ -176,9 +185,7 @@ export default function KafkaSidebar({
         <span className="text-xs font-semibold">{view === 'topics' ? 'Topics' : 'Consumer groups'}</span>
         <div className="flex gap-1">
           <Tooltip label="Refresh" placement="bottom">
-            <IconButton onClick={reload} aria-label={view === 'topics' ? 'Refresh topics' : 'Refresh groups'}>
-              <RefreshIcon />
-            </IconButton>
+            <RefreshButton onRefresh={reload} aria-label={view === 'topics' ? 'Refresh topics' : 'Refresh groups'} />
           </Tooltip>
           <Tooltip label={view === 'topics' ? 'Search topics' : 'Search groups'} placement="bottom">
             <IconButton
@@ -329,6 +336,16 @@ export default function KafkaSidebar({
             setCreating(false)
             onRunCommand(command)
           }}
+        />
+      )}
+
+      {deleting && (
+        <DeleteTopicDialog
+          conn={conn}
+          topic={deleting.name}
+          partitions={deleting.partitions}
+          onClose={() => setDeleting(null)}
+          onDeleted={onTopicDeleted}
         />
       )}
     </>

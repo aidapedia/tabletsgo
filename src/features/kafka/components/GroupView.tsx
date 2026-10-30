@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import Button from '@/shared/ui/buttons/Button'
-import IconButton from '@/shared/ui/buttons/IconButton'
+import RefreshButton from '@/shared/ui/buttons/RefreshButton'
 import Badge from '@/shared/ui/Badge'
 import Tooltip from '@/shared/ui/overlay/Tooltip'
 import TypeToConfirmDialog from '@/shared/ui/feedback/TypeToConfirmDialog'
 import { useToast } from '@/shared/ui/feedback/Toast'
-import { RefreshIcon } from '@/shared/ui/icons'
 import { deleteGroup, describeGroup, type GroupDetail } from '../lib/api'
 import { compact, groupStateLook, lagTone, num } from '../lib/format'
 import ResetOffsetsDialog from './ResetOffsetsDialog'
@@ -95,9 +94,7 @@ export default function GroupView({
             </Button>
           </Tooltip>
           <Tooltip label="Refresh" placement="left">
-            <IconButton size="toolbar" aria-label="Refresh group" onClick={load}>
-              <RefreshIcon width={15} height={15} />
-            </IconButton>
+            <RefreshButton size="toolbar" iconSize={15} aria-label="Refresh group" onRefresh={load} />
           </Tooltip>
         </div>
       </div>

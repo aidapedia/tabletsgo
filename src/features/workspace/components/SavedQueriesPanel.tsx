@@ -7,12 +7,12 @@ import {
   FolderPlusIcon,
   GaugeIcon,
   MoreVerticalIcon,
-  RefreshIcon,
   SearchIcon,
   TrashIcon,
 } from '@/shared/ui/icons'
 import { Input } from '@/shared/ui/form/Input'
 import IconButton from '@/shared/ui/buttons/IconButton'
+import RefreshButton from '@/shared/ui/buttons/RefreshButton'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
 import RowLabel from '@/shared/ui/RowLabel'
 import ListRow from '@/shared/ui/ListRow'
@@ -342,9 +342,7 @@ export default function SavedQueriesPanel({
         <span className="text-xs font-semibold">Saved queries</span>
         <div className="flex gap-1">
           <Tooltip label="Refresh" placement="bottom">
-            <IconButton onClick={onRefresh}>
-              <RefreshIcon />
-            </IconButton>
+            <RefreshButton onRefresh={onRefresh} aria-label="Refresh saved queries" />
           </Tooltip>
           <Tooltip label="Search" placement="bottom">
             <IconButton

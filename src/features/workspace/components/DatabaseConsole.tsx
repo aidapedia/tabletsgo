@@ -277,6 +277,11 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
     queryCounter += 1
     tabs.openTab({ key: `produce:${queryCounter}`, kind: 'kafkaProduce', topic, draft, title: `Produce · ${topic || 'message'}` })
   }
+  // Deleted from its tab or from the sidebar: close the tab, re-read the topics.
+  const onTopicDeleted = (topic: string) => {
+    tabs.dropTab(`topic:${topic}`)
+    setKeyspaceVersion((v) => v + 1)
+  }
 
   const openSchema = (table: string) =>
     tabs.openTab({ key: `schema:${table}`, kind: 'schema', table, title: `${table} · schema` })
@@ -427,6 +432,7 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
         onOpenGroup={openGroup}
         onProduce={(topic) => openProduce(topic)}
         onRunCommand={openQuery}
+        onTopicDeleted={onTopicDeleted}
       />
     ) : panel === 'browser' && kind === 'keyspace' ? (
       <RedisKeyTree
@@ -654,10 +660,7 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
               onOpenTopic={openTopic}
               onOpenGroup={openGroup}
               onProduce={openProduce}
-              onTopicDeleted={(topic) => {
-                tabs.dropTab(`topic:${topic}`)
-                setKeyspaceVersion((v) => v + 1)
-              }}
+              onTopicDeleted={onTopicDeleted}
               onGroupDeleted={(group) => {
                 tabs.dropTab(`group:${group}`)
                 setKeyspaceVersion((v) => v + 1)

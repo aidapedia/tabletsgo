@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import Button from '@/shared/ui/buttons/Button'
 import IconButton from '@/shared/ui/buttons/IconButton'
+import RefreshButton from '@/shared/ui/buttons/RefreshButton'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
 import Popover from '@/shared/ui/overlay/Popover'
 import Tooltip from '@/shared/ui/overlay/Tooltip'
-import TypeToConfirmDialog from '@/shared/ui/feedback/TypeToConfirmDialog'
 import { useToast } from '@/shared/ui/feedback/Toast'
-import { CodeIcon, CopyIcon, MoreVerticalIcon, RefreshIcon, SendIcon, TrashIcon } from '@/shared/ui/icons'
-import { deleteTopic, describeTopic, type TopicDetail } from '../lib/api'
+import { CodeIcon, CopyIcon, MoreVerticalIcon, SendIcon, TrashIcon } from '@/shared/ui/icons'
+import { describeTopic, type TopicDetail } from '../lib/api'
+import DeleteTopicDialog from './DeleteTopicDialog'
 import MessageBrowser from './MessageBrowser'
 import PartitionsPanel from './PartitionsPanel'
 import TopicConfigPanel from './TopicConfigPanel'
@@ -88,17 +89,6 @@ export default function TopicView({
     onViewChange?.(v)
   }
 
-  const remove = async () => {
-    setConfirmDelete(false)
-    try {
-      await deleteTopic(conn, topic)
-      toast.success(`Deleted topic ${topic}.`)
-      onDeleted(topic)
-    } catch (e: any) {
-      toast.error(`Delete failed: ${e.message}`)
-    }
-  }
-
   const cfg = (name: string) => detail?.configs.find((c) => c.name === name)?.value
   const retention = cfg('retention.ms')
   const badges = detail
@@ -145,9 +135,7 @@ export default function TopicView({
               Produce
             </Button>
             <Tooltip label="Refresh" placement="bottom">
-              <IconButton size="toolbar" aria-label="Refresh topic" onClick={load}>
-                <RefreshIcon width={15} height={15} />
-              </IconButton>
+              <RefreshButton size="toolbar" iconSize={15} aria-label="Refresh topic" onRefresh={load} />
             </Tooltip>
             <Popover
               align="right"
@@ -207,13 +195,12 @@ export default function TopicView({
       {view === 'consumers' && <TopicConsumersPanel conn={conn} topic={topic} onOpenGroup={onOpenGroup} />}
 
       {confirmDelete && (
-        <TypeToConfirmDialog
-          title={`Delete topic "${topic}"?`}
-          message={`Every message in all ${detail?.partitions ?? ''} partitions is deleted with it, and consumers reading it will fail. This cannot be undone.`}
-          confirmText={topic}
-          confirmLabel="Delete topic"
-          onConfirm={remove}
-          onCancel={() => setConfirmDelete(false)}
+        <DeleteTopicDialog
+          conn={conn}
+          topic={topic}
+          partitions={detail?.partitions}
+          onClose={() => setConfirmDelete(false)}
+          onDeleted={onDeleted}
         />
       )}
     </div>
