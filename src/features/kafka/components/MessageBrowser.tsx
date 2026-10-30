@@ -3,9 +3,14 @@ import Button from '@/shared/ui/buttons/Button'
 import IconButton from '@/shared/ui/buttons/IconButton'
 import Select from '@/shared/ui/form/Select'
 import Tooltip from '@/shared/ui/overlay/Tooltip'
+import ContextMenu from '@/shared/ui/overlay/ContextMenu'
+import SlideOverPanel from '@/shared/ui/overlay/SlideOverPanel'
+import { useSlideOver } from '@/shared/hooks/useSlideOver'
+import MenuItem from '@/shared/ui/navigation/MenuItem'
+import DataGrid, { cellText } from '@/shared/ui/table/DataGrid'
 import { controlClass, Input } from '@/shared/ui/form/Input'
 import { useToast } from '@/shared/ui/feedback/Toast'
-import { CloseIcon, CodeIcon, CopyIcon, DownloadIcon, PlayIcon, SendIcon } from '@/shared/ui/icons'
+import { CodeIcon, CopyIcon, DownloadIcon, EyeIcon, FilterIcon, PlayIcon, SendIcon } from '@/shared/ui/icons'
 import { readMessages, type MessagePage, type MessageRow } from '../lib/api'
 import { bytes, prettyJson, shortTime } from '../lib/format'
 
@@ -25,9 +30,16 @@ const DECODERS = [
 
 const label = 'mb-1 block text-[10px] font-semibold uppercase tracking-wide text-ink-faint'
 
+const COLUMNS = ['partition', 'offset', 'timestamp', 'key', 'value', 'size']
+const COLUMN_WIDTHS = { partition: 80, offset: 100, timestamp: 150, size: 80, value: 420 }
+
+// A filter literal: a doubled quote is the filter language's literal quote.
+const quote = (s: string) => `'${s.replace(/'/g, "''")}'`
+
 /**
- * A topic's messages: a bounded read with a filter bar, a grid and the selected
- * message in full beside it. Every fetch is one request to
+ * A topic's messages: a bounded read with a filter bar, the shared DataGrid the
+ * SQL and Redis consoles use, and — from a row's right-click menu — the message
+ * in full beside it. Every fetch is one request to
  * `/streams/topics/:topic/messages` — no consumer group, no commit, capped by
  * the server's read limits (the footer says when a cap cut it short).
  */
@@ -56,7 +68,8 @@ export default function MessageBrowser({
   const [rows, setRows] = useState<MessageRow[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [selected, setSelected] = useState<string | null>(null)
+  const [selected, setSelected] = useState<string | null>(null) // the message in the inspector
+  const [menu, setMenu] = useState<{ x: number; y: number; message: MessageRow; value: unknown; selection: any } | null>(null)
 
   const position = () => {
     if (from === 'offset') return `offset:${parseInt(offset) || 0}`
@@ -64,7 +77,7 @@ export default function MessageBrowser({
     return from
   }
 
-  const fetchPage = async () => {
+  const fetchPage = async (where = filter) => {
     setLoading(true)
     setError(null)
     try {
@@ -72,12 +85,11 @@ export default function MessageBrowser({
         partition: partition === '' ? null : Number(partition),
         from: position(),
         limit: Number(limit),
-        filter,
+        filter: where,
         decode,
       })
       setPage(res)
       setRows(res.rows)
-      setSelected(res.rows[0] ? keyOf(res.rows[0]) : null)
     } catch (e: any) {
       setError(e.message)
       setPage(null)
@@ -118,6 +130,40 @@ export default function MessageBrowser({
 
   const current = rows.find((r) => keyOf(r) === selected) || null
   const canOlder = partition !== '' && page?.cursor?.[partition] != null && page.cursor[partition] > 0
+
+  // What the grid shows; partition + offset stay raw so a grid row maps back
+  // to its message through keyOf.
+  const gridRows = useMemo(
+    () =>
+      rows.map((r) => ({
+        partition: r.partition,
+        offset: r.offset,
+        timestamp: shortTime(r.timestamp),
+        key: r.key,
+        value: r.value,
+        size: bytes(r.size),
+      })),
+    [rows]
+  )
+  const byKey = useMemo(() => new Map(rows.map((r) => [keyOf(r), r])), [rows])
+
+  const openMenu = (e: any, { rowIndex, value, selection }: any) =>
+    setMenu({ x: e.clientX, y: e.clientY, message: rows[rowIndex], value, selection })
+
+  const copy = (text: string, done: string) =>
+    navigator.clipboard?.writeText(text).then(
+      () => toast.success(done),
+      () => toast.error('Could not copy to clipboard')
+    )
+
+  const produceCopy = (m: MessageRow) =>
+    onProduceCopy({ key: m.key, value: m.value, headers: m.headers ? JSON.parse(m.headers) : null })
+
+  const filterByKey = (key: string | null) => {
+    const where = key == null ? 'key = null' : `key = ${quote(key)}`
+    setFilter(where)
+    fetchPage(where)
+  }
 
   const download = () => {
     const blob = new Blob([JSON.stringify(rows, null, 2)], { type: 'application/json' })
@@ -190,53 +236,10 @@ export default function MessageBrowser({
             <div className="mx-[18px] my-4 rounded-[9px] border border-red/25 bg-red/10 px-3.5 py-3 font-mono text-[11px] text-[#ff9b9b]">{error}</div>
           )}
           {!error && (
-            <div className="min-h-0 flex-1 overflow-auto">
-              <table className="w-full min-w-[640px] table-fixed border-collapse text-[12px]">
-                <colgroup>
-                  <col className="w-[52px]" />
-                  <col className="w-[100px]" />
-                  <col className="w-[140px]" />
-                  <col className="w-[150px]" />
-                  <col />
-                  <col className="w-[72px]" />
-                </colgroup>
-                <thead className="sticky top-0 z-[1] bg-panel">
-                  <tr className="text-left text-[11px] text-ink-faint">
-                    <th className="h-8 border-b border-edge px-3 text-right font-semibold">Part.</th>
-                    <th className="h-8 border-b border-edge px-3 text-right font-semibold">Offset</th>
-                    <th className="h-8 border-b border-edge px-3 font-semibold">Timestamp</th>
-                    <th className="h-8 border-b border-edge px-3 font-semibold">Key</th>
-                    <th className="h-8 border-b border-edge px-3 font-semibold">Value</th>
-                    <th className="h-8 border-b border-edge px-3 text-right font-semibold">Size</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((r) => {
-                    const on = keyOf(r) === selected
-                    return (
-                      <tr
-                        key={keyOf(r)}
-                        onClick={() => setSelected(keyOf(r))}
-                        aria-selected={on}
-                        className={`cursor-pointer ${on ? 'bg-green-dim/60 shadow-[inset_2px_0_0_var(--color-green)]' : 'hover:bg-elevated'}`}
-                      >
-                        <td className="h-[30px] truncate border-b border-edge/60 px-3 text-right font-mono text-ink-dim">{r.partition}</td>
-                        <td className="truncate border-b border-edge/60 px-3 text-right font-mono tabular-nums">{r.offset.toLocaleString()}</td>
-                        <td className="truncate border-b border-edge/60 px-3 font-mono text-ink-dim" title={r.timestamp}>
-                          {shortTime(r.timestamp)}
-                        </td>
-                        <td className="truncate border-b border-edge/60 px-3 font-mono" title={r.key ?? ''}>
-                          {r.key ?? <span className="italic text-ink-faint">null</span>}
-                        </td>
-                        <td className="truncate border-b border-edge/60 px-3 font-mono text-ink-dim">
-                          {r.value == null ? <span className="italic text-amber">null (tombstone)</span> : r.value}
-                        </td>
-                        <td className="truncate border-b border-edge/60 px-3 text-right text-ink-dim">{bytes(r.size)}</td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
+            <div className="flex min-h-0 flex-1 flex-col">
+              {rows.length > 0 && (
+                <DataGrid columns={COLUMNS} rows={gridRows} columnWidths={COLUMN_WIDTHS} onCellContextMenu={openMenu} />
+              )}
               {!loading && page && !rows.length && (
                 <div className="p-[30px] text-center text-xs text-ink-faint">
                   {filter.trim() ? `No messages matched in the ${page.scanned.toLocaleString()} scanned.` : 'No messages in this range.'}
@@ -249,6 +252,7 @@ export default function MessageBrowser({
             <div className="flex flex-wrap items-center gap-3 border-t border-edge px-[18px] py-2 text-[11px] text-ink-faint">
               <span>
                 {rows.length.toLocaleString()} shown · {page.scanned.toLocaleString()} scanned · {page.elapsedMs} ms
+                {rows.length > 0 && !current && ' · right-click a message to inspect it'}
                 {page.cappedBy && (
                   <span className="text-amber"> · stopped at the {page.cappedBy === 'time' ? 'time' : 'size'} limit — narrow the range or filter</span>
                 )}
@@ -275,13 +279,66 @@ export default function MessageBrowser({
             topic={topic}
             message={current}
             onClose={() => setSelected(null)}
-            onProduceCopy={() =>
-              onProduceCopy({ key: current.key, value: current.value, headers: current.headers ? JSON.parse(current.headers) : null })
-            }
+            onProduceCopy={() => produceCopy(current)}
             onRunCommand={onRunCommand}
           />
         )}
       </div>
+
+      {menu &&
+        (() => {
+          const m = menu.message
+          // Always a rectangle — a lone right-clicked cell is a 1×1 selection.
+          const sel = menu.selection
+          const multi = sel.cellCount > 1
+          const messages: MessageRow[] = sel.rows.map((r: MessageRow) => byKey.get(keyOf(r))).filter(Boolean)
+          const close = (fn: () => void) => () => {
+            fn()
+            setMenu(null)
+          }
+          return (
+            <ContextMenu x={menu.x} y={menu.y} onClose={() => setMenu(null)}>
+              <MenuItem onClick={close(() => setSelected(keyOf(m)))}>
+                <EyeIcon width={14} height={14} /> Open Inspector
+              </MenuItem>
+
+              <div className="my-1 h-px bg-edge" />
+              <MenuItem
+                onClick={close(() =>
+                  multi
+                    ? copy(sel.values.map((r: unknown[]) => r.map(cellText).join('\t')).join('\n'), `Copied ${sel.cellCount} cells`)
+                    : copy(cellText(menu.value), 'Copied cell value')
+                )}
+              >
+                <CopyIcon width={14} height={14} /> Copy {multi ? `${sel.cellCount} cells` : 'cell value'}
+              </MenuItem>
+              <MenuItem onClick={close(() => copy(m.value ?? 'null', 'Copied value'))}>
+                <CopyIcon width={14} height={14} /> Copy value
+              </MenuItem>
+              <MenuItem
+                onClick={close(() =>
+                  copy(
+                    JSON.stringify(messages.length > 1 ? messages : m, null, 2),
+                    messages.length > 1 ? `Copied ${messages.length} messages` : 'Copied message'
+                  )
+                )}
+              >
+                <CopyIcon width={14} height={14} /> Copy {messages.length > 1 ? `${messages.length} messages` : 'message'} as JSON
+              </MenuItem>
+              <MenuItem onClick={close(() => filterByKey(m.key))}>
+                <FilterIcon width={14} height={14} /> Filter by this key
+              </MenuItem>
+
+              <div className="my-1 h-px bg-edge" />
+              <MenuItem onClick={close(() => onRunCommand(`CONSUME ${topic} PARTITION ${m.partition} FROM OFFSET ${m.offset} LIMIT 1`))}>
+                <CodeIcon width={14} height={14} /> Open in console
+              </MenuItem>
+              <MenuItem onClick={close(() => produceCopy(m))}>
+                <SendIcon width={14} height={14} /> Produce a copy
+              </MenuItem>
+            </ContextMenu>
+          )
+        })()}
     </div>
   )
 }
@@ -302,106 +359,105 @@ function MessageDetail({
   onRunCommand: (command: string) => void
 }) {
   const toast = useToast()
+  const { show, close } = useSlideOver(onClose)
   const value = prettyJson(m.value)
   const headers: Record<string, string> = m.headers ? JSON.parse(m.headers) : {}
   const copy = (text: string) => navigator.clipboard?.writeText(text).then(() => toast.success('Copied.'))
 
   return (
-    <aside aria-label="Message" className="flex w-[360px] shrink-0 flex-col border-l border-edge bg-panel max-[1100px]:w-[300px] max-[860px]:hidden">
-      <div className="flex items-center justify-between border-b border-edge px-4 py-2.5">
+    <SlideOverPanel
+      show={show}
+      close={close}
+      header={
         <div className="min-w-0">
-          <p className="text-[10px] font-bold uppercase tracking-wide text-ink-faint">Message</p>
-          <p className="truncate font-mono text-xs font-semibold">
-            p{m.partition} · offset {m.offset.toLocaleString()}
+          <h3 className="text-base font-bold">Inspector</h3>
+          <p className="truncate font-mono text-[11px] text-ink-faint">
+            {topic} · p{m.partition} · offset {m.offset.toLocaleString()}
           </p>
         </div>
-        <div className="flex gap-0.5">
-          <Tooltip label="Copy value" placement="left">
-            <IconButton aria-label="Copy value" onClick={() => copy(m.value ?? 'null')}>
-              <CopyIcon width={14} height={14} />
-            </IconButton>
-          </Tooltip>
-          <Tooltip label="Produce a copy" placement="left">
-            <IconButton aria-label="Produce a copy" onClick={onProduceCopy}>
-              <SendIcon width={14} height={14} />
-            </IconButton>
-          </Tooltip>
-          <IconButton aria-label="Close message" onClick={onClose}>
-            <CloseIcon width={12} height={12} />
-          </IconButton>
+      }
+      bodyClassName="flex flex-col gap-4 px-5 py-4"
+      footer={
+        <>
+          <Button
+            variant="ghost"
+            size="sm"
+            icon={CodeIcon}
+            onClick={() => close(() => onRunCommand(`CONSUME ${topic} PARTITION ${m.partition} FROM OFFSET ${m.offset} LIMIT 1`))}
+          >
+            Open in console
+          </Button>
+          <Button variant="ghost" size="sm" icon={SendIcon} onClick={() => close(onProduceCopy)}>
+            Produce a copy
+          </Button>
+        </>
+      }
+    >
+      <Section title="Key">
+        <div className="break-all rounded-[8px] border border-edge bg-bg px-2.5 py-2 font-mono text-[12px]">
+          {m.key ?? <span className="italic text-ink-faint">null</span>}
         </div>
-      </div>
+      </Section>
 
-      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 py-3.5">
-        <Section title="Key">
-          <div className="break-all rounded-[8px] border border-edge bg-bg px-2.5 py-2 font-mono text-[12px]">
-            {m.key ?? <span className="italic text-ink-faint">null</span>}
+      <Section
+        title="Value"
+        aside={
+          <span className="flex items-center gap-1.5">
+            {value.json && 'JSON'}
+            <Tooltip label="Copy value" placement="left">
+              <IconButton aria-label="Copy value" onClick={() => copy(m.value ?? 'null')}>
+                <CopyIcon width={13} height={13} />
+              </IconButton>
+            </Tooltip>
+          </span>
+        }
+      >
+        {m.value == null ? (
+          <div className="rounded-[8px] border border-amber/30 bg-amber/10 px-2.5 py-2 text-[11px] text-amber">
+            Tombstone: the value is null. On a compacted topic this deletes the key.
           </div>
-        </Section>
+        ) : (
+          <pre className="overflow-x-auto whitespace-pre-wrap break-all rounded-[8px] border border-edge bg-bg px-2.5 py-2 font-mono text-[11.5px] leading-relaxed">
+            {value.json ? highlightJson(value.text) : value.text}
+          </pre>
+        )}
+      </Section>
 
-        <Section title="Value" aside={value.json ? 'JSON' : undefined}>
-          {m.value == null ? (
-            <div className="rounded-[8px] border border-amber/30 bg-amber/10 px-2.5 py-2 text-[11px] text-amber">
-              Tombstone: the value is null. On a compacted topic this deletes the key.
-            </div>
-          ) : (
-            <pre className="overflow-x-auto whitespace-pre-wrap break-all rounded-[8px] border border-edge bg-bg px-2.5 py-2 font-mono text-[11.5px] leading-relaxed">
-              {value.json ? highlightJson(value.text) : value.text}
-            </pre>
-          )}
-        </Section>
+      <Section title={`Headers · ${Object.keys(headers).length}`}>
+        {Object.keys(headers).length ? (
+          <div className="overflow-hidden rounded-[8px] border border-edge">
+            {Object.entries(headers).map(([k, v]) => (
+              <div key={k} className="flex gap-2.5 border-b border-edge/60 px-2.5 py-1.5 font-mono text-[11px] last:border-b-0">
+                <span className="w-[96px] shrink-0 truncate text-ink-faint" title={k}>
+                  {k}
+                </span>
+                <span className="min-w-0 break-all">{Array.isArray(v) ? v.join(', ') : String(v)}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-[11px] text-ink-faint">None.</p>
+        )}
+      </Section>
 
-        <Section title={`Headers · ${Object.keys(headers).length}`}>
-          {Object.keys(headers).length ? (
-            <div className="overflow-hidden rounded-[8px] border border-edge">
-              {Object.entries(headers).map(([k, v]) => (
-                <div key={k} className="flex gap-2.5 border-b border-edge/60 px-2.5 py-1.5 font-mono text-[11px] last:border-b-0">
-                  <span className="w-[96px] shrink-0 truncate text-ink-faint" title={k}>
-                    {k}
-                  </span>
-                  <span className="min-w-0 break-all">{Array.isArray(v) ? v.join(', ') : String(v)}</span>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <p className="text-[11px] text-ink-faint">None.</p>
-          )}
-        </Section>
-
-        <Section title="Metadata">
-          {[
-            ['Timestamp', new Date(m.timestamp).toISOString().replace('T', ' ').replace('Z', ' UTC')],
-            ['Partition', String(m.partition)],
-            ['Offset', m.offset.toLocaleString()],
-            ['Size', bytes(m.size)],
-          ].map(([k, v]) => (
-            <div key={k} className="flex justify-between gap-3 border-b border-edge/60 py-1.5 text-[11px] last:border-b-0">
-              <span className="text-ink-faint">{k}</span>
-              <span className="font-mono">{v}</span>
-            </div>
-          ))}
-        </Section>
-      </div>
-
-      <div className="flex gap-2 border-t border-edge px-4 py-3">
-        <Button
-          variant="ghost"
-          size="sm"
-          icon={CodeIcon}
-          className="flex-1 justify-center"
-          onClick={() => onRunCommand(`CONSUME ${topic} PARTITION ${m.partition} FROM OFFSET ${m.offset} LIMIT 1`)}
-        >
-          Open in console
-        </Button>
-        <Button variant="ghost" size="sm" icon={SendIcon} className="flex-1 justify-center" onClick={onProduceCopy}>
-          Produce a copy
-        </Button>
-      </div>
-    </aside>
+      <Section title="Metadata">
+        {[
+          ['Timestamp', new Date(m.timestamp).toISOString().replace('T', ' ').replace('Z', ' UTC')],
+          ['Partition', String(m.partition)],
+          ['Offset', m.offset.toLocaleString()],
+          ['Size', bytes(m.size)],
+        ].map(([k, v]) => (
+          <div key={k} className="flex justify-between gap-3 border-b border-edge/60 py-1.5 text-[11px] last:border-b-0">
+            <span className="text-ink-faint">{k}</span>
+            <span className="font-mono">{v}</span>
+          </div>
+        ))}
+      </Section>
+    </SlideOverPanel>
   )
 }
 
-function Section({ title, aside, children }: { title: string; aside?: string; children: ReactNode }) {
+function Section({ title, aside, children }: { title: string; aside?: ReactNode; children: ReactNode }) {
   return (
     <section>
       <div className="mb-1.5 flex items-center justify-between">

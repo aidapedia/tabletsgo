@@ -16,6 +16,7 @@ import {
   MoreVerticalIcon,
   PlusIcon,
   RefreshIcon,
+  SearchIcon,
   SendIcon,
   TopicIcon,
 } from '@/shared/ui/icons'
@@ -47,6 +48,7 @@ export default function KafkaSidebar({
 }) {
   const [view, setView] = useState<'topics' | 'groups'>('topics')
   const [filter, setFilter] = useState('')
+  const [searchOpen, setSearchOpen] = useState(false)
   const [internal, setInternal] = useState(false)
   const [overview, setOverview] = useState<StreamOverview | null>(null)
   const [topics, setTopics] = useState<TopicSummary[] | null>(null)
@@ -103,6 +105,11 @@ export default function KafkaSidebar({
       return next
     })
 
+  const collapseAll = () => setCollapsed(new Set(tree.flatMap((n) => (n.kind === 'topic' ? [] : [n.id]))))
+  const expandAll = () => setCollapsed(new Set())
+  // One button flips between the two: anything folded means "expand" is next.
+  const anyCollapsed = collapsed.size > 0
+
   const topicRow = (t: TopicSummary, depth: number) => (
     <ListRow
       key={t.name}
@@ -153,32 +160,7 @@ export default function KafkaSidebar({
 
   return (
     <>
-      <div className="flex items-center justify-between px-4 pb-1 pt-4">
-        <span className="text-xs font-semibold">{view === 'topics' ? 'Topics' : 'Consumer groups'}</span>
-        <div className="flex gap-1">
-          {view === 'topics' && (
-            <Tooltip label="New topic" placement="bottom">
-              <IconButton onClick={() => setCreating(true)} aria-label="New topic">
-                <PlusIcon width={15} height={15} />
-              </IconButton>
-            </Tooltip>
-          )}
-          <Tooltip label="Refresh" placement="bottom">
-            <IconButton onClick={reload} aria-label={view === 'topics' ? 'Refresh topics' : 'Refresh groups'}>
-              <RefreshIcon />
-            </IconButton>
-          </Tooltip>
-        </div>
-      </div>
-
-      <div className="flex items-center gap-1.5 px-4 pb-2.5 text-[10px] text-ink-faint">
-        <span className={`h-1.5 w-1.5 rounded-full ${overview ? 'bg-status-ok' : 'bg-ink-faint'}`} />
-        {overview
-          ? `${overview.brokers.length} broker${overview.brokers.length === 1 ? '' : 's'} · ${overview.topicCount} topics`
-          : 'Connecting…'}
-      </div>
-
-      <div className="px-3.5 pb-2">
+      <div className="px-3.5 pt-4">
         <Segmented
           className="w-full [&>button]:flex-1"
           value={view}
@@ -190,14 +172,69 @@ export default function KafkaSidebar({
         />
       </div>
 
-      <SearchInput
-        className="mx-3.5 mb-2"
-        placeholder={view === 'topics' ? 'Filter topics' : 'Filter groups'}
-        value={filter}
-        onChange={(e) => setFilter(e.target.value)}
-        onKeyDown={(e) => e.key === 'Escape' && setFilter('')}
-        inputClassName="!rounded-[9px] !text-xs"
-      />
+      <div className="flex items-center justify-between px-4 pb-1 pt-3">
+        <span className="text-xs font-semibold">{view === 'topics' ? 'Topics' : 'Consumer groups'}</span>
+        <div className="flex gap-1">
+          <Tooltip label="Refresh" placement="bottom">
+            <IconButton onClick={reload} aria-label={view === 'topics' ? 'Refresh topics' : 'Refresh groups'}>
+              <RefreshIcon />
+            </IconButton>
+          </Tooltip>
+          <Tooltip label={view === 'topics' ? 'Search topics' : 'Search groups'} placement="bottom">
+            <IconButton
+              active={searchOpen}
+              onClick={() => {
+                if (searchOpen) setFilter('')
+                setSearchOpen((o) => !o)
+              }}
+              aria-label={view === 'topics' ? 'Search topics' : 'Search groups'}
+            >
+              <SearchIcon width={15} height={15} />
+            </IconButton>
+          </Tooltip>
+          {view === 'topics' && (
+            <>
+              <Tooltip label={anyCollapsed ? 'Expand all' : 'Collapse all'} placement="bottom">
+                <IconButton
+                  onClick={anyCollapsed ? expandAll : collapseAll}
+                  aria-label={anyCollapsed ? 'Expand all prefixes' : 'Collapse all prefixes'}
+                >
+                  {anyCollapsed ? <FolderOpenIcon width={15} height={15} /> : <FolderIcon width={15} height={15} />}
+                </IconButton>
+              </Tooltip>
+              <Tooltip label="New topic" placement="bottom">
+                <IconButton onClick={() => setCreating(true)} aria-label="New topic">
+                  <PlusIcon width={15} height={15} />
+                </IconButton>
+              </Tooltip>
+            </>
+          )}
+        </div>
+      </div>
+
+      <div className="flex items-center gap-1.5 px-4 pb-2.5 text-[10px] text-ink-faint">
+        <span className={`h-1.5 w-1.5 rounded-full ${overview ? 'bg-status-ok' : 'bg-ink-faint'}`} />
+        {overview
+          ? `${overview.brokers.length} broker${overview.brokers.length === 1 ? '' : 's'} · ${overview.topicCount} topics`
+          : 'Connecting…'}
+      </div>
+
+      {searchOpen && (
+        <SearchInput
+          autoFocus
+          className="mx-3.5 mb-2"
+          placeholder={view === 'topics' ? 'Filter topics' : 'Filter groups'}
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') {
+              setFilter('')
+              setSearchOpen(false)
+            }
+          }}
+          inputClassName="!rounded-[9px] !text-xs"
+        />
+      )}
 
       <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-2 pb-2">
         {error && <div className="m-2 rounded-[9px] border border-red/25 bg-red/10 px-3 py-2.5 text-[11px] text-[#ff9b9b]">{error}</div>}

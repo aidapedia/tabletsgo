@@ -155,6 +155,7 @@ export default function DataGrid({
   onSort, // (col, additive) => void — header click; additive (Shift) adds to multi-sort
   actionsLabel = 'Actions', // header text for the trailing per-row actions column
   renderRowActions, // (row, i) => ReactNode — adds a trailing actions column when set
+  columnWidths, // { [colName]: px } — opening widths; a drag still overrides them
 }: any) {
   const [editing, setEditing] = useState(null) // { rowIndex, col, kind, origText }
   const [draft, setDraftState] = useState('')
@@ -175,7 +176,7 @@ export default function DataGrid({
   const [clientW, setClientW] = useState(0) // container width (to fill horizontally)
   const [widths, setWidths] = useState({}) // per-column override widths
   const [resizing, setResizing] = useState(null) // column currently being dragged
-  const colW = (c) => widths[c] ?? DEFAULT_W
+  const colW = (c) => widths[c] ?? columnWidths?.[c] ?? DEFAULT_W
 
   const startResize = (e, c) => {
     e.preventDefault()

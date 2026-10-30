@@ -19,6 +19,7 @@ import {
   KeyIcon,
   MoreVerticalIcon,
   RefreshIcon,
+  SearchIcon,
   TrashIcon,
 } from '@/shared/ui/icons'
 import { deleteKeys, getOverview, scanKeys, type RedisKeyMeta } from '../lib/api'
@@ -51,6 +52,7 @@ export default function RedisKeyTree({
 }) {
   const toast = useToast()
   const [pattern, setPattern] = useState('')
+  const [searchOpen, setSearchOpen] = useState(false)
   const [keys, setKeys] = useState<RedisKeyMeta[]>([])
   const [cursor, setCursor] = useState('0')
   const [done, setDone] = useState(true)
@@ -113,6 +115,8 @@ export default function RedisKeyTree({
 
   const collapseAll = () => setCollapsed(new Set(allBranchIds(tree)))
   const expandAll = () => setCollapsed(new Set())
+  // One button flips between the two: anything folded means "expand" is next.
+  const anyCollapsed = collapsed.size > 0
 
   const confirmDelete = async () => {
     if (!deleting) return
@@ -279,32 +283,50 @@ export default function RedisKeyTree({
       <div className="flex items-center justify-between px-4 pb-2.5 pt-4 text-[11px] font-semibold">
         <span className="text-xs">Keys</span>
         <div className="flex gap-1">
-          <Tooltip label="Expand all" placement="bottom">
-            <IconButton onClick={expandAll} aria-label="Expand all namespaces">
-              <FolderOpenIcon width={15} height={15} />
-            </IconButton>
-          </Tooltip>
-          <Tooltip label="Collapse all" placement="bottom">
-            <IconButton onClick={collapseAll} aria-label="Collapse all namespaces">
-              <FolderIcon width={15} height={15} />
-            </IconButton>
-          </Tooltip>
           <Tooltip label="Refresh" placement="bottom">
             <IconButton onClick={reload} aria-label="Refresh keys">
               <RefreshIcon />
             </IconButton>
           </Tooltip>
+          <Tooltip label="Search keys" placement="bottom">
+            <IconButton
+              active={searchOpen}
+              onClick={() => {
+                if (searchOpen) setPattern('')
+                setSearchOpen((o) => !o)
+              }}
+              aria-label="Search keys"
+            >
+              <SearchIcon width={15} height={15} />
+            </IconButton>
+          </Tooltip>
+          <Tooltip label={anyCollapsed ? 'Expand all' : 'Collapse all'} placement="bottom">
+            <IconButton
+              onClick={anyCollapsed ? expandAll : collapseAll}
+              aria-label={anyCollapsed ? 'Expand all namespaces' : 'Collapse all namespaces'}
+            >
+              {anyCollapsed ? <FolderOpenIcon width={15} height={15} /> : <FolderIcon width={15} height={15} />}
+            </IconButton>
+          </Tooltip>
         </div>
       </div>
 
-      <SearchInput
-        className="mx-3.5 mb-2"
-        placeholder="Match pattern, e.g. user:*"
-        value={pattern}
-        onChange={(e) => setPattern(e.target.value)}
-        onKeyDown={(e) => e.key === 'Escape' && setPattern('')}
-        inputClassName="!rounded-[9px] !text-xs !font-mono"
-      />
+      {searchOpen && (
+        <SearchInput
+          autoFocus
+          className="mx-3.5 mb-2"
+          placeholder="Match pattern, e.g. user:*"
+          value={pattern}
+          onChange={(e) => setPattern(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') {
+              setPattern('')
+              setSearchOpen(false)
+            }
+          }}
+          inputClassName="!rounded-[9px] !text-xs !font-mono"
+        />
+      )}
 
       <div className="flex items-center justify-between px-4 pb-2 text-[10px] text-ink-faint">
         <span>
