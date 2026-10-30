@@ -47,12 +47,15 @@ export default function MessageBrowser({
   conn,
   topic,
   partitions,
+  onProduce,
   onProduceCopy,
   onRunCommand,
 }: {
   conn: any
   topic: string
   partitions: number
+  /** Opens a blank produce form for this topic. */
+  onProduce: () => void
   onProduceCopy: (draft: { key?: string | null; value?: string | null; headers?: Record<string, string> | null }) => void
   onRunCommand: (command: string) => void
 }) {
@@ -228,6 +231,11 @@ export default function MessageBrowser({
         <Button type="submit" variant="primary" icon={PlayIcon} disabled={loading}>
           {loading ? 'Reading…' : 'Fetch'}
         </Button>
+        <Tooltip label="Produce message" placement="bottom">
+          <IconButton size="toolbar" aria-label="Produce message" onClick={onProduce}>
+            <SendIcon width={15} height={15} />
+          </IconButton>
+        </Tooltip>
       </form>
 
       <div className="flex min-h-0 flex-1">

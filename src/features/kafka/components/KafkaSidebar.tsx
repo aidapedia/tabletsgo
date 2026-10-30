@@ -3,7 +3,6 @@ import IconButton from '@/shared/ui/buttons/IconButton'
 import RefreshButton from '@/shared/ui/buttons/RefreshButton'
 import ListRow from '@/shared/ui/ListRow'
 import RowLabel from '@/shared/ui/RowLabel'
-import MenuItem from '@/shared/ui/navigation/MenuItem'
 import Popover from '@/shared/ui/overlay/Popover'
 import Tooltip from '@/shared/ui/overlay/Tooltip'
 import SearchInput from '@/shared/ui/form/SearchInput'
@@ -11,21 +10,19 @@ import Segmented from '@/shared/ui/form/Segmented'
 import Checkbox from '@/shared/ui/form/Checkbox'
 import {
   ChevronRight,
-  CodeIcon,
   FolderIcon,
   FolderOpenIcon,
   MoreVerticalIcon,
   PlusIcon,
   SearchIcon,
-  SendIcon,
   TopicIcon,
-  TrashIcon,
 } from '@/shared/ui/icons'
 import { getOverview, listGroups, listTopics, type GroupSummary, type StreamOverview, type TopicSummary } from '../lib/api'
 import { buildTopicTree, compact, groupStateLook, lagTone } from '../lib/format'
 import CreateTopicDialog from './CreateTopicDialog'
 import DeleteTopicDialog from './DeleteTopicDialog'
-import { TOPIC_VIEWS, type TopicSubView } from './TopicView'
+import TopicMenuItems from './TopicMenuItems'
+import { type TopicSubView } from './TopicView'
 
 /**
  * The console's sidebar for a stream engine: the cluster's topics (grouped by
@@ -132,6 +129,7 @@ export default function KafkaSidebar({
             <IconButton
               size="sm"
               active={open}
+              data-row-menu aria-expanded={open}
               onClick={toggleMenu}
               aria-label={`${t.name} actions`}
               className={open ? 'opacity-100' : '!text-ink-faint opacity-0 group-hover:opacity-100'}
@@ -142,25 +140,14 @@ export default function KafkaSidebar({
         >
           {({ close }) => (
             <div className="p-1">
-              {TOPIC_VIEWS.map(({ id, label, icon: Icon }) => (
-                <MenuItem key={id} onClick={() => { onOpenTopic(t.name, id); close() }}>
-                  <Icon width={14} height={14} /> {label}
-                </MenuItem>
-              ))}
-              <div className="my-1 h-px bg-edge" />
-              <MenuItem onClick={() => { onProduce(t.name); close() }}>
-                <SendIcon width={14} height={14} /> Produce message
-              </MenuItem>
-              <MenuItem onClick={() => { onRunCommand(`CONSUME ${t.name} FROM -20 LIMIT 20`); close() }}>
-                <CodeIcon width={14} height={14} /> Consume in console
-              </MenuItem>
-              <MenuItem onClick={() => { onRunCommand(`DESCRIBE ${t.name}`); close() }}>
-                <CodeIcon width={14} height={14} /> Describe in console
-              </MenuItem>
-              <div className="my-1 h-px bg-edge" />
-              <MenuItem danger onClick={() => { setDeleting(t); close() }}>
-                <TrashIcon width={14} height={14} /> Delete topic…
-              </MenuItem>
+              <TopicMenuItems
+                topic={t.name}
+                close={close}
+                onOpenView={(id) => onOpenTopic(t.name, id)}
+                onProduce={() => onProduce(t.name)}
+                onRunCommand={onRunCommand}
+                onDelete={() => setDeleting(t)}
+              />
             </div>
           )}
         </Popover>

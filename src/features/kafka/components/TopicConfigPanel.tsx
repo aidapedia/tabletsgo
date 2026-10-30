@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import Button from '@/shared/ui/buttons/Button'
 import IconButton from '@/shared/ui/buttons/IconButton'
+import RefreshButton from '@/shared/ui/buttons/RefreshButton'
 import TextButton from '@/shared/ui/buttons/TextButton'
 import Tooltip from '@/shared/ui/overlay/Tooltip'
 import SearchInput from '@/shared/ui/form/SearchInput'
@@ -25,7 +26,8 @@ export default function TopicConfigPanel({
   conn: any
   topic: string
   detail: TopicDetail | null
-  onChanged: () => void
+  /** Re-reads the topic — after a change, or from the refresh button. */
+  onChanged: () => unknown
 }) {
   const toast = useToast()
   const [filter, setFilter] = useState('')
@@ -70,6 +72,9 @@ export default function TopicConfigPanel({
         <span className="ml-auto text-[11px] text-ink-faint">
           {overrides} override{overrides === 1 ? '' : 's'} · {detail.configs.length} configs
         </span>
+        <Tooltip label="Refresh" placement="bottom">
+          <RefreshButton size="sm" iconSize={13} aria-label="Refresh configuration" onRefresh={onChanged} />
+        </Tooltip>
       </div>
 
       <div className="overflow-hidden rounded-card border border-edge bg-panel">

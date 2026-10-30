@@ -6,7 +6,16 @@ import { useSettings } from '@/features/settings'
 import { useKeymap, useShortcut } from '@/features/keymap'
 import { RedisKeyTree } from '@/features/redis'
 import useServerVersion from '@/shared/hooks/useServerVersion'
-import { KafkaSidebar, TOPIC_VIEWS, getOverview, type TopicSubView } from '@/features/kafka'
+import {
+  DeleteTopicDialog,
+  KafkaSidebar,
+  TOPIC_VIEWS,
+  TopicMenuItems,
+  getOverview,
+  topicFacts,
+  type TopicDetail,
+  type TopicSubView,
+} from '@/features/kafka'
 import CreateTablePanel from '@/features/schema-designer/components/CreateTablePanel'
 import { TemplatesPanel } from '@/features/templates'
 import {
@@ -300,8 +309,19 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
   // Deleted from its tab or from the sidebar: close the tab, re-read the topics.
   const onTopicDeleted = (topic: string) => {
     for (const v of TOPIC_VIEWS) tabs.dropTab(topicKey(topic, v.id))
+    setTopicDetails(({ [topic]: _, ...rest }) => rest)
     setKeyspaceVersion((v) => v + 1)
   }
+  // A topic tab has no header: its shape shows in the status bar, its actions
+  // in the tab's right-click menu (whose delete is confirmed here).
+  const [topicDetails, setTopicDetails] = useState<Record<string, TopicDetail>>({})
+  const [deletingTopic, setDeletingTopic] = useState<string | null>(null)
+  const onTopicDetail = (topic: string, detail: TopicDetail) =>
+    setTopicDetails((m) => (m[topic] === detail ? m : { ...m, [topic]: detail }))
+  const currentTopic = tabs.current?.kind === 'kafkaTopic' ? tabs.current.topic : null
+  const statusSubject =
+    currentTopic && topicDetails[currentTopic] ? { name: currentTopic, facts: topicFacts(topicDetails[currentTopic]) } : null
+  const menuTab = tabs.tabMenu ? tabs.tabs.find((t) => t.key === tabs.tabMenu!.key) : null
 
   const openSchema = (table: string) =>
     tabs.openTab({ key: `schema:${table}`, kind: 'schema', table, title: `${table} · schema` })
@@ -683,7 +703,7 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
               onOpenTopic={openTopic}
               onOpenGroup={openGroup}
               onProduce={openProduce}
-              onTopicDeleted={onTopicDeleted}
+              onTopicDetail={onTopicDetail}
               onGroupDeleted={(group) => {
                 tabs.dropTab(`group:${group}`)
                 setKeyspaceVersion((v) => v + 1)
@@ -707,6 +727,7 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
           detail={brokerCount != null ? `${brokerCount} broker${brokerCount === 1 ? '' : 's'}` : null}
           database={ns.database}
           schema={ns.schema}
+          subject={statusSubject}
           onSchemaHistory={openSchemaHistory}
         />
       </main>
@@ -723,6 +744,31 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
           onCloseToRight={tabs.closeTabsToRight}
           onCloseAll={tabs.closeAllTabs}
           onMoveToPane={tabs.moveTabToPane}
+          actions={
+            menuTab?.kind === 'kafkaTopic'
+              ? (close) => (
+                  <TopicMenuItems
+                    topic={menuTab.topic}
+                    current={menuTab.view}
+                    close={close}
+                    onOpenView={(view) => openTopic(menuTab.topic, view)}
+                    onProduce={() => openProduce(menuTab.topic)}
+                    onRunCommand={openQuery}
+                    onDelete={() => setDeletingTopic(menuTab.topic)}
+                  />
+                )
+              : undefined
+          }
+        />
+      )}
+
+      {deletingTopic && (
+        <DeleteTopicDialog
+          conn={nsConn}
+          topic={deletingTopic}
+          partitions={topicDetails[deletingTopic]?.partitions}
+          onClose={() => setDeletingTopic(null)}
+          onDeleted={onTopicDeleted}
         />
       )}
 

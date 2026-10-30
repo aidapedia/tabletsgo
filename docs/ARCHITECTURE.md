@@ -134,7 +134,10 @@ src/
 │   │   │                         #     prefix, groups sorted by lag; New topic; a row's menu opens any of
 │   │   │                         #     its views), TopicView (one tab per view, TOPIC_VIEWS: MessageBrowser /
 │   │   │                         #     PartitionsPanel / TopicConsumersPanel / TopicConfigPanel — the "Kafka
-│   │   │                         #     Topic Overview" template has the same as a dashboard), GroupView + ResetOffsetsDialog (live dry
+│   │   │                         #     Topic Overview" template has the same as a dashboard; no header — the
+│   │   │                         #     topic's shape goes up to the status bar via onDetail/topicFacts),
+│   │   │                         #     TopicMenuItems (the topic's actions, shared by the sidebar row ⋮ and
+│   │   │                         #     the tab's right-click menu), GroupView + ResetOffsetsDialog (live dry
 │   │   │                         #     run; apply needs an empty group + the id typed back),
 │   │   │                         #     ProduceView (a produce tab; production asks for the topic name),
 │   │   │                         #     CreateTopicDialog, KafkaConsole + KafkaEditor (lazy, NOT in the

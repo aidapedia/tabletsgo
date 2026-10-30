@@ -1,4 +1,5 @@
 import type { HTMLAttributes, ReactNode } from 'react'
+import { openRowMenu } from './overlay/rowMenu'
 
 /**
  * The standard clickable sidebar list row — one shared shape for the data
@@ -12,6 +13,7 @@ import type { HTMLAttributes, ReactNode } from 'react'
  *   and is auto-wrapped so its clicks don't bubble up to the row's `onClick`.
  * - `active` swaps idle styling for the selected look.
  * - `onClick`, `draggable`, `title`, drag handlers, etc. pass straight through.
+ * - Right-click opens the row's kebab menu (see `openRowMenu`).
  */
 type ListRowProps = {
   icon?: ReactNode
@@ -28,7 +30,7 @@ const activeCls = 'bg-card-hover text-ink'
 
 export default function ListRow({ icon, active = false, trailing, className = '', children, ...rest }: ListRowProps) {
   return (
-    <div className={`${base} ${active ? activeCls : idle} ${className}`} {...rest}>
+    <div className={`${base} ${active ? activeCls : idle} ${className}`} onContextMenu={openRowMenu} {...rest}>
       {icon}
       {children}
       {trailing != null && (

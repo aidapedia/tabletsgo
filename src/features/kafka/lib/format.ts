@@ -1,4 +1,4 @@
-import type { TopicSummary } from './api'
+import type { TopicDetail, TopicSummary } from './api'
 
 /** 48213004 → "48.2M"; small numbers keep their digits. */
 export function compact(n: number | null | undefined) {
@@ -79,3 +79,33 @@ export function prettyJson(value: string | null) {
 
 // A string as a single-quoted command argument (doubling any quote inside).
 export const quote = (s: string) => `'${String(s).replace(/'/g, "''")}'`
+
+// 604800000 → "7 d", 3600000 → "1 h".
+export function formatMs(ms: number) {
+  if (!Number.isFinite(ms)) return String(ms)
+  const units: [number, string][] = [
+    [86400000, 'd'],
+    [3600000, 'h'],
+    [60000, 'min'],
+    [1000, 's'],
+  ]
+  for (const [size, unit] of units) if (ms >= size && ms % size === 0) return `${ms / size} ${unit}`
+  for (const [size, unit] of units) if (ms >= size) return `${(ms / size).toFixed(1)} ${unit}`
+  return `${ms} ms`
+}
+
+/** A topic's shape in a few short facts — what the status bar shows for a topic tab. */
+export function topicFacts(detail: TopicDetail): string[] {
+  const cfg = (name: string) => detail.configs.find((c) => c.name === name)?.value
+  const retention = cfg('retention.ms')
+  const compression = cfg('compression.type')
+  return [
+    detail.internal && 'internal',
+    `${detail.partitions} partition${detail.partitions === 1 ? '' : 's'}`,
+    `RF ${detail.replication}`,
+    cfg('min.insync.replicas') && `min ISR ${cfg('min.insync.replicas')}`,
+    cfg('cleanup.policy') && `cleanup: ${cfg('cleanup.policy')}`,
+    retention && `retention ${retention === '-1' ? '∞' : formatMs(Number(retention))}`,
+    compression && compression !== 'producer' && `compression: ${compression}`,
+  ].filter(Boolean) as string[]
+}

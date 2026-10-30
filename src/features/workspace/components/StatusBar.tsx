@@ -6,13 +6,15 @@ import { consoleKindOf } from '@/shared/config/databaseTypes'
 // Thin bar pinned to the bottom of the console's main area (the icon rail and
 // Tables sidebar run past it, full height): what you're connected to (database
 // type + server version + name + environment) on the left, the schema version on the right.
-// The one place that answers "which database am I about to change?".
+// The one place that answers "which database am I about to change?" — and, when
+// the focused tab is about one thing (a Kafka topic), what that thing looks like.
 export default function StatusBar({
   conn,
   serverVersion,
   detail,
   database,
   schema,
+  subject,
   onSchemaHistory,
 }: {
   conn: any
@@ -22,10 +24,13 @@ export default function StatusBar({
   detail?: string | null
   database?: string
   schema?: string
+  /** The focused tab's subject and its shape ("orders" · "6 partitions", "RF 3"). */
+  subject?: { name: string; facts: string[] } | null
   onSchemaHistory: () => void
 }) {
   if (!conn) return null
   const namespace = [database, schema].filter(Boolean).join(' / ')
+  const sql = consoleKindOf(conn.type) === 'sql'
   return (
     <footer className="flex h-[26px] shrink-0 items-center gap-2.5 border-t border-edge bg-panel px-3 text-[11px] text-ink-faint">
       <span className="flex shrink-0 items-center gap-1.5">
@@ -47,9 +52,22 @@ export default function StatusBar({
       )}
       {/* Schemaless engines (Redis, Kafka) never run DDL, so their schema version
           would sit at v1 forever — show the current namespace there instead. */}
-      <div className="ml-auto flex shrink-0 items-center">
-        {consoleKindOf(conn.type) !== 'sql' ? (
-          <span className="px-1.5 py-0.5 font-medium">{namespace}</span>
+      <div className="ml-auto flex min-w-0 items-center gap-2.5">
+        {subject && (
+          <Tooltip label={[subject.name, ...subject.facts].join('\n')} placement="top" multiline wrapperClassName="min-w-0">
+            <span className="flex min-w-0 items-center gap-1.5 truncate">
+              <span className="truncate font-mono text-ink-dim">{subject.name}</span>
+              {subject.facts.map((f) => (
+                <span key={f} className="hidden shrink-0 before:mr-1.5 before:content-['·'] md:inline">
+                  {f}
+                </span>
+              ))}
+            </span>
+          </Tooltip>
+        )}
+        {subject && (namespace || sql) && <span className="text-edge-strong">|</span>}
+        {!sql ? (
+          namespace && <span className="px-1.5 py-0.5 font-medium">{namespace}</span>
         ) : (
           <Tooltip label="Schema version history" placement="top">
             <button

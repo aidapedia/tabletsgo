@@ -6,7 +6,7 @@ import QueryHistoryView from './QueryHistoryView'
 import SchemaHistoryView from './SchemaHistoryView'
 import DataTransferView, { type TransferMode } from './DataTransferView'
 import { RedisKeyView } from '@/features/redis'
-import { GroupView, ProduceView, TopicView, type TopicSubView } from '@/features/kafka'
+import { GroupView, ProduceView, TopicView, type TopicDetail, type TopicSubView } from '@/features/kafka'
 import type { ConsoleKind } from '@/shared/config/databaseTypes'
 import { TemplateDetailView, TEMPLATES } from '@/features/templates'
 import { DIALECT } from '../lib/dialect'
@@ -57,7 +57,8 @@ type Props = {
   onOpenTopic: (topic: string, view?: TopicSubView) => void
   onOpenGroup: (group: string) => void
   onProduce: (topic?: string, draft?: any) => void
-  onTopicDeleted: (topic: string) => void
+  /** A topic tab read its topic's description — for the status bar. */
+  onTopicDetail: (topic: string, detail: TopicDetail) => void
   onGroupDeleted: (group: string) => void
   onDashboardRenamed: (id: string, name: string) => void
   onTemplateApplied: (res: any) => void
@@ -98,7 +99,7 @@ export default function TabContent({
   onOpenTopic,
   onOpenGroup,
   onProduce,
-  onTopicDeleted,
+  onTopicDetail,
   onGroupDeleted,
   onDashboardRenamed,
   onTemplateApplied,
@@ -185,11 +186,10 @@ export default function TabContent({
           conn={nsConn}
           topic={t.topic}
           view={t.view}
-          onOpenView={(view) => onOpenTopic(t.topic, view)}
           onProduce={onProduce}
           onRunCommand={onNewQuery}
           onOpenGroup={onOpenGroup}
-          onDeleted={onTopicDeleted}
+          onDetail={(detail) => onTopicDetail(t.topic, detail)}
         />
       )
     case 'kafkaGroup':

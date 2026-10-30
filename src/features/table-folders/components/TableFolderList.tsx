@@ -12,6 +12,7 @@ import {
 import IconButton from '@/shared/ui/buttons/IconButton'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
 import Popover from '@/shared/ui/overlay/Popover'
+import { openRowMenu } from '@/shared/ui/overlay/rowMenu'
 import { ContextMenuSub } from '@/shared/ui/overlay/ContextMenu'
 import { Input } from '@/shared/ui/form/Input'
 import { useToast } from '@/shared/ui/feedback/Toast'
@@ -345,6 +346,7 @@ export default function TableFolderList({
           onDragStart={dragStart('folder', folder.id)}
           onDragEnd={dragEnd}
           onClick={() => toggle(folder.id)}
+          onContextMenu={openRowMenu}
           className={`${rowBase} cursor-pointer ${isDrop ? 'text-ink' : rowIdle}`}
         >
           <FolderGlyph className="shrink-0 text-ink-faint" width={15} height={15} style={tint} />
@@ -359,6 +361,7 @@ export default function TableFolderList({
                 <IconButton
                   size="sm"
                   active={open}
+                  data-row-menu aria-expanded={open}
                   onClick={toggleMenu}
                   aria-label="Folder actions"
                   className={open ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}

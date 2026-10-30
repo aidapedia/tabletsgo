@@ -169,6 +169,7 @@ export default function RedisKeyTree({
                   <IconButton
                     size="sm"
                     active={menuOpen}
+                    data-row-menu aria-expanded={menuOpen}
                     onClick={toggleMenu}
                     aria-label={`${node.prefix} actions`}
                     className={menuOpen ? 'opacity-100' : '!text-ink-faint opacity-0 group-hover:opacity-100'}
@@ -229,6 +230,7 @@ export default function RedisKeyTree({
               <IconButton
                 size="sm"
                 active={open}
+                data-row-menu aria-expanded={open}
                 onClick={toggleMenu}
                 aria-label={`${meta.key} actions`}
                 className={open ? 'opacity-100' : '!text-ink-faint opacity-0 group-hover:opacity-100'}

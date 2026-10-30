@@ -1,5 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import Badge from '@/shared/ui/Badge'
+import RefreshButton from '@/shared/ui/buttons/RefreshButton'
+import Tooltip from '@/shared/ui/overlay/Tooltip'
 import { listGroups, type GroupSummary } from '../lib/api'
 import { compact, groupStateLook, lagTone } from '../lib/format'
 
@@ -8,17 +10,34 @@ export default function TopicConsumersPanel({ conn, topic, onOpenGroup }: { conn
   const [groups, setGroups] = useState<GroupSummary[] | null>(null)
   const [error, setError] = useState<string | null>(null)
 
+  const load = useCallback(
+    () =>
+      listGroups(conn)
+        .then((all) => {
+          setGroups(all.filter((g) => g.topics.includes(topic)))
+          setError(null)
+        })
+        .catch((e) => setError(e.message)),
+    [conn, topic]
+  )
+
   useEffect(() => {
-    listGroups(conn)
-      .then((all) => setGroups(all.filter((g) => g.topics.includes(topic))))
-      .catch((e) => setError(e.message))
-  }, [conn, topic])
+    load()
+  }, [load])
 
   if (error) return <div className="mx-[18px] my-4 rounded-[9px] border border-red/25 bg-red/10 px-3.5 py-3 font-mono text-[11px] text-[#ff9b9b]">{error}</div>
   if (!groups) return <div className="p-[30px] text-center text-xs text-ink-faint">Reading consumer groups…</div>
 
   return (
     <div className="min-h-0 flex-1 overflow-y-auto px-[18px] py-4">
+      <div className="mb-3 flex items-center gap-3">
+        <span className="text-[11px] text-ink-faint">
+          {groups.length} group{groups.length === 1 ? '' : 's'} reading {topic}
+        </span>
+        <Tooltip label="Refresh" placement="bottom" wrapperClassName="ml-auto">
+          <RefreshButton size="sm" iconSize={13} aria-label="Refresh consumer groups" onRefresh={load} />
+        </Tooltip>
+      </div>
       {groups.length === 0 ? (
         <div className="rounded-card border border-dashed border-edge-strong p-8 text-center text-xs text-ink-faint">No consumer group has committed offsets on {topic}.</div>
       ) : (

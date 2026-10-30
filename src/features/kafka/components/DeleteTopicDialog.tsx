@@ -4,7 +4,7 @@ import { deleteTopic } from '../lib/api'
 
 /**
  * Type-the-name confirmation for deleting a topic, then the delete itself.
- * Shared by the topic tab's header menu and the sidebar's row menu.
+ * Shared by the topic tab's right-click menu and the sidebar's row menu.
  */
 export default function DeleteTopicDialog({
   conn,

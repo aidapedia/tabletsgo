@@ -162,6 +162,7 @@ export default function ObjectBrowser({
               <IconButton
                 size="sm"
                 active={open}
+                data-row-menu aria-expanded={open}
                 onClick={toggle}
                 aria-label={`${obj.type} actions`}
                 className={open ? 'opacity-100' : '!text-ink-faint opacity-0 group-hover:opacity-100'}

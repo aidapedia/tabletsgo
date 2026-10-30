@@ -17,6 +17,7 @@ import MenuItem from '@/shared/ui/navigation/MenuItem'
 import RowLabel from '@/shared/ui/RowLabel'
 import ListRow from '@/shared/ui/ListRow'
 import Popover from '@/shared/ui/overlay/Popover'
+import { openRowMenu } from '@/shared/ui/overlay/rowMenu'
 import Tooltip from '@/shared/ui/overlay/Tooltip'
 import { MAX_DASHBOARD_FOLDER_DEPTH } from '../types'
 import type { DashboardFolder, DashboardSummary } from '../types'
@@ -229,6 +230,7 @@ export default function DashboardsPanel({
               <IconButton
                 size="sm"
                 active={open}
+                data-row-menu aria-expanded={open}
                 onClick={toggle}
                 aria-label="Dashboard actions"
                 className={open ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}
@@ -290,6 +292,7 @@ export default function DashboardsPanel({
           onDragStart={(e) => onFolderDragStart(e, f.id)}
           onDragEnd={onDragEnd}
           onClick={() => toggleFolder(f.id)}
+          onContextMenu={openRowMenu}
           {...dropProps(f.id)}
           className={`${rowBase} cursor-pointer ${drag?.type === 'folder' && drag.id === f.id ? 'opacity-50' : ''} ${
             isDrop ? 'bg-green/15 text-ink ring-1 ring-green-dim' : rowIdle
@@ -309,7 +312,7 @@ export default function DashboardsPanel({
               align="right"
               width={180}
               trigger={({ open, toggle }) => (
-                <IconButton size="sm" active={open} onClick={toggle} aria-label="Folder actions" className={open ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}>
+                <IconButton size="sm" active={open} data-row-menu aria-expanded={open} onClick={toggle} aria-label="Folder actions" className={open ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}>
                   <MoreVerticalIcon width={15} height={15} />
                 </IconButton>
               )}
