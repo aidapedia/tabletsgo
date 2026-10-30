@@ -190,7 +190,7 @@ export default function KafkaSidebar({
         />
       </div>
 
-      <div className="flex items-center justify-between px-4 pb-1 pt-3">
+      <div className="flex items-center justify-between px-4 pb-2 pt-3">
         <span className="text-xs font-semibold">{view === 'topics' ? 'Topics' : 'Consumer groups'}</span>
         <div className="flex gap-1">
           <Tooltip label="Refresh" placement="bottom">
@@ -226,13 +226,6 @@ export default function KafkaSidebar({
             </>
           )}
         </div>
-      </div>
-
-      <div className="flex items-center gap-1.5 px-4 pb-2.5 text-[10px] text-ink-faint">
-        <span className={`h-1.5 w-1.5 rounded-full ${overview ? 'bg-status-ok' : 'bg-ink-faint'}`} />
-        {overview
-          ? `${overview.brokers.length} broker${overview.brokers.length === 1 ? '' : 's'} · ${overview.topicCount} topics`
-          : 'Connecting…'}
       </div>
 
       {searchOpen && (

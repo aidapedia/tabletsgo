@@ -14,6 +14,7 @@ import {
   MenuIcon,
   MoreVerticalIcon,
   SearchIcon,
+  SendIcon,
   TableIcon,
   TagIcon,
   TerminalIcon,
@@ -26,6 +27,8 @@ type Props = {
   bindings: any
   schemaVersion: number
   changeCount: number
+  /** False when nothing can be staged: Redis/Kafka, or Direct execute on. */
+  showChanges: boolean
   onOpenDrawer: () => void
   onCreateTable: () => void
   onNewQuery: () => void
@@ -33,6 +36,8 @@ type Props = {
   onNewDashboard: () => void
   onOpenPalette: () => void
   onOpenHistory: () => void
+  /** Kafka only: a blank produce form, no topic picked yet. */
+  onProduce: () => void
   onOpenTransfer: () => void
   onOpenSchemaEditor: () => void
   onOpenSchemaHistory: () => void
@@ -55,6 +60,7 @@ export default function ConsoleToolbar({
   bindings,
   schemaVersion,
   changeCount,
+  showChanges,
   onOpenDrawer,
   onCreateTable,
   onNewQuery,
@@ -62,6 +68,7 @@ export default function ConsoleToolbar({
   onNewDashboard,
   onOpenPalette,
   onOpenHistory,
+  onProduce,
   onOpenTransfer,
   onOpenSchemaEditor,
   onOpenSchemaHistory,
@@ -134,6 +141,13 @@ export default function ConsoleToolbar({
               <HistoryIcon width={16} height={16} />
             </IconButton>
           </Tooltip>
+          {kind === 'stream' && (
+            <Tooltip label="Produce message" placement="bottom">
+              <IconButton size="toolbar" onClick={onProduce} aria-label="Produce message">
+                <SendIcon width={16} height={16} />
+              </IconButton>
+            </Tooltip>
+          )}
           {/* Table rows out to / in from CSV, JSON or SQL files — one tab, its
               own Export/Import switch. Tableless engines (Redis, Kafka) have no rows
               to move, so it hides. */}
@@ -156,7 +170,7 @@ export default function ConsoleToolbar({
           )}
         </div>
 
-        {/* Mobile overflow: the history/transfer/schema entries hidden above. */}
+        {/* Mobile overflow: the history/produce/transfer/schema entries hidden above. */}
         <div className="hidden max-[720px]:block">
           <Popover
             align="right"
@@ -172,6 +186,11 @@ export default function ConsoleToolbar({
                 <MenuItem onClick={() => { onOpenHistory(); close() }}>
                   <HistoryIcon width={14} height={14} /> Query history
                 </MenuItem>
+                {kind === 'stream' && (
+                  <MenuItem onClick={() => { onProduce(); close() }}>
+                    <SendIcon width={14} height={14} /> Produce message
+                  </MenuItem>
+                )}
                 {!tableless && (
                   <MenuItem onClick={() => { onOpenTransfer(); close() }}>
                     <TransferIcon width={14} height={14} /> Export / Import
@@ -190,16 +209,18 @@ export default function ConsoleToolbar({
           </Popover>
         </div>
 
-        <Button variant="ghost" onClick={onOpenChanges} title="View changes">
-          <span className="max-[720px]:hidden">Changes</span>
-          <span
-            className={`rounded-[20px] px-[7px] text-xs ${
-              changeCount > 0 ? 'bg-green text-white' : 'bg-edge text-ink-faint'
-            }`}
-          >
-            {changeCount}
-          </span>
-        </Button>
+        {showChanges && (
+          <Button variant="ghost" onClick={onOpenChanges} title="View changes">
+            <span className="max-[720px]:hidden">Changes</span>
+            <span
+              className={`rounded-[20px] px-[7px] text-xs ${
+                changeCount > 0 ? 'bg-green text-white' : 'bg-edge text-ink-faint'
+              }`}
+            >
+              {changeCount}
+            </span>
+          </Button>
+        )}
       </div>
     </div>
   )

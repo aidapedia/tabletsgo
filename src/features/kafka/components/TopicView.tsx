@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react'
-import Button from '@/shared/ui/buttons/Button'
 import IconButton from '@/shared/ui/buttons/IconButton'
 import RefreshButton from '@/shared/ui/buttons/RefreshButton'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
@@ -128,9 +127,11 @@ export default function TopicView({
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="ghost" size="sm" icon={SendIcon} onClick={() => onProduce(topic)}>
-              Produce
-            </Button>
+            <Tooltip label="Produce message" placement="bottom">
+              <IconButton size="toolbar" onClick={() => onProduce(topic)} aria-label="Produce message">
+                <SendIcon width={15} height={15} />
+              </IconButton>
+            </Tooltip>
             <Tooltip label="Refresh" placement="bottom">
               <RefreshButton size="toolbar" iconSize={15} aria-label="Refresh topic" onRefresh={load} />
             </Tooltip>

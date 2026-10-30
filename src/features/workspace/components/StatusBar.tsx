@@ -10,6 +10,7 @@ import { consoleKindOf } from '@/shared/config/databaseTypes'
 export default function StatusBar({
   conn,
   serverVersion,
+  detail,
   database,
   schema,
   onSchemaHistory,
@@ -17,6 +18,8 @@ export default function StatusBar({
   conn: any
   /** The server's version ("7.4.8"), when the engine reports one. */
   serverVersion?: string | null
+  /** A short engine-specific fact beside the name ("3 brokers"). */
+  detail?: string | null
   database?: string
   schema?: string
   onSchemaHistory: () => void
@@ -36,6 +39,12 @@ export default function StatusBar({
       </span>
       <span className="text-edge-strong">|</span>
       <span className="truncate text-ink-dim">{conn.name}</span>
+      {detail && (
+        <>
+          <span className="text-edge-strong">|</span>
+          <span className="shrink-0">{detail}</span>
+        </>
+      )}
       {/* Schemaless engines (Redis, Kafka) never run DDL, so their schema version
           would sit at v1 forever — show the current namespace there instead. */}
       <div className="ml-auto flex shrink-0 items-center">

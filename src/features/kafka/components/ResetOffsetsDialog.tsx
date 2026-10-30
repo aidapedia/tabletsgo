@@ -93,7 +93,7 @@ export default function ResetOffsetsDialog({
 
   return (
     <Modal title={<>Reset offsets · <span className="font-mono">{group}</span></>} onClose={onClose} width={840}>
-      <p className="-mt-2 mb-4 text-[12px] text-ink-dim">Moves the group's committed position. Its consumers pick up from here when they restart.</p>
+      <p className="mb-4 text-[12px] text-ink-dim">Moves the group's committed position. Its consumers pick up from here when they restart.</p>
 
       {active && (
         <div className="mb-4 rounded-[9px] border border-amber/30 bg-amber/10 px-3.5 py-2.5 text-[12px] text-amber">

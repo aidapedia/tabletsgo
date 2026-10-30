@@ -39,14 +39,17 @@ export default function ConnectionFormPage() {
     )
   }
 
-  const handleSave = async (data) => {
+  // `connect` lands a new connection straight in its console (the form already
+  // probed it); a plain save lands on its detail page.
+  const handleSave = async (data, { connect = false } = {}) => {
     if (isEdit) {
       await updateConnection(conn.id, data)
       navigate(`/connections/${conn.id}`)
       return
     }
     const created = await addConnection(data)
-    navigate(created ? `/connections/${created.id}` : '/connections')
+    if (!created) navigate('/connections')
+    else navigate(connect ? `/connection/${created.id}` : `/connections/${created.id}`)
   }
 
   return (

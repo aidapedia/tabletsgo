@@ -38,7 +38,7 @@ const quote = (s: string) => `'${s.replace(/'/g, "''")}'`
 
 /**
  * A topic's messages: a bounded read with a filter bar, the shared DataGrid the
- * SQL and Redis consoles use, and — from a row's right-click menu — the message
+ * SQL and Redis consoles use, and — on a double-click or from a row's right-click menu — the message
  * in full beside it. Every fetch is one request to
  * `/streams/topics/:topic/messages` — no consumer group, no commit, capped by
  * the server's read limits (the footer says when a cap cut it short).
@@ -238,7 +238,13 @@ export default function MessageBrowser({
           {!error && (
             <div className="flex min-h-0 flex-1 flex-col">
               {rows.length > 0 && (
-                <DataGrid columns={COLUMNS} rows={gridRows} columnWidths={COLUMN_WIDTHS} onCellContextMenu={openMenu} />
+                <DataGrid
+                  columns={COLUMNS}
+                  rows={gridRows}
+                  columnWidths={COLUMN_WIDTHS}
+                  onCellContextMenu={openMenu}
+                  onCellDoubleClick={({ rowIndex }: any) => setSelected(keyOf(rows[rowIndex]))}
+                />
               )}
               {!loading && page && !rows.length && (
                 <div className="p-[30px] text-center text-xs text-ink-faint">
@@ -252,7 +258,7 @@ export default function MessageBrowser({
             <div className="flex flex-wrap items-center gap-3 border-t border-edge px-[18px] py-2 text-[11px] text-ink-faint">
               <span>
                 {rows.length.toLocaleString()} shown · {page.scanned.toLocaleString()} scanned · {page.elapsedMs} ms
-                {rows.length > 0 && !current && ' · right-click a message to inspect it'}
+                {rows.length > 0 && !current && ' · double-click a message to inspect it'}
                 {page.cappedBy && (
                   <span className="text-amber"> · stopped at the {page.cappedBy === 'time' ? 'time' : 'size'} limit — narrow the range or filter</span>
                 )}

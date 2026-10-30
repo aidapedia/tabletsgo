@@ -6,7 +6,7 @@ import { useSettings } from '@/features/settings'
 import { useKeymap, useShortcut } from '@/features/keymap'
 import { RedisKeyTree } from '@/features/redis'
 import useServerVersion from '@/shared/hooks/useServerVersion'
-import { KafkaSidebar, TOPIC_VIEWS, type TopicSubView } from '@/features/kafka'
+import { KafkaSidebar, TOPIC_VIEWS, getOverview, type TopicSubView } from '@/features/kafka'
 import CreateTablePanel from '@/features/schema-designer/components/CreateTablePanel'
 import { TemplatesPanel } from '@/features/templates'
 import {
@@ -109,6 +109,19 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
   // Shown in the status bar, for every engine that can report one.
   const serverVersion = useServerVersion(conn)
   const tableless = kind !== 'sql'
+  // A stream cluster's size, for the status bar ("3 brokers").
+  const [brokerCount, setBrokerCount] = useState<number | null>(null)
+  useEffect(() => {
+    setBrokerCount(null)
+    if (!conn || kind !== 'stream') return
+    let live = true
+    getOverview(conn)
+      .then((o) => live && setBrokerCount(o.brokers.length))
+      .catch(() => {})
+    return () => {
+      live = false
+    }
+  }, [conn?.id, kind])
 
   const [sidebarOpen, setSidebarOpen] = useState(false) // mobile drawer
   const [tablesVisible, setTablesVisible] = useState(true) // left panel visible
@@ -158,6 +171,10 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
       if (tabs.hasTabOfKind('schemaHistory')) schemaHistory.loadSchemaHistory()
     },
   })
+  // Only the SQL engines stage — Redis and Kafka mutations always run at once.
+  // With Direct execute on nothing is staged either, unless changes were queued
+  // before it was switched on: keep the panel reachable so they can be committed.
+  const showChanges = !tableless && (!directExecute || changes.changes.length > 0)
 
   const history = useQueryHistory(id, { user, isOpen: () => tabs.hasTabOfKind('history') })
 
@@ -407,6 +424,7 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
     kind,
     bindings,
     schemaVersion,
+    showChanges,
     splitDir: tabs.splitDir,
     actions: {
       newQuery: () => openQuery(),
@@ -570,6 +588,7 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
           bindings={bindings}
           schemaVersion={schemaVersion}
           changeCount={changes.changes.length}
+          showChanges={showChanges}
           onOpenDrawer={() => setSidebarOpen(true)}
           onCreateTable={() => setCreatingTable(true)}
           onNewQuery={() => openQuery()}
@@ -577,6 +596,7 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
           onNewDashboard={() => dashboards.create()}
           onOpenPalette={() => setPaletteOpen(true)}
           onOpenHistory={openHistory}
+          onProduce={() => openProduce()}
           onOpenTransfer={() => openTransfer()}
           onOpenSchemaEditor={openSchemaEditorPage}
           onOpenSchemaHistory={openSchemaHistory}
@@ -684,6 +704,7 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
         <StatusBar
           conn={conn}
           serverVersion={serverVersion}
+          detail={brokerCount != null ? `${brokerCount} broker${brokerCount === 1 ? '' : 's'}` : null}
           database={ns.database}
           schema={ns.schema}
           onSchemaHistory={openSchemaHistory}

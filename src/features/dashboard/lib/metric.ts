@@ -20,6 +20,8 @@ export function aggregateMetric(result: QueryResult, metric: WidgetMetric): stri
   const { columns, rows } = firstRows(result)
   const agg = metric.aggregate === 'rate' ? 'sum' : metric.aggregate ?? 'first'
   if (agg === 'count' && !metric.column) return rows.length
+  // Nothing to add up is a total of nothing, not a missing value.
+  if (!rows.length && (agg === 'count' || agg === 'sum')) return 0
   if (!columns.length) return null
   const idx = metric.column ? columns.indexOf(metric.column) : 0
   if (idx < 0) return null
@@ -33,6 +35,12 @@ export function aggregateMetric(result: QueryResult, metric: WidgetMetric): stri
   if (agg === 'min') return Math.min(...nums)
   if (agg === 'max') return Math.max(...nums)
   return nums.reduce((s, n) => s + n, 0) / nums.length
+}
+
+/** The column the metric names when the result has rows but not that column — a typo, or an engine that doesn't return it. */
+export function missingMetricColumn(result: QueryResult, metric: WidgetMetric): string | null {
+  const { columns, rows } = firstRows(result)
+  return metric.column && rows.length && !columns.includes(metric.column) ? metric.column : null
 }
 
 export type RateSample = { total: number; at: number }

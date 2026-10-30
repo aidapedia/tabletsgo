@@ -237,9 +237,10 @@ function OptionCard({
 // reaches the database, SSL/TLS included. Its own route, like the detail view:
 // the page owns the tab so `/connections/:id/edit/backup` is a real address.
 //
-// The engine is chosen once, at creation: everything filed under a connection
-// (dashboards, workflows, schema history) is written for it, so editing shows it
-// locked and the server refuses a change.
+// The engine is chosen once, in the type picker before this form: everything
+// filed under a connection (dashboards, workflows, schema history) is written for
+// it, so the form only shows it locked — create and edit alike — and the server
+// refuses a change.
 //
 // `onClose` is where cancelling lands (the record being edited, or the list for
 // a new one); `onList` is the list itself, which the breadcrumb needs as its
@@ -259,7 +260,7 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
   const [tagDraft, setTagDraft] = useState('')
   const [addingTag, setAddingTag] = useState(false)
   const [test, setTest] = useState(null) // { ok, message } | 'loading'
-  const [saving, setSaving] = useState(false)
+  const [saving, setSaving] = useState<false | 'save' | 'connect'>(false)
 
   const isSqlite = form.type === 'sqlite'
   const isRedis = form.type === 'redis'
@@ -294,13 +295,6 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
     const uri = e.target.value
     const parsed = parseUri(uri, form.type)
     setForm((f) => ({ ...f, uri, ...(parsed || {}) }))
-    setTest(null)
-  }
-
-  const pickType = (id) => {
-    if (isEdit) return
-    setForm((f) => ({ ...blankFor(id), name: f.name, folder: f.folder, tags: f.tags }))
-    setVia('direct')
     setTest(null)
   }
 
@@ -346,7 +340,10 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
     else toast.error(result?.message || 'Connection failed')
   }
 
-  const handleSave = async () => {
+  // `connect` (create only) also opens the console once saved. A plain save of a
+  // new connection skips the probe, so one can be stored while its database is
+  // unreachable (VPN down, server not up yet); editing always probes first.
+  const handleSave = async ({ connect = false } = {}) => {
     if (!valid || saving) return
     const payload = {
       ...withFirstBroker(form),
@@ -359,8 +356,14 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
       database: form.database?.trim() || '',
       folder: form.folder.trim(),
     }
+    if (!isEdit && !connect) {
+      setSaving('save')
+      await onSave(payload, { connect: false })
+      setSaving(false)
+      return
+    }
     // Verify the connection works before saving so we never store a broken one.
-    setSaving(true)
+    setSaving('connect')
     const result = await testConnection(payload)
     setSaving(false)
     if (!result?.ok) {
@@ -370,7 +373,7 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
     }
     setTest(result)
     toast.success(`Connected — saving "${payload.name}".`)
-    onSave(payload)
+    onSave(payload, { connect })
   }
 
   const tags = form.tags || []
@@ -383,33 +386,19 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
         desc={
           isEdit
             ? 'The engine is fixed once a connection exists — create a new connection to use a different one.'
-            : 'The engine you are connecting to. It cannot be changed later.'
+            : 'Chosen in the previous step and fixed from here on — go back to Connections to pick a different one.'
         }
       >
-        {isEdit ? (
-          <div className="mb-4 flex items-center gap-3 rounded-soft border border-edge bg-elevated p-3.5">
-            <DbLogo type={form.type} className="h-9 w-9 shrink-0" />
-            <div className="min-w-0 flex-1">
-              <div className="text-[12px] font-semibold">{engine?.label || form.type}</div>
-              {engine && <div className="mt-0.5 text-[11px] text-ink-dim">{engine.desc}</div>}
-            </div>
-            <span className="rounded-[6px] border border-edge px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-ink-faint">
-              Locked
-            </span>
+        <div className="mb-4 flex items-center gap-3 rounded-soft border border-edge bg-elevated p-3.5">
+          <DbLogo type={form.type} className="h-9 w-9 shrink-0" />
+          <div className="min-w-0 flex-1">
+            <div className="text-[12px] font-semibold">{engine?.label || form.type}</div>
+            {engine && <div className="mt-0.5 text-[11px] text-ink-dim">{engine.desc}</div>}
           </div>
-        ) : (
-          <div className="mb-4 grid grid-cols-4 gap-3 max-[720px]:grid-cols-2 max-[560px]:grid-cols-1">
-            {DB_TYPES.map((t) => (
-              <OptionCard
-                key={t.id}
-                selected={form.type === t.id}
-                onClick={() => pickType(t.id)}
-                icon={<DbLogo type={t.id} className="h-9 w-9" />}
-                title={t.label}
-              />
-            ))}
-          </div>
-        )}
+          <span className="rounded-[6px] border border-edge px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-ink-faint">
+            Locked
+          </span>
+        </div>
       </FormSection>
 
       <FormSection title="Details">
@@ -781,12 +770,29 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
       )}
 
       <div className="flex justify-end gap-3 border-t border-edge pb-8 pt-5">
-        <Button type="button" variant="ghost" size="lg" onClick={runTest} disabled={!valid || test === 'loading' || saving}>
+        <Button type="button" variant="ghost" size="lg" onClick={runTest} disabled={!valid || test === 'loading' || !!saving}>
           {test === 'loading' ? 'Testing…' : 'Test Connection'}
         </Button>
-        <Button type="button" variant="primary" size="lg" onClick={handleSave} disabled={!valid || saving}>
-          {saving ? 'Connecting…' : `${isEdit ? 'Update' : 'Create'} Connection`}
-        </Button>
+        {isEdit ? (
+          <Button type="button" variant="primary" size="lg" onClick={() => handleSave()} disabled={!valid || !!saving}>
+            {saving ? 'Connecting…' : 'Update Connection'}
+          </Button>
+        ) : (
+          <>
+            <Button type="button" variant="ghost" size="lg" onClick={() => handleSave()} disabled={!valid || !!saving}>
+              {saving === 'save' ? 'Saving…' : 'Save'}
+            </Button>
+            <Button
+              type="button"
+              variant="primary"
+              size="lg"
+              onClick={() => handleSave({ connect: true })}
+              disabled={!valid || !!saving}
+            >
+              {saving === 'connect' ? 'Connecting…' : 'Connect'}
+            </Button>
+          </>
+        )}
       </div>
     </>
   )
@@ -815,7 +821,7 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
         desc={
           isEdit
             ? 'Update how Tabletsgo reaches this database.'
-            : 'Point Tabletsgo at a database — it is tested before it is saved.'
+            : 'Point Tabletsgo at a database. Connect tests it, saves it and opens it; Save just stores it.'
         }
       />
 

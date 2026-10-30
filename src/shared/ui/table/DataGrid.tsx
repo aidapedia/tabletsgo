@@ -151,6 +151,7 @@ export default function DataGrid({
   edits,
   onEdit,
   onCellContextMenu,
+  onCellDoubleClick, // ({ row, rowIndex, col, value }) => void — only when the grid isn't editable (there it edits)
   sort, // [{ col, dir, enabled }] — sort rules (drives header carets; disabled ones are ignored)
   onSort, // (col, additive) => void — header click; additive (Shift) adds to multi-sort
   actionsLabel = 'Actions', // header text for the trailing per-row actions column
@@ -484,7 +485,11 @@ export default function DataGrid({
                         style={ringStyle}
                         onMouseDown={(e) => startSelect(e, i, j)}
                         onMouseEnter={() => extendSelect(i, j)}
-                        onDoubleClick={() => editable && !Array.isArray(row) && startEdit(i, c, val)}
+                        onDoubleClick={() => {
+                          if (Array.isArray(row)) return
+                          if (editable) startEdit(i, c, val)
+                          else onCellDoubleClick?.({ row, rowIndex: i, col: c, value: val })
+                        }}
                         onContextMenu={(e) => {
                           if (!onCellContextMenu || Array.isArray(row)) return
                           e.preventDefault()

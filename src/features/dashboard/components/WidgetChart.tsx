@@ -2,7 +2,7 @@ import { useMemo } from 'react'
 import EmptyState from '@/shared/ui/feedback/EmptyState'
 import { widgetRowActions, type VariableValues, type Widget } from '../types'
 import { toPieData, toSankeyData, toXYSeries, type QueryResult } from '../lib/queryData'
-import { activeThreshold, aggregateMetric, formatMetric, metricOf, thresholdCaption } from '../lib/metric'
+import { activeThreshold, aggregateMetric, formatMetric, metricOf, missingMetricColumn, thresholdCaption } from '../lib/metric'
 import { thresholdLook } from '../lib/thresholds'
 import { useChartPalette, MAX_SERIES } from '../lib/palette'
 import XYChart from './charts/XYChart'
@@ -20,6 +20,8 @@ function MetricWidget({ widget, result, rate, values }: { widget: Widget; result
   const isRate = metric.aggregate === 'rate'
   const value = isRate ? rate ?? null : aggregateMetric(result, metric)
   const ready = useMountAnimation(result)
+  const missing = missingMetricColumn(result, metric)
+  if (missing) return <EmptyState>The result has no “{missing}” column.</EmptyState>
   // A rate shows "…" until its second sample lands; anything else with no value is empty.
   if (value === null && !isRate) return <EmptyState>Query returned no value.</EmptyState>
   const step = activeThreshold(value, metric)

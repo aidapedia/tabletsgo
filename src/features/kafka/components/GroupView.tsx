@@ -85,7 +85,7 @@ export default function GroupView({
         <div className="flex items-center gap-2">
           <Tooltip label={busy || 'Move the group to another position'} placement="bottom">
             <Button variant="ghost" size="sm" onClick={() => setResetting(true)} disabled={!topics.length}>
-              Reset offsets…
+              Reset offsets
             </Button>
           </Tooltip>
           <Tooltip label={busy || 'Delete the group and its committed offsets'} placement="bottom">

@@ -100,8 +100,10 @@ export default function WidgetCard({
       if (isRate && !r?.error) {
         const total = Number(aggregateMetric(r, metric))
         const next = { total, at: Date.now() }
-        setRate((prev) => sampleRate(lastSample.current, next) ?? prev)
+        // Read the previous sample now — a state updater would run after it is replaced.
+        const measured = sampleRate(lastSample.current, next)
         lastSample.current = next
+        if (measured !== null) setRate(measured)
       }
       setResult(r)
       setLoading(false)
@@ -150,19 +152,11 @@ export default function WidgetCard({
   }
 
   return (
-    <div className={`flex h-full flex-col overflow-hidden rounded-card border ${look.cardClass}`} style={look.cardStyle}>
-      <div
-        className={`flex shrink-0 items-center gap-2 px-3 pt-2.5 ${editable ? 'widget-drag-handle cursor-grab active:cursor-grabbing' : ''}`}
-      >
-        <span
-          className={`min-w-0 flex-1 truncate font-semibold ${isTile ? 'text-[10px] uppercase tracking-wide' : 'text-[11px]'} ${
-            look.tinted ? look.textClass : isTile ? 'text-ink-faint' : 'text-ink-dim'
-          }`}
-          style={look.textStyle}
-        >
-          {widget.title}
-        </span>
-        {editable && (
+    <div className={`relative flex h-full flex-col overflow-hidden rounded-card border ${look.cardClass}`} style={look.cardStyle}>
+      {/* Overlaid, not in the header row: the 24px kebab would make the header taller in edit
+          mode than in view mode, shrinking the body and clipping a short (e.g. title-less text) widget. */}
+      {editable && (
+        <div className="absolute right-2 top-1.5">
           <Popover
             align="right"
             width={170}
@@ -191,7 +185,19 @@ export default function WidgetCard({
               </div>
             )}
           </Popover>
-        )}
+        </div>
+      )}
+      <div
+        className={`flex shrink-0 items-center gap-2 px-3 pt-2.5 ${editable ? 'widget-drag-handle pr-9 cursor-grab active:cursor-grabbing' : ''}`}
+      >
+        <span
+          className={`min-w-0 flex-1 truncate font-semibold ${isTile ? 'text-[10px] uppercase tracking-wide' : 'text-[11px]'} ${
+            look.tinted ? look.textClass : isTile ? 'text-ink-faint' : 'text-ink-dim'
+          }`}
+          style={look.textStyle}
+        >
+          {widget.title}
+        </span>
       </div>
 
       <div className="min-h-0 flex-1 p-2.5 pt-1.5">

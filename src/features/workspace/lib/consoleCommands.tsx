@@ -56,12 +56,14 @@ export function buildConsoleCommands({
   kind,
   bindings,
   schemaVersion,
+  showChanges,
   splitDir,
   actions: a,
 }: {
   kind: ConsoleKind
   bindings: any
   schemaVersion: number
+  showChanges: boolean
   splitDir: 'vertical' | 'horizontal' | null
   actions: Actions
 }): Command[] {
@@ -97,7 +99,9 @@ export function buildConsoleCommands({
           { id: 'export-data', group: 'View', label: 'Export data', keywords: 'download csv json sql dump tables', icon: <DownloadIcon width={15} height={15} />, run: () => a.openTransfer('export') },
           { id: 'import-data', group: 'View', label: 'Import data', keywords: 'upload csv json sql load tables', icon: <UploadIcon width={15} height={15} />, run: () => a.openTransfer('import') },
         ]),
-    { id: 'view-changes', group: 'View', label: 'View staged changes', keywords: 'commit diff pending', icon: <EditIcon width={15} height={15} />, run: a.openChanges },
+    ...(showChanges
+      ? [{ id: 'view-changes', group: 'View', label: 'View staged changes', keywords: 'commit diff pending', icon: <EditIcon width={15} height={15} />, run: a.openChanges }]
+      : []),
     { id: 'split-vertical', group: 'View', label: splitDir === 'vertical' ? 'Unsplit editor' : 'Split editor right', keywords: 'split pane side by side group', icon: <SplitVerticalIcon width={15} height={15} />, hint: hint('workspace.splitEditor'), run: () => a.toggleSplit('vertical') },
     { id: 'split-horizontal', group: 'View', label: splitDir === 'horizontal' ? 'Unsplit editor' : 'Split editor down', keywords: 'split pane stacked group', icon: <SplitHorizontalIcon width={15} height={15} />, run: () => a.toggleSplit('horizontal') },
   ]
