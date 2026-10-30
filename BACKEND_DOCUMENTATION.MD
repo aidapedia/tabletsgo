@@ -3064,10 +3064,15 @@ are rejected — they would hold the pooled connection open indefinitely.
 
 - **Body:** `{ "sql": "SELECT * FROM users", "database": "appdb", "schema": "public" }`
 - **Body (Redis):** `{ "sql": "HGETALL cfg:app", "database": "db2" }`
+- **Body (one page):** `{ "sql": "SELECT * FROM users", "page": { "limit": 21, "offset": 40 } }` —
+  optional, any engine. A SQL engine wraps the statement (`SELECT * FROM (…) AS _page LIMIT … OFFSET …`);
+  a command-driven one (Redis, Kafka) runs the command and slices the reply's rows. The caller never
+  rewrites the statement itself, which is what lets a paged dashboard table run a Kafka command.
 - **200 (SELECT):** `{ "type": "rows", "columns": [...], "rows": [...] }`
 - **200 (other):** `{ "type": "message", "message": "Query OK · 3 row(s) affected.", "rowCount": 3 }` (`rowCount` absent on Redis replies)
 - **200 (SQL error):** `{ "error": "<driver message>" }` (note: HTTP 200, error in body)
 - **400:** `{ "error": "SQL query required" }`
+- **400:** `{ "error": "page needs an integer limit ≥ 1 and offset ≥ 0" }`
 - **404:** `{ "error": "Connection not found" }`
 - **Example:** `POST http://localhost:3000/api/connections/demo-sqlite/query`
 
@@ -3578,11 +3583,11 @@ One command returns its own result; several return one summary row per command
 | Command | Returns |
 | --- | --- |
 | `TOPICS [LIKE 'orders.*'] [INTERNAL]` | topic, partitions, replication, under_replicated |
-| `DESCRIBE <topic>` | per partition: leader, replicas, isr, earliest, latest, messages |
+| `DESCRIBE <topic>` | per partition: leader, replicas, isr, earliest, latest, messages, under_replicated (isr shorter than replicas) |
 | `CONFIG <topic> [SET key=value, …]` | config, value, default — or a message once changed |
 | `CONSUME <topic> [PARTITION n] [FROM earliest\|latest\|-N\|OFFSET n\|'ISO'] [LIMIT n] [DECODE fmt] [WHERE …]` | the message columns above |
 | `PRODUCE <topic> [PARTITION n] [KEY 'k'] [HEADERS {…}] VALUE <rest of line>` | message (`VALUE null` = tombstone) |
-| `GROUPS` | group, state, members, lag, topics |
+| `GROUPS [TOPIC <topic>]` | group, state, members, lag, topics — with `TOPIC`, only the groups reading it, and lag on that topic alone (no `topics` column) |
 | `LAG <group>` (or `DESCRIBE GROUP <group>`) | topic, partition, committed, end, lag, member |
 | `CLUSTER` | node_id, host, port, controller, cluster_id |
 | `CREATE TOPIC <name> [PARTITIONS n] [REPLICATION r] [WITH key=value, …]` | message |

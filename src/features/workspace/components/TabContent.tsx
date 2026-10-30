@@ -185,7 +185,7 @@ export default function TabContent({
           conn={nsConn}
           topic={t.topic}
           view={t.view}
-          onViewChange={(view) => onOpenTopic(t.topic, view)}
+          onOpenView={(view) => onOpenTopic(t.topic, view)}
           onProduce={onProduce}
           onRunCommand={onNewQuery}
           onOpenGroup={onOpenGroup}

@@ -49,7 +49,8 @@ src/
 │   │   │                         #     useListView + ViewToggle (the per-list List / Grid switch,
 │   │   │                         #     remembered in localStorage; `view="grid"` makes DataTable draw
 │   │   │                         #     the rows as cards built from its columns, or `renderCard`'s own)
-│   │   └── (root)                #   Avatar, Badge, PersonRow, RowLabel, DragHandle (the grip a
+│   │   └── (root)                #   Avatar, Badge, PersonRow, RowLabel, HelpTip (a "?" whose hover
+│   │                             #     explains its neighbour — FormField's `help`), DragHandle (the grip a
 │   │                             #     reorderable list grabs by — pair with useDragReorder),
 │   │                             #     SaveQueryPanel, SqlEditor, JsonEditor, CommandReference (a command
 │   │                             #     console's side panel: catalog rows → insert, chevron → that command's
@@ -130,9 +131,10 @@ src/
 │   │   │                         #   see shared/config/databaseTypes). Like Redis it swaps the browser
 │   │   │                         #   sidebar and the query tab, and adds three tab kinds.
 │   │   ├── components/           #   KafkaSidebar (Topics | Groups switch: topics grouped by dotted
-│   │   │                         #     prefix, groups sorted by lag; New topic), TopicView (a topic tab:
-│   │   │                         #     MessageBrowser / PartitionsPanel / TopicConfigPanel /
-│   │   │                         #     TopicConsumersPanel), GroupView + ResetOffsetsDialog (live dry
+│   │   │                         #     prefix, groups sorted by lag; New topic; a row's menu opens any of
+│   │   │                         #     its views), TopicView (one tab per view, TOPIC_VIEWS: MessageBrowser /
+│   │   │                         #     PartitionsPanel / TopicConsumersPanel / TopicConfigPanel — the "Kafka
+│   │   │                         #     Topic Overview" template has the same as a dashboard), GroupView + ResetOffsetsDialog (live dry
 │   │   │                         #     run; apply needs an empty group + the id typed back),
 │   │   │                         #     ProduceView (a produce tab; production asks for the topic name),
 │   │   │                         #     CreateTopicDialog, KafkaConsole + KafkaEditor (lazy, NOT in the
@@ -322,12 +324,20 @@ src/
 │   │   │                         #   variant/icon, optional per-row condition that disables/hides by a
 │   │   │                         #   column value) that run a workflow with the clicked row as its trigger
 │   │   │                         #   input (Widget.pageSize/rowActions; icons in lib/rowActionIcons).
+│   │   │                         #   A table can also list its columns (Widget.tableColumns: header, display
+│   │   │                         #   text|number|compact|bytes|bar|badges|count, prefix/unit, mono, color thresholds); a metric
+│   │   │                         #   aggregates a column (Widget.metric: first|sum|count|min|max|avg|rate,
+│   │   │                         #   thresholds — base + "from value" steps with color/caption — hero or stat-tile look).
 │   │   ├── components/           #   DashboardView (tab content: toolbar + VariableBar + WidgetGrid),
-│   │   │                         #     DashboardsPanel (rail list), WidgetCard (runs its query), WidgetChart,
-│   │   │                         #     WidgetEditor + DashboardSettings (modals), MarkdownText,
+│   │   │                         #     DashboardsPanel (rail list), WidgetCard (runs its query; samples a rate
+│   │   │                         #     metric every 10 s), WidgetChart, TableWidget (per-column cells),
+│   │   │                         #     WidgetEditor + ColumnsEditor + MetricEditor + ThresholdsEditor + ColorSwatch +
+│   │   │                         #     DashboardSettings, MarkdownText,
 │   │   │                         #     charts/ (XYChart area|line|bar, PieDonut, SankeyChart, chrome)
 │   │   └── lib/                  #   api (per-connection CRUD), variables ({{}} substitution + option
-│   │                             #     resolution), queryData (result → chart shapes), palette (validated
+│   │                             #     resolution), queryData (result → chart shapes), metric (aggregate +
+│   │                             #     rate sampling), thresholds (active step + its color as card tint/text/fill),
+│   │                             #     format (number/compact/bytes, list cells), palette (validated
 │   │                             #     CVD-safe series colors), grid (collision math), scale, useSize
 │   ├── backup/                   # S3-compatible storage destinations (workspace-scoped) + the
 │   │   │                         #   per-connection backup schedule built from generic workflow nodes
@@ -348,7 +358,7 @@ src/
 │   │   │                         #   creates the workflows first, resolves `{{workflow:<key>}}`
 │   │   │                         #   placeholders in dashboard row-action `workflowId`s against the
 │   │   │                         #   newly created ids, then creates the dashboards. Filterable by
-│   │   │                         #   DB type ("postgresql" | "sqlite") against Template.databases.
+│   │   │                         #   DB type ("postgresql" | "sqlite" | "kafka") against Template.databases.
 │   │   │                         #   VSCode-style entry: a Templates icon in the console IconRail opens
 │   │   │                         #   TemplatesPanel in the sidebar; picking a template opens its detail
 │   │   │                         #   in a main-area tab (kind: 'template').

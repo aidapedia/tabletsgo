@@ -32,8 +32,8 @@ const DOCS: Record<string, Extra> = {
       { name: 'TOPIC', desc: 'Optional noise word — DESCRIBE TOPIC orders is the same as DESCRIBE orders.' },
       { name: 'GROUP id', desc: 'DESCRIBE GROUP <id> is an alias for LAG <id>.' },
     ],
-    returns: 'Rows of partition, leader, replicas, isr, earliest, latest, messages.',
-    examples: [{ command: 'DESCRIBE orders', response: 'partition  leader  replicas  isr    earliest  latest  messages\n0          1       1,2,3     1,2,3  0         10432   10432\n1          2       2,3,1     2,3,1  0         10388   10388\n…' }, { command: 'DESCRIBE GROUP billing-service', response: 'Same rows as LAG billing-service.' }],
+    returns: 'Rows of partition, leader, replicas, isr, earliest, latest, messages, under_replicated (true when isr is shorter than replicas).',
+    examples: [{ command: 'DESCRIBE orders', response: 'partition  leader  replicas  isr    earliest  latest  messages  under_replicated\n0          1       1,2,3     1,2,3  0         10432   10432     false\n1          2       2,3,1     2,3    0         10388   10388     true\n…' }, { command: 'DESCRIBE GROUP billing-service', response: 'Same rows as LAG billing-service.' }],
   },
   CONFIG: {
     writes: undefined, // reads, unless given SET
@@ -86,9 +86,15 @@ const DOCS: Record<string, Extra> = {
     ],
   },
   GROUPS: {
-    details: ['Lists consumer groups with their state, member count, total lag and the topics they consume.'],
-    returns: 'Rows of group, state, members, lag, topics.',
-    examples: [{ command: 'GROUPS', response: 'group            state   members  lag   topics\nbilling-service  Stable  3        12    orders, payments\nanalytics        Empty   0        8410  orders' }],
+    details: [
+      'Lists consumer groups with their state, member count, total lag and the topics they consume.',
+      'With TOPIC, only the groups reading that topic — committed to it or assigned it — and the lag is on that topic alone.',
+    ],
+    returns: 'Rows of group, state, members, lag, topics — or group, state, members, lag with TOPIC.',
+    examples: [
+      { command: 'GROUPS', response: 'group            state   members  lag   topics\nbilling-service  Stable  3        12    orders, payments\nanalytics        Empty   0        8410  orders' },
+      { command: 'GROUPS TOPIC orders', response: 'group            state   members  lag\nbilling-service  Stable  3        8\nanalytics        Empty   0        8410' },
+    ],
   },
   LAG: {
     details: ['Per-partition position of one consumer group: what it committed, where the log ends, and the difference.'],

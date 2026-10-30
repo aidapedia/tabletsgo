@@ -1,4 +1,5 @@
 import type { FormHTMLAttributes, LabelHTMLAttributes, ReactNode } from 'react'
+import HelpTip from '@/shared/ui/HelpTip'
 
 // A <form> wrapper. Kept thin — pass `onSubmit`; layout/spacing come from the
 // FormField children (or a `className` gap utility).
@@ -36,10 +37,14 @@ export function Label({ className = '', children, ...props }: LabelHTMLAttribute
 //
 // A field that follows something that *isn't* a field (a paragraph, a card)
 // still needs its own `mt-…` — a bottom margin can't reach upwards.
+//
+// `hint` is always shown under the control; `help` hides behind a "?" beside
+// the label until hovered — for advice, not for what the field needs to be filled.
 export function FormField({
   label,
   htmlFor,
   hint,
+  help,
   error,
   className = '',
   children,
@@ -47,6 +52,7 @@ export function FormField({
   label?: ReactNode
   htmlFor?: string
   hint?: ReactNode
+  help?: ReactNode
   error?: ReactNode
   className?: string
   children: ReactNode
@@ -54,9 +60,12 @@ export function FormField({
   return (
     <div className={`form-field mb-4 ${className}`}>
       {label && (
-        <Label htmlFor={htmlFor} className="mb-2">
-          {label}
-        </Label>
+        <div className="mb-2 flex items-center gap-1">
+          <Label htmlFor={htmlFor} className="!mb-0">
+            {label}
+          </Label>
+          {help && <HelpTip>{help}</HelpTip>}
+        </div>
       )}
       {children}
       {hint && <p className="mt-1.5 text-[11px] text-ink-faint">{hint}</p>}

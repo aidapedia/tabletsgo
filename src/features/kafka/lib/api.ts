@@ -70,7 +70,16 @@ export type ReadOptions = {
   decode?: string
 }
 
-export type GroupSummary = { id: string; state: string; protocol: string | null; members: number; topics: string[]; lag: number }
+export type GroupSummary = {
+  id: string
+  state: string
+  protocol: string | null
+  members: number
+  topics: string[]
+  /** Across every topic the group reads; `lagByTopic` splits it per topic. */
+  lag: number
+  lagByTopic: Record<string, number>
+}
 
 export type GroupOffset = {
   topic: string

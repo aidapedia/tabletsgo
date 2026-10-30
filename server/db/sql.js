@@ -187,6 +187,12 @@ export function sqlLiteral(v) {
   return `'${s.replace(/'/g, "''")}'`
 }
 
+// One page of a statement's rows, as a derived table — valid on every SQL
+// engine on the roadmap. A driver exposes it as `pageSql`; one without it gets
+// its rows sliced after the run (see runQuery in ./index.js).
+export const pageSql = (sql, { limit, offset }) =>
+  `SELECT * FROM (${String(sql).trim().replace(/;+\s*$/, '')}) AS _page LIMIT ${limit} OFFSET ${offset}`
+
 // Make a CREATE TABLE / CREATE INDEX idempotent, so an exported schema can be
 // replayed into a database that already has some of it.
 export const ifNotExists = (ddl) =>

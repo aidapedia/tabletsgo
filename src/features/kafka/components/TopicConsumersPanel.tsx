@@ -3,7 +3,7 @@ import Badge from '@/shared/ui/Badge'
 import { listGroups, type GroupSummary } from '../lib/api'
 import { compact, groupStateLook, lagTone } from '../lib/format'
 
-/** The consumer groups reading this topic — committed to it or assigned it. */
+/** The consumer groups reading this topic — committed to it or assigned it — and their lag on it. */
 export default function TopicConsumersPanel({ conn, topic, onOpenGroup }: { conn: any; topic: string; onOpenGroup: (group: string) => void }) {
   const [groups, setGroups] = useState<GroupSummary[] | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -29,12 +29,13 @@ export default function TopicConsumersPanel({ conn, topic, onOpenGroup }: { conn
                 <th className="h-8 border-b border-edge px-3.5 font-semibold">Group</th>
                 <th className="h-8 border-b border-edge px-3.5 font-semibold">State</th>
                 <th className="h-8 border-b border-edge px-3.5 text-right font-semibold">Members</th>
-                <th className="h-8 border-b border-edge px-3.5 text-right font-semibold">Total lag</th>
+                <th className="h-8 border-b border-edge px-3.5 text-right font-semibold">Lag</th>
               </tr>
             </thead>
             <tbody>
               {groups.map((g) => {
                 const look = groupStateLook(g.state)
+                const lag = g.lagByTopic?.[topic] ?? 0
                 return (
                   <tr key={g.id} onClick={() => onOpenGroup(g.id)} className="cursor-pointer hover:bg-elevated">
                     <td className="h-[34px] border-b border-edge/60 px-3.5 font-mono">{g.id}</td>
@@ -42,13 +43,13 @@ export default function TopicConsumersPanel({ conn, topic, onOpenGroup }: { conn
                       <Badge tone={look.tone}>{look.label}</Badge>
                     </td>
                     <td className="border-b border-edge/60 px-3.5 text-right">{g.members}</td>
-                    <td className={`border-b border-edge/60 px-3.5 text-right font-mono ${lagTone(g.lag)}`}>{compact(g.lag)}</td>
+                    <td className={`border-b border-edge/60 px-3.5 text-right font-mono ${lagTone(lag)}`}>{compact(lag)}</td>
                   </tr>
                 )
               })}
             </tbody>
           </table>
-          <p className="border-t border-edge px-3.5 py-2 text-[11px] text-ink-faint">Lag is across every topic the group reads. Open a group for the per-partition picture.</p>
+          <p className="border-t border-edge px-3.5 py-2 text-[11px] text-ink-faint">Lag on {topic} only. Open a group for the per-partition picture across everything it reads.</p>
         </div>
       )}
     </div>

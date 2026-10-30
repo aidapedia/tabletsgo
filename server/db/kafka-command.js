@@ -15,7 +15,7 @@
  *   CONFIG <topic> [SET key=value, …]
  *   CONSUME <topic> [PARTITION n] [FROM earliest|latest|-N|OFFSET n|'ISO time'] [LIMIT n] [DECODE fmt] [WHERE …]
  *   PRODUCE <topic> [PARTITION n] [KEY k] [HEADERS {…}] VALUE <rest of line>
- *   GROUPS
+ *   GROUPS [TOPIC <topic>]
  *   LAG <group>
  *   CLUSTER
  *   CREATE TOPIC <name> [PARTITIONS n] [REPLICATION r] [WITH key=value, …]
@@ -259,8 +259,11 @@ export function parseCommand(line) {
       return out
     }
 
-    case 'GROUPS':
-      return finish(sc, { op: 'groups' })
+    case 'GROUPS': {
+      if (sc.done()) return { op: 'groups' }
+      if (!sc.keyword('TOPIC')) throw badRequest(`Unexpected "${sc.next().raw}" — GROUPS [TOPIC <topic>].`)
+      return finish(sc, { op: 'groups', topic: sc.value('a topic name') })
+    }
 
     case 'LAG':
       return finish(sc, { op: 'lag', group: sc.value('a group id') })

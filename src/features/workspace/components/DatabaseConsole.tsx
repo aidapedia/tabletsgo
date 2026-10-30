@@ -6,7 +6,7 @@ import { useSettings } from '@/features/settings'
 import { useKeymap, useShortcut } from '@/features/keymap'
 import { RedisKeyTree } from '@/features/redis'
 import useServerVersion from '@/shared/hooks/useServerVersion'
-import { KafkaSidebar, type TopicSubView } from '@/features/kafka'
+import { KafkaSidebar, TOPIC_VIEWS, type TopicSubView } from '@/features/kafka'
 import CreateTablePanel from '@/features/schema-designer/components/CreateTablePanel'
 import { TemplatesPanel } from '@/features/templates'
 import {
@@ -269,9 +269,12 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
   const openRedisKey = (redisKey: string) =>
     tabs.openTab({ key: `rediskey:${redisKey}`, kind: 'redisKey', redisKey, title: redisKey })
 
-  // Kafka: a topic (on one of its views), a consumer group, a produce form.
-  const openTopic = (topic: string, view?: TopicSubView) =>
-    tabs.openTab({ key: `topic:${topic}`, kind: 'kafkaTopic', topic, title: topic, view }, view ? { view } : undefined)
+  // Kafka: each view of a topic (messages, partitions, consumers, config) is a
+  // tab of its own, a consumer group, a produce form. The messages tab keeps the
+  // bare `topic:` key and title — it's what opening a topic means.
+  const topicKey = (topic: string, view: TopicSubView = 'messages') => (view === 'messages' ? `topic:${topic}` : `topic${view}:${topic}`)
+  const openTopic = (topic: string, view: TopicSubView = 'messages') =>
+    tabs.openTab({ key: topicKey(topic, view), kind: 'kafkaTopic', topic, title: view === 'messages' ? topic : `${topic} · ${view}`, view })
   const openGroup = (group: string) => tabs.openTab({ key: `group:${group}`, kind: 'kafkaGroup', group, title: group })
   const openProduce = (topic?: string, draft?: any) => {
     queryCounter += 1
@@ -279,7 +282,7 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
   }
   // Deleted from its tab or from the sidebar: close the tab, re-read the topics.
   const onTopicDeleted = (topic: string) => {
-    tabs.dropTab(`topic:${topic}`)
+    for (const v of TOPIC_VIEWS) tabs.dropTab(topicKey(topic, v.id))
     setKeyspaceVersion((v) => v + 1)
   }
 
@@ -428,7 +431,7 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
         conn={nsConn}
         activeTopic={current?.kind === 'kafkaTopic' ? current.topic : null}
         activeGroup={current?.kind === 'kafkaGroup' ? current.group : null}
-        onOpenTopic={(topic) => openTopic(topic)}
+        onOpenTopic={openTopic}
         onOpenGroup={openGroup}
         onProduce={(topic) => openProduce(topic)}
         onRunCommand={openQuery}

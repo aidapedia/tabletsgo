@@ -48,8 +48,8 @@ FROM notifications
 GROUP BY channel`,
   },
   table: {
-    hint: 'Every column and row is rendered as returned.',
-    columns: [{ label: 'Any columns', role: 'Shown in order, as returned' }],
+    hint: 'Every column and row is rendered as returned — or pick the columns and how each reads in the Table tab.',
+    columns: [{ label: 'Any columns', role: 'Shown in order, as returned, unless the Table tab lists them' }],
     example: `-- Keep the row count modest; the widget scrolls
 SELECT id, title, channel, status
 FROM notifications
@@ -57,8 +57,8 @@ ORDER BY id DESC
 LIMIT 50`,
   },
   metric: {
-    hint: 'The first cell of the first row is shown; other cells are ignored.',
-    columns: [{ label: 'Row 1, column 1', role: 'The number shown (set a unit in the Format tab)' }],
+    hint: 'The first cell of the first row is shown — or a column summed, counted, averaged or turned into a rate in the Format tab.',
+    columns: [{ label: 'Row 1, column 1', role: 'The number shown (aggregate, unit and caption in the Format tab)' }],
     example: `-- A single aggregate value
 SELECT COUNT(*) AS total
 FROM notifications

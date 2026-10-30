@@ -16,6 +16,7 @@ import {
   ifNotExists,
   insertBatches,
   makeIndexSuggestion,
+  pageSql,
   queryLevelSuggestions,
   quoteIdent,
   sqlLiteral,
@@ -392,6 +393,7 @@ export const postgresDriver = {
   sqlLiteral: (v) => (Buffer.isBuffer(v) ? `'\\x${v.toString('hex')}'::bytea` : sqlLiteral(v)),
 
   runQuery: (conn, ctx, sql) => runQuery(poolFor(conn, ctx), sql, ctx?.schema),
+  pageSql,
 
   analyze: (conn, ctx, { sql, cls }) => analyze(poolFor(conn, ctx), sql, ctx?.schema, cls),
 

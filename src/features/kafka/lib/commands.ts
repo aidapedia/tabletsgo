@@ -25,7 +25,7 @@ export const KAFKA_COMMANDS: KafkaCommandSpec[] = [
     takes: 'topic',
   },
   { name: 'PRODUCE', args: "topic [PARTITION n] [KEY 'k'] [HEADERS {…}] VALUE …", desc: 'Send one message (VALUE null = tombstone)', takes: 'topic', writes: true },
-  { name: 'GROUPS', args: '', desc: 'Consumer groups with state and lag' },
+  { name: 'GROUPS', args: '[TOPIC topic]', desc: 'Consumer groups with state and lag' },
   { name: 'LAG', args: 'group', desc: 'Per-partition committed offset, end and lag', takes: 'group' },
   { name: 'CLUSTER', args: '', desc: 'Brokers and the controller' },
   { name: 'CREATE', args: 'TOPIC name [PARTITIONS n] [REPLICATION r] [WITH key=value, …]', desc: 'Create a topic', writes: true },

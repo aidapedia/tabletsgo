@@ -3146,10 +3146,14 @@ app.post('/api/connections/:id/analyze', async (req, res) => {
 app.post('/api/connections/:id/query', async (req, res) => {
   const conn = await connOr404(req, res)
   if (!conn) return
-  const { sql } = req.body
+  const { sql, page } = req.body
   if (!sql || !sql.trim()) return res.status(400).json({ error: 'SQL query required' })
+  const isCount = (n, min) => Number.isInteger(n) && n >= min
+  if (page !== undefined && !(isCount(page?.limit, 1) && isCount(page?.offset, 0))) {
+    return res.status(400).json({ error: 'page needs an integer limit ≥ 1 and offset ≥ 0' })
+  }
   try {
-    res.json(await db.runQuery(conn, bodyCtx(req), sql))
+    res.json(await db.runQuery(conn, bodyCtx(req), sql, { page }))
   } catch (error) {
     fail(res, error)
   }

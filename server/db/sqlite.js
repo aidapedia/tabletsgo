@@ -16,6 +16,7 @@ import {
   ifNotExists,
   insertBatches,
   makeIndexSuggestion,
+  pageSql,
   queryLevelSuggestions,
   quoteIdent,
 } from './sql.js'
@@ -230,6 +231,7 @@ export const sqliteDriver = {
   },
 
   runQuery: (conn, ctx, sql) => runQuery(dbFor(conn), sql),
+  pageSql,
 
   analyze: (conn, ctx, { sql, cls }) => analyze(dbFor(conn), sql, cls),
 

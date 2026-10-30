@@ -25,11 +25,14 @@ import { getOverview, listGroups, listTopics, type GroupSummary, type StreamOver
 import { buildTopicTree, compact, groupStateLook, lagTone } from '../lib/format'
 import CreateTopicDialog from './CreateTopicDialog'
 import DeleteTopicDialog from './DeleteTopicDialog'
+import { TOPIC_VIEWS, type TopicSubView } from './TopicView'
 
 /**
  * The console's sidebar for a stream engine: the cluster's topics (grouped by
  * their dotted prefix) or its consumer groups, behind one switch. Opening either
- * opens a tab; the console owns the tabs.
+ * opens a tab; the console owns the tabs. A topic row opens its messages; its
+ * other views (partitions, consumers, configuration) are tabs of their own,
+ * reached from the row's menu.
  */
 export default function KafkaSidebar({
   conn,
@@ -44,7 +47,7 @@ export default function KafkaSidebar({
   conn: any
   activeTopic?: string | null
   activeGroup?: string | null
-  onOpenTopic: (topic: string) => void
+  onOpenTopic: (topic: string, view?: TopicSubView) => void
   onOpenGroup: (group: string) => void
   onProduce: (topic: string) => void
   onRunCommand: (command: string) => void
@@ -139,6 +142,12 @@ export default function KafkaSidebar({
         >
           {({ close }) => (
             <div className="p-1">
+              {TOPIC_VIEWS.map(({ id, label, icon: Icon }) => (
+                <MenuItem key={id} onClick={() => { onOpenTopic(t.name, id); close() }}>
+                  <Icon width={14} height={14} /> {label}
+                </MenuItem>
+              ))}
+              <div className="my-1 h-px bg-edge" />
               <MenuItem onClick={() => { onProduce(t.name); close() }}>
                 <SendIcon width={14} height={14} /> Produce message
               </MenuItem>

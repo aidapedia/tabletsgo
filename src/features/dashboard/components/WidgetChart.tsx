@@ -1,108 +1,49 @@
 import { useMemo } from 'react'
 import EmptyState from '@/shared/ui/feedback/EmptyState'
-import Button from '@/shared/ui/buttons/Button'
-import { rowActionState, widgetRowActions, type Widget, type WidgetRowAction } from '../types'
-import { rowActionIcon } from '../lib/rowActionIcons'
-import { toMetric, toPieData, toSankeyData, toXYSeries, firstRows, cellAt, type QueryResult } from '../lib/queryData'
+import { widgetRowActions, type VariableValues, type Widget } from '../types'
+import { toPieData, toSankeyData, toXYSeries, type QueryResult } from '../lib/queryData'
+import { activeThreshold, aggregateMetric, formatMetric, metricOf, thresholdCaption } from '../lib/metric'
+import { thresholdLook } from '../lib/thresholds'
 import { useChartPalette, MAX_SERIES } from '../lib/palette'
 import XYChart from './charts/XYChart'
 import PieDonut from './charts/PieDonut'
 import SankeyChart from './charts/SankeyChart'
-import { fmtNum, useMountAnimation } from './charts/chrome'
+import { useMountAnimation } from './charts/chrome'
+import TableWidget from './TableWidget'
 
 // Renders one widget's query result as its chart form. Data-shape conventions
 // live in lib/queryData.ts; colors come from the validated palette (assigned
 // to series in fixed slot order, capped at MAX_SERIES — never cycled).
 
-function TableWidget({
-  result,
-  rowActions,
-  running,
-  onRowAction,
-}: {
-  result: QueryResult
-  rowActions?: WidgetRowAction[]
-  running?: { row: number; action: number } | null
-  onRowAction?: (row: Record<string, unknown>, rowIndex: number, actionIndex: number) => void
-}) {
-  const { columns, rows } = firstRows(result)
+function MetricWidget({ widget, result, rate, values }: { widget: Widget; result: QueryResult; rate?: number | null; values?: VariableValues }) {
+  const metric = metricOf(widget)
+  const isRate = metric.aggregate === 'rate'
+  const value = isRate ? rate ?? null : aggregateMetric(result, metric)
   const ready = useMountAnimation(result)
-  if (!columns.length) return <EmptyState>Query returned no rows.</EmptyState>
-  // Normalize a row (array or object depending on dialect) into a stable
-  // column→value object — the shape the workflow receives as its input.
-  const rowObject = (row: any): Record<string, unknown> =>
-    Object.fromEntries(columns.map((c, j) => [c, cellAt(row, columns, j)]))
-  return (
-    <div className="h-full overflow-auto">
-      <table className="w-full border-collapse text-left text-[11px]">
-        <thead className="sticky top-0 z-[1] bg-card">
-          <tr>
-            {columns.map((c) => (
-              <th key={c} className="border-b border-edge px-2.5 py-1.5 font-semibold text-ink-dim">
-                {c}
-              </th>
-            ))}
-            {!!rowActions?.length && <th className="w-px border-b border-edge px-2.5 py-1.5" aria-label="Actions" />}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row, i) => (
-            <tr
-              key={i}
-              className="hover:bg-card-hover"
-              style={{
-                opacity: ready ? 1 : 0,
-                transition: `opacity 260ms ease ${Math.min(i, 20) * 20}ms`,
-              }}
-            >
-              {columns.map((c, j) => {
-                const v = cellAt(row, columns, j)
-                return (
-                  <td key={c} className="max-w-[280px] truncate border-b border-edge/60 px-2.5 py-1.5 text-ink tabular-nums">
-                    {v === null || v === undefined ? <span className="text-ink-faint">null</span> : String(v)}
-                  </td>
-                )
-              })}
-              {!!rowActions?.length && (() => {
-                // One row object drives both the condition checks and the workflow payload.
-                const ro = rowObject(row)
-                return (
-                  <td className="border-b border-edge/60 px-2.5 py-1">
-                    <div className="flex items-center gap-1.5 whitespace-nowrap">
-                      {rowActions.map((action, a) => {
-                        const { hidden, disabled } = rowActionState(action, ro)
-                        if (hidden) return null
-                        const isRunning = running?.row === i && running?.action === a
-                        return (
-                          <Button
-                            key={a}
-                            size="sm"
-                            variant={action.variant ?? 'ghost'}
-                            icon={isRunning ? undefined : rowActionIcon(action.icon)}
-                            className="!rounded-[6px] !py-0.5"
-                            disabled={!onRowAction || running != null || disabled}
-                            onClick={() => onRowAction?.(ro, i, a)}
-                          >
-                            {isRunning ? 'Running…' : action.label?.trim() || 'Run'}
-                          </Button>
-                        )
-                      })}
-                    </div>
-                  </td>
-                )
-              })()}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  )
-}
+  // A rate shows "…" until its second sample lands; anything else with no value is empty.
+  if (value === null && !isRate) return <EmptyState>Query returned no value.</EmptyState>
+  const step = activeThreshold(value, metric)
+  const look = thresholdLook(step.color)
+  const caption = thresholdCaption(step, metric, values)
+  const valueClass = look.textClass || 'text-ink'
+  const unit = widget.unit && <span className="ml-1.5 text-sm font-medium text-ink-dim">{widget.unit}</span>
 
-function MetricWidget({ result, unit }: { result: QueryResult; unit?: string }) {
-  const value = toMetric(result)
-  const ready = useMountAnimation(result)
-  if (value === null) return <EmptyState>Query returned no value.</EmptyState>
+  if (metric.variant === 'tile') {
+    return (
+      <div className="flex h-full min-w-0 flex-col justify-center px-1" style={{ opacity: ready ? 1 : 0, transition: 'opacity 320ms ease' }}>
+        <p className={`truncate text-[22px] font-bold leading-tight ${valueClass}`} style={look.textStyle}>
+          {formatMetric(value, metric)}
+          {widget.unit && <span className="ml-1 text-[12px] font-medium text-ink-faint">{widget.unit}</span>}
+        </p>
+        {caption && (
+          <p className="mt-1 truncate text-[11px] text-ink-faint" title={caption}>
+            {caption}
+          </p>
+        )}
+      </div>
+    )
+  }
+
   return (
     <div className="flex h-full items-center justify-center">
       <div
@@ -113,8 +54,11 @@ function MetricWidget({ result, unit }: { result: QueryResult; unit?: string }) 
           transition: 'opacity 320ms ease, transform 320ms cubic-bezier(0.22,1,0.36,1)',
         }}
       >
-        <span className="break-words text-[40px] font-bold leading-none text-ink">{fmtNum(value)}</span>
-        {unit && <span className="ml-1.5 text-sm font-medium text-ink-dim">{unit}</span>}
+        <span className={`break-words text-[40px] font-bold leading-none ${valueClass}`} style={look.textStyle}>
+          {formatMetric(value, metric)}
+        </span>
+        {unit}
+        {caption && <p className="mt-2 truncate text-[11px] text-ink-faint">{caption}</p>}
       </div>
     </div>
   )
@@ -125,9 +69,15 @@ export default function WidgetChart({
   result,
   running,
   onRowAction,
+  rate,
+  values,
 }: {
   widget: Widget
   result: QueryResult
+  /** `metric` with the `rate` aggregate: the per-second change WidgetCard measured (null until two samples). */
+  rate?: number | null
+  /** Dashboard variable values, for `{{name}}` in a metric caption. */
+  values?: VariableValues
   /** table row-action state/handler — owned by WidgetCard; absent in previews (buttons render disabled). */
   running?: { row: number; action: number } | null
   onRowAction?: (row: Record<string, unknown>, rowIndex: number, actionIndex: number) => void
@@ -173,9 +123,11 @@ export default function WidgetChart({
       }
       return <SankeyChart data={sankey!} palette={palette} />
     case 'table':
-      return <TableWidget result={result} rowActions={widgetRowActions(widget)} running={running} onRowAction={onRowAction} />
+      return (
+        <TableWidget result={result} columns={widget.tableColumns} rowActions={widgetRowActions(widget)} running={running} onRowAction={onRowAction} />
+      )
     case 'metric':
-      return <MetricWidget result={result} unit={widget.unit} />
+      return <MetricWidget widget={widget} result={result} rate={rate} values={values} />
     default:
       return <EmptyState>Unsupported widget type.</EmptyState>
   }

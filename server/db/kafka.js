@@ -689,15 +689,19 @@ async function groupsOverview(admin) {
     .map((g) => {
       const commits = committed[ids.indexOf(g.groupId)] || []
       let lag = 0
+      const lagByTopic = {}
       for (const t of commits) {
         for (const p of t.partitions) {
           const end = ends.get(t.topic)?.get(p.partition)?.high
-          if (end !== undefined && Number(p.offset) >= 0) lag += Math.max(end - Number(p.offset), 0)
+          if (end === undefined || Number(p.offset) < 0) continue
+          const behind = Math.max(end - Number(p.offset), 0)
+          lag += behind
+          lagByTopic[t.topic] = (lagByTopic[t.topic] || 0) + behind
         }
       }
       const topics = new Set(commits.map((t) => t.topic))
       for (const m of g.members) for (const t of Object.keys(assignmentOf(m))) topics.add(t)
-      return { id: g.groupId, state: g.state, protocol: g.protocol, members: g.members.length, topics: [...topics].sort(), lag }
+      return { id: g.groupId, state: g.state, protocol: g.protocol, members: g.members.length, topics: [...topics].sort(), lag, lagByTopic }
     })
     .sort((a, b) => a.id.localeCompare(b.id))
 }
@@ -834,8 +838,9 @@ async function execCommand(conn, command) {
     }
     case 'describe': {
       const t = await describeTopic(conn, command.topic)
-      return rowsOf(['partition', 'leader', 'replicas', 'isr', 'earliest', 'latest', 'messages'], t.partitionList.map((p) => ({
+      return rowsOf(['partition', 'leader', 'replicas', 'isr', 'earliest', 'latest', 'messages', 'under_replicated'], t.partitionList.map((p) => ({
         partition: p.partition, leader: p.leader, replicas: p.replicas.join(','), isr: p.isr.join(','), earliest: p.low, latest: p.high, messages: p.messages,
+        under_replicated: p.isr.length < p.replicas.length,
       })))
     }
     case 'config': {
@@ -856,6 +861,12 @@ async function execCommand(conn, command) {
     }
     case 'groups': {
       const groups = await listGroups(conn)
+      // Narrowed to one topic, the lag is that topic's alone — not the group's total.
+      if (command.topic) {
+        return rowsOf(['group', 'state', 'members', 'lag'], groups.filter((g) => g.topics.includes(command.topic)).map((g) => ({
+          group: g.id, state: g.state, members: g.members, lag: g.lagByTopic[command.topic] || 0,
+        })))
+      }
       return rowsOf(['group', 'state', 'members', 'lag', 'topics'], groups.map((g) => ({ group: g.id, state: g.state, members: g.members, lag: g.lag, topics: g.topics.join(', ') })))
     }
     case 'lag': {

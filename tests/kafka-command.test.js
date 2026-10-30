@@ -40,6 +40,13 @@ test('DESCRIBE reads a topic, DESCRIBE GROUP a group', () => {
   assert.deepEqual(parseCommand('DESCRIBE GROUP payments'), { op: 'lag', group: 'payments' })
 })
 
+test('GROUPS lists every group, or only those reading one TOPIC', () => {
+  assert.deepEqual(parseCommand('GROUPS'), { op: 'groups' })
+  assert.deepEqual(parseCommand('groups topic orders.created'), { op: 'groups', topic: 'orders.created' })
+  assert.throws(() => parseCommand('GROUPS TOPIC'), /topic name/)
+  assert.throws(() => parseCommand('GROUPS TOPIC orders extra'), /Unexpected "extra"/)
+})
+
 test('CONFIG reads or sets key=value pairs', () => {
   assert.deepEqual(parseCommand('CONFIG t'), { op: 'config', topic: 't' })
   assert.deepEqual(parseCommand("CONFIG t SET retention.ms=1000, cleanup.policy='compact'"), {

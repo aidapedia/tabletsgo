@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactElement } from 'react'
 import Button from '@/shared/ui/buttons/Button'
 import IconButton from '@/shared/ui/buttons/IconButton'
 import RefreshButton from '@/shared/ui/buttons/RefreshButton'
@@ -6,7 +6,7 @@ import MenuItem from '@/shared/ui/navigation/MenuItem'
 import Popover from '@/shared/ui/overlay/Popover'
 import Tooltip from '@/shared/ui/overlay/Tooltip'
 import { useToast } from '@/shared/ui/feedback/Toast'
-import { CodeIcon, CopyIcon, MoreVerticalIcon, SendIcon, TrashIcon } from '@/shared/ui/icons'
+import { CodeIcon, ColumnsIcon, CopyIcon, MoreVerticalIcon, SendIcon, SettingsIcon, TopicIcon, TrashIcon, UsersIcon } from '@/shared/ui/icons'
 import { describeTopic, type TopicDetail } from '../lib/api'
 import DeleteTopicDialog from './DeleteTopicDialog'
 import MessageBrowser from './MessageBrowser'
@@ -14,30 +14,32 @@ import PartitionsPanel from './PartitionsPanel'
 import TopicConfigPanel from './TopicConfigPanel'
 import TopicConsumersPanel from './TopicConsumersPanel'
 
-export type TopicSubView = 'messages' | 'partitions' | 'config' | 'consumers'
+/** Each view of a topic is a console tab of its own. */
+export type TopicSubView = 'messages' | 'partitions' | 'consumers' | 'config'
 
-const VIEWS: { id: TopicSubView; label: string }[] = [
-  { id: 'messages', label: 'Messages' },
-  { id: 'partitions', label: 'Partitions' },
-  { id: 'config', label: 'Configuration' },
-  { id: 'consumers', label: 'Consumers' },
+/** The views in menu order — the sidebar's row menu and a topic tab's ⋮ both list them. */
+export const TOPIC_VIEWS: { id: TopicSubView; label: string; icon: (props: any) => ReactElement }[] = [
+  { id: 'messages', label: 'Browse messages', icon: TopicIcon },
+  { id: 'partitions', label: 'Partitions', icon: ColumnsIcon },
+  { id: 'consumers', label: 'Consumers', icon: UsersIcon },
+  { id: 'config', label: 'Configuration', icon: SettingsIcon },
 ]
 
 const REFRESH_MS = 10000
 
 /**
- * One topic's tab: its header (name, shape, actions) over four views — the
- * message browser, partitions, configuration and the groups consuming it.
+ * One topic's tab: its header (name, shape, actions) over one view — the
+ * message browser, partitions, the groups consuming it, or configuration.
  *
- * The topic's description is read here and shared, and re-read every 10 s while
- * the Partitions view is showing: two reads apart is also how the produce rate
- * is measured, from the movement of the end offsets.
+ * The topic's description is read here, and re-read every 10 s on the
+ * Partitions view: two reads apart is also how the produce rate is measured,
+ * from the movement of the end offsets.
  */
 export default function TopicView({
   conn,
   topic,
-  view: initialView = 'messages',
-  onViewChange,
+  view = 'messages',
+  onOpenView,
   onProduce,
   onRunCommand,
   onOpenGroup,
@@ -46,14 +48,14 @@ export default function TopicView({
   conn: any
   topic: string
   view?: TopicSubView
-  onViewChange?: (view: TopicSubView) => void
+  /** Opens (or focuses) another of the topic's tabs. */
+  onOpenView: (view: TopicSubView) => void
   onProduce: (topic: string, draft?: { key?: string | null; value?: string | null; headers?: Record<string, string> | null }) => void
   onRunCommand: (command: string) => void
   onOpenGroup: (group: string) => void
   onDeleted: (topic: string) => void
 }) {
   const toast = useToast()
-  const [view, setView] = useState<TopicSubView>(initialView)
   const [detail, setDetail] = useState<TopicDetail | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [rate, setRate] = useState<number | null>(null)
@@ -84,11 +86,6 @@ export default function TopicView({
     return () => clearInterval(iv)
   }, [view, load])
 
-  const pick = (v: TopicSubView) => {
-    setView(v)
-    onViewChange?.(v)
-  }
-
   const cfg = (name: string) => detail?.configs.find((c) => c.name === name)?.value
   const retention = cfg('retention.ms')
   const badges = detail
@@ -104,7 +101,7 @@ export default function TopicView({
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <div className="border-b border-edge px-[18px] pt-3.5">
+      <div className="border-b border-edge px-[18px] py-3.5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
             <div className="flex items-center gap-1.5">
@@ -148,6 +145,12 @@ export default function TopicView({
             >
               {({ close }) => (
                 <div className="p-1">
+                  {TOPIC_VIEWS.filter((v) => v.id !== view).map(({ id, label, icon: Icon }) => (
+                    <MenuItem key={id} onClick={() => { onOpenView(id); close() }}>
+                      <Icon width={14} height={14} /> {label}
+                    </MenuItem>
+                  ))}
+                  <div className="my-1 h-px bg-edge" />
                   <MenuItem onClick={() => { onRunCommand(`DESCRIBE ${topic}`); close() }}>
                     <CodeIcon width={14} height={14} /> Describe in console
                   </MenuItem>
@@ -160,28 +163,19 @@ export default function TopicView({
             </Popover>
           </div>
         </div>
-        <nav className="mt-3 flex gap-5" aria-label="Topic views">
-          {VIEWS.map((v) => (
-            <button
-              key={v.id}
-              type="button"
-              onClick={() => pick(v.id)}
-              aria-current={view === v.id ? 'page' : undefined}
-              className={`-mb-px border-b-2 pb-2 text-xs transition-colors ${
-                view === v.id ? 'border-green font-medium text-ink' : 'border-transparent text-ink-dim hover:text-ink'
-              }`}
-            >
-              {v.label}
-            </button>
-          ))}
-        </nav>
       </div>
 
       {error && !detail && (
         <div className="mx-[18px] my-4 rounded-[9px] border border-red/25 bg-red/10 px-3.5 py-3 font-mono text-[11px] text-[#ff9b9b]">{error}</div>
       )}
 
-      {view === 'messages' && (
+      {view === 'partitions' ? (
+        <PartitionsPanel conn={conn} topic={topic} detail={detail} rate={rate} />
+      ) : view === 'consumers' ? (
+        <TopicConsumersPanel conn={conn} topic={topic} onOpenGroup={onOpenGroup} />
+      ) : view === 'config' ? (
+        <TopicConfigPanel conn={conn} topic={topic} detail={detail} onChanged={load} />
+      ) : (
         <MessageBrowser
           conn={conn}
           topic={topic}
@@ -190,9 +184,6 @@ export default function TopicView({
           onRunCommand={onRunCommand}
         />
       )}
-      {view === 'partitions' && <PartitionsPanel conn={conn} topic={topic} detail={detail} rate={rate} />}
-      {view === 'config' && <TopicConfigPanel conn={conn} topic={topic} detail={detail} onChanged={load} />}
-      {view === 'consumers' && <TopicConsumersPanel conn={conn} topic={topic} onOpenGroup={onOpenGroup} />}
 
       {confirmDelete && (
         <DeleteTopicDialog

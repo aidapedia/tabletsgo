@@ -22,10 +22,10 @@ Browse data, write queries, design schemas, automate workflows and back up to S3
 
 - **Data browser** — spreadsheet‑style grid: filter, sort, edit inline, review staged changes before commit.
 - **SQL editor** — highlighting, formatting, history, saved queries, and a command reference that shows which SQLite / PostgreSQL release each statement arrived in.
-- **Kafka console** — browse topics and filter messages without joining a consumer group, produce, manage topic configs, and watch or reset consumer-group lag.
+- **Kafka console** — browse topics and filter messages without joining a consumer group, produce, see a topic's messages, partitions, consumers and configs (each in its own tab), and watch or reset consumer-group lag. The **Kafka Topic Overview** template adds a dashboard of a topic's partitions — retained messages, produce rate and under-replicated tiles over a per-partition table — and the groups consuming it.
 - **Schema designer** — visual ERD; stage DDL, release it in one confirmed step, roll back by version.
 - **Workflows** — schedule/webhook triggers → query → HTTP → JavaScript → export.
-- **Dashboards** — query widgets with variables, auto‑refresh and a kiosk mode.
+- **Dashboards** — query widgets with variables, auto‑refresh and a kiosk mode. Table widgets can format each column (number, compact, bytes, a bar of its share, badges, a list count, a prefix or unit) and color its cells by thresholds; metric widgets can sum, count, average or measure a per-second rate of a column, with thresholds that color the widget and swap its caption as the value climbs (theme tones or any custom color).
 - **Backups** — scheduled dumps to any S3‑compatible bucket, with one‑click restore.
 - **Data export / import** — CSV, JSON or SQL, with a dry‑run preview.
 - **SSH tunnels** — reach private databases through a bastion (plain SSH, Railway, Cloudflare Access).

@@ -56,6 +56,8 @@
  *                                 ./sql.js's default when the engine spells nothing
  *                                 differently)
  *   runQuery(conn, ctx, sql)      → { type:'rows', columns, rows } | { type:'message', message } | { error }
+ *   pageSql(sql, { limit, offset }) → the statement narrowed to one page (optional
+ *                                 property; without it, runQuery slices the rows)
  *                                 (a failed statement is `{ error }`, not a throw —
  *                                  see runQueryOrThrow below for the other contract)
  *   analyze(conn, ctx, { sql, cls })           → { dialect, summary, plan, rawPlan, …Suggestions }
@@ -367,7 +369,19 @@ export const analyze = gatedRequired('analyze')
 // against the connection's target database. A *statement-level* failure comes
 // back as `{ error }` rather than throwing — that's what lets the /query route
 // hand a syntax error to the console like any other result.
-export const runQuery = gatedRequired('runQuery')
+//
+// `opts.page` ({ limit, offset }) asks for one page of rows: an engine that can
+// page in the statement itself names how (`pageSql`, the SQL drivers), any
+// other has its rows sliced after the run — so a paged caller (a dashboard
+// table) never needs to know which kind of engine it is talking to.
+const runDriverQuery = gatedRequired('runQuery')
+export async function runQuery(conn, ctx, sql, { page } = {}) {
+  if (!page) return runDriverQuery(conn, ctx, sql)
+  const pageSql = drivers[conn?.type]?.pageSql
+  if (pageSql) return runDriverQuery(conn, ctx, pageSql(sql, page))
+  const result = await runDriverQuery(conn, ctx, sql)
+  return result?.type === 'rows' ? { ...result, rows: result.rows.slice(page.offset, page.offset + page.limit) } : result
+}
 
 // The throwing variant, for callers running a sequence that must stop at the
 // first failure instead of carrying on as if it had succeeded: schema rollback
