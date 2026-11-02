@@ -5,6 +5,8 @@ import Tooltip from '@/shared/ui/overlay/Tooltip'
 import Popover from '@/shared/ui/overlay/Popover'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
 import { formatCombo } from '@/features/keymap'
+import { CLUSTER_PANELS, type ClusterPanel } from '@/features/kafka'
+import type { ConsoleKind } from '@/shared/config/databaseTypes'
 import {
   CodeIcon,
   DiagramIcon,
@@ -13,6 +15,7 @@ import {
   MenuIcon,
   MoreVerticalIcon,
   SearchIcon,
+  SendIcon,
   TableIcon,
   TagIcon,
   TerminalIcon,
@@ -21,10 +24,12 @@ import {
 } from '@/shared/ui/icons'
 
 type Props = {
-  isRedis: boolean
+  kind: ConsoleKind
   bindings: any
   schemaVersion: number
   changeCount: number
+  /** False when nothing can be staged: Redis/Kafka, or Direct execute on. */
+  showChanges: boolean
   onOpenDrawer: () => void
   onCreateTable: () => void
   onNewQuery: () => void
@@ -32,6 +37,10 @@ type Props = {
   onNewDashboard: () => void
   onOpenPalette: () => void
   onOpenHistory: () => void
+  /** Kafka only: a blank produce form, no topic picked yet. */
+  onProduce: () => void
+  /** Kafka only: a cluster-wide tab (brokers, ACLs). */
+  onOpenCluster: (panel: ClusterPanel) => void
   onOpenTransfer: () => void
   onOpenSchemaEditor: () => void
   onOpenSchemaHistory: () => void
@@ -50,10 +59,11 @@ type Props = {
  * disappearing.
  */
 export default function ConsoleToolbar({
-  isRedis,
+  kind,
   bindings,
   schemaVersion,
   changeCount,
+  showChanges,
   onOpenDrawer,
   onCreateTable,
   onNewQuery,
@@ -61,12 +71,16 @@ export default function ConsoleToolbar({
   onNewDashboard,
   onOpenPalette,
   onOpenHistory,
+  onProduce,
+  onOpenCluster,
   onOpenTransfer,
   onOpenSchemaEditor,
   onOpenSchemaHistory,
   onOpenChanges,
   filePickers,
 }: Props) {
+  // Redis and Kafka have no tables to create, browse, export or diagram.
+  const tableless = kind !== 'sql'
   return (
     <div className="flex items-center gap-3 border-b border-edge px-[18px] py-3 max-[720px]:px-3">
       <div className="hidden max-[720px]:block">
@@ -80,21 +94,21 @@ export default function ConsoleToolbar({
         trigger={({ open, toggle }: any) => (
           <Tooltip label="New…" placement="bottom">
             <IconButton size="toolbar" active={open} onClick={toggle} aria-label="Create new">
-              {isRedis ? <TerminalIcon width={16} height={16} /> : <CodeIcon width={16} height={16} />}
+              {tableless ? <TerminalIcon width={16} height={16} /> : <CodeIcon width={16} height={16} />}
             </IconButton>
           </Tooltip>
         )}
       >
         {({ close }: any) => (
           <div className="p-1">
-            {!isRedis && (
+            {!tableless && (
               <MenuItem onClick={() => { onCreateTable(); close() }}>
                 <TableIcon width={14} height={14} /> New table
               </MenuItem>
             )}
             <MenuItem onClick={() => { onNewQuery(); close() }}>
-              {isRedis ? <TerminalIcon width={14} height={14} /> : <CodeIcon width={14} height={14} />}
-              {isRedis ? 'New console' : 'New SQL query'}
+              {tableless ? <TerminalIcon width={14} height={14} /> : <CodeIcon width={14} height={14} />}
+              {tableless ? 'New console' : 'New SQL query'}
               <kbd className="ml-auto rounded-[5px] border border-edge bg-elevated px-1.5 py-px text-[11px] text-ink-faint">
                 {formatCombo(bindings['general.newTab'])}
               </kbd>
@@ -131,10 +145,25 @@ export default function ConsoleToolbar({
               <HistoryIcon width={16} height={16} />
             </IconButton>
           </Tooltip>
+          {kind === 'stream' &&
+            CLUSTER_PANELS.map(({ id, label, icon: Icon }) => (
+              <Tooltip key={id} label={label} placement="bottom">
+                <IconButton size="toolbar" onClick={() => onOpenCluster(id)} aria-label={label}>
+                  <Icon width={16} height={16} />
+                </IconButton>
+              </Tooltip>
+            ))}
+          {kind === 'stream' && (
+            <Tooltip label="Produce message" placement="bottom">
+              <IconButton size="toolbar" onClick={onProduce} aria-label="Produce message">
+                <SendIcon width={16} height={16} />
+              </IconButton>
+            </Tooltip>
+          )}
           {/* Table rows out to / in from CSV, JSON or SQL files — one tab, its
-              own Export/Import switch. Tableless engines (Redis) have no rows
+              own Export/Import switch. Tableless engines (Redis, Kafka) have no rows
               to move, so it hides. */}
-          {!isRedis && (
+          {!tableless && (
             <Tooltip label="Export / Import" placement="bottom">
               <IconButton size="toolbar" onClick={onOpenTransfer} aria-label="Export / Import">
                 <TransferIcon width={16} height={16} />
@@ -143,8 +172,8 @@ export default function ConsoleToolbar({
           )}
           {/* Leaves the console for the Schema Editor page, so unlike the panel
               buttons there is no active state to mark. Schemaless engines
-              (Redis) have no diagram to draw, so it hides. */}
-          {!isRedis && (
+              (Redis, Kafka) have no diagram to draw, so it hides. */}
+          {!tableless && (
             <Tooltip label="Schema editor" placement="bottom">
               <IconButton size="toolbar" onClick={onOpenSchemaEditor} aria-label="Schema editor">
                 <DiagramIcon width={16} height={16} />
@@ -153,7 +182,7 @@ export default function ConsoleToolbar({
           )}
         </div>
 
-        {/* Mobile overflow: the history/transfer/schema entries hidden above. */}
+        {/* Mobile overflow: the history/produce/cluster/transfer/schema entries hidden above. */}
         <div className="hidden max-[720px]:block">
           <Popover
             align="right"
@@ -169,12 +198,23 @@ export default function ConsoleToolbar({
                 <MenuItem onClick={() => { onOpenHistory(); close() }}>
                   <HistoryIcon width={14} height={14} /> Query history
                 </MenuItem>
-                {!isRedis && (
+                {kind === 'stream' &&
+                  CLUSTER_PANELS.map(({ id, label, icon: Icon }) => (
+                    <MenuItem key={id} onClick={() => { onOpenCluster(id); close() }}>
+                      <Icon width={14} height={14} /> {label}
+                    </MenuItem>
+                  ))}
+                {kind === 'stream' && (
+                  <MenuItem onClick={() => { onProduce(); close() }}>
+                    <SendIcon width={14} height={14} /> Produce message
+                  </MenuItem>
+                )}
+                {!tableless && (
                   <MenuItem onClick={() => { onOpenTransfer(); close() }}>
                     <TransferIcon width={14} height={14} /> Export / Import
                   </MenuItem>
                 )}
-                {!isRedis && (
+                {!tableless && (
                   <MenuItem onClick={() => { onOpenSchemaEditor(); close() }}>
                     <DiagramIcon width={14} height={14} /> Schema editor
                   </MenuItem>
@@ -187,16 +227,18 @@ export default function ConsoleToolbar({
           </Popover>
         </div>
 
-        <Button variant="ghost" onClick={onOpenChanges} title="View changes">
-          <span className="max-[720px]:hidden">Changes</span>
-          <span
-            className={`rounded-[20px] px-[7px] text-xs ${
-              changeCount > 0 ? 'bg-green text-white' : 'bg-edge text-ink-faint'
-            }`}
-          >
-            {changeCount}
-          </span>
-        </Button>
+        {showChanges && (
+          <Button variant="ghost" onClick={onOpenChanges} title="View changes">
+            <span className="max-[720px]:hidden">Changes</span>
+            <span
+              className={`rounded-[20px] px-[7px] text-xs ${
+                changeCount > 0 ? 'bg-green text-white' : 'bg-edge text-ink-faint'
+              }`}
+            >
+              {changeCount}
+            </span>
+          </Button>
+        )}
       </div>
     </div>
   )

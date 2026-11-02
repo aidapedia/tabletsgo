@@ -5,6 +5,26 @@ import { useConnections, ConnectionSwitcherModal } from '@/features/connections'
 import { useSettings } from '@/features/settings'
 import { useKeymap, useShortcut } from '@/features/keymap'
 import { RedisKeyTree } from '@/features/redis'
+import useServerVersion from '@/shared/hooks/useServerVersion'
+import {
+  CLUSTER_PANELS,
+  ClearTopicDialog,
+  ConnectSidebar,
+  ConsumerGroupsSidebar,
+  CreateTopicDialog,
+  DeleteTopicDialog,
+  KafkaSidebar,
+  KsqlSidebar,
+  SchemaRegistrySidebar,
+  kafkaPanelsFor,
+  TOPIC_VIEWS,
+  getOverview,
+  topicFacts,
+  type ClusterPanel,
+  type ConnectorDraft,
+  type TopicDetail,
+  type TopicSubView,
+} from '@/features/kafka'
 import CreateTablePanel from '@/features/schema-designer/components/CreateTablePanel'
 import { TemplatesPanel } from '@/features/templates'
 import {
@@ -38,7 +58,8 @@ import ConfirmDialog from '@/shared/ui/feedback/ConfirmDialog'
 import CommandPalette from '@/shared/ui/overlay/CommandPalette'
 import SaveQueryPanel from '@/shared/ui/SaveQueryPanel'
 import { useToast } from '@/shared/ui/feedback/Toast'
-import { KeyIcon } from '@/shared/ui/icons'
+import { KeyIcon, TopicIcon } from '@/shared/ui/icons'
+import { consoleKindOf } from '@/shared/config/databaseTypes'
 
 import IconRail from './IconRail'
 import StatusBar from './StatusBar'
@@ -98,10 +119,27 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
   const conn = connections.find((c: any) => c.id === id)
   const { bindings } = useKeymap()
 
-  // Redis is schemaless and tableless: no tables/views/functions browser, no
-  // schema designer, no table folders — the sidebar shows its keyspace instead,
-  // and every write goes through the command console.
-  const isRedis = conn?.type === 'redis'
+  // The console's shape. Redis and Kafka are schemaless and tableless: no
+  // tables/views/functions browser, no schema designer, no table folders — the
+  // sidebar shows the keyspace or the topics instead, and the query tab is a
+  // command console.
+  const kind = consoleKindOf(conn?.type)
+  // Shown in the status bar, for every engine that can report one.
+  const serverVersion = useServerVersion(conn)
+  const tableless = kind !== 'sql'
+  // A stream cluster's size, for the status bar ("3 brokers").
+  const [brokerCount, setBrokerCount] = useState<number | null>(null)
+  useEffect(() => {
+    setBrokerCount(null)
+    if (!conn || kind !== 'stream') return
+    let live = true
+    getOverview(conn)
+      .then((o) => live && setBrokerCount(o.brokers.length))
+      .catch(() => {})
+    return () => {
+      live = false
+    }
+  }, [conn?.id, kind])
 
   const [sidebarOpen, setSidebarOpen] = useState(false) // mobile drawer
   const [tablesVisible, setTablesVisible] = useState(true) // left panel visible
@@ -114,7 +152,7 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
   const [analyzeSql, setAnalyzeSql] = useState<string | null>(null)
   const [analyzeFolder, setAnalyzeFolder] = useState<any>(null) // { name, queries }
   const [dataVersion, setDataVersion] = useState(0) // bump to force table reloads
-  const [keyspaceVersion, setKeyspaceVersion] = useState(0) // bump to re-scan the Redis key tree
+  const [keyspaceVersion, setKeyspaceVersion] = useState(0) // bump to re-read the Redis key tree / Kafka topics
   const autoOpenedFor = useRef<string | null>(null) // connection we've already auto-opened a tab for
   // The import entries live in the sidebar panels but the hidden inputs they
   // drive are rendered up in the toolbar, so the refs are held here between them.
@@ -151,6 +189,10 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
       if (tabs.hasTabOfKind('schemaHistory')) schemaHistory.loadSchemaHistory()
     },
   })
+  // Only the SQL engines stage — Redis and Kafka mutations always run at once.
+  // With Direct execute on nothing is staged either, unless changes were queued
+  // before it was switched on: keep the panel reachable so they can be committed.
+  const showChanges = !tableless && (!directExecute || changes.changes.length > 0)
 
   const history = useQueryHistory(id, { user, isOpen: () => tabs.hasTabOfKind('history') })
 
@@ -255,12 +297,68 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
   function openQuery(sql?: string) {
     queryCounter += 1
     const initialSql = typeof sql === 'string' ? sql : undefined
-    const title = `${isRedis ? 'Console' : 'Query'} ${queryCounter}`
+    const title = `${tableless ? 'Console' : 'Query'} ${queryCounter}`
     tabs.openTab({ key: `query:${queryCounter}`, kind: 'query', title, sql: initialSql })
   }
 
   const openRedisKey = (redisKey: string) =>
     tabs.openTab({ key: `rediskey:${redisKey}`, kind: 'redisKey', redisKey, title: redisKey })
+
+  // Kafka: each view of a topic (messages, partitions, consumers, config) is a
+  // tab of its own, a consumer group, a produce form. The messages tab keeps the
+  // bare `topic:` key and title — it's what opening a topic means.
+  const topicKey = (topic: string, view: TopicSubView = 'messages') => (view === 'messages' ? `topic:${topic}` : `topic${view}:${topic}`)
+  const openTopic = (topic: string, view: TopicSubView = 'messages') =>
+    tabs.openTab({ key: topicKey(topic, view), kind: 'kafkaTopic', topic, title: view === 'messages' ? topic : `${topic} · ${view}`, view })
+  const openGroup = (group: string) => tabs.openTab({ key: `group:${group}`, kind: 'kafkaGroup', group, title: group })
+  const openCluster = (panel: ClusterPanel) =>
+    tabs.openTab({ key: `cluster:${panel}`, kind: 'kafkaCluster', panel, title: CLUSTER_PANELS.find((p) => p.id === panel)?.label || panel })
+  // The services beside the cluster (Schema Registry, Connect, ksqlDB) each have
+  // a rail entry and a sidebar; an item opens a tab, null opens a new one.
+  // Their sidebars re-read on `serviceVersion`, bumped when a tab changes them.
+  const [serviceVersion, setServiceVersion] = useState(0)
+  const onServiceChanged = () => setServiceVersion((v) => v + 1)
+  const openSubject = (subject: string | null) => {
+    queryCounter += 1
+    tabs.openTab(
+      subject
+        ? { key: `subject:${subject}`, kind: 'kafkaSubject', subject, title: subject }
+        : { key: `subject:new:${queryCounter}`, kind: 'kafkaSubject', subject: null, title: 'New subject' }
+    )
+  }
+  const openConnector = (connector: string | null, draft?: ConnectorDraft) => {
+    queryCounter += 1
+    tabs.openTab(
+      connector
+        ? { key: `connector:${connector}`, kind: 'kafkaConnector', connector, title: connector }
+        : { key: `connector:new:${queryCounter}`, kind: 'kafkaConnector', connector: null, draft, title: draft ? `${draft.name}` : 'New connector' }
+    )
+  }
+  const openKsql = (sql?: string, run = false) => {
+    queryCounter += 1
+    tabs.openTab({ key: `ksql:${queryCounter}`, kind: 'kafkaKsql', sql, run, title: `ksqlDB ${queryCounter}` })
+  }
+  const openProduce = (topic?: string, draft?: any) => {
+    queryCounter += 1
+    tabs.openTab({ key: `produce:${queryCounter}`, kind: 'kafkaProduce', topic, draft, title: `Produce · ${topic || 'message'}` })
+  }
+  // Deleted from its tab or from the sidebar: close the tab, re-read the topics.
+  const onTopicDeleted = (topic: string) => {
+    for (const v of TOPIC_VIEWS) tabs.dropTab(topicKey(topic, v.id))
+    setTopicDetails(({ [topic]: _, ...rest }) => rest)
+    setKeyspaceVersion((v) => v + 1)
+  }
+  // A topic tab has no header: its shape shows in the status bar, its actions
+  // in the tab's right-click menu (whose delete is confirmed here).
+  const [topicDetails, setTopicDetails] = useState<Record<string, TopicDetail>>({})
+  const [deletingTopic, setDeletingTopic] = useState<string | null>(null)
+  const [clearingTopic, setClearingTopic] = useState<string | null>(null)
+  const [cloningTopic, setCloningTopic] = useState<string | null>(null)
+  const onTopicDetail = (topic: string, detail: TopicDetail) =>
+    setTopicDetails((m) => (m[topic] === detail ? m : { ...m, [topic]: detail }))
+  const currentTopic = tabs.current?.kind === 'kafkaTopic' ? tabs.current.topic : null
+  const statusSubject =
+    currentTopic && topicDetails[currentTopic] ? { name: currentTopic, facts: topicFacts(topicDetails[currentTopic]) } : null
 
   const openSchema = (table: string) =>
     tabs.openTab({ key: `schema:${table}`, kind: 'schema', table, title: `${table} · schema` })
@@ -302,7 +400,7 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
   // is no diagram to leave for, so the rail hides the entry and this stops the
   // keyboard shortcut reaching it either.
   const openSchemaEditorPage = () => {
-    if (isRedis) return
+    if (tableless) return
     navigate(`/schemas/connection/${id}`)
   }
 
@@ -380,9 +478,10 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
   const schemaVersion = conn.schemaVersion ?? 1
 
   const commands = buildConsoleCommands({
-    isRedis,
+    kind,
     bindings,
     schemaVersion,
+    showChanges,
     splitDir: tabs.splitDir,
     actions: {
       newQuery: () => openQuery(),
@@ -400,8 +499,47 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
     },
   })
 
+  // Kafka's rail entries under Topics: consumer groups, then the services the
+  // connection names. One it no longer names falls back to the browser.
+  const servicePanels = kind === 'stream' ? kafkaPanelsFor(conn) : []
+  const shownPanel = panel.startsWith('kafka-') && !servicePanels.some((p) => p.id === panel) ? 'browser' : panel
+
   const sidebarPanel =
-    panel === 'browser' && isRedis ? (
+    shownPanel === 'kafka-groups' ? (
+      <ConsumerGroupsSidebar
+        key={`${id}:${keyspaceVersion}`}
+        conn={nsConn}
+        activeGroup={current?.kind === 'kafkaGroup' ? current.group : null}
+        onOpenGroup={openGroup}
+      />
+    ) : shownPanel === 'kafka-schemas' ? (
+      <SchemaRegistrySidebar
+        key={`${id}:${serviceVersion}`}
+        conn={nsConn}
+        activeSubject={current?.kind === 'kafkaSubject' ? current.subject : null}
+        onOpenSubject={openSubject}
+      />
+    ) : shownPanel === 'kafka-connect' ? (
+      <ConnectSidebar
+        key={`${id}:${serviceVersion}`}
+        conn={nsConn}
+        activeConnector={current?.kind === 'kafkaConnector' ? current.connector : null}
+        onOpenConnector={(name) => openConnector(name)}
+      />
+    ) : shownPanel === 'kafka-ksql' ? (
+      <KsqlSidebar key={`${id}:${serviceVersion}`} conn={nsConn} onOpenKsql={openKsql} />
+    ) : shownPanel === 'browser' && kind === 'stream' ? (
+      <KafkaSidebar
+        key={`${id}:${keyspaceVersion}`}
+        conn={nsConn}
+        activeTopic={current?.kind === 'kafkaTopic' ? current.topic : null}
+        onOpenTopic={openTopic}
+        onProduce={(topic) => openProduce(topic)}
+        onRunCommand={openQuery}
+        onTopicDeleted={onTopicDeleted}
+        onTopicCleared={() => setKeyspaceVersion((v) => v + 1)}
+      />
+    ) : shownPanel === 'browser' && kind === 'keyspace' ? (
       <RedisKeyTree
         key={`${id}:${ns.database}:${keyspaceVersion}`}
         conn={nsConn}
@@ -409,7 +547,7 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
         onOpenKey={openRedisKey}
         onRunCommand={openQuery}
       />
-    ) : panel === 'browser' ? (
+    ) : shownPanel === 'browser' ? (
       <ObjectBrowser
         connectionId={id}
         objects={objects}
@@ -505,19 +643,21 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
           connections={connections}
           currentId={id}
           onBrowseConnections={() => setSwitcherOpen(true)}
-          active={tablesVisible ? panel : ''}
+          active={tablesVisible ? shownPanel : ''}
           onBrowser={() => selectPanel('browser')}
           onQueries={() => selectPanel('queries')}
           onWorkflows={() => selectPanel('workflows')}
           onDashboards={() => selectPanel('dashboards')}
           onTemplates={() => selectPanel('templates')}
+          extraPanels={servicePanels}
+          onPanel={selectPanel}
           onHome={() => navigate('/')}
           onLogout={logout}
-          browserIcon={isRedis ? KeyIcon : undefined}
-          browserLabel={isRedis ? 'Keyspace' : undefined}
+          browserIcon={kind === 'keyspace' ? KeyIcon : kind === 'stream' ? TopicIcon : undefined}
+          browserLabel={kind === 'keyspace' ? 'Keyspace' : kind === 'stream' ? 'Topics' : undefined}
         />
         <ConsoleSidebar
-          isRedis={isRedis}
+          kind={kind}
           ns={ns}
           namespaces={namespaces}
           onDatabaseChange={browser.changeDatabase}
@@ -530,10 +670,11 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
 
       <main className="flex min-h-0 min-w-0 flex-1 flex-col">
         <ConsoleToolbar
-          isRedis={isRedis}
+          kind={kind}
           bindings={bindings}
           schemaVersion={schemaVersion}
           changeCount={changes.changes.length}
+          showChanges={showChanges}
           onOpenDrawer={() => setSidebarOpen(true)}
           onCreateTable={() => setCreatingTable(true)}
           onNewQuery={() => openQuery()}
@@ -541,6 +682,8 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
           onNewDashboard={() => dashboards.create()}
           onOpenPalette={() => setPaletteOpen(true)}
           onOpenHistory={openHistory}
+          onProduce={() => openProduce()}
+          onOpenCluster={openCluster}
           onOpenTransfer={() => openTransfer()}
           onOpenSchemaEditor={openSchemaEditorPage}
           onOpenSchemaHistory={openSchemaHistory}
@@ -575,11 +718,11 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
 
         <EditorPanes
           tabs={tabs}
-          isRedis={isRedis}
+          tableless={tableless}
           onNewQuery={() => openQuery()}
           empty={
             <EmptyWorkspace
-              isRedis={isRedis}
+              kind={kind}
               tables={tables}
               bindings={bindings}
               onNewQuery={() => openQuery()}
@@ -593,7 +736,7 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
               conn={conn}
               nsConn={nsConn}
               connectionId={id}
-              isRedis={isRedis}
+              kind={kind}
               tables={tables}
               dataVersion={dataVersion}
               keyspaceVersion={keyspaceVersion}
@@ -624,6 +767,18 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
                 tabs.dropTab(`rediskey:${deletedKey}`)
                 setKeyspaceVersion((v) => v + 1)
               }}
+              onOpenTopic={openTopic}
+              onOpenGroup={openGroup}
+              onProduce={openProduce}
+              onTopicDetail={onTopicDetail}
+              onOpenSubject={openSubject}
+              onOpenConnector={openConnector}
+              onServiceChanged={onServiceChanged}
+              onCloseTab={tabs.dropTab}
+              onGroupDeleted={(group) => {
+                tabs.dropTab(`group:${group}`)
+                setKeyspaceVersion((v) => v + 1)
+              }}
               onDashboardRenamed={dashboards.renamedExternally}
               onTemplateApplied={onTemplateApplied}
               onTransferModeChange={openTransfer}
@@ -637,7 +792,15 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
 
         {/* Status bar — bottom of the main area only; the rail and sidebar keep
             their full height. */}
-        <StatusBar conn={conn} database={ns.database} schema={ns.schema} onSchemaHistory={openSchemaHistory} />
+        <StatusBar
+          conn={conn}
+          serverVersion={serverVersion}
+          detail={brokerCount != null ? `${brokerCount} broker${brokerCount === 1 ? '' : 's'}` : null}
+          database={ns.database}
+          schema={ns.schema}
+          subject={statusSubject}
+          onSchemaHistory={openSchemaHistory}
+        />
       </main>
 
       {tabs.tabMenu && (
@@ -652,6 +815,42 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
           onCloseToRight={tabs.closeTabsToRight}
           onCloseAll={tabs.closeAllTabs}
           onMoveToPane={tabs.moveTabToPane}
+        />
+      )}
+
+      {clearingTopic && (
+        <ClearTopicDialog
+          conn={nsConn}
+          topic={clearingTopic}
+          onClose={() => setClearingTopic(null)}
+          onCleared={() => setKeyspaceVersion((v) => v + 1)}
+        />
+      )}
+
+      {cloningTopic && (
+        <CreateTopicDialog
+          conn={nsConn}
+          cloneOf={cloningTopic}
+          onClose={() => setCloningTopic(null)}
+          onCreated={(name) => {
+            setCloningTopic(null)
+            setKeyspaceVersion((v) => v + 1)
+            openTopic(name)
+          }}
+          onOpenInConsole={(command) => {
+            setCloningTopic(null)
+            openQuery(command)
+          }}
+        />
+      )}
+
+      {deletingTopic && (
+        <DeleteTopicDialog
+          conn={nsConn}
+          topic={deletingTopic}
+          partitions={topicDetails[deletingTopic]?.partitions}
+          onClose={() => setDeletingTopic(null)}
+          onDeleted={onTopicDeleted}
         />
       )}
 

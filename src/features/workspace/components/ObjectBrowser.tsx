@@ -4,6 +4,7 @@ import SearchInput from '@/shared/ui/form/SearchInput'
 import Tooltip from '@/shared/ui/overlay/Tooltip'
 import Popover from '@/shared/ui/overlay/Popover'
 import IconButton from '@/shared/ui/buttons/IconButton'
+import RefreshButton from '@/shared/ui/buttons/RefreshButton'
 import TextButton from '@/shared/ui/buttons/TextButton'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
 import ListRow from '@/shared/ui/ListRow'
@@ -17,7 +18,6 @@ import {
   FolderPlusIcon,
   MoreVerticalIcon,
   PlusIcon,
-  RefreshIcon,
   SearchIcon,
   TableIcon,
   TrashIcon,
@@ -162,6 +162,7 @@ export default function ObjectBrowser({
               <IconButton
                 size="sm"
                 active={open}
+                data-row-menu aria-expanded={open}
                 onClick={toggle}
                 aria-label={`${obj.type} actions`}
                 className={open ? 'opacity-100' : '!text-ink-faint opacity-0 group-hover:opacity-100'}
@@ -224,9 +225,7 @@ export default function ObjectBrowser({
         <span className="text-xs">Tables</span>
         <div className="flex gap-1">
           <Tooltip label="Refresh" placement="bottom">
-            <IconButton onClick={onRefresh}>
-              <RefreshIcon />
-            </IconButton>
+            <RefreshButton onRefresh={onRefresh} aria-label="Refresh tables" />
           </Tooltip>
           <Tooltip label="Search tables" placement="bottom">
             <IconButton

@@ -67,7 +67,8 @@ src/
 | `workspaces` | org/tenant layer: current workspace, members (roster on the workspace node), notifications, general settings |
 | `workspace` | **the per-connection DB console** — DataGrid, TableView, QueryEditor, tabs, status bar |
 | `connections` | connection CRUD, access, type picker, switcher modal, export/import, connect handshake |
-| `redis` | the Redis-shaped console pieces: key tree sidebar + command console (swaps in on `type === 'redis'`) |
+| `redis` | the Redis-shaped console pieces: key tree sidebar + command console (console kind `keyspace`) |
+| `kafka` | the stream-shaped console pieces: topics sidebar, consumer-groups sidebar (own rail entry), topic/group/produce tabs, command console (console kind `stream`) |
 | `table-folders` | the connected DB's tables grouped by the generic folders tree (`type='table'`) |
 | `schema-designer` | React Flow ERD, table/column editors, schema history, DDL rollback |
 | `workflow` | node-graph automations: builder, scheduling, folders, JSON export/import |
@@ -90,7 +91,8 @@ respond**.
 ```
 prisma/<engine>/         # schema.prisma + migrations/ per engine (sqlite | postgresql) → skill meta-schema
 scripts/migrate.js       # `npm run migrate [-- --status]` — the migrator by hand (the app runs it on boot; the updater's one-shot container runs this)
-server.js                # express app: 108 routes, static frontend, schedulers, shutdown
+scripts/dev/kafka/       # local Kafka stacks (broker+ACLs, Schema Registry, Connect, ksqlDB) + seed.mjs sample data
+server.js                # express app: 172 routes, static frontend, schedulers, shutdown
 server/
 ├── config.js            # every env var + filesystem path, resolved once      → skill add-tunable
 ├── util.js  crypto.js   # helpers; AES-256-GCM secret + file encryption
@@ -110,7 +112,7 @@ server/
 ├── ssh.js               # SSH keys + gateways (bastions); host key pinning      → skill db-engine
 ├── cloudflare-access.js # SSH over Cloudflare Access (WebSocket + service token) → skill db-engine
 ├── storage.js           # storage destinations (S3 + local disk) and object ops
-├── db/                  # ★ the engine-agnostic database layer                → skill db-engine
+├── db/                  # ★ the engine-agnostic database layer (sqlite|postgres|redis|kafka) → skill db-engine
 ├── workflow.js          # the node-graph executor + scheduler
 ├── connection-transfer.js  # the portable connection bundle          → skill connection-transfer
 ├── data-transfer.js     # table rows out/in as CSV/JSON/SQL (console Export / Import tab) → skill db-engine
@@ -129,7 +131,7 @@ server/
 - **Anything a user can be looking at has an address.** A detail view, a create/edit form and a tab are routes (`/connections/:id/:tab`, `/connections/:id/edit/:tab`), not `useState` on the list page — so a refresh keeps you there and a link lands there. Use `useTabRoute` to bind a tab bar to its segment. Transient dialogs (confirm, export, picker) stay local state.
 - All backend calls go through `shared/api/request.ts`: use `request()` for mutations (throws on failure — caller `try/catch`es and toasts) and `safeRequest(path, fallback)` for reads that should degrade quietly. Don't call `fetch` directly or re-declare `API_URL`.
 - UI styling lives in `shared/ui` components — `Button`, `IconButton`, `Input`/`Textarea`, `Form`/`FormField`/`Label`. Use those instead of shared class-string helpers (the old `shared/lib/styles.ts` is gone). `controlClass` (exported from `shared/ui/form/Input`) is **only** for non-`<input>` controls that need the field look (e.g. `Select`) — never put it on a raw `<input>`/`<textarea>`; use `Input`/`Textarea`.
-- Reuse the shared micro-components instead of re-styling inline: `Avatar` (initial bubble), `Badge` (uppercase pill), `PersonRow` (avatar+name+email), `CheckboxRow` (bordered selectable row), `SearchInput` (input with search icon), `LoadingState`/`EmptyState` (faint placeholders), `ConfirmDialog` (never `window.confirm`), `toggleId` (selection-list toggle), `DragHandle` + `useDragReorder` (drag-to-reorder a list of cards — the grip starts the drag, the whole card is the drop target, and the cards animate into place on drop; spread `listProps` on the container and give `itemProps(i, id)` a stable id, never the index; native HTML5 drag, so it does **not** work inside a React Flow canvas, whose d3-drag suppresses native drag events), `AccountTile` (the signed-in person's gradient mark; `presence` notches the online dot into it — pass the `surface` it sits on), `AccountMenu` (name/email/sign-out popover), `RailItem`/`RailDivider` (a row of a 56px icon rail), `Breadcrumb` (the `root / … / here` trail — see below).
+- Reuse the shared micro-components instead of re-styling inline: `Avatar` (initial bubble), `Badge` (uppercase pill), `PersonRow` (avatar+name+email), `CheckboxRow` (bordered selectable row), `HelpTip` (a "?" whose hover explains the thing beside it — for a field, pass `FormField`'s `help` instead of a `hint` when the text is advice rather than something needed to fill it in), `SearchInput` (input with search icon), `LoadingState`/`EmptyState` (faint placeholders), `ConfirmDialog` (never `window.confirm`), `toggleId` (selection-list toggle), `DragHandle` + `useDragReorder` (drag-to-reorder a list of cards — the grip starts the drag, the whole card is the drop target, and the cards animate into place on drop; spread `listProps` on the container and give `itemProps(i, id)` a stable id, never the index; native HTML5 drag, so it does **not** work inside a React Flow canvas, whose d3-drag suppresses native drag events), `AccountTile` (the signed-in person's gradient mark; `presence` notches the online dot into it — pass the `surface` it sits on), `AccountMenu` (name/email/sign-out popover), `RailItem`/`RailDivider` (a row of a 56px icon rail), `Breadcrumb` (the `root / … / here` trail — see below).
 - **A list page offers List / Grid** — `useListView('<list>')` + `<ViewToggle>` at the end of the search row, and pass `view` into `useDataTable` (it reaches `DataTable` through the spread). The grid card is built from the columns: the first is its title, a trailing empty-header column its actions, the rest labelled fields — so keep that column shape, or pass `renderCard` for a card of your own (connections does).
 - **A path a user is standing in is drawn by `Breadcrumb`** — the page header's trail (`PageHeader`'s `crumbs`), a node's ancestors in the resource tree, the location a dialog writes into. The last crumb is where you are and never links, even if given an `onClick`. `PageHeader`'s `back` stays for views with no trail worth drawing; `crumbs` wins when both are passed. Don't hand-roll another `name / name` line.
 - **There is one icon rail, used twice** — the console's `IconRail` and the home sidebar collapsed. Both are built from `RailItem`, so size, tooltip and active look are defined once; don't restyle either in place.

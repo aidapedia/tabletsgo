@@ -15,6 +15,10 @@ export default function IconRail({
   onWorkflows,
   onDashboards,
   onTemplates,
+  // Engine-specific panels, listed under the browser: [{ id, icon, label }] —
+  // the Kafka services a connection names (Schema Registry, Connect, ksqlDB).
+  extraPanels = [],
+  onPanel,
   onHome,
   onLogout,
   // What the browser panel holds — tables for the SQL engines, keys for Redis.
@@ -47,6 +51,9 @@ export default function IconRail({
 
       <div className="flex flex-col gap-1.5">
         <RailItem icon={BrowserIcon} label={browserLabel} active={active === 'browser'} onClick={onBrowser} />
+        {extraPanels.map((p) => (
+          <RailItem key={p.id} icon={p.icon} label={p.label} active={active === p.id} onClick={() => onPanel?.(p.id)} />
+        ))}
         <RailItem icon={CodeIcon} label="Saved queries" active={active === 'queries'} onClick={onQueries} />
         <RailItem icon={WorkflowIcon} label="Workflows" active={active === 'workflows'} onClick={onWorkflows} />
         <RailItem icon={GridIcon} label="Dashboards" active={active === 'dashboards'} onClick={onDashboards} />

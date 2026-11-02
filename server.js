@@ -5,7 +5,7 @@
  * This file is routes and wiring only. Everything a route needs lives in a
  * module under server/:
  *
- *   db/           the engine-agnostic database layer (sqlite | postgres | redis)
+ *   db/           the engine-agnostic database layer (sqlite | postgres | redis | kafka)
  *   meta.js       the app's own SQLite/PostgreSQL store; migrator/ evolves its schema
  *   auth.js       sessions, guards, workspace/connection access rules
  *   connections.js  connection records (credentials encrypted at rest)
@@ -2944,6 +2944,18 @@ app.get('/api/connections/:id/ping', async (req, res) => {
   }
 })
 
+// The engine's release ("16.4"), for the status bar and the command reference.
+// Always 200 — `version: null` when the engine can't say or isn't reachable.
+app.get('/api/connections/:id/server-version', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  try {
+    res.json({ version: (await db.serverVersion(conn, queryCtx(req))) || null })
+  } catch (error) {
+    res.json({ version: null, error: error.message })
+  }
+})
+
 // Pre-flight handshake the console runs before it opens a connection. Same
 // probe as /ping, but a failure explains itself: { ok:false, reason, cause,
 // hint } — see server/db/diagnose.js. Never throws, so the UI always has
@@ -3134,10 +3146,14 @@ app.post('/api/connections/:id/analyze', async (req, res) => {
 app.post('/api/connections/:id/query', async (req, res) => {
   const conn = await connOr404(req, res)
   if (!conn) return
-  const { sql } = req.body
+  const { sql, page } = req.body
   if (!sql || !sql.trim()) return res.status(400).json({ error: 'SQL query required' })
+  const isCount = (n, min) => Number.isInteger(n) && n >= min
+  if (page !== undefined && !(isCount(page?.limit, 1) && isCount(page?.offset, 0))) {
+    return res.status(400).json({ error: 'page needs an integer limit ≥ 1 and offset ≥ 0' })
+  }
   try {
-    res.json(await db.runQuery(conn, bodyCtx(req), sql))
+    res.json(await db.runQuery(conn, bodyCtx(req), sql, { page }))
   } catch (error) {
     fail(res, error)
   }
@@ -3275,6 +3291,20 @@ app.get('/api/connections/:id/redis/overview', async (req, res) => {
   }
 })
 
+// The server's own reference for one command (COMMAND DOCS + COMMAND INFO), for
+// the console's command reference. Always 200 — `available: false` says why not.
+app.get('/api/connections/:id/redis/command-docs', async (req, res) => {
+  const conn = await requireRedis(req, res)
+  if (!conn) return
+  const name = String(req.query.name || '')
+  if (!/^[A-Za-z][\w-]*$/.test(name)) return res.status(400).json({ error: 'A command name is required.' })
+  try {
+    res.json(await redis.commandDocs(conn, queryCtx(req), name))
+  } catch (error) {
+    res.status(500).json({ error: error.message })
+  }
+})
+
 // One key's value as a generic { columns, rows } page (plus type/TTL/length).
 // Every collection type is paged by offset/limit.
 app.get('/api/connections/:id/redis/key', async (req, res) => {
@@ -3311,6 +3341,437 @@ app.put('/api/connections/:id/redis/ttl', async (req, res) => {
     res.json(await redis.setTtl(conn, queryCtx(req), key, ttlMs))
   } catch (error) {
     res.status(400).json({ error: error.message })
+  }
+})
+
+// ============================================================================
+// Streams: topics, messages, consumer groups (Kafka today)
+// ============================================================================
+// A log-shaped engine's own browsing, beside the generic /query route its
+// console commands ride. Each op is a generic dispatcher in server/db: an engine
+// without the stream capability answers 400 naming its type, so there is no
+// engine check here — only authorize (the /api/connections/:id guard above) →
+// validate → call → respond. Deleting a topic or group, and applying an offset
+// reset, must echo the name back as `confirm`.
+
+const confirmed = (req, res, name) => {
+  if (req.body?.confirm === name) return true
+  res.status(400).json({ error: `Type "${name}" as "confirm" to go ahead — this cannot be undone.` })
+  return false
+}
+
+// Cluster summary for the sidebar header: id, brokers, controller, topic counts.
+app.get('/api/connections/:id/streams/overview', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  try {
+    res.json(await db.streamOverview(conn, queryCtx(req)))
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+// Topics for the sidebar tree. `?pattern=orders.*` (glob, or a substring), `&internal=1`.
+app.get('/api/connections/:id/streams/topics', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  try {
+    res.json(await db.listTopics(conn, queryCtx(req), { pattern: String(req.query.pattern || ''), internal: truthy(req.query.internal) }))
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+// Create a topic. Body: { name, partitions?, replication?, configs?, validateOnly? }.
+app.post('/api/connections/:id/streams/topics', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  const { name, partitions, replication, configs, validateOnly } = req.body || {}
+  if (!name) return res.status(400).json({ error: 'A topic name is required.' })
+  try {
+    res.json(await db.createTopic(conn, queryCtx(req), { name: String(name).trim(), partitions, replication, configs: configs || {}, validateOnly: Boolean(validateOnly) }))
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+// One topic: partitions (leader, replicas, ISR, offsets) and its configs.
+app.get('/api/connections/:id/streams/topics/:topic', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  try {
+    res.json(await db.describeTopic(conn, queryCtx(req), req.params.topic))
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+// Change a topic. Body: { configs?: { key: value | null }, partitions?: n } —
+// configs merge into the current overrides (null removes one); partitions only grow.
+app.patch('/api/connections/:id/streams/topics/:topic', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  const { configs, partitions } = req.body || {}
+  if (!configs && partitions == null) return res.status(400).json({ error: 'Nothing to change — send configs and/or partitions.' })
+  try {
+    res.json(await db.alterTopic(conn, queryCtx(req), req.params.topic, { configs, partitions }))
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+// Delete a topic and every message in it. Body: { confirm: <topic> }.
+app.delete('/api/connections/:id/streams/topics/:topic', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  if (!confirmed(req, res, req.params.topic)) return
+  try {
+    res.json(await db.deleteTopic(conn, queryCtx(req), req.params.topic))
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+// Empty a topic and keep it (configs, consumers). Body: { confirm: <topic>, partitions?: [n] }.
+app.delete('/api/connections/:id/streams/topics/:topic/messages', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  if (!confirmed(req, res, req.params.topic)) return
+  try {
+    res.json(await db.clearTopic(conn, queryCtx(req), req.params.topic, { partitions: req.body?.partitions }))
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+// A bounded read: `?partition=&from=latest|earliest|-N|offset:N|ts:<ISO>&limit=&filter=&decode=auto|string|json|hex|base64`.
+// Joins no consumer group and commits nothing.
+app.get('/api/connections/:id/streams/topics/:topic/messages', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  try {
+    res.json(
+      await db.readMessages(conn, queryCtx(req), {
+        topic: req.params.topic,
+        partition: req.query.partition,
+        from: req.query.from ? String(req.query.from) : 'latest',
+        limit: req.query.limit,
+        filter: req.query.filter ? String(req.query.filter) : '',
+        decode: req.query.decode ? String(req.query.decode) : 'auto',
+      })
+    )
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+// Produce one message. Body: { key?, value, headers?, partition?, keySchema?, valueSchema? } — value
+// null is a tombstone; a schema ({ subject, version?, message? }) writes that side from its JSON.
+app.post('/api/connections/:id/streams/topics/:topic/messages', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  const { key, value, headers, partition, keySchema, valueSchema } = req.body || {}
+  if (value === undefined) return res.status(400).json({ error: 'A value is required (null sends a tombstone).' })
+  try {
+    res.json(await db.produceMessage(conn, queryCtx(req), { topic: req.params.topic, key, value, headers, partition, keySchema, valueSchema }))
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+// Consumer groups with state, member count, topics and total lag.
+app.get('/api/connections/:id/streams/groups', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  try {
+    res.json(await db.listGroups(conn, queryCtx(req)))
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+// One group: members and per-partition committed offset, log end and lag.
+app.get('/api/connections/:id/streams/groups/:group', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  try {
+    res.json(await db.describeGroup(conn, queryCtx(req), req.params.group))
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+// Reset a group's offsets on one topic. Body: { topic, strategy: earliest|latest|timestamp|offset|shift,
+// value?, partitions?, dryRun = true, confirm } — `confirm` (the group id) only when applying.
+app.put('/api/connections/:id/streams/groups/:group/offsets', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  const { topic, strategy, value, partitions } = req.body || {}
+  const dryRun = req.body?.dryRun !== false
+  if (!dryRun && !confirmed(req, res, req.params.group)) return
+  try {
+    res.json(await db.resetOffsets(conn, queryCtx(req), req.params.group, { topic, strategy, value, partitions, dryRun }))
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message, ...(error.reason ? { reason: error.reason } : {}) })
+  }
+})
+
+// Delete a consumer group (it must have no active members). Body: { confirm: <group> }.
+app.delete('/api/connections/:id/streams/groups/:group', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  if (!confirmed(req, res, req.params.group)) return
+  try {
+    res.json(await db.deleteGroup(conn, queryCtx(req), req.params.group))
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+// Brokers with leadership, replica, out-of-sync and skew counts, plus cluster totals.
+app.get('/api/connections/:id/streams/brokers', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  try {
+    res.json(await db.listBrokers(conn, queryCtx(req)))
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+// One broker's configuration; `dynamic` marks an override set at runtime.
+app.get('/api/connections/:id/streams/brokers/:broker', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  try {
+    res.json(await db.describeBroker(conn, queryCtx(req), req.params.broker))
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+// Change a broker's dynamic configs. Body: { configs: { key: value | null } } — merged into its overrides.
+app.patch('/api/connections/:id/streams/brokers/:broker', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  const { configs } = req.body || {}
+  if (!configs || typeof configs !== 'object') return res.status(400).json({ error: 'Nothing to change — send configs.' })
+  try {
+    res.json(await db.alterBroker(conn, queryCtx(req), req.params.broker, { configs }))
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+// ---- Schema registry ----------------------------------------------------------
+// The connection's Schema Registry (its URL and credentials are connection
+// settings); a connection without one answers 400.
+
+// Every subject with its latest version and type, plus the registry-wide compatibility.
+app.get('/api/connections/:id/streams/schemas', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  try {
+    res.json(await db.listSchemas(conn, queryCtx(req)))
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+// The registry-wide compatibility rule. Body: { compatibility }.
+app.put('/api/connections/:id/streams/schemas/config', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  try {
+    res.json(await db.setSchemaCompatibility(conn, queryCtx(req), null, req.body?.compatibility))
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+// One subject: every version's schema and its compatibility.
+app.get('/api/connections/:id/streams/schemas/:subject', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  try {
+    res.json(await db.describeSchema(conn, queryCtx(req), req.params.subject))
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+// Register a schema (new subject or next version). Body: { schema, type: AVRO|PROTOBUF|JSON,
+// references?, validateOnly? } — validateOnly only tests it against the subject's compatibility.
+app.post('/api/connections/:id/streams/schemas/:subject', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  const { schema, type, references, validateOnly } = req.body || {}
+  try {
+    res.json(await db.registerSchema(conn, queryCtx(req), req.params.subject, { schema, type, references, validateOnly: Boolean(validateOnly) }))
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+// A subject's own compatibility rule. Body: { compatibility } — null goes back to the registry's.
+app.put('/api/connections/:id/streams/schemas/:subject/config', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  try {
+    res.json(await db.setSchemaCompatibility(conn, queryCtx(req), req.params.subject, req.body?.compatibility ?? null))
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+// Delete a subject or one version. Body: { confirm: <subject>, version?, permanent? }.
+app.delete('/api/connections/:id/streams/schemas/:subject', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  if (!confirmed(req, res, req.params.subject)) return
+  const { version, permanent } = req.body || {}
+  try {
+    res.json(await db.deleteSchema(conn, queryCtx(req), req.params.subject, { version, permanent: Boolean(permanent) }))
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+// ---- ACLs ---------------------------------------------------------------------------
+
+// ACL bindings. `?principal=User:alice&resourceType=TOPIC&resourceName=orders` narrow it.
+app.get('/api/connections/:id/streams/acls', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  const { principal, resourceType, resourceName } = req.query
+  try {
+    res.json(await db.listAcls(conn, queryCtx(req), { principal: principal || undefined, resourceType: resourceType || undefined, resourceName: resourceName || undefined }))
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+// Add bindings. Body: { acls: [{ principal, host?, operation, permission?, resourceType, resourceName, patternType? }] }.
+app.post('/api/connections/:id/streams/acls', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  try {
+    res.json(await db.createAcls(conn, queryCtx(req), req.body?.acls))
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+// Remove bindings, each matched exactly. Body: { acls: [...] } as listed.
+app.delete('/api/connections/:id/streams/acls', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  try {
+    res.json(await db.deleteAcls(conn, queryCtx(req), req.body?.acls))
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+// ---- Connectors ----------------------------------------------------------------------
+// The connection's Kafka Connect cluster; a connection without one answers 400.
+
+// Every connector with its state, class and tasks.
+app.get('/api/connections/:id/streams/connectors', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  try {
+    res.json(await db.listConnectors(conn, queryCtx(req)))
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+// The connector classes the workers have installed.
+app.get('/api/connections/:id/streams/connector-plugins', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  try {
+    res.json(await db.listConnectorPlugins(conn, queryCtx(req)))
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+// One connector: state, tasks with failure traces, config, topics.
+app.get('/api/connections/:id/streams/connectors/:name', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  try {
+    res.json(await db.describeConnector(conn, queryCtx(req), req.params.name))
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+// Create a connector or replace its config. Body: { config: { 'connector.class': …, … }, validateOnly? }.
+app.put('/api/connections/:id/streams/connectors/:name', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  const { config, validateOnly } = req.body || {}
+  try {
+    res.json(
+      validateOnly
+        ? await db.validateConnector(conn, queryCtx(req), req.params.name, config)
+        : await db.saveConnector(conn, queryCtx(req), req.params.name, config)
+    )
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+// A lifecycle action. Body: { action: pause|resume|stop|restart|restartTask|resetOffsets, task?, onlyFailed? }.
+app.post('/api/connections/:id/streams/connectors/:name/actions', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  const { action, task, onlyFailed } = req.body || {}
+  try {
+    res.json(await db.connectorAction(conn, queryCtx(req), req.params.name, { action, task, onlyFailed: Boolean(onlyFailed) }))
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+// Delete a connector. Body: { confirm: <name> }.
+app.delete('/api/connections/:id/streams/connectors/:name', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  if (!confirmed(req, res, req.params.name)) return
+  try {
+    res.json(await db.deleteConnector(conn, queryCtx(req), req.params.name))
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+// ---- Streaming SQL ----------------------------------------------------------------------
+// The connection's ksqlDB; a connection without one answers 400.
+
+// Run statements, or one bounded query. Body: { sql, properties?, limit? }.
+app.post('/api/connections/:id/streams/sql', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  const { sql, properties, limit } = req.body || {}
+  try {
+    res.json(await db.runStreamSql(conn, queryCtx(req), { sql, properties: properties || {}, limit }))
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+// Streams, tables and running queries.
+app.get('/api/connections/:id/streams/sql/catalog', async (req, res) => {
+  const conn = await connOr404(req, res)
+  if (!conn) return
+  try {
+    res.json(await db.streamSqlCatalog(conn, queryCtx(req)))
+  } catch (error) {
+    fail(res, error)
   }
 })
 

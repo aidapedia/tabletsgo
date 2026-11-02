@@ -135,6 +135,12 @@ export async function getSchema(conn) {
   return safeRequest(withNs(conn, `/connections/${conn.id}/schema`), {})
 }
 
+// The engine's release ("16.4"), or null when it can't say.
+export async function getServerVersion(conn): Promise<string | null> {
+  const res = await safeRequest<{ version: string | null }>(`/connections/${conn.id}/server-version`, { version: null })
+  return res.version || null
+}
+
 export async function getIndexes(conn, table) {
   return safeRequest(withNs(conn, `/connections/${conn.id}/indexes/${encodeURIComponent(table)}`), [])
 }
@@ -184,13 +190,19 @@ export async function insertRow(conn, table, values) {
 
 // `timeoutMs` (optional) aborts the request client-side once it elapses,
 // surfacing a timeout error instead of hanging on a slow/runaway query.
-export async function runQuery(conn, sql, { timeoutMs }: { timeoutMs?: number } = {}) {
+// `page` (optional) asks for one page of rows; the server pages however the
+// engine can, so the caller never wraps the statement itself.
+export async function runQuery(
+  conn,
+  sql,
+  { timeoutMs, page }: { timeoutMs?: number; page?: { limit: number; offset: number } } = {}
+) {
   const controller = timeoutMs ? new AbortController() : null
   const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null
   try {
     return await request(`/connections/${conn.id}/query`, {
       method: 'POST',
-      body: { sql, ...nsBody(conn) },
+      body: { sql, ...(page ? { page } : {}), ...nsBody(conn) },
       signal: controller?.signal,
     })
   } catch (error) {

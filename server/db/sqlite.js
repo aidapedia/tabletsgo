@@ -16,6 +16,7 @@ import {
   ifNotExists,
   insertBatches,
   makeIndexSuggestion,
+  pageSql,
   queryLevelSuggestions,
   quoteIdent,
 } from './sql.js'
@@ -115,6 +116,9 @@ export const sqliteDriver = {
     dbFor(conn).prepare('SELECT 1').get()
     return { ok: true }
   },
+
+  // The library's bundled engine is the one running every query on the file.
+  serverVersion: (conn) => dbFor(conn).prepare('SELECT sqlite_version() AS v').get()?.v || null,
 
   namespaces(conn) {
     const name = path.basename(conn.filepath || 'database')
@@ -227,6 +231,7 @@ export const sqliteDriver = {
   },
 
   runQuery: (conn, ctx, sql) => runQuery(dbFor(conn), sql),
+  pageSql,
 
   analyze: (conn, ctx, { sql, cls }) => analyze(dbFor(conn), sql, cls),
 

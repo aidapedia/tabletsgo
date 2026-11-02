@@ -4,7 +4,7 @@ import { useToast } from '@/shared/ui/feedback/Toast'
 import Button from '@/shared/ui/buttons/Button'
 import TextButton from '@/shared/ui/buttons/TextButton'
 import Tooltip from '@/shared/ui/overlay/Tooltip'
-import JsonEditor from '@/shared/ui/JsonEditor'
+import CodeEditor from '@/shared/ui/CodeEditor'
 import NumberStepper from '@/shared/ui/form/NumberStepper'
 import DateTimeField from '@/shared/ui/form/DateTimeField'
 import { CloseIcon, ExternalLinkIcon } from '@/shared/ui/icons'
@@ -151,10 +151,12 @@ export default function DataGrid({
   edits,
   onEdit,
   onCellContextMenu,
+  onCellDoubleClick, // ({ row, rowIndex, col, value }) => void — only when the grid isn't editable (there it edits)
   sort, // [{ col, dir, enabled }] — sort rules (drives header carets; disabled ones are ignored)
   onSort, // (col, additive) => void — header click; additive (Shift) adds to multi-sort
   actionsLabel = 'Actions', // header text for the trailing per-row actions column
   renderRowActions, // (row, i) => ReactNode — adds a trailing actions column when set
+  columnWidths, // { [colName]: px } — opening widths; a drag still overrides them
 }: any) {
   const [editing, setEditing] = useState(null) // { rowIndex, col, kind, origText }
   const [draft, setDraftState] = useState('')
@@ -175,7 +177,7 @@ export default function DataGrid({
   const [clientW, setClientW] = useState(0) // container width (to fill horizontally)
   const [widths, setWidths] = useState({}) // per-column override widths
   const [resizing, setResizing] = useState(null) // column currently being dragged
-  const colW = (c) => widths[c] ?? DEFAULT_W
+  const colW = (c) => widths[c] ?? columnWidths?.[c] ?? DEFAULT_W
 
   const startResize = (e, c) => {
     e.preventDefault()
@@ -483,7 +485,11 @@ export default function DataGrid({
                         style={ringStyle}
                         onMouseDown={(e) => startSelect(e, i, j)}
                         onMouseEnter={() => extendSelect(i, j)}
-                        onDoubleClick={() => editable && !Array.isArray(row) && startEdit(i, c, val)}
+                        onDoubleClick={() => {
+                          if (Array.isArray(row)) return
+                          if (editable) startEdit(i, c, val)
+                          else onCellDoubleClick?.({ row, rowIndex: i, col: c, value: val })
+                        }}
                         onContextMenu={(e) => {
                           if (!onCellContextMenu || Array.isArray(row)) return
                           e.preventDefault()
@@ -581,7 +587,7 @@ export default function DataGrid({
               </div>
 
               {kind === 'json' ? (
-                <JsonEditor
+                <CodeEditor
                   autoFocus
                   value={draft}
                   onChange={setDraft}

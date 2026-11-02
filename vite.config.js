@@ -20,7 +20,9 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'http://localhost:3000',
+        // IPv4 on purpose: `localhost` resolves to ::1 first, and another dev
+        // server bound to [::1]:3000 would silently answer in the API's place.
+        target: 'http://127.0.0.1:3000',
         changeOrigin: true,
       },
     },

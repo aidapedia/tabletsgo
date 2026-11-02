@@ -21,10 +21,11 @@ Browse data, write queries, design schemas, automate workflows and back up to S3
 ## Features
 
 - **Data browser** — spreadsheet‑style grid: filter, sort, edit inline, review staged changes before commit.
-- **SQL editor** — highlighting, formatting, history and saved queries.
+- **SQL editor** — highlighting, formatting, history, saved queries, and a command reference that shows which SQLite / PostgreSQL release each statement arrived in.
+- **Kafka console** — browse topics and filter messages without joining a consumer group, produce, see a topic's messages, partitions, consumers and configs (each in its own tab), clone or clear a topic, and watch or reset consumer-group lag. Toolbar buttons for **Brokers** and **ACLs** add brokers (skew, out-of-sync replicas, runtime config edits) and ACLs (with consumer / producer / Streams-app templates), and — when the connection names them, each with its own icon-rail entry — **Schema Registry** (Avro / Protobuf / JSON Schema messages decode to JSON and can be produced from it; subjects, versions, compatibility), **Kafka Connect** (connectors, tasks, failure traces, pause / stop / restart / reset offsets) and **ksqlDB** (streams, tables, queries and a KSQL editor). Connects with SASL PLAIN / SCRAM / OAUTHBEARER / AWS_MSK_IAM and mutual TLS (PEM or PKCS#12). The **Kafka Topic Overview** template adds a dashboard of a topic's partitions — retained messages, produce rate and under-replicated tiles over a per-partition table — and the groups consuming it.
 - **Schema designer** — visual ERD; stage DDL, release it in one confirmed step, roll back by version.
 - **Workflows** — schedule/webhook triggers → query → HTTP → JavaScript → export.
-- **Dashboards** — query widgets with variables, auto‑refresh and a kiosk mode.
+- **Dashboards** — query widgets with variables, auto‑refresh and a kiosk mode. Table widgets can format each column (number, compact, bytes, a bar of its share, badges, a list count, a prefix or unit) and color its cells by thresholds; metric widgets can sum, count, average or measure a per-second rate of a column, with thresholds that color the widget and swap its caption as the value climbs (theme tones or any custom color).
 - **Backups** — scheduled dumps to any S3‑compatible bucket, with one‑click restore.
 - **Data export / import** — CSV, JSON or SQL, with a dry‑run preview.
 - **SSH tunnels** — reach private databases through a bastion (plain SSH, Railway, Cloudflare Access).
@@ -49,7 +50,7 @@ Every feature in detail: **[docs/FEATURES.md](docs/FEATURES.md)**.
 
 | Database | Status |
 |---|:---:|
-| PostgreSQL, SQLite, Redis | ✅ Supported |
+| PostgreSQL, SQLite, Redis, Kafka | ✅ Supported |
 | MySQL, MariaDB, MongoDB | 🚧 Planned |
 
 ## Quick start
@@ -93,6 +94,7 @@ Set these in `.env`. Everything else is optional.
 | `META_DB_TYPE` / `META_DATABASE_URL` | Metadata store: `sqlite` (default) or `postgresql` + its URL. |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | Pre‑seed the instance admin instead of using the wizard. |
 | `SMTP_*` | Fallback mail server for invites and resets (admins can set one in the UI). |
+| `KAFKA_READ_MAX_MESSAGES` / `_MAX_BYTES` / `_TIMEOUT_MS` | Caps on one Kafka read (defaults 500 rows / 16 MiB / 8000 ms). |
 
 Full list: [docs/CONFIGURATION.md](docs/CONFIGURATION.md) and [`.env.example`](.env.example).
 

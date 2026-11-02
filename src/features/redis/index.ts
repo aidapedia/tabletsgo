@@ -11,7 +11,7 @@ export { default as RedisKeyView } from '@/features/redis/components/RedisKeyVie
 
 export { scanKeys, getOverview, readKey, deleteKeys, setKeyTtl } from '@/features/redis/lib/api'
 export type { RedisKeyMeta, RedisKeyType, RedisKeyValue, RedisScanPage } from '@/features/redis/lib/api'
-export { REDIS_COMMANDS, REDIS_COMMAND_NAMES, findCommand, commandAtCursor } from '@/features/redis/lib/commands'
+export { REDIS_COMMANDS, REDIS_COMMAND_NAMES, findCommand, commandAtCursor, isWriteCommand, meetsVersion } from '@/features/redis/lib/commands'
 export type { RedisCommandSpec } from '@/features/redis/lib/commands'
 export { buildKeyTree, formatTtl, TYPE_COLOR, TYPE_LABEL } from '@/features/redis/lib/tree'
 export type { RedisTreeNode } from '@/features/redis/lib/tree'

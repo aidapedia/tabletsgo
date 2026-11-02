@@ -129,10 +129,7 @@ export default function useSavedQueries(connectionId: string, { toast, openTab, 
     }
   }
 
-  const refresh = () => {
-    fetchSaved(connectionId).then(setSaved)
-    refreshFolders()
-  }
+  const refresh = () => Promise.all([fetchSaved(connectionId).then(setSaved), refreshFolders()])
 
   return {
     saved,

@@ -29,7 +29,18 @@ import { safeJson } from './util.js'
 
 export const CONNECTION_EXPORT_VERSION = 1
 // Credential fields kept out of an export unless the caller opts in (?secrets=1).
-const CONNECTION_SECRET_FIELDS = ['password']
+// Kafka's client key, PKCS#12 bundle, their passphrase, an AWS session token and
+// the ecosystem services' passwords are secrets too.
+const CONNECTION_SECRET_FIELDS = [
+  'password',
+  'clientKey',
+  'clientPfx',
+  'clientKeyPassphrase',
+  'awsSessionToken',
+  'schemaRegistryPassword',
+  'connectPassword',
+  'ksqlPassword',
+]
 // Same shape as the frontend's genWebhookToken — an opaque, URL-safe token.
 const mintWebhookToken = () => (randomUUID() + randomUUID()).replace(/-/g, '')
 

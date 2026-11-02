@@ -6,11 +6,12 @@ import { Input, Textarea, controlClass } from '@/shared/ui/form/Input'
 import { FormField } from '@/shared/ui/form/Form'
 import Select from '@/shared/ui/form/Select'
 import Toggle from '@/shared/ui/form/Toggle'
+import NumberStepper from '@/shared/ui/form/NumberStepper'
 import Tab from '@/shared/ui/navigation/Tab'
 import { listWorkflows, type WorkflowSummary } from '@/features/workflow'
 import SqlEditor from '@/shared/ui/SqlEditor'
 import Popover from '@/shared/ui/overlay/Popover'
-import { ChevronDown, CloseIcon, PlayIcon, TrashIcon } from '@/shared/ui/icons'
+import { ChevronDown, PlayIcon, TrashIcon } from '@/shared/ui/icons'
 import { runQuery } from '@/shared/api/database'
 import IconButton from '@/shared/ui/buttons/IconButton'
 import type {
@@ -23,7 +24,7 @@ import type {
   WidgetRowActionVariant,
   WidgetType,
 } from '../types'
-import { MAX_TABLE_ROW_ACTIONS, ROW_ACTION_OPERATORS, ROW_ACTION_VARIANTS, WIDGET_TYPE_LABEL, widgetRowActions } from '../types'
+import { MAX_TABLE_PAGE_SIZE, MAX_TABLE_ROW_ACTIONS, TABLE_PAGE_SIZES, ROW_ACTION_OPERATORS, ROW_ACTION_VARIANTS, WIDGET_TYPE_LABEL, widgetRowActions } from '../types'
 import { ROW_ACTION_ICONS, ROW_ACTION_ICON_KEYS, rowActionIcon } from '../lib/rowActionIcons'
 import { referencedVariables, substituteVariables, isVariableSet } from '../lib/variables'
 import { sampleResult } from '../lib/sampleData'
@@ -33,61 +34,11 @@ import { useChartPalette, MAX_SERIES } from '../lib/palette'
 import WidgetChart from './WidgetChart'
 import MarkdownText from './MarkdownText'
 import ShapeGuide from './ShapeGuide'
+import ColorSwatch from './ColorSwatch'
+import ColumnsEditor from './ColumnsEditor'
+import MetricEditor from './MetricEditor'
 
 const COLORABLE: WidgetType[] = ['area', 'line', 'bar', 'pie']
-
-// Preset swatches offered by the color picker (a fixed, curated set — not the
-// chart palette itself, so users can pick outside the validated series colors).
-const PRESET_COLORS = [
-  '#8e8e93', '#ff3b30', '#ff9500', '#ffcc00', '#34c759', '#00c7be', '#30b0c7',
-  '#55b6f2', '#007aff', '#5856d6', '#af52de', '#bf5af2', '#ff2d55', '#ff375f',
-]
-
-// Swatch button that opens a small preset-color grid, closer to a native
-// system color picker than the browser's <input type="color"> dialog.
-function ColorSwatch({ color, onChange }: { color: string; onChange: (c: string) => void }) {
-  return (
-    <Popover
-      portal
-      width={300}
-      trigger={({ toggle }) => (
-        <button
-          type="button"
-          aria-label="Pick color"
-          onClick={toggle}
-          className="h-5 w-5 shrink-0 rounded-full border border-edge-strong"
-          style={{ background: color }}
-        />
-      )}
-    >
-      {({ close }) => (
-        <div className="flex flex-wrap gap-2 p-2.5">
-          <button
-            type="button"
-            aria-label="Close"
-            onClick={close}
-            className="flex h-7 w-7 items-center justify-center rounded-full bg-elevated text-ink-faint hover:text-ink"
-          >
-            <CloseIcon width={12} height={12} />
-          </button>
-          {PRESET_COLORS.map((c) => (
-            <button
-              key={c}
-              type="button"
-              aria-label={c}
-              onClick={() => {
-                onChange(c)
-                close()
-              }}
-              className="h-7 w-7 rounded-full border border-black/10"
-              style={{ background: c }}
-            />
-          ))}
-        </div>
-      )}
-    </Popover>
-  )
-}
 
 const TYPE_OPTIONS = (Object.entries(WIDGET_TYPE_LABEL) as [WidgetType, string][]).map(([value, label]) => ({
   value,
@@ -179,6 +130,9 @@ export default function WidgetEditor({
     const actions = widgetRowActions(widget)
     return { ...rest, rowActions: actions.length ? actions : undefined }
   })
+  // A size outside the list opens on "Custom…"; picking it keeps the stepper up
+  // even when the number typed happens to be one of the listed sizes.
+  const [customPageSize, setCustomPageSize] = useState(() => !!draft.pageSize && !TABLE_PAGE_SIZES.includes(draft.pageSize))
   const [preview, setPreview] = useState<QueryResult | null>(null)
   const [previewing, setPreviewing] = useState(false)
   const [previewOpen, setPreviewOpen] = useState(true)
@@ -210,29 +164,6 @@ export default function WidgetEditor({
     })
   }, [isTable, workflows, conn.id])
 
-  // Columns offered to the row-action condition picker. A run preview provides
-  // them for free; otherwise fetch them by running the query once (LIMIT 1) so
-  // the picker is a proper single-select without forcing a manual "Run preview".
-  const [fetchedColumns, setFetchedColumns] = useState<string[]>([])
-  const conditionColumns = preview?.columns?.length ? preview.columns : fetchedColumns
-  const hasRowActions = isTable && !!draft.rowActions?.length
-  useEffect(() => {
-    if (!hasRowActions || preview?.columns?.length) return
-    const q = draft.query?.trim()
-    if (!q) return
-    // Same rule as WidgetCard: don't run until every referenced {{variable}} is resolved.
-    if (referencedVariables(draft.query).some((n) => !isVariableSet(variableValues[n]))) return
-    let alive = true
-    const sql = `SELECT * FROM (${substituteVariables(q, variableValues).replace(/;+\s*$/, '')}) AS _cols LIMIT 1`
-    runQuery(conn, sql).then((r: QueryResult) => {
-      if (alive && r?.columns?.length) setFetchedColumns(r.columns)
-    })
-    return () => {
-      alive = false
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasRowActions, draft.query, variableValues, preview?.columns, conn?.id])
-
   // Until a query has run, preview the selected type with sample data so the
   // diagram is visible while picking a type / writing SQL.
   const isSample = !preview
@@ -257,6 +188,37 @@ export default function WidgetEditor({
   useEffect(() => {
     setActiveTab(draft.type === 'text' ? 'content' : 'query')
   }, [draft.type])
+  // Columns offered to the column, metric and row-action condition pickers. A
+  // run preview provides them for free; otherwise fetch them by running the
+  // query once (a one-row page) so each picker is a proper single-select
+  // without forcing a manual "Run preview".
+  const [fetched, setFetched] = useState<QueryResult | null>(null)
+  const columnSource = preview?.columns?.length ? preview : fetched
+  const queryColumns = columnSource?.columns ?? []
+  const hasRowActions = isTable && !!draft.rowActions?.length
+  const needsColumns = hasRowActions || activeTab === 'table' || activeTab === 'format'
+  useEffect(() => {
+    if (!needsColumns || preview?.columns?.length) return
+    const q = draft.query?.trim()
+    if (!q) return
+    // Same rule as WidgetCard: don't run until every referenced {{variable}} is resolved.
+    if (referencedVariables(draft.query).some((n) => !isVariableSet(variableValues[n]))) return
+    let alive = true
+    runQuery(conn, substituteVariables(q, variableValues), { page: { limit: 1, offset: 0 } }).then((r: QueryResult) => {
+      if (alive && r?.columns?.length) setFetched(r)
+    })
+    return () => {
+      alive = false
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [needsColumns, draft.query, variableValues, preview?.columns, conn?.id])
+  const sampleRow = useMemo(() => {
+    const row = columnSource?.rows?.[0]
+    if (!row) return undefined
+    const cols = columnSource!.columns ?? []
+    return Array.isArray(row) ? Object.fromEntries(cols.map((c, j) => [c, row[j]])) : row
+  }, [columnSource])
+
   // Labels for the color pickers, in the same order colors are applied — series
   // names for xy charts, slice names for pie (sample data while no real preview ran).
   const colorLabels = useMemo(() => {
@@ -314,8 +276,12 @@ export default function WidgetEditor({
                 value={draft.type}
                 onChange={(type: WidgetType) => {
                   setPreview(null)
-                  // Row actions are a table-only, deliberate choice — drop them when the type changes.
-                  patch({ type, ...(type !== 'table' ? { rowActions: undefined } : null) })
+                  // Row actions and columns are table-only, the value settings metric-only — drop them when the type changes.
+                  patch({
+                    type,
+                    ...(type !== 'table' ? { rowActions: undefined, tableColumns: undefined } : null),
+                    ...(type !== 'metric' ? { metric: undefined } : null),
+                  })
                 }}
                 options={TYPE_OPTIONS}
               />
@@ -380,33 +346,49 @@ export default function WidgetEditor({
             </div>
           )}
 
-          {activeTab === 'format' && (
-            <FormField
-              label="Unit"
-              className="w-[220px]"
-              hint="Shown after the value, e.g. “ms”, “%”, “req/s”. Leave blank for none."
-            >
-              <Input value={draft.unit ?? ''} onChange={(e) => patch({ unit: e.target.value })} placeholder="ms, %…" />
-            </FormField>
-          )}
+          {activeTab === 'format' && <MetricEditor widget={draft} onChange={patch} queryColumns={queryColumns} />}
 
           {activeTab === 'table' && (
             <div className="space-y-3">
               <FormField
                 label="Rows per page"
-                className="w-[220px]"
-                hint="Paginated tables fetch one page at a time — add an ORDER BY so pages stay stable."
+                help="Paginated tables fetch one page at a time — pages stay stable when the query returns rows in a fixed order."
               >
-                <Select
-                  className={controlClass}
-                  value={draft.pageSize ? String(draft.pageSize) : ''}
-                  onChange={(v: string) => patch({ pageSize: v ? Number(v) : undefined })}
-                  options={[
-                    { value: '', label: 'All rows (no pagination)' },
-                    ...['10', '25', '50', '100'].map((n) => ({ value: n, label: `${n} rows` })),
-                  ]}
-                />
+                <div className="flex items-center gap-2">
+                  <Select
+                    className={`${controlClass} !w-[220px] shrink-0`}
+                    value={customPageSize ? 'custom' : draft.pageSize ? String(draft.pageSize) : ''}
+                    onChange={(v: string) => {
+                      setCustomPageSize(v === 'custom')
+                      if (v === 'custom') patch({ pageSize: draft.pageSize || TABLE_PAGE_SIZES[1] })
+                      else patch({ pageSize: v ? Number(v) : undefined })
+                    }}
+                    options={[
+                      { value: '', label: 'All rows (no pagination)' },
+                      ...TABLE_PAGE_SIZES.map((n) => ({ value: String(n), label: `${n} rows` })),
+                      { value: 'custom', label: 'Custom…' },
+                    ]}
+                  />
+                  {customPageSize && (
+                    <NumberStepper
+                      className="w-[110px]"
+                      ariaLabel="Rows per page"
+                      autoFocus
+                      min={1}
+                      max={MAX_TABLE_PAGE_SIZE}
+                      value={draft.pageSize ?? TABLE_PAGE_SIZES[1]}
+                      onChange={(n) => patch({ pageSize: n ?? TABLE_PAGE_SIZES[1] })}
+                    />
+                  )}
+                </div>
               </FormField>
+
+              <ColumnsEditor
+                value={draft.tableColumns}
+                onChange={(tableColumns) => patch({ tableColumns })}
+                queryColumns={queryColumns}
+                sampleRow={sampleRow}
+              />
 
               <div className="rounded-soft border border-edge bg-card p-3">
                 <div className="flex items-center justify-between gap-3">
@@ -489,7 +471,7 @@ export default function WidgetEditor({
                                     ariaLabel="Conditional button"
                                     onChange={(on: boolean) =>
                                       patchAction({
-                                        condition: on ? { column: conditionColumns[0] ?? '', operator: 'eq', effect: 'disable' } : undefined,
+                                        condition: on ? { column: queryColumns[0] ?? '', operator: 'eq', effect: 'disable' } : undefined,
                                       })
                                     }
                                   />
@@ -504,13 +486,13 @@ export default function WidgetEditor({
                                       <>
                                         <div className="mt-2 flex items-end gap-2">
                                           <FormField label="When column" className="flex-1">
-                                            {conditionColumns.length ? (
+                                            {queryColumns.length ? (
                                               <Select
                                                 className={controlClass}
                                                 value={cond.column}
                                                 placeholder="Pick a column…"
                                                 onChange={(v: string) => patchCond({ column: v })}
-                                                options={conditionColumns.map((c) => ({ value: c, label: c }))}
+                                                options={queryColumns.map((c) => ({ value: c, label: c }))}
                                               />
                                             ) : (
                                               <Input
@@ -551,7 +533,7 @@ export default function WidgetEditor({
                                           />
                                           <span className="text-[11px] text-ink-faint">this button</span>
                                         </div>
-                                        {!conditionColumns.length && (
+                                        {!queryColumns.length && (
                                           <p className="mt-1.5 text-[11px] text-ink-faint">
                                             Columns load from the query automatically — type the name for now, or run the
                                             preview / resolve variables to pick from a list.
@@ -667,7 +649,7 @@ export default function WidgetEditor({
                   ) : (
                     shown && (
                       <div className={`h-full ${isSample ? 'opacity-70' : ''}`}>
-                        <WidgetChart widget={draft} result={shown} />
+                        <WidgetChart widget={draft} result={shown} values={variableValues} />
                       </div>
                     )
                   )}

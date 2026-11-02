@@ -3,7 +3,7 @@
 // and database-agnostic:
 //   area/line/bar — first column is the x axis, every other numeric column is a series
 //   pie           — first column is the slice label, second is the value
-//   metric        — the first cell of the first row
+//   metric        — the first cell of the first row, or a column aggregated (lib/metric.ts)
 //   sankey        — three columns: source, target, value (one link per row)
 
 export type QueryResult = { columns?: string[]; rows?: any[]; error?: string }
@@ -53,13 +53,6 @@ export function toPieData(result: QueryResult): PieDatum[] {
       value: toNumber(cellAt(row, columns, 1)) ?? 0,
     }))
     .filter((d) => d.value > 0)
-}
-
-export function toMetric(result: QueryResult): string | number | null {
-  const { columns, rows } = firstRows(result)
-  if (!rows.length || !columns.length) return null
-  const v = cellAt(rows[0], columns, 0)
-  return v === undefined ? null : v
 }
 
 export type SankeyData = { nodes: { name: string }[]; links: { source: number; target: number; value: number }[] }

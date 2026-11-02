@@ -40,9 +40,11 @@ function targetOf(conn, defaultPort) {
 
 // The connection as the driver should dial it: everything pointed at the local
 // end. `tunneledHost` keeps the real name for TLS (SNI + certificate checks),
-// which would otherwise be checked against 127.0.0.1.
-function dialThrough(conn, port, target) {
-  const reached = { ...conn, host: '127.0.0.1', port: String(port), tunneledHost: target.host }
+// which would otherwise be checked against 127.0.0.1. `forwardPort(host, port)`
+// resolves the local port for any *other* address the engine is redirected to
+// (see `portFor` above) — a single-host engine never calls it.
+function dialThrough(conn, port, target, tunnel) {
+  const reached = { ...conn, host: '127.0.0.1', port: String(port), tunneledHost: target.host, forwardPort: tunnel.portFor }
   if (conn.uri) {
     try {
       const u = new URL(conn.uri)
@@ -88,30 +90,49 @@ function openTunnel(gateway, target) {
     return connecting
   }
 
-  const server = net.createServer((socket) => {
-    sockets.add(socket)
-    socket.on('close', () => sockets.delete(socket))
-    socket.on('error', () => socket.destroy())
-    ensureSsh()
-      .then((c) => forwardOut(c, target.host, target.port))
-      .then((stream) => {
-        stream.on('error', () => socket.destroy())
-        socket.on('close', () => stream.destroy())
-        socket.pipe(stream).pipe(socket)
-      })
-      .catch(() => socket.destroy())
-  })
+  // A local listener whose every socket is forwarded to `host:port` through the
+  // shared SSH session.
+  const servers = []
+  const listen = (host, port) => {
+    const server = net.createServer((socket) => {
+      sockets.add(socket)
+      socket.on('close', () => sockets.delete(socket))
+      socket.on('error', () => socket.destroy())
+      ensureSsh()
+        .then((c) => forwardOut(c, host, port))
+        .then((stream) => {
+          stream.on('error', () => socket.destroy())
+          socket.on('close', () => stream.destroy())
+          socket.pipe(stream).pipe(socket)
+        })
+        .catch(() => socket.destroy())
+    })
+    servers.push(server)
+    return new Promise((resolve, reject) => {
+      server.once('error', reject)
+      server.listen(0, '127.0.0.1', () => resolve(server.address().port))
+    })
+  }
 
-  const listening = new Promise((resolve, reject) => {
-    server.once('error', reject)
-    server.listen(0, '127.0.0.1', () => resolve(server.address().port))
-  })
+  const listening = listen(target.host, target.port)
+
+  // Engines that redirect the client to other hosts after the first contact
+  // (Kafka: every broker the cluster advertises) need one listener per address.
+  // They share this tunnel's SSH session; the target itself reuses the main one.
+  const extra = new Map() // "host:port" → listening promise
+  const portFor = (host, port) => {
+    if (host === target.host && Number(port) === Number(target.port)) return listening
+    const key = `${host}:${port}`
+    if (!extra.has(key)) extra.set(key, listen(host, Number(port)))
+    return extra.get(key)
+  }
 
   return {
     listening,
     ensureSsh,
+    portFor,
     close() {
-      server.close()
+      for (const server of servers) server.close()
       for (const s of sockets) s.destroy()
       client?.end()
       client = null
@@ -163,7 +184,7 @@ export async function reach(conn, defaultPort, onStale) {
   // A failed login keeps the listener: pools may already point at its port,
   // and the next call logs in again on the same one.
   await tunnel.ensureSsh()
-  return dialThrough(conn, port, target)
+  return dialThrough(conn, port, target, tunnel)
 }
 
 /**
@@ -179,7 +200,7 @@ export async function withTunnel(conn, defaultPort, fn) {
   try {
     const port = await tunnel.listening
     await tunnel.ensureSsh()
-    return await fn(dialThrough(conn, port, target))
+    return await fn(dialThrough(conn, port, target, tunnel))
   } finally {
     tunnel.close()
   }

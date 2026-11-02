@@ -91,6 +91,7 @@ respond**.
 ```
 prisma/<engine>/         # schema.prisma + migrations/ per engine (sqlite | postgresql) → skill meta-schema
 scripts/migrate.js       # `npm run migrate [-- --status]` — the migrator by hand (the app runs it on boot; the updater's one-shot container runs this)
+scripts/dev/kafka/       # local Kafka stacks (broker+ACLs, Schema Registry, Connect, ksqlDB) + seed.mjs sample data
 server.js                # express app: 108 routes, static frontend, schedulers, shutdown
 server/
 ├── config.js            # every env var + filesystem path, resolved once      → skill add-tunable

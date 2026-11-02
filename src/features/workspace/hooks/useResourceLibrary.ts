@@ -135,10 +135,7 @@ export default function useResourceLibrary<I extends LibraryItem, F extends Fold
     }
   }
 
-  const refresh = () => {
-    api.list(connectionId).then(setItems)
-    refreshFolders()
-  }
+  const refresh = () => Promise.all([api.list(connectionId).then(setItems), refreshFolders()])
 
   return { items, setItems, open, create, rename, renamedExternally, remove, importFile, moveToFolder, refresh, ...folderTree }
 }

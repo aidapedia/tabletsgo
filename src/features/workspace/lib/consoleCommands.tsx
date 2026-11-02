@@ -15,10 +15,12 @@ import {
   TableIcon,
   TagIcon,
   TerminalIcon,
+  TopicIcon,
   UploadIcon,
   WandIcon,
   WorkflowIcon,
 } from '@/shared/ui/icons'
+import type { ConsoleKind } from '@/shared/config/databaseTypes'
 
 type Actions = {
   newQuery: () => void
@@ -40,55 +42,66 @@ type Actions = {
  *
  * `hint` mirrors the action's current keymap binding so the palette stays in
  * sync with user-customized shortcuts. Schema and table entries only exist for
- * the engines that have them: on Redis the palette offers the console and the
- * keyspace instead, rather than listing actions that would do nothing.
+ * the engines that have them: on Redis and Kafka the palette offers the console
+ * and the keyspace / topics instead, rather than listing actions that would do
+ * nothing.
  */
+const CONSOLE_LABEL: Record<ConsoleKind, string> = { sql: 'New SQL query', keyspace: 'New Redis console', stream: 'New Kafka console' }
+const BROWSER: Record<ConsoleKind, { label: string; keywords: string; icon: any }> = {
+  sql: { label: 'Browser', keywords: 'tables data browse', icon: TableIcon },
+  keyspace: { label: 'Keyspace', keywords: 'keys redis browse scan', icon: KeyIcon },
+  stream: { label: 'Topics', keywords: 'topics kafka groups browse messages', icon: TopicIcon },
+}
 export function buildConsoleCommands({
-  isRedis,
+  kind,
   bindings,
   schemaVersion,
+  showChanges,
   splitDir,
   actions: a,
 }: {
-  isRedis: boolean
+  kind: ConsoleKind
   bindings: any
   schemaVersion: number
+  showChanges: boolean
   splitDir: 'vertical' | 'horizontal' | null
   actions: Actions
 }): Command[] {
   const hint = (action: string) => formatCombo(bindings[action])
+  const tableless = kind !== 'sql'
+  const browser = BROWSER[kind]
 
   return [
-    isRedis
-      ? { id: 'new-query', group: 'Create', label: 'New Redis console', keywords: 'command redis cli tab', icon: <TerminalIcon width={15} height={15} />, hint: hint('general.newTab'), run: a.newQuery }
-      : { id: 'new-query', group: 'Create', label: 'New SQL query', keywords: 'sql add query tab', icon: <CodeIcon width={15} height={15} />, hint: hint('general.newTab'), run: a.newQuery },
+    tableless
+      ? { id: 'new-query', group: 'Create', label: CONSOLE_LABEL[kind], keywords: 'command console cli tab', icon: <TerminalIcon width={15} height={15} />, hint: hint('general.newTab'), run: a.newQuery }
+      : { id: 'new-query', group: 'Create', label: CONSOLE_LABEL[kind], keywords: 'sql add query tab', icon: <CodeIcon width={15} height={15} />, hint: hint('general.newTab'), run: a.newQuery },
     { id: 'new-workflow', group: 'Create', label: 'New workflow', keywords: 'automation flow', icon: <WorkflowIcon width={15} height={15} />, run: a.newWorkflow },
     { id: 'new-dashboard', group: 'Create', label: 'New dashboard', keywords: 'charts widgets analytics', icon: <GridIcon width={15} height={15} />, run: a.newDashboard },
-    ...(isRedis
+    ...(tableless
       ? []
       : [{ id: 'new-table', group: 'Create', label: 'New table', keywords: 'create table ddl', icon: <PlusIcon width={15} height={15} />, run: a.newTable }]),
 
-    isRedis
-      ? { id: 'go-browser', group: 'Navigate', label: 'Keyspace', keywords: 'keys redis browse scan', icon: <KeyIcon width={15} height={15} />, hint: hint('workspace.panelBrowser'), run: () => a.selectPanel('browser') }
-      : { id: 'go-browser', group: 'Navigate', label: 'Browser', keywords: 'tables data browse', icon: <TableIcon width={15} height={15} />, hint: hint('workspace.panelBrowser'), run: () => a.selectPanel('browser') },
+    { id: 'go-browser', group: 'Navigate', label: browser.label, keywords: browser.keywords, icon: <browser.icon width={15} height={15} />, hint: hint('workspace.panelBrowser'), run: () => a.selectPanel('browser') },
     { id: 'go-queries', group: 'Navigate', label: 'Saved queries', keywords: 'queries panel', icon: <CodeIcon width={15} height={15} />, hint: hint('workspace.panelQueries'), run: () => a.selectPanel('queries') },
     { id: 'go-workflows', group: 'Navigate', label: 'Workflows', keywords: 'automation', icon: <WorkflowIcon width={15} height={15} />, hint: hint('workspace.panelWorkflows'), run: () => a.selectPanel('workflows') },
-    ...(isRedis
+    ...(tableless
       ? []
       : [{ id: 'go-schema', group: 'Navigate', label: 'Schema editor', keywords: 'designer diagram erd', icon: <DiagramIcon width={15} height={15} />, hint: hint('workspace.panelSchema'), run: a.openSchemaEditor }]),
     { id: 'go-dashboards', group: 'Navigate', label: 'Dashboards', keywords: 'charts analytics', icon: <GridIcon width={15} height={15} />, hint: hint('workspace.panelDashboards'), run: () => a.selectPanel('dashboards') },
     { id: 'go-templates', group: 'Navigate', label: 'Templates', keywords: 'presets starter gallery scaffold', icon: <WandIcon width={15} height={15} />, run: () => a.selectPanel('templates') },
     { id: 'switch-connection', group: 'Navigate', label: 'Switch connection…', keywords: 'database change connect', icon: <DatabaseIcon width={15} height={15} />, run: a.switchConnection },
 
-    { id: 'view-history', group: 'View', label: isRedis ? 'Command history' : 'Query history', keywords: 'recent past', icon: <HistoryIcon width={15} height={15} />, run: a.openHistory },
-    ...(isRedis
+    { id: 'view-history', group: 'View', label: tableless ? 'Command history' : 'Query history', keywords: 'recent past', icon: <HistoryIcon width={15} height={15} />, run: a.openHistory },
+    ...(tableless
       ? []
       : [
           { id: 'view-schema-history', group: 'View', label: `Schema version history (v${schemaVersion})`, keywords: 'migrations audit', icon: <TagIcon width={15} height={15} />, run: a.openSchemaHistory },
           { id: 'export-data', group: 'View', label: 'Export data', keywords: 'download csv json sql dump tables', icon: <DownloadIcon width={15} height={15} />, run: () => a.openTransfer('export') },
           { id: 'import-data', group: 'View', label: 'Import data', keywords: 'upload csv json sql load tables', icon: <UploadIcon width={15} height={15} />, run: () => a.openTransfer('import') },
         ]),
-    { id: 'view-changes', group: 'View', label: 'View staged changes', keywords: 'commit diff pending', icon: <EditIcon width={15} height={15} />, run: a.openChanges },
+    ...(showChanges
+      ? [{ id: 'view-changes', group: 'View', label: 'View staged changes', keywords: 'commit diff pending', icon: <EditIcon width={15} height={15} />, run: a.openChanges }]
+      : []),
     { id: 'split-vertical', group: 'View', label: splitDir === 'vertical' ? 'Unsplit editor' : 'Split editor right', keywords: 'split pane side by side group', icon: <SplitVerticalIcon width={15} height={15} />, hint: hint('workspace.splitEditor'), run: () => a.toggleSplit('vertical') },
     { id: 'split-horizontal', group: 'View', label: splitDir === 'horizontal' ? 'Unsplit editor' : 'Split editor down', keywords: 'split pane stacked group', icon: <SplitHorizontalIcon width={15} height={15} />, run: () => a.toggleSplit('horizontal') },
   ]

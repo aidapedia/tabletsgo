@@ -75,6 +75,100 @@ export function rowActionState(action: WidgetRowAction, row: Record<string, unkn
 /** Cap on row-action buttons per table widget — row width and sanity, not a hard server limit. */
 export const MAX_TABLE_ROW_ACTIONS = 3
 
+/** `table` page sizes offered in the editor's list; any other size from 1 to MAX_TABLE_PAGE_SIZE is a custom one. */
+export const TABLE_PAGE_SIZES = [10, 25, 50, 100]
+export const MAX_TABLE_PAGE_SIZE = 500
+
+/** How a number is written: grouped digits, short scale (48.2M) or binary bytes (1.2 MB). */
+export type NumberFormat = 'number' | 'compact' | 'bytes'
+export const NUMBER_FORMATS: { value: NumberFormat; label: string }[] = [
+  { value: 'number', label: 'Number (1,234)' },
+  { value: 'compact', label: 'Compact (1.2k)' },
+  { value: 'bytes', label: 'Bytes (1.2 MB)' },
+]
+
+/** How a `table` column draws its cells. */
+export type ColumnDisplay = 'text' | NumberFormat | 'bar' | 'badges' | 'count'
+export const COLUMN_DISPLAYS: { value: ColumnDisplay; label: string }[] = [
+  { value: 'text', label: 'Text' },
+  ...NUMBER_FORMATS,
+  { value: 'bar', label: 'Bar (share of largest)' },
+  { value: 'badges', label: 'Badges (list)' },
+  { value: 'count', label: 'Count (list size)' },
+]
+/** Displays that read the "compare with" column. */
+export const COLUMN_DISPLAYS_WITH_REF: ColumnDisplay[] = ['badges', 'count']
+
+/** One column of a `table` widget, as shown. The list is ordered and may name a
+ *  query column more than once — e.g. `messages` as a number and again as a bar. */
+export type WidgetColumn = {
+  /** Column of the query result this reads. */
+  column: string
+  /** Header text; defaults to the column name. */
+  label?: string
+  /** Defaults to 'text'. */
+  display?: ColumnDisplay
+  /** Text before the value, e.g. "broker ". */
+  prefix?: string
+  /** Text after the value, e.g. "ms". */
+  unit?: string
+  /** Fraction digits for the number displays. */
+  decimals?: number
+  /** Monospaced cell text. */
+  mono?: boolean
+  /** `badges`: items also listed in this column are filled, the rest dashed (replicas vs in-sync).
+   *  `count`: shown as "n / m" with m this column's item count, amber when short. */
+  ref?: string
+  /** Colors the cell (a bar's fill) by its value — see Threshold. Not used by `badges`. */
+  thresholds?: Threshold[]
+}
+
+/** How a `metric` widget reduces its result to one value. `rate` is the
+ *  per-second change of the column's sum between two runs of the query. */
+export type MetricAggregate = 'first' | 'sum' | 'count' | 'min' | 'max' | 'avg' | 'rate'
+export const METRIC_AGGREGATES: { value: MetricAggregate; label: string }[] = [
+  { value: 'first', label: 'First row' },
+  { value: 'sum', label: 'Sum' },
+  { value: 'count', label: 'Count' },
+  { value: 'min', label: 'Minimum' },
+  { value: 'max', label: 'Maximum' },
+  { value: 'avg', label: 'Average' },
+  { value: 'rate', label: 'Rate per second' },
+]
+
+/** A threshold color: a theme tone (follows light/dark) or a custom `#rrggbb`. */
+export type ThresholdTone = 'neutral' | 'green' | 'amber' | 'red'
+export const THRESHOLD_TONES: ThresholdTone[] = ['neutral', 'green', 'amber', 'red']
+export const isThresholdColor = (c: unknown): c is string =>
+  typeof c === 'string' && (THRESHOLD_TONES.includes(c as ThresholdTone) || /^#[0-9a-fA-F]{6}$/.test(c))
+
+/** One step of a metric's or a column's thresholds. The step without `from`
+ *  is the base — what the value looks like below every other step; the rest
+ *  apply from their value up (value ≥ from), the highest one reached winning. */
+export type Threshold = {
+  from?: number
+  /** Defaults to 'neutral'. */
+  color?: string
+}
+
+export type MetricThreshold = Threshold & {
+  /** Line under the value while this step applies; `{{variable}}` placeholders are filled in. */
+  caption?: string
+}
+
+export type WidgetMetric = {
+  /** Column the aggregate reads; defaults to the first one. `count` without a column counts rows. */
+  column?: string
+  /** Defaults to 'first' — the first cell of the first row. */
+  aggregate?: MetricAggregate
+  format?: NumberFormat
+  decimals?: number
+  /** Base step first (no `from`), then the steps in ascending `from` — see MetricThreshold. */
+  thresholds?: MetricThreshold[]
+  /** 'hero' (default): one big centred number. 'tile': label, value and caption, left-aligned. */
+  variant?: 'hero' | 'tile'
+}
+
 /** A table widget's row actions, tolerating the pre-list `rowAction` (single object) shape. */
 export function widgetRowActions(w: Widget): WidgetRowAction[] {
   return w.rowActions ?? ((w as any).rowAction ? [(w as any).rowAction as WidgetRowAction] : [])
@@ -94,6 +188,10 @@ export type Widget = {
   pageSize?: number
   /** `table` only: per-row workflow buttons (max MAX_TABLE_ROW_ACTIONS). */
   rowActions?: WidgetRowAction[]
+  /** `table` only: the columns shown and how. Unset = every column, as returned. */
+  tableColumns?: WidgetColumn[]
+  /** `metric` only: how the result becomes the value, and how the value reads. */
+  metric?: WidgetMetric
   /** Per-series/slice color overrides (area/line/bar/pie), in series order. Falls back to the theme palette where unset. */
   colors?: string[]
   /** Base (`lg`) layout — the 12-column grid position. */
@@ -180,8 +278,10 @@ export function sanitizeConfig(raw: any): DashboardConfig {
         query: typeof w.query === 'string' ? w.query : undefined,
         text: typeof w.text === 'string' ? w.text : undefined,
         unit: typeof w.unit === 'string' ? w.unit : undefined,
-        pageSize: Number.isFinite(Number(w.pageSize)) && Number(w.pageSize) > 0 ? clampInt(w.pageSize, 1, 500, 25) : undefined,
+        pageSize: Number.isFinite(Number(w.pageSize)) && Number(w.pageSize) > 0 ? clampInt(w.pageSize, 1, MAX_TABLE_PAGE_SIZE, 25) : undefined,
         rowActions: sanitizeRowActions(w.rowActions ?? w.rowAction),
+        tableColumns: sanitizeTableColumns(w.tableColumns),
+        metric: sanitizeMetric(w.metric),
         // Kept index-aligned with the series it colors — invalid/missing slots become '' (falls back to the palette), never removed.
         colors: Array.isArray(w.colors)
           ? w.colors.map((c: any) => (typeof c === 'string' && /^#[0-9a-fA-F]{6}$/.test(c) ? c : ''))
@@ -231,6 +331,75 @@ function sanitizeRowActions(raw: any): WidgetRowAction[] | undefined {
       condition: sanitizeRowActionCondition(a.condition),
     }))
   return out.length ? out : undefined
+}
+
+const str = (v: any) => (typeof v === 'string' && v ? v : undefined)
+const decimals = (v: any) => (v === undefined || v === null || v === '' ? undefined : clampInt(v, 0, 6, 0))
+
+function sanitizeTableColumns(raw: any): WidgetColumn[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  const out = raw
+    .filter((c: any) => c && typeof c === 'object' && typeof c.column === 'string' && c.column)
+    .map((c: any) => ({
+      column: c.column,
+      label: str(c.label),
+      display: COLUMN_DISPLAYS.some((d) => d.value === c.display) ? c.display : undefined,
+      prefix: str(c.prefix),
+      unit: str(c.unit),
+      decimals: decimals(c.decimals),
+      mono: c.mono === true || undefined,
+      ref: str(c.ref),
+      // A cell has no caption — only the step's value and color carry over.
+      thresholds: sanitizeSteps(c.thresholds)?.map(({ from, color }) => ({ from, color })),
+    }))
+  return out.length ? out : undefined
+}
+
+const finite = (v: any) => (v === undefined || v === null || v === '' || !Number.isFinite(Number(v)) ? undefined : Number(v))
+
+// A metric's thresholds. Accepts the earlier `caption` / `warnAbove` /
+// `warnCaption` fields, which became the base step's caption and one amber
+// step (warnAbove was "greater than", steps are "from").
+export function sanitizeThresholds(raw: any): MetricThreshold[] | undefined {
+  const list: any[] = Array.isArray(raw?.thresholds) ? [...raw.thresholds] : []
+  const legacyWarn = finite(raw?.warnAbove)
+  if (!list.length && (str(raw?.caption) || legacyWarn !== undefined)) {
+    list.push({ caption: raw.caption })
+    if (legacyWarn !== undefined) {
+      list.push({ from: Number.isInteger(legacyWarn) ? legacyWarn + 1 : legacyWarn, color: 'amber', caption: raw.warnCaption })
+    }
+  }
+  return sanitizeSteps(list)
+}
+
+// Base step first, then the others by ascending `from`; unset when nothing is in it.
+function sanitizeSteps(raw: any): MetricThreshold[] | undefined {
+  if (!Array.isArray(raw)) return undefined
+  const list = raw.filter((t: any) => t && typeof t === 'object')
+  const step = (t: any): MetricThreshold => ({
+    from: finite(t.from),
+    color: isThresholdColor(t.color) && t.color !== 'neutral' ? t.color : undefined,
+    caption: str(t.caption),
+  })
+  const base = list.find((t) => finite(t.from) === undefined)
+  const steps = list
+    .filter((t) => finite(t.from) !== undefined)
+    .map(step)
+    .sort((a, b) => a.from! - b.from!)
+  const out = [base ? step(base) : {}, ...steps]
+  return out.length > 1 || out[0].color || out[0].caption ? out : undefined
+}
+
+function sanitizeMetric(raw: any): WidgetMetric | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  return {
+    column: str(raw.column),
+    aggregate: METRIC_AGGREGATES.some((a) => a.value === raw.aggregate) ? raw.aggregate : undefined,
+    format: NUMBER_FORMATS.some((f) => f.value === raw.format) ? raw.format : undefined,
+    decimals: decimals(raw.decimals),
+    thresholds: sanitizeThresholds(raw),
+    variant: raw.variant === 'tile' ? 'tile' : undefined,
+  }
 }
 
 function clampInt(v: any, min: number, max: number, fallback: number) {

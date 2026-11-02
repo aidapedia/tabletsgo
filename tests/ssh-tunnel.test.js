@@ -130,6 +130,48 @@ test('a connection is reached through its SSH gateway', async (t) => {
   db.releaseConnection(conn)
 })
 
+// Kafka redirects a client to every broker the cluster advertises, so a tunnel
+// must be able to forward more than its one target — over the same SSH login.
+test('a redirected engine gets a listener per advertised address over one SSH session', async (t) => {
+  const { reach, closeTunnel } = await import('../server/db/tunnel.js')
+  const key = await ssh.createSshKey(WS, { name: 'brokers' }, 'u1')
+  const { server: gw, stats } = fakeGateway(key.publicKey)
+  // Two "brokers": each echoes a fixed greeting so we can tell them apart.
+  const broker = (name) => net.createServer((s) => s.end(name))
+  const b1 = broker('broker-1')
+  const b2 = broker('broker-2')
+  const gwPort = await listen(gw)
+  const p1 = await listen(b1)
+  const p2 = await listen(b2)
+  t.after(() => {
+    closeTunnel('kafka-1')
+    gw.close()
+    b1.close()
+    b2.close()
+  })
+  const gateway = await ssh.createSshGateway(WS, { name: 'Brokers', host: '127.0.0.1', port: gwPort, username: 'deploy', auth: 'key', keyId: key.id })
+  assert.equal((await ssh.testSshGateway(gateway)).ok, true)
+
+  const reached = await reach({ id: 'kafka-1', type: 'kafka', host: '127.0.0.1', port: String(p1), sshGatewayId: gateway.id }, 9092)
+  assert.equal(typeof reached.forwardPort, 'function')
+  const read = (port) =>
+    new Promise((resolve, reject) => {
+      let text = ''
+      net.connect(port, '127.0.0.1').on('data', (d) => (text += d)).on('end', () => resolve(text)).on('error', reject)
+    })
+
+  // The bootstrap address maps back onto the tunnel's own listener…
+  assert.equal(await reached.forwardPort('127.0.0.1', p1), Number(reached.port))
+  // …and any other address gets its own, stable, listener.
+  const local2 = await reached.forwardPort('127.0.0.1', p2)
+  assert.notEqual(local2, Number(reached.port))
+  assert.equal(await reached.forwardPort('127.0.0.1', p2), local2)
+  const before = stats.forwards
+  assert.equal(await read(Number(reached.port)), 'broker-1')
+  assert.equal(await read(local2), 'broker-2')
+  assert.ok(stats.forwards >= before + 2, 'both went through the gateway')
+})
+
 test('tunnel failures are diagnosed as SSH, not blamed on the database', async (t) => {
   const key = await ssh.createSshKey(WS, { name: 'k2' }, 'u1')
   const other = await ssh.createSshKey(WS, { name: 'not-authorized' }, 'u1')

@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import Select from '@/shared/ui/form/Select'
+import type { ConsoleKind } from '@/shared/config/databaseTypes'
 
 /**
  * The console's left sidebar: the namespace breadcrumb, then whichever panel
@@ -10,7 +11,7 @@ import Select from '@/shared/ui/form/Select'
  * same element is the slide-over drawer.
  */
 export default function ConsoleSidebar({
-  isRedis,
+  kind,
   ns,
   namespaces,
   onDatabaseChange,
@@ -18,7 +19,7 @@ export default function ConsoleSidebar({
   visible,
   children,
 }: {
-  isRedis: boolean
+  kind: ConsoleKind
   ns: any
   namespaces: any
   onDatabaseChange: (db: string) => void
@@ -29,29 +30,31 @@ export default function ConsoleSidebar({
   return (
     <div className={`shrink-0 overflow-hidden transition-[width] duration-200 ease-out ${visible ? 'w-[280px]' : 'w-0'}`}>
       <aside className="flex h-full min-h-0 w-[280px] flex-col border-r border-edge bg-panel">
-        {/* Database / schema breadcrumb */}
-        <div className="flex items-center gap-0.5 px-3 pt-3">
-          <Select
-            className="max-w-[110px] rounded px-1.5 py-0.5 text-[11px] font-medium text-ink hover:bg-elevated"
-            value={ns.database || ''}
-            onChange={onDatabaseChange}
-            options={(namespaces.databases || []).map((d: string) => ({ value: d, label: d }))}
-            placeholder="database"
-          />
-          {/* Redis has no schemas — only its numbered databases. */}
-          {!isRedis && (
-            <>
-              <span className="text-[11px] text-ink-faint">/</span>
-              <Select
-                className="max-w-[110px] rounded px-1.5 py-0.5 text-[11px] font-medium text-ink hover:bg-elevated"
-                value={ns.schema || ''}
-                onChange={onSchemaChange}
-                options={(namespaces.schemas || []).map((s: string) => ({ value: s, label: s }))}
-                placeholder="schema"
-              />
-            </>
-          )}
-        </div>
+        {/* Database / schema breadcrumb. A stream engine (Kafka) has neither. */}
+        {kind !== 'stream' && (
+          <div className="flex items-center gap-0.5 px-3 pt-3">
+            <Select
+              className="max-w-[110px] rounded px-1.5 py-0.5 text-[11px] font-medium text-ink hover:bg-elevated"
+              value={ns.database || ''}
+              onChange={onDatabaseChange}
+              options={(namespaces.databases || []).map((d: string) => ({ value: d, label: d }))}
+              placeholder="database"
+            />
+            {/* Only SQL engines have schemas — Redis has just its numbered databases. */}
+            {kind === 'sql' && (
+              <>
+                <span className="text-[11px] text-ink-faint">/</span>
+                <Select
+                  className="max-w-[110px] rounded px-1.5 py-0.5 text-[11px] font-medium text-ink hover:bg-elevated"
+                  value={ns.schema || ''}
+                  onChange={onSchemaChange}
+                  options={(namespaces.schemas || []).map((s: string) => ({ value: s, label: s }))}
+                  placeholder="schema"
+                />
+              </>
+            )}
+          </div>
+        )}
         {children}
       </aside>
     </div>

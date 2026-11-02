@@ -10,7 +10,8 @@ type TabsApi = ReturnType<typeof useConsoleTabs>
 
 type Props = {
   tabs: TabsApi
-  isRedis: boolean
+  /** A command console (Redis, Kafka) rather than a SQL editor. */
+  tableless: boolean
   onNewQuery: () => void
   /** Shown when a *whole* console has nothing open (not just one empty pane). */
   empty: ReactNode
@@ -24,7 +25,7 @@ type Props = {
  * of where tabs live rather than a second component tree — which is why a tab
  * can be dragged across and the split folds away on its own once pane 1 empties.
  */
-export default function EditorPanes({ tabs: api, isRedis, onNewQuery, empty, renderContent }: Props) {
+export default function EditorPanes({ tabs: api, tableless, onNewQuery, empty, renderContent }: Props) {
   const { tabs, activeByPane, focusedPane, splitDir, splitRatio, paneWrapRef } = api
 
   const renderPane = (p: number) => {
@@ -87,8 +88,8 @@ export default function EditorPanes({ tabs: api, isRedis, onNewQuery, empty, ren
             // A pane with nothing in it: compact, since it only owns half the area.
             <div className="flex h-full w-full flex-col items-center justify-center gap-3 p-6 text-center">
               <p className="text-xs text-ink-faint">Drag a tab here, or start a new one.</p>
-              <Button variant="ghost" icon={isRedis ? TerminalIcon : CodeIcon} onClick={onNewQuery}>
-                {isRedis ? 'New console' : 'New SQL query'}
+              <Button variant="ghost" icon={tableless ? TerminalIcon : CodeIcon} onClick={onNewQuery}>
+                {tableless ? 'New console' : 'New SQL query'}
               </Button>
             </div>
           ) : (

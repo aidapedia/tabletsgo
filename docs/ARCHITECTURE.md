@@ -39,7 +39,9 @@ src/
 │   │   │                         #     column — pages never cap themselves, HomeLayout owns the width)
 │   │   ├── overlay/              #   Popover, Tooltip, ContextMenu
 │   │   ├── feedback/             #   Toast, ConfirmDialog, TypeToConfirmDialog, LoadingState, EmptyState, Wizard
-│   │   ├── table/                #   DataGrid (editable console grid shared with Redis), DataTable
+│   │   ├── table/                #   DataGrid (editable console grid shared with Redis), GridRules
+│   │   │                         #   (a DataGrid's client-side Filter/Sort/Columns popovers + matchFilter/
+│   │   │                         #     sortRows/cycleSortRules — table tab, histories, Kafka ACLs), DataTable
 │   │   │                         #   (the shared list-as-table: sortable columns, row click,
 │   │   │                         #     pagination footer), Pagination, useDataTable (client-side
 │   │   │                         #     sort/paging state — spread its result into DataTable; pass the
@@ -49,16 +51,23 @@ src/
 │   │   │                         #     useListView + ViewToggle (the per-list List / Grid switch,
 │   │   │                         #     remembered in localStorage; `view="grid"` makes DataTable draw
 │   │   │                         #     the rows as cards built from its columns, or `renderCard`'s own)
-│   │   └── (root)                #   Avatar, Badge, PersonRow, RowLabel, DragHandle (the grip a
+│   │   └── (root)                #   Avatar, Badge, PersonRow, RowLabel, HelpTip (a "?" whose hover
+│   │                             #     explains its neighbour — FormField's `help`), DragHandle (the grip a
 │   │                             #     reorderable list grabs by — pair with useDragReorder),
-│   │                             #     SaveQueryPanel, SqlEditor, JsonEditor, icons — no group yet
-│   ├── hooks/                    # generic hooks (useSlideOver, useDragReorder — drag-to-reorder a
+│   │                             #     SaveQueryPanel, SqlEditor, CodeEditor, CommandReference (a command
+│   │                             #     console's side panel: catalog rows → insert, chevron → that command's
+│   │                             #     docs in place, Back → the list), CommandDocView + CommandDoc (one
+│   │                             #     command's docs, any engine),
+│   │                             #     icons — no group yet
+│   ├── hooks/                    # generic hooks (useServerVersion — the connected server's release, one
+│   │                             #   cached lookup per connection, shared by the status bar and every
+│   │                             #   command reference; useSlideOver, useDragReorder — drag-to-reorder a
 │   │                             #   vertical list of cards: the grip starts it, the whole card is a
 │   │                             #   drop target, and the cards animate into their new places (FLIP:
 │   │                             #   measure on drop, play the delta with transforms). Native HTML5
 │   │                             #   drag, so keep it out of a React Flow canvas, whose own d3-drag
 │   │                             #   suppresses native drag events)
-│   ├── lib/                      # helpers: recents, schemaDraft, toggleId
+│   ├── lib/                      # helpers: recents, schemaDraft, toggleId, version (meetsVersion)
 │   ├── api/                      # backend client: request.ts (fetch wrapper) + database.ts
 │   ├── config/                   # runtime API_URL and shared database type catalog/labels
 │   └── types/                    # ambient/shared TS types (globals.d.ts)
@@ -114,8 +123,41 @@ src/
 │   │   │                         #     CodeMirror), RedisEditor (CodeMirror with a Redis StreamLanguage
 │   │   │                         #     + command autocomplete; reuses SqlEditor's exported theme)
 │   │   └── lib/                  #   api (/redis/* client), commands (command catalog for autocomplete
-│   │                             #     + argument hints), tree (buildKeyTree: split keys on ':' — one
+│   │                             #     + argument hints + `since` per command, isWriteCommand), docs (redisCommandDoc: the
+│   │                             #     reference panel's static summary/returns/example responses;
+│   │                             #     liveRedisDoc merges the server's COMMAND DOCS over it — args,
+│   │                             #     complexity, history — + redis.io link), tree (buildKeyTree:
+│   │                             #     split keys on ':' — one
 │   │                             #     folder level per segment, no chain folding; TTL/type formatting)
+│   ├── kafka/                    # everything stream-shaped in the console (console kind `stream`,
+│   │   │                         #   see shared/config/databaseTypes). Like Redis it swaps the browser
+│   │   │                         #   sidebar and the query tab, and adds three tab kinds.
+│   │   ├── components/           #   KafkaSidebar (the topics, grouped by dotted
+│   │   │                         #     prefix; New topic; a row's menu opens any of its views),
+│   │   │                         #     ConsumerGroupsSidebar (its own rail entry under Topics: groups
+│   │   │                         #     sorted by lag, each unfolding its consumers via describeGroup), TopicView (one tab per view, TOPIC_VIEWS: MessageBrowser /
+│   │   │                         #     PartitionsPanel / TopicConsumersPanel / TopicConfigPanel — the "Kafka
+│   │   │                         #     Topic Overview" template has the same as a dashboard; no header — the
+│   │   │                         #     topic's shape goes up to the status bar via onDetail/topicFacts),
+│   │   │                         #     TopicMenuItems (the topic's actions, in the sidebar row's ⋮ — a
+│   │   │                         #     tab's right-click menu is close/split only), GroupView + ResetOffsetsDialog (live dry
+│   │   │                         #     run; apply needs an empty group + the id typed back),
+│   │   │                         #     ProduceView (a produce tab; production asks for the topic name),
+│   │   │                         #     CreateTopicDialog (also Clone: `cloneOf`), ClearTopicDialog,
+│   │   │                         #     ClusterView (one tab per lib/services CLUSTER_PANELS entry, opened from the console toolbar: BrokersPanel,
+│   │   │                         #     AclsPanel). The services
+│   │   │                         #     beside it are rail entries (lib/services SERVICE_PANELS, shown
+│   │   │                         #     when the connection names one; kafkaPanelsFor puts Consumer
+│   │   │                         #     groups ahead of them), each a sidebar + a tab kind:
+│   │   │                         #     SchemaRegistrySidebar + SubjectView, ConnectSidebar +
+│   │   │                         #     ConnectorView, KsqlSidebar + KsqlView, ConfigList
+│   │   │                         #     (a topic's or broker's configs, shared), Tile,
+│   │   │                         #     KafkaConsole + KafkaEditor (lazy, NOT in the
+│   │   │                         #     barrel — CodeMirror; commands + topic/group completion)
+│   │   └── lib/                  #   api (/streams/* client), commands (catalog for completion, hints
+│   │                             #     and the reference panel), docs (kafkaCommandDoc: the reference panel's
+│   │                             #     options/returns/examples — the only docs our grammar has),
+│   │                             #     format (topic tree, lag tones, JSON)
 │   ├── resource-tree/            # the instance-wide resource hierarchy and the access granted on it:
 │   │   │                         #   application → workspace → group → {connection, storage} →
 │   │   │                         #   {dashboard, workflow}. Ownership and grants cascade down it, so this
@@ -219,7 +261,11 @@ src/
 │   │   │                         #   useSavedQueries (not a library: a saved query seeds a tab rather than
 │   │   │                         #     being edited in place, and saving from its tab updates it)
 │   │   └── lib/                  #   savedQueries, queryHistory, dataTransfer (backend calls), dialect, consoleCommands
-│   │                             #     (the ⌘K entries — engine-aware, hints mirror the live keymap)
+│   │                             #     (the ⌘K entries — engine-aware, hints mirror the live keymap),
+│   │                             #     sql-reference (the SQL editor's command reference: one catalog per
+│   │                             #     engine — sqlite, postgres — of statements, clauses and functions
+│   │                             #     with the release each arrived in; index turns an entry into a
+│   │                             #     CommandDoc and dims what the connected server predates)
 │   ├── schema-designer/          # visual schema design (React Flow ERD + table/column editors; tables
 │   │   │                         #   sharing a folder are clustered into a draggable, editable region;
 │   │   │                         #   sticky notes pinned to the canvas, and the whole arrangement —
@@ -293,12 +339,20 @@ src/
 │   │   │                         #   variant/icon, optional per-row condition that disables/hides by a
 │   │   │                         #   column value) that run a workflow with the clicked row as its trigger
 │   │   │                         #   input (Widget.pageSize/rowActions; icons in lib/rowActionIcons).
+│   │   │                         #   A table can also list its columns (Widget.tableColumns: header, display
+│   │   │                         #   text|number|compact|bytes|bar|badges|count, prefix/unit, mono, color thresholds); a metric
+│   │   │                         #   aggregates a column (Widget.metric: first|sum|count|min|max|avg|rate,
+│   │   │                         #   thresholds — base + "from value" steps with color/caption — hero or stat-tile look).
 │   │   ├── components/           #   DashboardView (tab content: toolbar + VariableBar + WidgetGrid),
-│   │   │                         #     DashboardsPanel (rail list), WidgetCard (runs its query), WidgetChart,
-│   │   │                         #     WidgetEditor + DashboardSettings (modals), MarkdownText,
+│   │   │                         #     DashboardsPanel (rail list), WidgetCard (runs its query; samples a rate
+│   │   │                         #     metric every 10 s), WidgetChart, TableWidget (per-column cells),
+│   │   │                         #     WidgetEditor + ColumnsEditor + MetricEditor + ThresholdsEditor + ColorSwatch +
+│   │   │                         #     DashboardSettings, MarkdownText,
 │   │   │                         #     charts/ (XYChart area|line|bar, PieDonut, SankeyChart, chrome)
 │   │   └── lib/                  #   api (per-connection CRUD), variables ({{}} substitution + option
-│   │                             #     resolution), queryData (result → chart shapes), palette (validated
+│   │                             #     resolution), queryData (result → chart shapes), metric (aggregate +
+│   │                             #     rate sampling), thresholds (active step + its color as card tint/text/fill),
+│   │                             #     format (number/compact/bytes, list cells), palette (validated
 │   │                             #     CVD-safe series colors), grid (collision math), scale, useSize
 │   ├── backup/                   # S3-compatible storage destinations (workspace-scoped) + the
 │   │   │                         #   per-connection backup schedule built from generic workflow nodes
@@ -319,7 +373,7 @@ src/
 │   │   │                         #   creates the workflows first, resolves `{{workflow:<key>}}`
 │   │   │                         #   placeholders in dashboard row-action `workflowId`s against the
 │   │   │                         #   newly created ids, then creates the dashboards. Filterable by
-│   │   │                         #   DB type ("postgresql" | "sqlite") against Template.databases.
+│   │   │                         #   DB type ("postgresql" | "sqlite" | "kafka") against Template.databases.
 │   │   │                         #   VSCode-style entry: a Templates icon in the console IconRail opens
 │   │   │                         #   TemplatesPanel in the sidebar; picking a template opens its detail
 │   │   │                         #   in a main-area tab (kind: 'template').
@@ -462,6 +516,7 @@ prisma/
 ├── sqlite/               # schema.prisma + migrations/ (0_baseline = legacy v22) — Prisma Migrate's
 └── postgresql/           #   history is provider-locked, so one per engine; both declare the same models
 scripts/migrate.js        # `npm run migrate [-- --status]` — the migrator by hand (also the updater's one-shot container)
+scripts/dev/kafka/        # local Kafka stacks (broker+ACLs, Schema Registry, Connect, ksqlDB) + seed.mjs sample data
 server.js                 # express app: 108 routes, static frontend, schedulers, shutdown
 server/
 ├── config.js             # every env var + filesystem path, resolved once (imports nothing app-level)
@@ -549,11 +604,25 @@ server/
 │   ├── diagnose.js       #   why a connection attempt failed: engine-agnostic transport
 │   │                     #     classification + the driver's own `explainError`
 │   ├── tunnel.js         #   SSH tunnels: a 127.0.0.1 listener per connection forwarding through its
-│   │                     #     gateway; every dispatcher dials through it, so drivers never know
+│   │                     #     gateway; every dispatcher dials through it, so drivers never know.
+│   │                     #     `forwardPort(host, port)` adds a listener per extra address on the same
+│   │                     #     SSH login, for engines redirected to other hosts (Kafka's brokers)
 │   ├── sql.js            #   dialect-agnostic SQL text utils shared by the SQL drivers
 │   ├── sqlite.js         #   one file per engine; each adapts itself to the contract
 │   ├── postgres.js
-│   └── redis.js
+│   ├── redis.js
+│   ├── kafka.js          #   Kafka: admin/producer/fetch clients per connection, the stream ops
+│   │                     #     (topics, clear, bounded group-less reads, produce, groups, offset
+│   │                     #     resets, brokers + their configs, ACLs)
+│   ├── kafka-auth.js     #   client certificates (mTLS) + SASL OAUTHBEARER (client-credentials
+│   │                     #     token, cached) and AWS_MSK_IAM (SigV4-signed, no AWS SDK)
+│   ├── kafka-rest.js     #   the one HTTP client for the services beside a cluster: URL + Basic
+│   │                     #     auth per service, the connection's TLS, its SSH tunnel; bounded reads
+│   ├── kafka-registry.js #   Schema Registry: subjects/versions/compatibility + the wire format
+│   │                     #     (Avro, Protobuf message indexes, JSON Schema ↔ JSON), codecs by id
+│   ├── kafka-connect.js  #   Kafka Connect: connectors, plugins, validate/save, lifecycle actions
+│   ├── kafka-ksql.js     #   ksqlDB: statements via /ksql, bounded SELECT/PRINT via /query-stream
+│   └── kafka-command.js  #   pure parser: the console's command language + the WHERE filter
 ├── workflow.js           # the node-graph executor (vm sandbox, {{input.x}} substitution),
 │                         #   executeAndRecord, nextRunForGraph, runDueWorkflows
 ├── connection-transfer.js  # the portable connection export/import bundle (see that skill)

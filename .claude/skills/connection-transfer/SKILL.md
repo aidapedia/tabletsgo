@@ -39,7 +39,10 @@ connection connects directly until someone picks one.
 
 - The password is omitted unless `?secrets=1` (a password embedded in a `uri` is
   blanked as well); the import dialog can supply one via the body's `settings`
-  override.
+  override. `CONNECTION_SECRET_FIELDS` lists every secret credential field — Kafka
+  adds `clientKey`, `clientPfx`, `clientKeyPassphrase`, `awsSessionToken` and the
+  ecosystem services' `schemaRegistryPassword` / `connectPassword` / `ksqlPassword`.
+  A new secret field on any engine goes there too.
 - Webhook tokens are **stripped on export and re-minted on import** — same rule as
   the per-workflow export (`features/workflow/lib/exportImport.ts`).
 

@@ -1,0 +1,605 @@
+import type { CommandDoc } from '@/shared/ui/CommandDocView'
+import { getCommandDocs, type RedisDocArgument } from './api'
+import { findCommand, isWriteCommand, meetsVersion, REDIS_GROUP_LABELS } from './commands'
+
+/**
+ * Docs for the Redis console's command catalog, shown in a console tab from the
+ * command reference: a one-line summary per command, examples for the common
+ * ones, and a link to the full page on redis.io. Static for the same reason the
+ * catalog is — it works offline and on servers that restrict `COMMAND DOCS`.
+ */
+
+const SUMMARY: Record<string, string> = {
+  // Keys
+  DEL: 'Delete one or more keys. Returns how many were removed.',
+  UNLINK: 'Delete keys, reclaiming their memory in the background — non-blocking DEL.',
+  EXISTS: 'Count how many of the given keys exist.',
+  EXPIRE: 'Set a key’s time to live in seconds.',
+  PEXPIRE: 'Set a key’s time to live in milliseconds.',
+  EXPIREAT: 'Expire a key at a Unix timestamp (seconds).',
+  TTL: 'Remaining time to live in seconds (-1 no expiry, -2 no such key).',
+  PTTL: 'Remaining time to live in milliseconds.',
+  PERSIST: 'Remove a key’s expiry so it lives forever.',
+  RENAME: 'Rename a key, overwriting the destination if it exists.',
+  RENAMENX: 'Rename a key only if the new name is free.',
+  TYPE: 'The data type stored at a key (string, list, set, zset, hash, stream).',
+  SCAN: 'Incrementally iterate the keyspace with a cursor — safe on large databases.',
+  KEYS: 'Every key matching a glob pattern, in one blocking call.',
+  RANDOMKEY: 'A random key from the current database.',
+  TOUCH: 'Update the last-access time of keys. Returns how many exist.',
+  COPY: 'Copy a key’s value to another key, optionally into another database.',
+  DUMP: 'Serialize a key’s value in Redis’ internal format.',
+  RESTORE: 'Recreate a key from a DUMP payload.',
+  OBJECT: 'Inspect a key’s internals: encoding, LFU frequency, idle time, refcount.',
+  SORT: 'Sort the elements of a list, set or sorted set.',
+
+  // Strings
+  GET: 'Get the string value of a key.',
+  SET: 'Set a string value, with optional expiry and existence conditions.',
+  SETNX: 'Set a key only if it does not exist.',
+  SETEX: 'Set a value with an expiry in seconds.',
+  PSETEX: 'Set a value with an expiry in milliseconds.',
+  GETSET: 'Set a new value and return the old one (deprecated — use SET … GET).',
+  GETDEL: 'Get a value and delete the key.',
+  GETEX: 'Get a value and optionally change its expiry.',
+  MGET: 'Get the values of several keys at once.',
+  MSET: 'Set several keys at once, atomically.',
+  MSETNX: 'Set several keys only if none of them exist.',
+  APPEND: 'Append to a string value. Returns the new length.',
+  STRLEN: 'Length of a string value in bytes.',
+  INCR: 'Increment an integer value by one.',
+  DECR: 'Decrement an integer value by one.',
+  INCRBY: 'Increment an integer value by an amount.',
+  DECRBY: 'Decrement an integer value by an amount.',
+  INCRBYFLOAT: 'Increment a numeric value by a floating-point amount.',
+  GETRANGE: 'A substring of a string value, by byte offsets (inclusive).',
+  SETRANGE: 'Overwrite part of a string value starting at an offset.',
+
+  // Hashes
+  HGET: 'Get one field of a hash.',
+  HSET: 'Set one or more fields of a hash. Returns how many were new.',
+  HSETNX: 'Set a hash field only if it does not exist.',
+  HDEL: 'Delete fields from a hash.',
+  HGETALL: 'Every field and value of a hash.',
+  HKEYS: 'Every field name of a hash.',
+  HVALS: 'Every value of a hash.',
+  HLEN: 'Number of fields in a hash.',
+  HEXISTS: 'Whether a hash field exists.',
+  HMGET: 'Get several fields of a hash.',
+  HINCRBY: 'Increment an integer hash field.',
+  HINCRBYFLOAT: 'Increment a numeric hash field by a float.',
+  HRANDFIELD: 'Random fields from a hash, optionally with values.',
+  HSCAN: 'Incrementally iterate a hash’s fields.',
+
+  // Lists
+  LPUSH: 'Prepend elements to a list.',
+  RPUSH: 'Append elements to a list.',
+  LPUSHX: 'Prepend only if the list exists.',
+  RPUSHX: 'Append only if the list exists.',
+  LPOP: 'Remove and return elements from the head of a list.',
+  RPOP: 'Remove and return elements from the tail of a list.',
+  LRANGE: 'A range of list elements by index (0 is first, -1 is last).',
+  LLEN: 'Length of a list.',
+  LINDEX: 'The element at an index.',
+  LSET: 'Replace the element at an index.',
+  LINSERT: 'Insert an element before or after a pivot element.',
+  LREM: 'Remove occurrences of an element (count > 0 from head, < 0 from tail, 0 all).',
+  LTRIM: 'Trim a list to the given index range.',
+  LMOVE: 'Pop from one end of a list and push onto an end of another, atomically.',
+  LPOS: 'Index of matching elements in a list.',
+
+  // Sets
+  SADD: 'Add members to a set.',
+  SREM: 'Remove members from a set.',
+  SMEMBERS: 'Every member of a set.',
+  SISMEMBER: 'Whether a value is a member of a set.',
+  SMISMEMBER: 'Membership of several values at once.',
+  SCARD: 'Number of members in a set.',
+  SPOP: 'Remove and return random members.',
+  SRANDMEMBER: 'Random members without removing them (negative count allows repeats).',
+  SMOVE: 'Move a member from one set to another.',
+  SDIFF: 'Members of the first set not in the others.',
+  SINTER: 'Members common to every set.',
+  SUNION: 'Members of any of the sets.',
+  SDIFFSTORE: 'Store SDIFF’s result in a destination key.',
+  SINTERSTORE: 'Store SINTER’s result in a destination key.',
+  SUNIONSTORE: 'Store SUNION’s result in a destination key.',
+  SSCAN: 'Incrementally iterate a set’s members.',
+
+  // Sorted sets
+  ZADD: 'Add members with scores to a sorted set, or update their scores.',
+  ZREM: 'Remove members from a sorted set.',
+  ZSCORE: 'The score of a member.',
+  ZMSCORE: 'Scores of several members.',
+  ZCARD: 'Number of members in a sorted set.',
+  ZCOUNT: 'Number of members with a score in a range.',
+  ZINCRBY: 'Increment a member’s score.',
+  ZRANGE: 'Members by rank, score or lexical range, optionally reversed and with scores.',
+  ZREVRANGE: 'Members by rank, highest score first (prefer ZRANGE … REV).',
+  ZRANGEBYSCORE: 'Members with a score in a range (prefer ZRANGE … BYSCORE).',
+  ZRANK: 'A member’s rank, lowest score first.',
+  ZREVRANK: 'A member’s rank, highest score first.',
+  ZPOPMIN: 'Remove and return the lowest-scored members.',
+  ZPOPMAX: 'Remove and return the highest-scored members.',
+  ZRANDMEMBER: 'Random members, optionally with scores.',
+  ZREMRANGEBYRANK: 'Remove members in a rank range.',
+  ZREMRANGEBYSCORE: 'Remove members in a score range.',
+  ZSCAN: 'Incrementally iterate a sorted set’s members and scores.',
+
+  // Streams
+  XADD: 'Append an entry to a stream (* lets Redis pick the id).',
+  XLEN: 'Number of entries in a stream.',
+  XRANGE: 'Entries in an id range, oldest first (- and + are the ends).',
+  XREVRANGE: 'Entries in an id range, newest first.',
+  XDEL: 'Delete entries by id.',
+  XTRIM: 'Trim a stream by length or minimum id.',
+  XINFO: 'Information about a stream, its consumer groups or a group’s consumers.',
+  XGROUP: 'Create, destroy or manage a stream consumer group.',
+  XACK: 'Acknowledge entries as processed by a consumer group.',
+  XPENDING: 'Entries delivered to a group but not acknowledged yet.',
+
+  // Other data types
+  SETBIT: 'Set or clear the bit at an offset.',
+  GETBIT: 'The bit value at an offset.',
+  BITCOUNT: 'Number of set bits, optionally in a range.',
+  BITPOS: 'Position of the first bit set to 0 or 1.',
+  PFADD: 'Add elements to a HyperLogLog.',
+  PFCOUNT: 'Approximate number of unique elements seen by HyperLogLogs.',
+  PFMERGE: 'Merge HyperLogLogs into one.',
+  GEOADD: 'Add members with longitude/latitude to a geo index.',
+  GEOPOS: 'Longitude/latitude of members.',
+  GEODIST: 'Distance between two members.',
+  GEOSEARCH: 'Members within a radius or box of a point or member.',
+
+  // Pub/sub
+  PUBLISH: 'Post a message to a channel. Returns how many subscribers received it.',
+  PUBSUB: 'Introspect pub/sub: active channels and subscriber counts.',
+
+  // Scripting & transactions
+  EVAL: 'Run a Lua script server-side.',
+  EVALSHA: 'Run a cached Lua script by its SHA1.',
+  SCRIPT: 'Manage the Lua script cache.',
+  FUNCTION: 'Manage Redis Functions libraries.',
+
+  // Server / connection
+  PING: 'Check the connection — replies PONG, or echoes a message.',
+  ECHO: 'Return the given message.',
+  SELECT: 'Switch the connection to another database index.',
+  SWAPDB: 'Swap two databases’ contents.',
+  DBSIZE: 'Number of keys in the current database.',
+  FLUSHDB: 'Delete every key in the current database.',
+  FLUSHALL: 'Delete every key in every database.',
+  INFO: 'Server information and statistics, optionally one section.',
+  CONFIG: 'Read or change server configuration.',
+  CLIENT: 'Inspect and manage client connections.',
+  COMMAND: 'Introspect the server’s command table.',
+  MEMORY: 'Memory usage of a key, or a memory report for the server.',
+  SLOWLOG: 'Read or reset the slow query log.',
+  LASTSAVE: 'Unix time of the last successful save to disk.',
+  BGSAVE: 'Save the dataset to disk in the background.',
+  BGREWRITEAOF: 'Rewrite the append-only file in the background.',
+  TIME: 'The server’s current time (seconds and microseconds).',
+  ACL: 'Inspect users and permissions.',
+  LATENCY: 'Latency monitoring reports.',
+}
+
+type Example = NonNullable<CommandDoc['examples']>[number]
+
+// Responses are written the way redis-cli prints them, against one running
+// sample dataset (user:1 is a hash, leaderboard a sorted set, events a stream…).
+const EXAMPLES: Record<string, Example[]> = {
+  DEL: [{ command: 'DEL session:42 session:43', response: '(integer) 2' }],
+  UNLINK: [{ command: 'UNLINK cache:big', response: '(integer) 1' }],
+  EXISTS: [{ command: 'EXISTS user:1 user:999', response: '(integer) 1', note: 'Only user:1 exists.' }],
+  EXPIRE: [{ command: 'EXPIRE session:42 3600', note: 'Expire in one hour.', response: '(integer) 1' }],
+  EXPIREAT: [{ command: 'EXPIREAT session:42 1798761600', response: '(integer) 1' }],
+  TTL: [{ command: 'TTL session:42', response: '(integer) 3597' }],
+  PTTL: [{ command: 'PTTL session:42', response: '(integer) 3596812' }],
+  PERSIST: [{ command: 'PERSIST session:42', response: '(integer) 1' }],
+  RENAME: [{ command: 'RENAME user:tmp user:2', response: 'OK' }],
+  TYPE: [{ command: 'TYPE user:1', response: 'hash' }],
+  SCAN: [
+    { command: 'SCAN 0 COUNT 100', response: '1) "1792"\n2) 1) "user:1"\n   2) "session:42"\n   3) "leaderboard"' },
+    { command: 'SCAN 0 MATCH user:* COUNT 100', note: 'Repeat with the returned cursor until it comes back 0.', response: '1) "0"\n2) 1) "user:1"\n   2) "user:2"' },
+    { command: 'SCAN 0 TYPE hash', response: '1) "0"\n2) 1) "user:1"' },
+  ],
+  KEYS: [{ command: 'KEYS user:*', response: '1) "user:1"\n2) "user:2"' }],
+  RANDOMKEY: [{ command: 'RANDOMKEY', response: '"leaderboard"' }],
+  COPY: [{ command: 'COPY user:1 user:1:backup', response: '(integer) 1' }],
+  OBJECT: [{ command: 'OBJECT ENCODING user:1', response: '"listpack"' }],
+  SORT: [{ command: 'SORT queue:ids LIMIT 0 3', response: '1) "3"\n2) "7"\n3) "12"' }],
+  GET: [{ command: 'GET greeting', response: '"hello world"' }, { command: 'GET missing', response: '(nil)' }],
+  SET: [
+    { command: 'SET greeting "hello world"', response: 'OK' },
+    { command: 'SET session:42 active EX 3600', note: 'With a one-hour expiry.', response: 'OK' },
+    { command: 'SET lock:job 1 NX PX 30000', note: 'A 30-second lock, only if nobody holds it.', response: 'OK — or (nil) when the lock is already held' },
+    { command: 'SET greeting hi GET', note: 'Set and return the old value.', response: '"hello world"' },
+  ],
+  SETNX: [{ command: 'SETNX greeting hi', response: '(integer) 0', note: 'greeting already exists, so nothing changed.' }],
+  SETEX: [{ command: 'SETEX session:42 3600 active', response: 'OK' }],
+  GETDEL: [{ command: 'GETDEL otp:42', response: '"918273"' }],
+  GETEX: [{ command: 'GETEX session:42 EX 600', response: '"active"' }],
+  MGET: [{ command: 'MGET user:1:name user:2:name missing', response: '1) "Ana"\n2) "Budi"\n3) (nil)' }],
+  MSET: [{ command: 'MSET user:1:name Ana user:2:name Budi', response: 'OK' }],
+  APPEND: [{ command: 'APPEND greeting "!"', response: '(integer) 12' }],
+  STRLEN: [{ command: 'STRLEN greeting', response: '(integer) 11' }],
+  INCR: [{ command: 'INCR page:views', response: '(integer) 1041' }],
+  DECR: [{ command: 'DECR stock:sku-1', response: '(integer) 9' }],
+  INCRBY: [{ command: 'INCRBY page:views 10', response: '(integer) 1051' }],
+  INCRBYFLOAT: [{ command: 'INCRBYFLOAT balance 2.5', response: '"102.5"' }],
+  GETRANGE: [{ command: 'GETRANGE greeting 0 4', response: '"hello"' }],
+  SETRANGE: [{ command: 'SETRANGE greeting 6 Redis', response: '(integer) 11' }],
+  HGET: [{ command: 'HGET user:1 email', response: '"ana@example.com"' }],
+  HSET: [{ command: 'HSET user:1 name Ana email ana@example.com', response: '(integer) 2', note: 'Two fields were new.' }],
+  HSETNX: [{ command: 'HSETNX user:1 name Anna', response: '(integer) 0' }],
+  HDEL: [{ command: 'HDEL user:1 email', response: '(integer) 1' }],
+  HGETALL: [{ command: 'HGETALL user:1', response: '1) "name"\n2) "Ana"\n3) "email"\n4) "ana@example.com"\n5) "logins"\n6) "7"' }],
+  HKEYS: [{ command: 'HKEYS user:1', response: '1) "name"\n2) "email"\n3) "logins"' }],
+  HVALS: [{ command: 'HVALS user:1', response: '1) "Ana"\n2) "ana@example.com"\n3) "7"' }],
+  HLEN: [{ command: 'HLEN user:1', response: '(integer) 3' }],
+  HEXISTS: [{ command: 'HEXISTS user:1 phone', response: '(integer) 0' }],
+  HMGET: [{ command: 'HMGET user:1 name phone', response: '1) "Ana"\n2) (nil)' }],
+  HINCRBY: [{ command: 'HINCRBY user:1 logins 1', response: '(integer) 8' }],
+  HRANDFIELD: [{ command: 'HRANDFIELD user:1 2 WITHVALUES', response: '1) "logins"\n2) "8"\n3) "name"\n4) "Ana"' }],
+  HSCAN: [{ command: 'HSCAN user:1 0 MATCH e* COUNT 50', response: '1) "0"\n2) 1) "email"\n   2) "ana@example.com"' }],
+  LPUSH: [{ command: 'LPUSH queue:jobs job-3 job-2 job-1', response: '(integer) 3' }],
+  RPUSH: [{ command: 'RPUSH queue:jobs job-4', response: '(integer) 4' }],
+  LPOP: [{ command: 'LPOP queue:jobs 2', response: '1) "job-1"\n2) "job-2"' }],
+  RPOP: [{ command: 'RPOP queue:jobs', response: '"job-4"' }],
+  LRANGE: [
+    { command: 'LRANGE queue:jobs 0 -1', note: 'The whole list.', response: '1) "job-1"\n2) "job-2"\n3) "job-3"\n4) "job-4"' },
+    { command: 'LRANGE queue:jobs 0 1', response: '1) "job-1"\n2) "job-2"' },
+  ],
+  LLEN: [{ command: 'LLEN queue:jobs', response: '(integer) 4' }],
+  LINDEX: [{ command: 'LINDEX queue:jobs -1', response: '"job-4"' }],
+  LSET: [{ command: 'LSET queue:jobs 0 job-0', response: 'OK' }],
+  LREM: [{ command: 'LREM queue:jobs 0 job-2', response: '(integer) 1' }],
+  LTRIM: [{ command: 'LTRIM recent:events 0 99', note: 'Keep the first 100.', response: 'OK' }],
+  LMOVE: [{ command: 'LMOVE queue:jobs queue:working LEFT RIGHT', response: '"job-1"' }],
+  LPOS: [{ command: 'LPOS queue:jobs job-3', response: '(integer) 2' }],
+  SADD: [{ command: 'SADD tags:post:1 redis database cache', response: '(integer) 3' }],
+  SREM: [{ command: 'SREM tags:post:1 cache', response: '(integer) 1' }],
+  SMEMBERS: [{ command: 'SMEMBERS tags:post:1', response: '1) "redis"\n2) "database"' }],
+  SISMEMBER: [{ command: 'SISMEMBER tags:post:1 redis', response: '(integer) 1' }],
+  SMISMEMBER: [{ command: 'SMISMEMBER tags:post:1 redis cache', response: '1) (integer) 1\n2) (integer) 0' }],
+  SCARD: [{ command: 'SCARD tags:post:1', response: '(integer) 2' }],
+  SPOP: [{ command: 'SPOP raffle:entrants', response: '"budi"' }],
+  SRANDMEMBER: [{ command: 'SRANDMEMBER tags:post:1 2', response: '1) "database"\n2) "redis"' }],
+  SINTER: [{ command: 'SINTER tags:post:1 tags:post:2', response: '1) "redis"' }],
+  SUNION: [{ command: 'SUNION tags:post:1 tags:post:2', response: '1) "redis"\n2) "database"\n3) "queue"' }],
+  SDIFF: [{ command: 'SDIFF tags:post:1 tags:post:2', response: '1) "database"' }],
+  SINTERSTORE: [{ command: 'SINTERSTORE tags:common tags:post:1 tags:post:2', response: '(integer) 1' }],
+  SSCAN: [{ command: 'SSCAN tags:post:1 0 COUNT 50', response: '1) "0"\n2) 1) "redis"\n   2) "database"' }],
+  ZADD: [
+    { command: 'ZADD leaderboard 120 ana 95 budi', response: '(integer) 2' },
+    { command: 'ZADD leaderboard GT CH 130 ana', note: 'Only raise a score; CH counts changed members.', response: '(integer) 1' },
+  ],
+  ZREM: [{ command: 'ZREM leaderboard budi', response: '(integer) 1' }],
+  ZSCORE: [{ command: 'ZSCORE leaderboard ana', response: '"130"' }],
+  ZMSCORE: [{ command: 'ZMSCORE leaderboard ana nobody', response: '1) "130"\n2) (nil)' }],
+  ZCARD: [{ command: 'ZCARD leaderboard', response: '(integer) 3' }],
+  ZCOUNT: [{ command: 'ZCOUNT leaderboard 100 +inf', response: '(integer) 3' }],
+  ZINCRBY: [{ command: 'ZINCRBY leaderboard 5 budi', response: '"100"' }],
+  ZRANGE: [
+    { command: 'ZRANGE leaderboard 0 2 REV WITHSCORES', note: 'Top 3.', response: '1) "ana"\n2) "130"\n3) "citra"\n4) "110"\n5) "budi"\n6) "100"' },
+    { command: 'ZRANGE leaderboard 100 120 BYSCORE LIMIT 0 20', response: '1) "budi"\n2) "citra"' },
+  ],
+  ZREVRANGE: [{ command: 'ZREVRANGE leaderboard 0 1', response: '1) "ana"\n2) "citra"' }],
+  ZRANGEBYSCORE: [{ command: 'ZRANGEBYSCORE leaderboard 100 (130', response: '1) "budi"\n2) "citra"' }],
+  ZRANK: [{ command: 'ZRANK leaderboard ana', response: '(integer) 2' }],
+  ZREVRANK: [{ command: 'ZREVRANK leaderboard ana', response: '(integer) 0' }],
+  ZPOPMIN: [{ command: 'ZPOPMIN leaderboard', response: '1) "budi"\n2) "100"' }],
+  ZPOPMAX: [{ command: 'ZPOPMAX leaderboard', response: '1) "ana"\n2) "130"' }],
+  ZREMRANGEBYSCORE: [{ command: 'ZREMRANGEBYSCORE leaderboard -inf (100', note: 'Every member below 100.', response: '(integer) 0' }],
+  ZSCAN: [{ command: 'ZSCAN leaderboard 0 COUNT 50', response: '1) "0"\n2) 1) "budi"\n   2) "100"\n   3) "ana"\n   4) "130"' }],
+  XADD: [
+    { command: 'XADD events * type signup user 42', response: '"1730188800000-0"' },
+    { command: 'XADD events MAXLEN ~ 10000 * type click', note: 'Cap the stream at about 10k entries.', response: '"1730188800123-0"' },
+  ],
+  XLEN: [{ command: 'XLEN events', response: '(integer) 2' }],
+  XRANGE: [{ command: 'XRANGE events - + COUNT 2', response: '1) 1) "1730188800000-0"\n   2) 1) "type"\n      2) "signup"\n      3) "user"\n      4) "42"\n2) 1) "1730188800123-0"\n   2) 1) "type"\n      2) "click"' }],
+  XREVRANGE: [{ command: 'XREVRANGE events + - COUNT 1', note: 'The newest entry.', response: '1) 1) "1730188800123-0"\n   2) 1) "type"\n      2) "click"' }],
+  XDEL: [{ command: 'XDEL events 1730188800000-0', response: '(integer) 1' }],
+  XTRIM: [{ command: 'XTRIM events MAXLEN ~ 1000', response: '(integer) 0' }],
+  XINFO: [
+    { command: 'XINFO GROUPS events', response: '1) 1) "name"\n   2) "workers"\n   3) "consumers"\n   4) (integer) 2\n   5) "pending"\n   6) (integer) 1\n   …' },
+  ],
+  XGROUP: [{ command: 'XGROUP CREATE events workers $ MKSTREAM', note: 'Start a group at the end of the stream.', response: 'OK' }],
+  XACK: [{ command: 'XACK events workers 1730188800000-0', response: '(integer) 1' }],
+  XPENDING: [{ command: 'XPENDING events workers', response: '1) (integer) 1\n2) "1730188800123-0"\n3) "1730188800123-0"\n4) 1) 1) "worker-1"\n      2) "1"' }],
+  SETBIT: [{ command: 'SETBIT active:2026-10-29 42 1', response: '(integer) 0', note: 'The bit’s previous value.' }],
+  GETBIT: [{ command: 'GETBIT active:2026-10-29 42', response: '(integer) 1' }],
+  BITCOUNT: [{ command: 'BITCOUNT active:2026-10-29', response: '(integer) 318' }],
+  BITPOS: [{ command: 'BITPOS active:2026-10-29 1', response: '(integer) 3' }],
+  PFADD: [{ command: 'PFADD visitors:today ana budi citra', response: '(integer) 1' }],
+  PFCOUNT: [{ command: 'PFCOUNT visitors:today', response: '(integer) 3' }],
+  PFMERGE: [{ command: 'PFMERGE visitors:week visitors:today visitors:yesterday', response: 'OK' }],
+  GEOADD: [{ command: 'GEOADD stores 106.8456 -6.2088 jakarta 112.7521 -7.2575 surabaya', response: '(integer) 2' }],
+  GEOPOS: [{ command: 'GEOPOS stores jakarta', response: '1) 1) "106.84560030698776245"\n   2) "-6.20880084306657502"' }],
+  GEODIST: [{ command: 'GEODIST stores jakarta surabaya KM', response: '"662.5394"' }],
+  GEOSEARCH: [{ command: 'GEOSEARCH stores FROMLONLAT 106.8 -6.2 BYRADIUS 50 KM ASC', response: '1) "jakarta"' }],
+  PUBLISH: [{ command: 'PUBLISH notifications "deploy finished"', response: '(integer) 3', note: 'Three subscribers received it.' }],
+  PUBSUB: [{ command: 'PUBSUB CHANNELS', response: '1) "notifications"\n2) "chat:general"' }],
+  EVAL: [{ command: "EVAL \"return redis.call('GET', KEYS[1])\" 1 greeting", response: '"hello world"' }],
+  SCRIPT: [{ command: "SCRIPT LOAD \"return 1\"", response: '"e0e1f9fabfc9d4800c877a703b823ac0578ff8db"' }],
+  PING: [{ command: 'PING', response: 'PONG' }, { command: 'PING hello', response: '"hello"' }],
+  ECHO: [{ command: 'ECHO hi', response: '"hi"' }],
+  DBSIZE: [{ command: 'DBSIZE', response: '(integer) 1284' }],
+  INFO: [
+    { command: 'INFO server', response: '# Server\nredis_version:7.4.8\nredis_mode:standalone\nos:Linux 6.10 x86_64\nuptime_in_days:12\n…' },
+    { command: 'INFO memory', response: '# Memory\nused_memory:1838240\nused_memory_human:1.75M\nmaxmemory_policy:noeviction\n…' },
+    { command: 'INFO keyspace', response: '# Keyspace\ndb0:keys=1284,expires=37,avg_ttl=2985112' },
+  ],
+  CONFIG: [{ command: 'CONFIG GET maxmemory*', response: '1) "maxmemory"\n2) "0"\n3) "maxmemory-policy"\n4) "noeviction"\n…' }],
+  CLIENT: [{ command: 'CLIENT LIST', response: 'id=7 addr=172.17.0.1:51220 laddr=172.17.0.2:6379 fd=8 name= age=42 idle=0 db=0 cmd=client|list …' }],
+  COMMAND: [
+    { command: 'COMMAND COUNT', response: '(integer) 241' },
+    { command: 'COMMAND DOCS SET', response: '1) "set"\n2)  1) "summary"\n    2) "Sets the string value of a key…"\n    3) "since"\n    4) "1.0.0"\n    …' },
+  ],
+  MEMORY: [{ command: 'MEMORY USAGE user:1', response: '(integer) 104' }],
+  SLOWLOG: [{ command: 'SLOWLOG GET 1', response: '1) 1) (integer) 14\n   2) (integer) 1730188800\n   3) (integer) 12034\n   4) 1) "KEYS"\n      2) "*"\n   …' }],
+  LASTSAVE: [{ command: 'LASTSAVE', response: '(integer) 1730185200' }],
+  TIME: [{ command: 'TIME', response: '1) "1730188800"\n2) "412305"' }],
+  ACL: [{ command: 'ACL WHOAMI', response: '"default"' }],
+  LATENCY: [{ command: 'LATENCY LATEST', response: '(empty array)' }],
+}
+
+// What each command replies with (RESP2), as redis.io's "Reply" section puts it.
+const RETURNS: Record<string, string> = {
+  DEL: 'Integer: the number of keys that were removed.',
+  UNLINK: 'Integer: the number of keys that were unlinked.',
+  EXISTS: 'Integer: how many of the keys exist (a key named twice counts twice).',
+  EXPIRE: 'Integer: 1 if the timeout was set, 0 if the key does not exist or a condition (NX/XX/GT/LT) was not met.',
+  PEXPIRE: 'Integer: 1 if the timeout was set, 0 otherwise.',
+  EXPIREAT: 'Integer: 1 if the timeout was set, 0 otherwise.',
+  TTL: 'Integer: seconds to live; -1 if the key has no expiry, -2 if it does not exist.',
+  PTTL: 'Integer: milliseconds to live; -1 if no expiry, -2 if the key does not exist.',
+  PERSIST: 'Integer: 1 if the timeout was removed, 0 if the key has no timeout or does not exist.',
+  RENAME: 'Simple string: OK. An error if the key does not exist.',
+  RENAMENX: 'Integer: 1 if renamed, 0 if the new name already exists.',
+  TYPE: 'Simple string: string, list, set, zset, hash, stream — or none when the key does not exist.',
+  SCAN: 'Array of two: the next cursor ("0" when the iteration is done) and an array of keys.',
+  KEYS: 'Array: every matching key.',
+  RANDOMKEY: 'Bulk string: a random key, or nil when the database is empty.',
+  TOUCH: 'Integer: the number of keys that were touched.',
+  COPY: 'Integer: 1 if copied, 0 if the destination exists and REPLACE was not given.',
+  DUMP: 'Bulk string: the serialized value, or nil when the key does not exist.',
+  RESTORE: 'Simple string: OK.',
+  OBJECT: 'Depends on the subcommand: ENCODING a bulk string, FREQ / IDLETIME / REFCOUNT an integer.',
+  SORT: 'Array: the sorted elements — or, with STORE, an integer: how many were stored.',
+  GET: 'Bulk string: the value, or nil when the key does not exist.',
+  SET: 'Simple string: OK — nil when NX/XX stopped it. With GET: the old value, or nil.',
+  SETNX: 'Integer: 1 if the key was set, 0 if it already existed.',
+  SETEX: 'Simple string: OK.',
+  PSETEX: 'Simple string: OK.',
+  GETSET: 'Bulk string: the old value, or nil when the key did not exist.',
+  GETDEL: 'Bulk string: the value, or nil when the key did not exist.',
+  GETEX: 'Bulk string: the value, or nil when the key does not exist.',
+  MGET: 'Array: one value per key, nil for a key that does not exist.',
+  MSET: 'Simple string: always OK.',
+  MSETNX: 'Integer: 1 if every key was set, 0 if none were (one already existed).',
+  APPEND: 'Integer: the string’s length after the append.',
+  STRLEN: 'Integer: the length in bytes, 0 when the key does not exist.',
+  INCR: 'Integer: the value after the increment.',
+  DECR: 'Integer: the value after the decrement.',
+  INCRBY: 'Integer: the value after the increment.',
+  DECRBY: 'Integer: the value after the decrement.',
+  INCRBYFLOAT: 'Bulk string: the value after the increment.',
+  GETRANGE: 'Bulk string: the substring.',
+  SETRANGE: 'Integer: the string’s length after the change.',
+  HGET: 'Bulk string: the field’s value, or nil when the field or key does not exist.',
+  HSET: 'Integer: the number of fields that were added (updates are not counted).',
+  HSETNX: 'Integer: 1 if the field was set, 0 if it already existed.',
+  HDEL: 'Integer: the number of fields that were removed.',
+  HGETALL: 'Array: field, value, field, value… — empty when the key does not exist.',
+  HKEYS: 'Array: the field names.',
+  HVALS: 'Array: the values.',
+  HLEN: 'Integer: the number of fields, 0 when the key does not exist.',
+  HEXISTS: 'Integer: 1 if the field exists, 0 otherwise.',
+  HMGET: 'Array: one value per field, nil for a field that does not exist.',
+  HINCRBY: 'Integer: the field’s value after the increment.',
+  HINCRBYFLOAT: 'Bulk string: the field’s value after the increment.',
+  HRANDFIELD: 'Bulk string without a count; with a count an array of fields (or field, value pairs with WITHVALUES).',
+  HSCAN: 'Array of two: the next cursor and an array of field, value pairs.',
+  LPUSH: 'Integer: the list’s length after the push.',
+  RPUSH: 'Integer: the list’s length after the push.',
+  LPUSHX: 'Integer: the list’s length after the push, 0 when the key does not exist.',
+  RPUSHX: 'Integer: the list’s length after the push, 0 when the key does not exist.',
+  LPOP: 'Bulk string without a count, an array with one; nil when the key does not exist.',
+  RPOP: 'Bulk string without a count, an array with one; nil when the key does not exist.',
+  LRANGE: 'Array: the elements in the range.',
+  LLEN: 'Integer: the list’s length, 0 when the key does not exist.',
+  LINDEX: 'Bulk string: the element, or nil when the index is out of range.',
+  LSET: 'Simple string: OK. An error when the index is out of range.',
+  LINSERT: 'Integer: the list’s length after the insert, -1 when the pivot was not found, 0 when the key does not exist.',
+  LREM: 'Integer: the number of elements removed.',
+  LTRIM: 'Simple string: OK.',
+  LMOVE: 'Bulk string: the element that was moved, or nil when the source is empty.',
+  LPOS: 'Integer: the index of the first match, or nil. With COUNT: an array of indexes.',
+  SADD: 'Integer: the number of members that were added (not counting ones already there).',
+  SREM: 'Integer: the number of members that were removed.',
+  SMEMBERS: 'Array: every member.',
+  SISMEMBER: 'Integer: 1 if a member, 0 otherwise.',
+  SMISMEMBER: 'Array of integers: 1 or 0 per value.',
+  SCARD: 'Integer: the number of members, 0 when the key does not exist.',
+  SPOP: 'Bulk string without a count (nil when empty), an array with one.',
+  SRANDMEMBER: 'Bulk string without a count, an array with one.',
+  SMOVE: 'Integer: 1 if moved, 0 if the member was not in the source.',
+  SDIFF: 'Array: the resulting members.',
+  SINTER: 'Array: the resulting members.',
+  SUNION: 'Array: the resulting members.',
+  SDIFFSTORE: 'Integer: the number of members stored in the destination.',
+  SINTERSTORE: 'Integer: the number of members stored in the destination.',
+  SUNIONSTORE: 'Integer: the number of members stored in the destination.',
+  SSCAN: 'Array of two: the next cursor and an array of members.',
+  ZADD: 'Integer: members added (with CH: added or changed). With INCR: the new score as a bulk string.',
+  ZREM: 'Integer: the number of members removed.',
+  ZSCORE: 'Bulk string: the score, or nil when the member does not exist.',
+  ZMSCORE: 'Array: one score per member, nil where it does not exist.',
+  ZCARD: 'Integer: the number of members.',
+  ZCOUNT: 'Integer: the number of members with a score in the range.',
+  ZINCRBY: 'Bulk string: the member’s new score.',
+  ZRANGE: 'Array: members in the range (member, score pairs with WITHSCORES).',
+  ZREVRANGE: 'Array: members in the range, highest first.',
+  ZRANGEBYSCORE: 'Array: members with a score in the range.',
+  ZRANK: 'Integer: the rank, or nil when the member does not exist. With WITHSCORE: rank and score.',
+  ZREVRANK: 'Integer: the rank from the top, or nil when the member does not exist.',
+  ZPOPMIN: 'Array: member, score pairs that were popped.',
+  ZPOPMAX: 'Array: member, score pairs that were popped.',
+  ZRANDMEMBER: 'Bulk string without a count, an array with one.',
+  ZREMRANGEBYRANK: 'Integer: the number of members removed.',
+  ZREMRANGEBYSCORE: 'Integer: the number of members removed.',
+  ZSCAN: 'Array of two: the next cursor and an array of member, score pairs.',
+  XADD: 'Bulk string: the id of the new entry (nil with NOMKSTREAM when the stream does not exist).',
+  XLEN: 'Integer: the number of entries.',
+  XRANGE: 'Array: entries, each an id and an array of field, value pairs.',
+  XREVRANGE: 'Array: entries, newest first.',
+  XDEL: 'Integer: the number of entries deleted.',
+  XTRIM: 'Integer: the number of entries removed.',
+  XINFO: 'Array (a map in RESP3) of properties per stream, group or consumer.',
+  XGROUP: 'CREATE: OK. DESTROY: 1 or 0. CREATECONSUMER: 1 if created, 0 if it existed.',
+  XACK: 'Integer: the number of entries acknowledged.',
+  XPENDING: 'Summary form: count, smallest id, greatest id, and pending count per consumer. Extended form: one row per entry.',
+  SETBIT: 'Integer: the bit’s previous value.',
+  GETBIT: 'Integer: 0 or 1.',
+  BITCOUNT: 'Integer: the number of bits set to 1.',
+  BITPOS: 'Integer: the position of the first matching bit, or -1.',
+  PFADD: 'Integer: 1 if the estimate changed, 0 otherwise.',
+  PFCOUNT: 'Integer: the approximate number of unique elements.',
+  PFMERGE: 'Simple string: OK.',
+  GEOADD: 'Integer: the number of members added.',
+  GEOPOS: 'Array: a [longitude, latitude] pair per member, nil where it does not exist.',
+  GEODIST: 'Bulk string: the distance in the given unit, or nil when a member does not exist.',
+  GEOSEARCH: 'Array: matching members (with WITHDIST / WITHCOORD / WITHHASH, an array per member).',
+  PUBLISH: 'Integer: the number of clients that received the message.',
+  PUBSUB: 'CHANNELS: an array of channels. NUMSUB: channel, count pairs. NUMPAT: an integer.',
+  EVAL: 'Whatever the script returns, converted to a Redis reply.',
+  EVALSHA: 'Whatever the script returns, converted to a Redis reply.',
+  SCRIPT: 'LOAD: the script’s SHA1. EXISTS: an array of 1/0. FLUSH: OK.',
+  FUNCTION: 'Depends on the subcommand — LIST an array of libraries, FLUSH OK.',
+  PING: 'Simple string PONG, or the message as a bulk string.',
+  ECHO: 'Bulk string: the message.',
+  SELECT: 'Simple string: OK.',
+  SWAPDB: 'Simple string: OK.',
+  DBSIZE: 'Integer: the number of keys in the database.',
+  FLUSHDB: 'Simple string: OK.',
+  FLUSHALL: 'Simple string: OK.',
+  INFO: 'Bulk string: "# Section" headers followed by field:value lines (the console shows one row per line).',
+  CONFIG: 'GET: parameter, value pairs. SET / RESETSTAT: OK.',
+  CLIENT: 'LIST / INFO: a bulk string, one client per line. KILL: OK or a count.',
+  COMMAND: 'COUNT: an integer. DOCS / INFO: an array describing each command.',
+  MEMORY: 'USAGE: bytes as an integer (nil if the key does not exist). STATS: field, value pairs. DOCTOR: a report.',
+  SLOWLOG: 'GET: an array of entries (id, timestamp, microseconds, arguments, client). LEN: an integer. RESET: OK.',
+  LASTSAVE: 'Integer: a Unix timestamp.',
+  BGSAVE: 'Simple string: "Background saving started".',
+  BGREWRITEAOF: 'Simple string: "Background append only file rewriting started".',
+  TIME: 'Array of two: Unix seconds and microseconds.',
+  ACL: 'Depends on the subcommand — WHOAMI a username, LIST an array of rules.',
+  LATENCY: 'Depends on the subcommand — LATEST an array of events, DOCTOR a report.',
+}
+
+const NOTES: Record<string, string[]> = {
+  KEYS: ['KEYS walks the whole keyspace in one call and blocks the server while it does. On anything but a small database, use SCAN instead.'],
+  SCAN: ['A cursor of 0 starts the iteration; keep calling with the cursor it returns until it comes back 0. COUNT is a hint, not a page size.'],
+  SMEMBERS: ['Returns the whole set at once — use SSCAN on large sets.'],
+  HGETALL: ['Returns the whole hash at once — use HSCAN on large hashes.'],
+  FLUSHDB: ['Deletes everything in this database immediately. This cannot be undone.'],
+  FLUSHALL: ['Deletes everything in every database on the server. This cannot be undone.'],
+  SELECT: ['To change which database this console runs against, use the console’s database picker rather than SELECT.'],
+  PUBLISH: ['The console can publish but not subscribe — subscribing would hold the connection open.'],
+}
+
+const SOMETIMES_WRITES = new Set(['EVAL', 'EVALSHA', 'SCRIPT', 'FUNCTION', 'SORT', 'CONFIG', 'CLIENT', 'ACL', 'SELECT'])
+
+/** redis.io's page for a command. */
+const docsUrl = (name: string) => `https://redis.io/docs/latest/commands/${name.toLowerCase()}/`
+
+/**
+ * The static docs for a Redis command, or null when it isn't in the catalog.
+ * Given the connected server's version, says so when the command is newer.
+ */
+export function redisCommandDoc(name: string, serverVersion?: string | null): CommandDoc | null {
+  const spec = findCommand(name)
+  if (!spec) return null
+  return {
+    name: spec.name,
+    syntax: spec.args,
+    summary: SUMMARY[spec.name] || '',
+    engine: 'Redis',
+    category: REDIS_GROUP_LABELS[spec.group],
+    facts: [{ label: 'Available since', value: `Redis ${spec.since}` }],
+    warning: meetsVersion(serverVersion, spec.since)
+      ? undefined
+      : `Not available on this server — ${spec.name} needs Redis ${spec.since}, and this one runs ${serverVersion}.`,
+    // Scripts, SORT … STORE and the like write or don't depending on their arguments — no badge.
+    writes: isWriteCommand(spec.name) ? true : SOMETIMES_WRITES.has(spec.name) ? undefined : false,
+    returns: RETURNS[spec.name],
+    examples: EXAMPLES[spec.name],
+    notes: NOTES[spec.name],
+    link: { href: docsUrl(spec.name), label: `Full ${spec.name} reference on redis.io` },
+  }
+}
+
+// ---- The server's own reference ---------------------------------------------
+
+const ARG_TYPE: Record<string, string> = {
+  key: 'A key name',
+  string: 'A string',
+  integer: 'An integer',
+  double: 'A floating-point number',
+  pattern: 'A glob-style pattern',
+  'unix-time': 'A Unix timestamp',
+  'pure-token': 'A flag',
+  oneof: 'One of',
+  block: 'A group of',
+}
+
+// One argument as it reads in the syntax line — `[EX seconds | PX milliseconds]`.
+function argText(a: RedisDocArgument): string {
+  const inner =
+    a.type === 'oneof'
+      ? a.arguments.map(argText).join(' | ')
+      : a.type === 'block'
+        ? a.arguments.map(argText).join(' ')
+        : a.type === 'pure-token'
+          ? a.token || a.display
+          : [a.token, a.display].filter(Boolean).join(' ')
+  const one = a.type === 'oneof' && !a.optional ? `<${inner}>` : inner
+  const many = a.multiple ? `${one} [${one} ...]` : one
+  return a.optional ? `[${many}]` : many
+}
+
+function argDesc(a: RedisDocArgument): string {
+  const flags = [a.optional && 'optional', a.multiple && 'repeatable', a.since && `since ${a.since}`].filter(Boolean).join(', ')
+  const head = `${ARG_TYPE[a.type] || a.type}${flags ? ` (${flags})` : ''}`
+  if (a.type !== 'oneof' && a.type !== 'block') return `${head}.`
+  const parts = a.arguments.map((c) => `\`${argText(c)}\`${c.since ? ` since ${c.since}` : ''}`)
+  return `${head}: ${parts.join(', ')}.`
+}
+
+/**
+ * The connected server's reference for a command — complexity, the argument
+ * tree, version history, subcommands — merged over the static docs. Null when
+ * the server can't say (pre-7.0, ACLs), so the static docs stand alone.
+ */
+export async function liveRedisDoc(conn: any, name: string): Promise<Partial<CommandDoc> | null> {
+  const d = await getCommandDocs(conn, name)
+  if (!d.available) return null
+  const facts = [
+    d.complexity && { label: 'Time complexity', value: d.complexity },
+    d.since && { label: 'Available since', value: `Redis ${d.since}` },
+    d.aclCategories?.length && { label: 'ACL categories', value: d.aclCategories.join(' ') },
+  ].filter(Boolean) as { label: string; value: string }[]
+  return {
+    ...(d.summary ? { summary: d.summary } : {}),
+    ...(d.arguments?.length ? { syntax: d.arguments.map(argText).join(' ') } : {}),
+    facts,
+    options: d.arguments?.map((a) => ({ name: argText(a), desc: argDesc(a) })),
+    subcommands: d.subcommands?.map((s) => ({ name: s.name, summary: s.summary || '' })),
+    history: d.history,
+    ...(d.deprecatedSince
+      ? { warning: `Deprecated since ${d.deprecatedSince}${d.replacedBy ? ` — use ${d.replacedBy.replace(/!/g, '')} instead` : ''}.` }
+      : {}),
+    source: `Reference from this server · Redis ${d.version || ''}`.trim(),
+  }
+}

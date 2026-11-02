@@ -28,6 +28,10 @@
  *   release(conn)                 drop cached handles/pools for this connection
  *   closeAll()                    shutdown
  *   ping(conn, ctx)               → { ok: true } or throws
+ *   serverVersion(conn, ctx)      → the engine's release as dotted numbers ("16.4",
+ *                                   "3.45.1", "7.4.8"), or null when it can't say
+ *                                   (optional — the console shows it and dims commands
+ *                                   newer than it)
  *   namespaces(conn, ctx)         → { databases, schemas, currentDatabase }
  *   listTables(conn, ctx)         → string[]
  *   listObjects(conn, ctx)        → [{ name, type, … }]
@@ -52,11 +56,89 @@
  *                                 ./sql.js's default when the engine spells nothing
  *                                 differently)
  *   runQuery(conn, ctx, sql)      → { type:'rows', columns, rows } | { type:'message', message } | { error }
+ *   pageSql(sql, { limit, offset }) → the statement narrowed to one page (optional
+ *                                 property; without it, runQuery slices the rows)
  *                                 (a failed statement is `{ error }`, not a throw —
  *                                  see runQueryOrThrow below for the other contract)
  *   analyze(conn, ctx, { sql, cls })           → { dialect, summary, plan, rawPlan, …Suggestions }
  *   dump(conn, destPath)          write a restorable dump of the whole database
  *   restore(conn, dumpPath)       overwrite the live database with one
+ *
+ * ### The stream capability (log-shaped engines: Kafka today)
+ *
+ * Optional as a set — an engine implements all of them or none, and
+ * `supports(conn, 'readMessages')` is how a caller asks. They are named for what
+ * they do rather than for Kafka, so another log-shaped engine (Redis Streams,
+ * Pulsar, …) reuses the /streams/* routes and the console UI unchanged.
+ *
+ *   streamOverview(conn, ctx)     → { clusterId, controller, brokers, topicCount, internalTopicCount }
+ *   listTopics(conn, ctx, { pattern, internal })
+ *                                 → [{ name, partitions, replication, underReplicated, internal }]
+ *   describeTopic(conn, ctx, t)   → { name, partitions, replication, underReplicated, messages,
+ *                                     partitionList: [{ partition, leader, replicas, isr, low, high, messages }],
+ *                                     configs: [{ name, value, isDefault, readOnly, sensitive }] }
+ *   createTopic(conn, ctx, { name, partitions, replication, configs, validateOnly })
+ *   alterTopic(conn, ctx, t, { configs, partitions })   configs merge into the overrides
+ *   deleteTopic(conn, ctx, t)
+ *   clearTopic(conn, ctx, t, { partitions? })  → { ok, cleared, partitions } — empties the
+ *                                 log, keeps the topic (its configs and consumers)
+ *   readMessages(conn, ctx, { topic, partition, from, limit, filter, decode })
+ *                                 → { type:'rows', columns, rows, scanned, matched, truncated, cappedBy, cursor }
+ *                                 (bounded: no group joined, nothing committed)
+ *   produce(conn, ctx, { topic, partition, key, value, headers, keySchema?, valueSchema? })
+ *                                 → { topic, partition, offset, timestamp }
+ *   listGroups(conn, ctx)         → [{ id, state, members, topics, lag }]
+ *   describeGroup(conn, ctx, id)  → { id, state, members, offsets: [{ topic, partition, committed, end, lag, member }], lag }
+ *   resetOffsets(conn, ctx, id, { topic, partitions, strategy, value, dryRun })
+ *                                 → { offsets: [{ partition, current, target, delta }] }
+ *   deleteGroup(conn, ctx, id)
+ *   listBrokers(conn, ctx)        → { clusterId, controller, topics, partitions, underReplicated,
+ *                                     offlinePartitions, brokers: [{ nodeId, host, port, controller,
+ *                                     leaders, replicas, outOfSync, offline, leaderSkew }] }
+ *   describeBroker(conn, ctx, id) → { nodeId, host, port, configs: [{ name, value, isDefault,
+ *                                     readOnly, sensitive, dynamic }] }
+ *   alterBroker(conn, ctx, id, { configs })   merged into the broker's dynamic overrides
+ *
+ * A stream engine's schema registry (Kafka: Confluent Schema Registry, set on the
+ * connection) — optional within the set; a connection without one answers 400:
+ *
+ *   listSchemas(conn, ctx)        → { compatibility, subjects: [{ subject, version, id, type }] }
+ *   describeSchema(conn, ctx, s)  → { subject, compatibility, compatibilityInherited, registryCompatibility,
+ *                                     versions: [{ version, id, type, schema, references }] }
+ *   registerSchema(conn, ctx, s, { schema, type, references, validateOnly })
+ *                                 → { id, version } | { compatible, messages } (validateOnly)
+ *   deleteSchema(conn, ctx, s, { version?, permanent? })
+ *   setSchemaCompatibility(conn, ctx, s | null, level | null)   null subject = registry-wide
+ *
+ * With a registry, readMessages decodes schema-framed keys/values to JSON, and
+ * produce takes `keySchema` / `valueSchema` ({ subject, version?, message? }).
+ *
+ * Access control lists, by name (TOPIC, READ, ALLOW, LITERAL…):
+ *
+ *   listAcls(conn, ctx, { principal?, resourceType?, resourceName? })
+ *                                 → [{ principal, host, operation, permission, resourceType,
+ *                                      resourceName, patternType }]
+ *   createAcls(conn, ctx, [acl])  → { ok, created }
+ *   deleteAcls(conn, ctx, [acl])  → { ok, deleted } — each binding matched exactly
+ *
+ * Connectors (Kafka: Kafka Connect, set on the connection) — 400 without one:
+ *
+ *   listConnectors(conn, ctx)     → [{ name, type, state, workerId, className, tasks, failedTasks }]
+ *   describeConnector(conn, ctx, name)  → that + { config, topics, trace }
+ *   listConnectorPlugins(conn, ctx)     → [{ className, type, version }]
+ *   validateConnector(conn, ctx, name, config) → { errorCount, errors: [{ name, errors }] }
+ *   saveConnector(conn, ctx, name, config)     create or replace the config
+ *   connectorAction(conn, ctx, name, { action: pause|resume|stop|restart|restartTask|resetOffsets,
+ *                                      task?, onlyFailed? })
+ *   deleteConnector(conn, ctx, name)
+ *
+ * Streaming SQL (Kafka: ksqlDB, set on the connection) — 400 without one:
+ *
+ *   runStreamSql(conn, ctx, { sql, properties?, limit? })
+ *                                 → { results: [{ statement, type:'rows', columns, rows, truncated? }
+ *                                                | { statement, type:'message', message }] }
+ *                                 (a query is bounded like readMessages)
+ *   streamSqlCatalog(conn, ctx)   → { streams, tables, queries }
  *
  * Every op that takes `ctx` is dispatched through `gatedRequired`/`gatedOptional`,
  * which register a *session* for the handle the call is about to use (see
@@ -94,11 +176,13 @@ import { sqlLiteral } from './sql.js'
 import { sqliteDriver } from './sqlite.js'
 import { postgresDriver } from './postgres.js'
 import { redisDriver } from './redis.js'
+import { kafkaDriver } from './kafka.js'
 
 export const drivers = {
   sqlite: sqliteDriver,
   postgresql: postgresDriver,
   redis: redisDriver,
+  kafka: kafkaDriver,
 }
 
 // Thrown when an engine can't answer at all. `status` lets routes reply with a
@@ -133,6 +217,31 @@ const UNSUPPORTED = {
   analyze: (conn) => `Query analysis is not supported for ${conn.type} connections.`,
   dump: (conn) => `Export not supported for connection type: ${conn.type}`,
   restore: (conn) => `Restore not supported for connection type: ${conn.type}`,
+  ...Object.fromEntries(
+    ['streamOverview', 'listTopics', 'describeTopic', 'createTopic', 'alterTopic', 'deleteTopic', 'clearTopic', 'readMessages', 'produce']
+      .map((op) => [op, (conn) => `Topics are not supported for ${conn.type} connections.`])
+  ),
+  ...Object.fromEntries(
+    ['listGroups', 'describeGroup', 'resetOffsets', 'deleteGroup']
+      .map((op) => [op, (conn) => `Consumer groups are not supported for ${conn.type} connections.`])
+  ),
+  ...Object.fromEntries(
+    ['listBrokers', 'describeBroker', 'alterBroker'].map((op) => [op, (conn) => `Brokers are not supported for ${conn.type} connections.`])
+  ),
+  ...Object.fromEntries(
+    ['listAcls', 'createAcls', 'deleteAcls'].map((op) => [op, (conn) => `ACLs are not supported for ${conn.type} connections.`])
+  ),
+  ...Object.fromEntries(
+    ['listConnectors', 'describeConnector', 'listConnectorPlugins', 'validateConnector', 'saveConnector', 'connectorAction', 'deleteConnector']
+      .map((op) => [op, (conn) => `Connectors are not supported for ${conn.type} connections.`])
+  ),
+  ...Object.fromEntries(
+    ['runStreamSql', 'streamSqlCatalog'].map((op) => [op, (conn) => `Streaming SQL is not supported for ${conn.type} connections.`])
+  ),
+  ...Object.fromEntries(
+    ['listSchemas', 'describeSchema', 'registerSchema', 'deleteSchema', 'setSchemaCompatibility']
+      .map((op) => [op, (conn) => `A schema registry is not supported for ${conn.type} connections.`])
+  ),
 }
 
 // Assert an engine can do something *before* doing unrelated work — lets a
@@ -296,6 +405,7 @@ export async function handshake(conn, ctx) {
     return { ok: false, latencyMs: Date.now() - started, ...base, ...failure }
   }
 }
+export const serverVersion = gatedOptional('serverVersion', null)
 export const namespaces = gatedRequired('namespaces')
 export const listTables = gatedOptional('listTables', [])
 export const listObjects = gatedOptional('listObjects', [])
@@ -326,7 +436,19 @@ export const analyze = gatedRequired('analyze')
 // against the connection's target database. A *statement-level* failure comes
 // back as `{ error }` rather than throwing — that's what lets the /query route
 // hand a syntax error to the console like any other result.
-export const runQuery = gatedRequired('runQuery')
+//
+// `opts.page` ({ limit, offset }) asks for one page of rows: an engine that can
+// page in the statement itself names how (`pageSql`, the SQL drivers), any
+// other has its rows sliced after the run — so a paged caller (a dashboard
+// table) never needs to know which kind of engine it is talking to.
+const runDriverQuery = gatedRequired('runQuery')
+export async function runQuery(conn, ctx, sql, { page } = {}) {
+  if (!page) return runDriverQuery(conn, ctx, sql)
+  const pageSql = drivers[conn?.type]?.pageSql
+  if (pageSql) return runDriverQuery(conn, ctx, pageSql(sql, page))
+  const result = await runDriverQuery(conn, ctx, sql)
+  return result?.type === 'rows' ? { ...result, rows: result.rows.slice(page.offset, page.offset + page.limit) } : result
+}
 
 // The throwing variant, for callers running a sequence that must stop at the
 // first failure instead of carrying on as if it had succeeded: schema rollback
@@ -337,6 +459,43 @@ export async function runQueryOrThrow(conn, ctx, sql) {
   if (result?.error) throw new Error(result.error)
   return result
 }
+
+// ---- Streams: topics, messages, consumer groups ----
+// Required-style dispatch: an engine without the capability answers with a 400
+// naming its type, so the /streams/* routes need no engine check of their own.
+export const streamOverview = gatedRequired('streamOverview')
+export const listTopics = gatedRequired('listTopics')
+export const describeTopic = gatedRequired('describeTopic')
+export const createTopic = gatedRequired('createTopic')
+export const alterTopic = gatedRequired('alterTopic')
+export const deleteTopic = gatedRequired('deleteTopic')
+export const clearTopic = gatedRequired('clearTopic')
+export const readMessages = gatedRequired('readMessages')
+export const produceMessage = gatedRequired('produce')
+export const listGroups = gatedRequired('listGroups')
+export const describeGroup = gatedRequired('describeGroup')
+export const resetOffsets = gatedRequired('resetOffsets')
+export const deleteGroup = gatedRequired('deleteGroup')
+export const listBrokers = gatedRequired('listBrokers')
+export const describeBroker = gatedRequired('describeBroker')
+export const alterBroker = gatedRequired('alterBroker')
+export const listSchemas = gatedRequired('listSchemas')
+export const describeSchema = gatedRequired('describeSchema')
+export const registerSchema = gatedRequired('registerSchema')
+export const deleteSchema = gatedRequired('deleteSchema')
+export const setSchemaCompatibility = gatedRequired('setSchemaCompatibility')
+export const listAcls = gatedRequired('listAcls')
+export const createAcls = gatedRequired('createAcls')
+export const deleteAcls = gatedRequired('deleteAcls')
+export const listConnectors = gatedRequired('listConnectors')
+export const describeConnector = gatedRequired('describeConnector')
+export const listConnectorPlugins = gatedRequired('listConnectorPlugins')
+export const validateConnector = gatedRequired('validateConnector')
+export const saveConnector = gatedRequired('saveConnector')
+export const connectorAction = gatedRequired('connectorAction')
+export const deleteConnector = gatedRequired('deleteConnector')
+export const runStreamSql = gatedRequired('runStreamSql')
+export const streamSqlCatalog = gatedRequired('streamSqlCatalog')
 
 // ---- Backup / restore ----
 // Dumps the connection's whole database to a staging file.

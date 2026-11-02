@@ -2776,6 +2776,20 @@ engines; the client uses it to detect a dropped connection.
 - **Query:** optional `database`, `schema` (PG)
 - **Example:** `GET http://localhost:3000/api/connections/demo-pg/ping`
 
+### GET `/api/connections/:id/server-version`
+The engine's release, for the console's status bar and the SQL / Redis command
+reference (which dims commands newer than it). Generic across engines — each
+driver answers through its optional `serverVersion`: SQLite `sqlite_version()`,
+PostgreSQL `SHOW server_version` (distro suffix stripped), Redis `INFO server`,
+Kafka the brokers' `inter.broker.protocol.version` (3.x; Kafka 4 dropped it).
+Always `200`; `version` is `null` when the engine can't say or isn't reachable.
+
+- **Query:** optional `database`, `schema` (PG)
+- **200:** `{ "version": "16.4" }`
+- **200 (unknown):** `{ "version": null }` or `{ "version": null, "error": "<msg>" }`
+- **404:** `{ "error": "Connection not found" }`
+- **Example:** `GET http://localhost:3000/api/connections/demo-pg/server-version`
+
 ### GET `/api/connections/:id/handshake`
 Pre-flight connectivity check the console runs **before** it opens a connection
 (the "Connect" button on the connections list). Same probe as `/ping`, but a
@@ -3050,10 +3064,15 @@ are rejected — they would hold the pooled connection open indefinitely.
 
 - **Body:** `{ "sql": "SELECT * FROM users", "database": "appdb", "schema": "public" }`
 - **Body (Redis):** `{ "sql": "HGETALL cfg:app", "database": "db2" }`
+- **Body (one page):** `{ "sql": "SELECT * FROM users", "page": { "limit": 21, "offset": 40 } }` —
+  optional, any engine. A SQL engine wraps the statement (`SELECT * FROM (…) AS _page LIMIT … OFFSET …`);
+  a command-driven one (Redis, Kafka) runs the command and slices the reply's rows. The caller never
+  rewrites the statement itself, which is what lets a paged dashboard table run a Kafka command.
 - **200 (SELECT):** `{ "type": "rows", "columns": [...], "rows": [...] }`
 - **200 (other):** `{ "type": "message", "message": "Query OK · 3 row(s) affected.", "rowCount": 3 }` (`rowCount` absent on Redis replies)
 - **200 (SQL error):** `{ "error": "<driver message>" }` (note: HTTP 200, error in body)
 - **400:** `{ "error": "SQL query required" }`
+- **400:** `{ "error": "page needs an integer limit ≥ 1 and offset ≥ 0" }`
 - **404:** `{ "error": "Connection not found" }`
 - **Example:** `POST http://localhost:3000/api/connections/demo-sqlite/query`
 
@@ -3292,6 +3311,48 @@ Keyspace summary for the sidebar header.
 - **200:** `{ "database": "db0", "keyCount": 128, "version": "7.4.2" }`
 - **Example:** `GET http://localhost:3000/api/connections/<id>/redis/overview`
 
+### GET `/api/connections/:id/redis/command-docs`
+The connected server's own reference for one command — the data redis.io renders,
+read from `COMMAND DOCS` (Redis 7+) and `COMMAND INFO`. Powers the details view of
+the console's command reference. Always `200`: on an older server, an ACL that
+forbids `COMMAND`, or an unknown name it answers `available: false` with the reason
+and the console falls back to its static docs.
+
+- **Query:** `name` (**required**, a command name such as `SET` or `CONFIG`), `database`
+- **200:**
+  ```json
+  {
+    "available": true,
+    "version": "7.4.8",
+    "name": "SET",
+    "summary": "Sets the string value of a key, ignoring its type. The key is created if it doesn't exist.",
+    "since": "1.0.0",
+    "group": "string",
+    "complexity": "O(1)",
+    "deprecatedSince": null,
+    "replacedBy": null,
+    "history": [{ "version": "6.0.0", "change": "Added the `KEEPTTL` option." }],
+    "arguments": [
+      { "name": "key", "type": "key", "display": "key", "token": null, "since": null, "optional": false, "multiple": false, "arguments": [] },
+      {
+        "name": "condition", "type": "oneof", "display": "condition", "token": null, "since": "2.6.12", "optional": true, "multiple": false,
+        "arguments": [
+          { "name": "nx", "type": "pure-token", "display": "nx", "token": "NX", "since": null, "optional": false, "multiple": false, "arguments": [] },
+          { "name": "xx", "type": "pure-token", "display": "xx", "token": "XX", "since": null, "optional": false, "multiple": false, "arguments": [] }
+        ]
+      }
+    ],
+    "subcommands": [],
+    "flags": ["write", "denyoom"],
+    "aclCategories": ["@write", "@string", "@slow"]
+  }
+  ```
+  `subcommands` is filled for container commands (`CONFIG`, `CLIENT`, `XINFO`, …):
+  `[{ "name": "CONFIG SET", "summary": "…", "since": "2.0.0" }]`.
+- **200 (no docs):** `{ "available": false, "version": "6.2.14", "reason": "ERR unknown subcommand 'DOCS'…" }`
+- **400:** `{ "error": "A command name is required." }`
+- **Example:** `GET http://localhost:3000/api/connections/<id>/redis/command-docs?name=SET`
+
 ### GET `/api/connections/:id/redis/key`
 One key's value as a generic `{ columns, rows }` page, plus its metadata. Every
 collection type is paged by `offset`/`limit` so a million-element list can still be
@@ -3339,6 +3400,402 @@ positive runs `PEXPIRE`.
 - **400:** `{ "error": "A key is required." }` or
   `{ "error": "Key \"session:abc\" does not exist or already has no expiry." }`
 - **Example:** `PUT http://localhost:3000/api/connections/<id>/redis/ttl`
+
+---
+
+## Streams: topics, messages, consumer groups (per connection)
+
+The browsing side of a log-shaped engine (Kafka today). The routes are named for
+the capability, not the engine: each calls a generic op in `server/db`, so an
+engine without the stream capability answers
+`400 { "error": "Topics are not supported for sqlite connections." }` (or
+`"Consumer groups are not supported…"`) and another log-shaped engine can implement
+the same ops without a route change. Running commands, workflow query nodes and
+dashboard widgets go through the shared `POST /api/connections/:id/query` route
+(see the Kafka command language under it below).
+
+Access is the usual per-connection guard — whoever can open the connection can use
+these. Deleting a topic or group, and applying an offset reset, must echo the name
+back as `confirm`. Broker errors carry a status: `404` unknown topic/group, `409`
+already exists / group not empty, `403` the cluster's ACLs refused, `400` invalid.
+
+Reads are bounded: no consumer group is joined and nothing is committed, and every
+read stops at `KAFKA_READ_MAX_MESSAGES` rows (default 500),
+`KAFKA_READ_MAX_BYTES` fetched (default 16 MiB) or `KAFKA_READ_TIMEOUT_MS`
+(default 8000).
+
+### GET `/api/connections/:id/streams/overview`
+Cluster summary for the sidebar header.
+
+- **200:**
+  ```json
+  {
+    "clusterId": "lkc-9x2q7",
+    "controller": 2,
+    "brokers": [{ "nodeId": 1, "host": "b-1.kafka.internal", "port": 9096 }],
+    "topicCount": 48,
+    "internalTopicCount": 3
+  }
+  ```
+- **Example:** `GET http://localhost:3000/api/connections/<id>/streams/overview`
+
+### GET `/api/connections/:id/streams/topics`
+Topics for the sidebar tree, sorted by name.
+
+- **Query:** `pattern` (a glob like `orders.*`, or a case-insensitive substring), `internal` (`1` to include `__consumer_offsets` & co.)
+- **200:**
+  ```json
+  [{ "name": "orders.paid", "internal": false, "partitions": 12, "replication": 3, "underReplicated": 1 }]
+  ```
+- **Example:** `GET http://localhost:3000/api/connections/<id>/streams/topics?pattern=orders.*`
+
+### POST `/api/connections/:id/streams/topics`
+Create a topic. `partitions`/`replication` default to the broker's defaults.
+
+- **Body:**
+  ```json
+  { "name": "orders.disputed", "partitions": 12, "replication": 3,
+    "configs": { "retention.ms": "604800000", "min.insync.replicas": "2" }, "validateOnly": false }
+  ```
+- **200:** `{ "ok": true, "name": "orders.disputed", "validateOnly": false }`
+- **400:** `{ "error": "A topic name uses letters, digits, \".\", \"_\" and \"-\" only, up to 249 characters." }`
+- **409:** `{ "error": "Topic \"orders.disputed\" already exists." }`
+- **Example:** `POST http://localhost:3000/api/connections/<id>/streams/topics`
+
+### GET `/api/connections/:id/streams/topics/:topic`
+One topic: per-partition leader, replicas, in-sync replicas and offsets, plus its configs.
+
+- **200:**
+  ```json
+  {
+    "name": "orders.paid", "internal": false, "partitions": 12, "replication": 3, "underReplicated": 0,
+    "messages": 48213004,
+    "partitionList": [
+      { "partition": 0, "leader": 1, "replicas": [1, 2, 3], "isr": [1, 2, 3], "offline": [], "low": 1180211, "high": 5201549, "messages": 4021338 }
+    ],
+    "configs": [{ "name": "retention.ms", "value": "604800000", "isDefault": false, "readOnly": false, "sensitive": false }]
+  }
+  ```
+- **404:** `{ "error": "Topic \"orders.paid\" does not exist." }`
+- **Example:** `GET http://localhost:3000/api/connections/<id>/streams/topics/orders.paid`
+
+### PATCH `/api/connections/:id/streams/topics/:topic`
+Change configs and/or grow the partition count. Configs **merge** into the topic's
+current overrides (Kafka's AlterConfigs would otherwise reset the rest); a `null`
+value removes an override. Partitions can only increase.
+
+- **Body:** `{ "configs": { "cleanup.policy": "compact", "retention.ms": null }, "partitions": 16 }`
+- **200:** `{ "ok": true }`
+- **400:** `{ "error": "Nothing to change — send configs and/or partitions." }` or the broker's refusal, e.g. `{ "error": "Number of partitions is invalid" }`
+- **Example:** `PATCH http://localhost:3000/api/connections/<id>/streams/topics/orders.paid`
+
+### DELETE `/api/connections/:id/streams/topics/:topic`
+Delete a topic and every message in it.
+
+- **Body:** `{ "confirm": "orders.paid" }`
+- **200:** `{ "ok": true }`
+- **400:** `{ "error": "Type \"orders.paid\" as \"confirm\" to go ahead — this cannot be undone." }`
+- **Example:** `DELETE http://localhost:3000/api/connections/<id>/streams/topics/orders.paid`
+
+### GET `/api/connections/:id/streams/topics/:topic/messages`
+A bounded read, returned in the grid shape every engine uses.
+
+- **Query:**
+  - `partition` — one partition (default: all)
+  - `from` — `latest` (default; the newest `limit` per partition), `earliest`, `-N` (the last N per partition), `offset:N`, `ts:<ISO time or epoch ms>`
+  - `limit` — rows returned (1–`KAFKA_READ_MAX_MESSAGES`, default 100)
+  - `filter` — a WHERE clause: `key`, `value`, `value.<json.path>`, `header.<name>`, `partition`, `offset`, `timestamp` compared with `= != > >= < <=` or `~` (case-insensitive contains), joined by `AND`. With a filter, newest-first reads walk back through the topic until they have `limit` matches or hit a cap.
+  - `decode` — `auto` (UTF-8, hex for binary, Schema Registry payloads labelled), `string`, `hex`, `base64`
+- **200:**
+  ```json
+  {
+    "type": "rows",
+    "columns": ["partition", "offset", "timestamp", "key", "value", "headers", "size"],
+    "rows": [
+      { "partition": 3, "offset": 1204861, "timestamp": "2026-10-29T09:41:07.211Z", "key": "ord_8f2k1",
+        "value": "{\"orderId\":\"ord_8f2k1\",\"amount\":129.5}", "headers": "{\"trace-id\":\"9a1f0c3e\"}", "size": 412 }
+    ],
+    "scanned": 1742, "matched": 20, "truncated": false, "cappedBy": null,
+    "cursor": { "3": 1204841 }, "elapsedMs": 380
+  }
+  ```
+  `value` is `null` for a tombstone; `cappedBy` is `"time"` or `"bytes"` when a cap
+  cut the read short; `cursor[p]` is the offset older messages of partition `p` end at.
+- **400:** a bad filter, e.g. `{ "error": "Unknown field \"nope\" in WHERE." }`
+- **Example:** `GET http://localhost:3000/api/connections/<id>/streams/topics/orders.paid/messages?partition=3&from=-20&limit=20&filter=value.amount%20%3E%20100`
+
+### DELETE `/api/connections/:id/streams/topics/:topic/messages`
+Clear a topic: delete every message up to each partition's end, and keep the topic —
+its configs, ACLs and consumer groups stay. Kafka refuses this on a compact-only topic.
+
+- **Body:** `{ "confirm": "orders.paid", "partitions": [0, 3] }` — `partitions` defaults to all.
+- **200:** `{ "ok": true, "cleared": 120443, "partitions": [0, 3] }`
+- **409:** `{ "error": "Topic \"orders.paid\" is compacted (cleanup.policy=compact), and Kafka only clears topics that delete old segments. Add \"delete\" to its cleanup.policy first, or delete and re-create it." }`
+- **Example:** `DELETE http://localhost:3000/api/connections/<id>/streams/topics/orders.paid/messages`
+
+### POST `/api/connections/:id/streams/topics/:topic/messages`
+Produce one message (acks = all). An object `value` is sent as JSON. With a Schema
+Registry on the connection, `keySchema` / `valueSchema` write that side in the
+registry's wire format from its JSON (`{ subject, version? = "latest", message? }` —
+`message` picks a Protobuf message other than the schema's first).
+
+- **Body:** `{ "key": "ord_123", "value": { "orderId": "ord_123" }, "headers": { "source": "tabletsgo" }, "partition": null }` — `value: null` sends a tombstone; omit `partition` to hash the key.
+  With a schema: `{ "key": "ord_123", "value": "{\"id\":\"ord_123\",\"amount\":12.5}", "valueSchema": { "subject": "orders.paid-value" } }`
+- **200:** `{ "topic": "orders.paid", "partition": 4, "offset": 4021377, "timestamp": 1793271234567 }`
+- **400:** `{ "error": "A value is required (null sends a tombstone)." }` or, with a schema,
+  `{ "error": "The value doesn't match the Avro schema: amount = undefined is not double" }`
+- **Example:** `POST http://localhost:3000/api/connections/<id>/streams/topics/orders.paid/messages`
+
+### GET `/api/connections/:id/streams/groups`
+Consumer groups with state, member count, the topics they read and total lag.
+
+- **200:** `[{ "id": "payments-service", "state": "Stable", "protocol": "range", "members": 4, "topics": ["orders.paid"], "lag": 1284 }]`
+- **Example:** `GET http://localhost:3000/api/connections/<id>/streams/groups`
+
+### GET `/api/connections/:id/streams/groups/:group`
+One group: members (with their assignment) and per-partition committed offset, log end and lag.
+
+- **200:**
+  ```json
+  {
+    "id": "payments-service", "state": "Stable", "protocol": "range", "lag": 1284,
+    "members": [{ "memberId": "payments-7f9c-…", "clientId": "payments-7f9c", "host": "/10.0.4.12", "assignment": { "orders.paid": [0, 1, 2] } }],
+    "offsets": [{ "topic": "orders.paid", "partition": 0, "committed": 5200926, "end": 5201338, "lag": 412, "member": "payments-7f9c", "host": "/10.0.4.12" }]
+  }
+  ```
+  `committed` is `-1` (and `lag` `null`) for a partition assigned but never committed.
+- **404:** `{ "error": "Consumer group \"payments-service\" does not exist." }`
+- **Example:** `GET http://localhost:3000/api/connections/<id>/streams/groups/payments-service`
+
+### PUT `/api/connections/:id/streams/groups/:group/offsets`
+Move a group's committed offsets on one topic. A **dry run by default**: it returns
+the before → after table without changing anything. Applying needs
+`"dryRun": false` plus `confirm`, and an empty group — Kafka refuses a reset while
+members are connected.
+
+- **Body:** `{ "topic": "orders.paid", "strategy": "timestamp", "value": "2026-10-29T08:00:00Z", "partitions": [0, 1], "dryRun": true }`
+  — `strategy` is `earliest` | `latest` | `timestamp` (`value` = ISO or epoch ms) | `offset` (`value` = N) | `shift` (`value` = ±N); `partitions` defaults to all.
+  Applying adds `"dryRun": false, "confirm": "payments-service"`.
+- **200:** `{ "topic": "orders.paid", "strategy": "timestamp", "dryRun": true, "offsets": [{ "partition": 0, "current": 5200926, "target": 5100400, "delta": -100526 }] }`
+  (targets are clamped into each partition's retained range)
+- **409:** `{ "error": "Group \"payments-service\" is Stable with 4 member(s) (payments-7f9c, …). Stop the consumers first — Kafka only resets an empty group.", "reason": "group_active" }`
+- **Example:** `PUT http://localhost:3000/api/connections/<id>/streams/groups/payments-service/offsets`
+
+### DELETE `/api/connections/:id/streams/groups/:group`
+Delete a consumer group and its committed offsets (it must have no members).
+
+- **Body:** `{ "confirm": "payments-service" }`
+- **200:** `{ "ok": true }`
+- **409:** the broker's refusal while members are connected.
+- **Example:** `DELETE http://localhost:3000/api/connections/<id>/streams/groups/payments-service`
+
+### GET `/api/connections/:id/streams/brokers`
+Every broker with what it carries — partitions it leads and replicates, replicas it
+has fallen out of sync on, and its leadership skew (percent off an even share of
+leaders) — plus cluster totals, read from the metadata of every topic.
+
+- **200:**
+  ```json
+  {
+    "clusterId": "5L6g3nShT-eMCtK--X86sw", "controller": 1, "topics": 42, "partitions": 318,
+    "underReplicated": 0, "offlinePartitions": 0,
+    "brokers": [{ "nodeId": 1, "host": "b-1.kafka", "port": 9092, "controller": true, "leaders": 106, "replicas": 318, "outOfSync": 0, "offline": 0, "leaderSkew": 0 }]
+  }
+  ```
+- **Example:** `GET http://localhost:3000/api/connections/<id>/streams/brokers`
+
+### GET `/api/connections/:id/streams/brokers/:broker`
+One broker's configuration. `dynamic` marks an override set on this broker at runtime.
+
+- **200:** `{ "nodeId": 1, "host": "b-1.kafka", "port": 9092, "configs": [{ "name": "log.cleaner.threads", "value": "2", "isDefault": false, "readOnly": false, "sensitive": false, "dynamic": true }] }`
+- **404:** `{ "error": "Broker 9 is not in this cluster." }`
+- **Example:** `GET http://localhost:3000/api/connections/<id>/streams/brokers/1`
+
+### PATCH `/api/connections/:id/streams/brokers/:broker`
+Change a broker's dynamic configs at runtime. Like a topic's, the change **merges**
+into the broker's current overrides; `null` removes one. A broker holding a
+*sensitive* dynamic override (whose value is never returned, so can't be carried
+over) is refused. The change reaches the GET a moment later.
+
+- **Body:** `{ "configs": { "log.cleaner.threads": "2", "message.max.bytes": null } }`
+- **200:** `{ "ok": true }`
+- **409:** `{ "error": "Broker 1 has a sensitive dynamic setting (listener.name.internal.ssl.keystore.password) that can't be carried over — change it with kafka-configs.sh --alter instead." }`
+- **Example:** `PATCH http://localhost:3000/api/connections/<id>/streams/brokers/1`
+
+### GET `/api/connections/:id/streams/acls`
+ACL bindings, by name. Query: `principal`, `resourceType`, `resourceName` narrow it.
+
+- **200:** `[{ "principal": "User:billing", "host": "*", "operation": "READ", "permission": "ALLOW", "resourceType": "TOPIC", "resourceName": "orders", "patternType": "PREFIXED" }]`
+- **400:** `{ "error": "This cluster has no authorizer, so it keeps no ACLs (set authorizer.class.name on the brokers to use them)." }`
+- **Example:** `GET http://localhost:3000/api/connections/<id>/streams/acls?principal=User:billing`
+
+### POST `/api/connections/:id/streams/acls`
+Add bindings. `host` defaults to `*`, `permission` to `ALLOW`, `patternType` to
+`LITERAL`; a `CLUSTER` resource is always named `kafka-cluster`.
+
+- **Body:** `{ "acls": [{ "principal": "User:billing", "operation": "READ", "resourceType": "TOPIC", "resourceName": "orders", "patternType": "PREFIXED" }] }`
+  — `operation`: ALL, READ, WRITE, CREATE, DELETE, ALTER, DESCRIBE, CLUSTER_ACTION, DESCRIBE_CONFIGS, ALTER_CONFIGS, IDEMPOTENT_WRITE; `resourceType`: TOPIC, GROUP, CLUSTER, TRANSACTIONAL_ID, DELEGATION_TOKEN.
+- **200:** `{ "ok": true, "created": 1 }`
+- **400:** `{ "error": "A principal is \"<type>:<name>\", e.g. User:alice — \"alice\" isn't." }`
+- **Example:** `POST http://localhost:3000/api/connections/<id>/streams/acls`
+
+### DELETE `/api/connections/:id/streams/acls`
+Remove bindings, each matched on every field (send them as the GET listed them).
+
+- **Body:** `{ "acls": [{ "principal": "User:billing", "host": "*", "operation": "READ", "permission": "ALLOW", "resourceType": "TOPIC", "resourceName": "orders", "patternType": "PREFIXED" }] }`
+- **200:** `{ "ok": true, "deleted": 1 }`
+- **Example:** `DELETE http://localhost:3000/api/connections/<id>/streams/acls`
+
+## Kafka ecosystem services (per connection)
+
+Schema Registry, Kafka Connect and ksqlDB are reached over HTTP from settings on the
+Kafka connection: `schemaRegistryUrl`, `connectUrl`, `ksqlUrl`, each with an optional
+`<service>Username` / `<service>Password` (Basic auth; for Confluent Cloud the API
+key and secret). They are dialed the way the brokers are — through the connection's
+SSH tunnel when it has one — trust its `caCert`, skip verification when `tls` is
+`insecure`, and present its client certificate when one is set.
+
+A connection without the service answers
+`400 { "error": "This connection has no Schema Registry — add its URL in the connection settings." }`;
+a service that can't be reached `502`, one that doesn't answer `504`, one that
+refuses the credentials `403`. The service's own error message is passed through.
+
+### GET `/api/connections/:id/streams/schemas`
+Every subject with its latest version, plus the registry-wide compatibility rule.
+
+- **200:** `{ "compatibility": "BACKWARD", "subjects": [{ "subject": "orders.paid-value", "version": 3, "id": 12, "type": "AVRO" }] }`
+- **Example:** `GET http://localhost:3000/api/connections/<id>/streams/schemas`
+
+### PUT `/api/connections/:id/streams/schemas/config`
+The registry-wide compatibility rule.
+
+- **Body:** `{ "compatibility": "FULL" }` — BACKWARD, BACKWARD_TRANSITIVE, FORWARD, FORWARD_TRANSITIVE, FULL, FULL_TRANSITIVE or NONE.
+- **200:** `{ "ok": true, "compatibility": "FULL" }`
+- **Example:** `PUT http://localhost:3000/api/connections/<id>/streams/schemas/config`
+
+### GET `/api/connections/:id/streams/schemas/:subject`
+One subject: every version's schema (newest first), and its compatibility rule — its own, or the registry's when `compatibilityInherited`.
+
+- **200:** `{ "subject": "orders.paid-value", "compatibility": "BACKWARD", "compatibilityInherited": true, "registryCompatibility": "BACKWARD", "versions": [{ "version": 3, "id": 12, "type": "AVRO", "schema": "{\"type\":\"record\",…}", "references": [] }] }`
+- **Example:** `GET http://localhost:3000/api/connections/<id>/streams/schemas/orders.paid-value`
+
+### POST `/api/connections/:id/streams/schemas/:subject`
+Register a schema — a new subject, or its next version. With `validateOnly` it is
+only tested against the subject's compatibility rule. A schema without references is
+compiled locally first, so a syntax error is named precisely.
+
+- **Body:** `{ "schema": "syntax = \"proto3\"; …", "type": "PROTOBUF", "references": [], "validateOnly": false }` — `type`: AVRO (default), PROTOBUF or JSON.
+- **200:** `{ "id": 13, "version": 4 }`; with `validateOnly`: `{ "compatible": false, "messages": ["{errorType:'READER_FIELD_MISSING_DEFAULT_VALUE', …}"] }`
+- **400:** `{ "error": "Invalid Avro schema: unknown type: \"recrd\"" }`
+- **409:** `{ "error": "The schema is incompatible with \"orders.paid-value\" under its compatibility rule: …" }`
+- **Example:** `POST http://localhost:3000/api/connections/<id>/streams/schemas/orders.paid-value`
+
+### PUT `/api/connections/:id/streams/schemas/:subject/config`
+A subject's own compatibility rule; `null` returns it to the registry's.
+
+- **Body:** `{ "compatibility": "NONE" }`
+- **200:** `{ "ok": true, "compatibility": "NONE" }`
+- **Example:** `PUT http://localhost:3000/api/connections/<id>/streams/schemas/orders.paid-value/config`
+
+### DELETE `/api/connections/:id/streams/schemas/:subject`
+Delete a subject or one version. Soft by default — the schema still resolves by id,
+so messages written with it stay readable; `permanent` erases it (the soft delete
+the registry requires first is done for you).
+
+- **Body:** `{ "confirm": "orders.paid-value", "version": 2, "permanent": false }` — omit `version` for the whole subject.
+- **200:** `{ "ok": true }`
+- **Example:** `DELETE http://localhost:3000/api/connections/<id>/streams/schemas/orders.paid-value`
+
+### GET `/api/connections/:id/streams/connectors`
+Every connector with its state, class and tasks.
+
+- **200:** `[{ "name": "orders-to-s3", "type": "sink", "state": "RUNNING", "workerId": "connect:8083", "className": "io.confluent.connect.s3.S3SinkConnector", "tasks": [{ "id": 0, "state": "FAILED", "workerId": "connect:8083", "trace": "org.apache.kafka.connect.errors.ConnectException: …" }], "failedTasks": 1 }]`
+- **Example:** `GET http://localhost:3000/api/connections/<id>/streams/connectors`
+
+### GET `/api/connections/:id/streams/connector-plugins`
+The connector classes installed on the workers.
+
+- **200:** `[{ "className": "org.apache.kafka.connect.file.FileStreamSinkConnector", "type": "sink", "version": "7.7.1-ccs" }]`
+- **Example:** `GET http://localhost:3000/api/connections/<id>/streams/connector-plugins`
+
+### GET `/api/connections/:id/streams/connectors/:name`
+One connector: the list fields plus its `config`, the `topics` it has used and the connector's own failure `trace`.
+
+- **200:** `{ "name": "orders-to-s3", "state": "RUNNING", …, "config": { "connector.class": "…", "tasks.max": "1" }, "topics": ["orders.paid"], "trace": null }`
+- **404:** `{ "error": "Connector orders-to-s3 not found" }`
+- **Example:** `GET http://localhost:3000/api/connections/<id>/streams/connectors/orders-to-s3`
+
+### PUT `/api/connections/:id/streams/connectors/:name`
+Create a connector or replace its config. With `validateOnly` the config is checked
+against its plugin and nothing is saved.
+
+- **Body:** `{ "config": { "connector.class": "org.apache.kafka.connect.file.FileStreamSinkConnector", "tasks.max": "1", "topics": "orders.paid", "file": "/tmp/out.txt" }, "validateOnly": false }`
+- **200:** `{ "ok": true, "name": "orders-to-s3" }`; with `validateOnly`: `{ "errorCount": 1, "errors": [{ "name": "topics", "errors": ["Must configure one of topics or topics.regex"] }] }`
+- **400:** `{ "error": "The config needs connector.class." }`
+- **Example:** `PUT http://localhost:3000/api/connections/<id>/streams/connectors/orders-to-s3`
+
+### POST `/api/connections/:id/streams/connectors/:name/actions`
+A lifecycle action: `pause`, `resume`, `stop` (Connect 3.5+), `restart` (the connector
+and its tasks; `onlyFailed` narrows it), `restartTask` (`task` = id) or
+`resetOffsets` (Connect 3.6+, connector must be STOPPED).
+
+- **Body:** `{ "action": "restart", "onlyFailed": true }` or `{ "action": "restartTask", "task": 0 }`
+- **200:** `{ "ok": true }`
+- **400:** `{ "error": "This Connect cluster has no \"stop\" — it needs Kafka Connect 3.5+ (stop) / 3.6+ (offsets)." }`
+- **Example:** `POST http://localhost:3000/api/connections/<id>/streams/connectors/orders-to-s3/actions`
+
+### DELETE `/api/connections/:id/streams/connectors/:name`
+Delete a connector. Topics it wrote and offsets it committed stay.
+
+- **Body:** `{ "confirm": "orders-to-s3" }`
+- **200:** `{ "ok": true }`
+- **Example:** `DELETE http://localhost:3000/api/connections/<id>/streams/connectors/orders-to-s3`
+
+### POST `/api/connections/:id/streams/sql`
+Run KSQL. Statements (CREATE, SHOW, DESCRIBE, DROP, TERMINATE, …) run together in one
+call and each answers on its own; a `SELECT` or `PRINT` must be sent alone and is
+**bounded like a topic read** — a push query (`EMIT CHANGES`) returns what arrived
+within `limit` rows (max `KAFKA_READ_MAX_MESSAGES`) or `KAFKA_READ_TIMEOUT_MS`, then
+stops. `properties` are streams properties.
+
+- **Body:** `{ "sql": "SELECT * FROM pageviews EMIT CHANGES;", "properties": { "auto.offset.reset": "earliest" }, "limit": 100 }`
+- **200:**
+  ```json
+  { "results": [
+    { "statement": "SELECT * FROM pageviews EMIT CHANGES", "type": "rows", "columns": ["USER", "PAGE"], "rows": [{ "USER": "u0", "PAGE": "/p0" }], "queryId": "transient_…", "truncated": true, "cappedBy": "rows" }
+  ] }
+  ```
+  A statement answers `{ "statement": "CREATE STREAM …", "type": "message", "message": "Stream created" }`;
+  `DESCRIBE` answers its fields as rows plus a `message` summary.
+- **400:** `{ "error": "Run a SELECT or PRINT on its own — not together with other statements." }` or ksqlDB's own, e.g. `{ "error": "Exception while preparing statement: NOPE does not exist." }`
+- **Example:** `POST http://localhost:3000/api/connections/<id>/streams/sql`
+
+### GET `/api/connections/:id/streams/sql/catalog`
+The streams, tables and running persistent queries.
+
+- **200:** `{ "streams": [{ "name": "PV", "topic": "pageviews", "keyFormat": "KAFKA", "valueFormat": "JSON", "system": false }], "tables": [{ "name": "PV_COUNTS", "topic": "PV_COUNTS", "keyFormat": "KAFKA", "valueFormat": "JSON", "windowed": false }], "queries": [{ "id": "CTAS_PV_COUNTS_3", "state": "RUNNING", "sinks": ["PV_COUNTS"], "statement": "CREATE TABLE PV_COUNTS AS …" }] }`
+- **Example:** `GET http://localhost:3000/api/connections/<id>/streams/sql/catalog`
+
+### The Kafka command language (`POST /api/connections/:id/query`)
+On a Kafka connection the `sql` body field takes commands, one per line (`#` comments).
+One command returns its own result; several return one summary row per command
+(`#`, `command`, `status`, `reply`), so a failure in the middle is visible.
+
+| Command | Returns |
+| --- | --- |
+| `TOPICS [LIKE 'orders.*'] [INTERNAL]` | topic, partitions, replication, under_replicated |
+| `DESCRIBE <topic>` | per partition: leader, replicas, isr, earliest, latest, messages, under_replicated (isr shorter than replicas) |
+| `CONFIG <topic> [SET key=value, …]` | config, value, default — or a message once changed |
+| `CONSUME <topic> [PARTITION n] [FROM earliest\|latest\|-N\|OFFSET n\|'ISO'] [LIMIT n] [DECODE fmt] [WHERE …]` | the message columns above |
+| `PRODUCE <topic> [PARTITION n] [KEY 'k'] [HEADERS {…}] VALUE <rest of line>` | message (`VALUE null` = tombstone) |
+| `GROUPS [TOPIC <topic>]` | group, state, members, lag, topics — with `TOPIC`, only the groups reading it, and lag on that topic alone (no `topics` column) |
+| `LAG <group>` (or `DESCRIBE GROUP <group>`) | topic, partition, committed, end, lag, member |
+| `CLUSTER` | node_id, host, port, controller, cluster_id |
+| `CREATE TOPIC <name> [PARTITIONS n] [REPLICATION r] [WITH key=value, …]` | message |
+| `DROP TOPIC <name> CONFIRM` | message — refused without `CONFIRM` |
+
+- **Example:** `POST http://localhost:3000/api/connections/<id>/query` with
+  `{ "sql": "CONSUME orders.paid FROM -50 LIMIT 20 WHERE value.method = 'card'" }`
 
 ---
 
@@ -3512,6 +3969,7 @@ Liveness probe. Also reports boot readiness and the running identity.
 | GET    | `/api/connections/:id/schema/migrations`  | List schema migration history   |
 | POST   | `/api/connections/:id/schema/rollback`    | Roll schema back to a version   |
 | GET    | `/api/connections/:id/ping`               | Connectivity check `{ ok }`     |
+| GET    | `/api/connections/:id/server-version`     | The engine's release `{ version }` |
 | GET    | `/api/connections/:id/handshake`          | Pre-flight check + root cause   |
 | GET    | `/api/connections/:id/sessions`           | Open sessions + the limit       |
 | DELETE | `/api/connections/:id/sessions/:sid`      | Leave (or owner-close) a session|
@@ -3532,9 +3990,43 @@ Liveness probe. Also reports boot readiness and the running identity.
 | POST   | `/api/connections/:id/data/import`        | Import a CSV/JSON/SQL file      |
 | GET    | `/api/connections/:id/redis/keys`         | SCAN one page of the keyspace   |
 | GET    | `/api/connections/:id/redis/overview`     | Redis db / key count / version  |
+| GET    | `/api/connections/:id/redis/command-docs` | A command's reference (COMMAND DOCS) |
 | GET    | `/api/connections/:id/redis/key`          | Read one key's value (paged)    |
 | DELETE | `/api/connections/:id/redis/keys`         | Delete keys                     |
 | PUT    | `/api/connections/:id/redis/ttl`          | Set / clear a key's expiry      |
+| GET    | `/api/connections/:id/streams/overview`   | Cluster id / brokers / topic count |
+| GET    | `/api/connections/:id/streams/topics`     | List topics                     |
+| POST   | `/api/connections/:id/streams/topics`     | Create a topic                  |
+| GET    | `/api/connections/:id/streams/topics/:topic` | Partitions, offsets, configs |
+| PATCH  | `/api/connections/:id/streams/topics/:topic` | Change configs / add partitions |
+| DELETE | `/api/connections/:id/streams/topics/:topic` | Delete a topic (confirm)     |
+| GET    | `/api/connections/:id/streams/topics/:topic/messages` | Bounded message read |
+| POST   | `/api/connections/:id/streams/topics/:topic/messages` | Produce one message  |
+| GET    | `/api/connections/:id/streams/groups`     | Consumer groups with lag        |
+| GET    | `/api/connections/:id/streams/groups/:group` | Members + per-partition lag  |
+| PUT    | `/api/connections/:id/streams/groups/:group/offsets` | Reset offsets (dry run by default) |
+| DELETE | `/api/connections/:id/streams/groups/:group` | Delete a group (confirm)     |
+| DELETE | `/api/connections/:id/streams/topics/:topic/messages` | Clear a topic, keep it (confirm) |
+| GET    | `/api/connections/:id/streams/brokers`    | Brokers: leaders, replicas, skew |
+| GET    | `/api/connections/:id/streams/brokers/:broker` | One broker's configs        |
+| PATCH  | `/api/connections/:id/streams/brokers/:broker` | Change dynamic broker configs |
+| GET    | `/api/connections/:id/streams/acls`       | List ACL bindings               |
+| POST   | `/api/connections/:id/streams/acls`       | Add ACL bindings                |
+| DELETE | `/api/connections/:id/streams/acls`       | Remove ACL bindings             |
+| GET    | `/api/connections/:id/streams/schemas`    | Schema Registry subjects        |
+| PUT    | `/api/connections/:id/streams/schemas/config` | Registry-wide compatibility |
+| GET    | `/api/connections/:id/streams/schemas/:subject` | A subject's versions      |
+| POST   | `/api/connections/:id/streams/schemas/:subject` | Register / check a schema |
+| PUT    | `/api/connections/:id/streams/schemas/:subject/config` | Subject compatibility |
+| DELETE | `/api/connections/:id/streams/schemas/:subject` | Delete subject / version (confirm) |
+| GET    | `/api/connections/:id/streams/connectors` | Kafka Connect connectors        |
+| GET    | `/api/connections/:id/streams/connector-plugins` | Installed connector classes |
+| GET    | `/api/connections/:id/streams/connectors/:name` | Connector status + config |
+| PUT    | `/api/connections/:id/streams/connectors/:name` | Create / update / validate |
+| POST   | `/api/connections/:id/streams/connectors/:name/actions` | Pause, stop, restart… |
+| DELETE | `/api/connections/:id/streams/connectors/:name` | Delete a connector (confirm) |
+| POST   | `/api/connections/:id/streams/sql`        | Run KSQL (bounded queries)      |
+| GET    | `/api/connections/:id/streams/sql/catalog` | ksqlDB streams, tables, queries |
 | GET    | `/api/connections/:id/dashboards`         | List dashboards                 |
 | POST   | `/api/connections/:id/dashboards`         | Create dashboard (opt. config)  |
 | GET    | `/api/connections/:id/dashboards/:did`    | Fetch dashboard + config        |

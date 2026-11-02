@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { runQuery } from '@/shared/api/database'
 import { runWorkflow } from '@/features/workflow'
 import LoadingState from '@/shared/ui/feedback/LoadingState'
@@ -11,6 +11,8 @@ import { ChevronLeft, ChevronRight, CopyIcon, EditIcon, MoreVerticalIcon, TrashI
 import { widgetRowActions, type Widget, type VariableValues } from '../types'
 import { referencedVariables, substituteVariables, isVariableSet } from '../lib/variables'
 import type { QueryResult } from '../lib/queryData'
+import { activeThreshold, aggregateMetric, metricOf, sampleRate, RATE_SAMPLE_MS, type RateSample } from '../lib/metric'
+import { thresholdLook } from '../lib/thresholds'
 import WidgetChart from './WidgetChart'
 import MarkdownText from './MarkdownText'
 
@@ -49,17 +51,13 @@ export default function WidgetCard({
     [widget.type, widget.query, values, missingVars.length]
   )
 
-  // Server-side pagination for table widgets: wrap the query in LIMIT/OFFSET
-  // (valid on every roadmap dialect) and fetch pageSize+1 rows — the extra row
-  // only signals that a next page exists, without a costly COUNT(*).
+  // Server-side pagination for table widgets: ask /query for pageSize+1 rows —
+  // the extra row only signals that a next page exists, without a costly
+  // COUNT(*). The server pages however the engine can (a wrapped SQL statement,
+  // or the rows of a Redis/Kafka reply sliced), so the query is never rewritten here.
   const pageSize = widget.type === 'table' && widget.pageSize ? widget.pageSize : 0
   const [page, setPage] = useState(0)
   useEffect(() => setPage(0), [baseSql, pageSize])
-
-  const sql = useMemo(() => {
-    if (!baseSql.trim() || !pageSize) return baseSql
-    return `SELECT * FROM (${baseSql.replace(/;+\s*$/, '')}) AS _page LIMIT ${pageSize + 1} OFFSET ${page * pageSize}`
-  }, [baseSql, pageSize, page])
 
   const [result, setResult] = useState<QueryResult | null>(null)
   const [loading, setLoading] = useState(false)
@@ -67,15 +65,46 @@ export default function WidgetCard({
   // workflow likely changed the rows it displays).
   const [actionRefresh, setActionRefresh] = useState(0)
 
+  // A `rate` metric is a change over time, so it needs two reads: it re-runs
+  // its own query every RATE_SAMPLE_MS (quietly — no loading fade) and compares
+  // each column sum with the one before. A new query starts the measuring over.
+  const metric = metricOf(widget)
+  const isRate = widget.type === 'metric' && metric.aggregate === 'rate'
+  const [sampleTick, setSampleTick] = useState(0)
+  const [rate, setRate] = useState<number | null>(null)
+  const lastSample = useRef<RateSample | null>(null)
+  const quietRun = useRef(false)
   useEffect(() => {
-    if (!sql.trim()) {
+    lastSample.current = null
+    setRate(null)
+  }, [baseSql, isRate, metric.column])
+  useEffect(() => {
+    if (!isRate || !baseSql) return
+    const id = setInterval(() => {
+      quietRun.current = true
+      setSampleTick((n) => n + 1)
+    }, RATE_SAMPLE_MS)
+    return () => clearInterval(id)
+  }, [isRate, baseSql])
+
+  useEffect(() => {
+    if (!baseSql.trim()) {
       setResult(null)
       return
     }
     let alive = true
-    setLoading(true)
-    runQuery(conn, sql).then((r: QueryResult) => {
+    if (!quietRun.current) setLoading(true)
+    quietRun.current = false
+    runQuery(conn, baseSql, pageSize ? { page: { limit: pageSize + 1, offset: page * pageSize } } : {}).then((r: QueryResult) => {
       if (!alive) return
+      if (isRate && !r?.error) {
+        const total = Number(aggregateMetric(r, metric))
+        const next = { total, at: Date.now() }
+        // Read the previous sample now — a state updater would run after it is replaced.
+        const measured = sampleRate(lastSample.current, next)
+        lastSample.current = next
+        if (measured !== null) setRate(measured)
+      }
       setResult(r)
       setLoading(false)
     })
@@ -83,13 +112,19 @@ export default function WidgetCard({
       alive = false
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sql, refreshKey, actionRefresh, conn?.id, conn?.ns?.database, conn?.ns?.schema])
+  }, [baseSql, pageSize, page, refreshKey, actionRefresh, sampleTick, conn?.id, conn?.ns?.database, conn?.ns?.schema])
 
   // Trim the has-more probe row before rendering.
   const hasMore = !!pageSize && (result?.rows?.length ?? 0) > pageSize
   const display = useMemo(
     () => (result && hasMore ? { ...result, rows: result.rows!.slice(0, pageSize) } : result),
     [result, hasMore, pageSize]
+  )
+
+  // A metric's threshold step tints the whole card; the stat tile also gets an uppercase label.
+  const isTile = widget.type === 'metric' && metric.variant === 'tile'
+  const look = thresholdLook(
+    widget.type === 'metric' && display && !display.error ? activeThreshold(isRate ? rate : aggregateMetric(display, metric), metric).color : undefined
   )
 
   const toast = useToast()
@@ -117,12 +152,11 @@ export default function WidgetCard({
   }
 
   return (
-    <div className="flex h-full flex-col overflow-hidden rounded-card border border-edge bg-card">
-      <div
-        className={`flex shrink-0 items-center gap-2 px-3 pt-2.5 ${editable ? 'widget-drag-handle cursor-grab active:cursor-grabbing' : ''}`}
-      >
-        <span className="min-w-0 flex-1 truncate text-[11px] font-semibold text-ink-dim">{widget.title}</span>
-        {editable && (
+    <div className={`relative flex h-full flex-col overflow-hidden rounded-card border ${look.cardClass}`} style={look.cardStyle}>
+      {/* Overlaid, not in the header row: the 24px kebab would make the header taller in edit
+          mode than in view mode, shrinking the body and clipping a short (e.g. title-less text) widget. */}
+      {editable && (
+        <div className="absolute right-2 top-1.5">
           <Popover
             align="right"
             width={170}
@@ -151,7 +185,19 @@ export default function WidgetCard({
               </div>
             )}
           </Popover>
-        )}
+        </div>
+      )}
+      <div
+        className={`flex shrink-0 items-center gap-2 px-3 pt-2.5 ${editable ? 'widget-drag-handle pr-9 cursor-grab active:cursor-grabbing' : ''}`}
+      >
+        <span
+          className={`min-w-0 flex-1 truncate font-semibold ${isTile ? 'text-[10px] uppercase tracking-wide' : 'text-[11px]'} ${
+            look.tinted ? look.textClass : isTile ? 'text-ink-faint' : 'text-ink-dim'
+          }`}
+          style={look.textStyle}
+        >
+          {widget.title}
+        </span>
       </div>
 
       <div className="min-h-0 flex-1 p-2.5 pt-1.5">
@@ -170,7 +216,7 @@ export default function WidgetCard({
         ) : display ? (
           <div className={`flex h-full flex-col ${loading ? 'opacity-60 transition-opacity' : ''}`}>
             <div className="min-h-0 flex-1">
-              <WidgetChart widget={widget} result={display} running={running} onRowAction={runRowAction} />
+              <WidgetChart widget={widget} result={display} rate={rate} values={values} running={running} onRowAction={runRowAction} />
             </div>
             {pageSize > 0 && (
               <div className="flex shrink-0 items-center justify-end gap-1 pt-1.5">

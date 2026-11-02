@@ -22,7 +22,9 @@ export function parseStaticValues(values = ''): VariableOption[] {
 /**
  * Resolve a variable's selectable options. Query-backed variables read the
  * first column as the value and the (optional) second column as the label —
- * e.g. `SELECT id, name FROM events`.
+ * e.g. `SELECT id, name FROM events`. A second column holding numbers is not a
+ * label: a command-driven engine can't pick its columns (Kafka's `TOPICS` is
+ * topic, partitions, …), and a count never belongs where the value would show.
  */
 export async function resolveVariableOptions(conn: any, variable: DashboardVariable): Promise<VariableOption[]> {
   if (variable.source === 'static') return parseStaticValues(variable.values)
@@ -33,7 +35,8 @@ export async function resolveVariableOptions(conn: any, variable: DashboardVaria
   if (!columns.length) return []
   return rows.map((row) => {
     const value = String(cell(row, columns, 0) ?? '')
-    const label = columns.length > 1 ? String(cell(row, columns, 1) ?? value) : value
+    const second = columns.length > 1 ? cell(row, columns, 1) : null
+    const label = second == null || typeof second === 'number' ? value : String(second)
     return { value, label }
   })
 }

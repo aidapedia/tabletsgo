@@ -16,6 +16,7 @@ import {
   ifNotExists,
   insertBatches,
   makeIndexSuggestion,
+  pageSql,
   queryLevelSuggestions,
   quoteIdent,
   sqlLiteral,
@@ -165,6 +166,12 @@ export const postgresDriver = {
   async ping(conn, ctx) {
     await poolFor(conn, ctx).query('SELECT 1')
     return { ok: true }
+  },
+
+  // `server_version` can carry a distro suffix ("16.4 (Debian 16.4-1.pgdg120+1)").
+  async serverVersion(conn, ctx) {
+    const { rows } = await poolFor(conn, ctx).query('SHOW server_version')
+    return /^\d+(\.\d+)*/.exec(rows[0]?.server_version || '')?.[0] || null
   },
 
   async namespaces(conn, ctx) {
@@ -386,6 +393,7 @@ export const postgresDriver = {
   sqlLiteral: (v) => (Buffer.isBuffer(v) ? `'\\x${v.toString('hex')}'::bytea` : sqlLiteral(v)),
 
   runQuery: (conn, ctx, sql) => runQuery(poolFor(conn, ctx), sql, ctx?.schema),
+  pageSql,
 
   analyze: (conn, ctx, { sql, cls }) => analyze(poolFor(conn, ctx), sql, ctx?.schema, cls),
 

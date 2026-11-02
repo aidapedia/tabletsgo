@@ -7,16 +7,17 @@ import {
   FolderPlusIcon,
   GaugeIcon,
   MoreVerticalIcon,
-  RefreshIcon,
   SearchIcon,
   TrashIcon,
 } from '@/shared/ui/icons'
 import { Input } from '@/shared/ui/form/Input'
 import IconButton from '@/shared/ui/buttons/IconButton'
+import RefreshButton from '@/shared/ui/buttons/RefreshButton'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
 import RowLabel from '@/shared/ui/RowLabel'
 import ListRow from '@/shared/ui/ListRow'
 import Popover from '@/shared/ui/overlay/Popover'
+import { openRowMenu } from '@/shared/ui/overlay/rowMenu'
 import Tooltip from '@/shared/ui/overlay/Tooltip'
 
 // Compact rows that match the table list's type style (text-xs, not bold).
@@ -189,7 +190,7 @@ export default function SavedQueriesPanel({
             align="right"
             width={210}
             trigger={({ open, toggle }) => (
-              <IconButton size="sm" active={open} onClick={toggle} aria-label="Query actions" className={open ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}>
+              <IconButton size="sm" active={open} data-row-menu aria-expanded={open} onClick={toggle} aria-label="Query actions" className={open ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}>
                 <MoreVerticalIcon width={15} height={15} />
               </IconButton>
             )}
@@ -253,6 +254,7 @@ export default function SavedQueriesPanel({
           onDragStart={(e) => onFolderDragStart(e, f.id)}
           onDragEnd={onDragEnd}
           onClick={() => toggleFolder(f.id)}
+          onContextMenu={openRowMenu}
           {...dropProps(f.id)}
           className={`${rowBase} cursor-pointer ${drag?.type === 'folder' && drag.id === f.id ? 'opacity-50' : ''} ${
             isDrop ? 'bg-green/15 text-ink ring-1 ring-green-dim' : rowIdle
@@ -272,7 +274,7 @@ export default function SavedQueriesPanel({
               align="right"
               width={180}
               trigger={({ open, toggle }) => (
-                <IconButton size="sm" active={open} onClick={toggle} aria-label="Folder actions" className={open ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}>
+                <IconButton size="sm" active={open} data-row-menu aria-expanded={open} onClick={toggle} aria-label="Folder actions" className={open ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}>
                   <MoreVerticalIcon width={15} height={15} />
                 </IconButton>
               )}
@@ -342,9 +344,7 @@ export default function SavedQueriesPanel({
         <span className="text-xs font-semibold">Saved queries</span>
         <div className="flex gap-1">
           <Tooltip label="Refresh" placement="bottom">
-            <IconButton onClick={onRefresh}>
-              <RefreshIcon />
-            </IconButton>
+            <RefreshButton onRefresh={onRefresh} aria-label="Refresh saved queries" />
           </Tooltip>
           <Tooltip label="Search" placement="bottom">
             <IconButton

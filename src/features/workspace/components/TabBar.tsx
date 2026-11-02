@@ -1,12 +1,19 @@
 import { useEffect, useRef, useState } from 'react'
 import {
+  ActivityIcon,
   CloseIcon,
   CodeIcon,
   ColumnsIcon,
   GridIcon,
   HistoryIcon,
   KeyIcon,
+  LinkIcon,
+  NoteIcon,
+  SendIcon,
+  TerminalIcon,
   TableIcon,
+  TopicIcon,
+  UsersIcon,
   WandIcon,
   WorkflowIcon,
 } from '@/shared/ui/icons'
@@ -23,6 +30,13 @@ const KIND_ICON = {
   dashboard: GridIcon,
   template: WandIcon,
   redisKey: KeyIcon,
+  kafkaTopic: TopicIcon,
+  kafkaGroup: UsersIcon,
+  kafkaProduce: SendIcon,
+  kafkaCluster: ActivityIcon,
+  kafkaSubject: NoteIcon,
+  kafkaConnector: LinkIcon,
+  kafkaKsql: TerminalIcon,
 }
 
 // Marks a drag as "one of our tabs" so a strip can tell a tab coming from the

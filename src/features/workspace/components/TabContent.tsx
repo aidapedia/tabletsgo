@@ -6,6 +6,19 @@ import QueryHistoryView from './QueryHistoryView'
 import SchemaHistoryView from './SchemaHistoryView'
 import DataTransferView, { type TransferMode } from './DataTransferView'
 import { RedisKeyView } from '@/features/redis'
+import {
+  ClusterView,
+  ConnectorView,
+  GroupView,
+  KsqlView,
+  ProduceView,
+  SubjectView,
+  TopicView,
+  type ConnectorDraft,
+  type TopicDetail,
+  type TopicSubView,
+} from '@/features/kafka'
+import type { ConsoleKind } from '@/shared/config/databaseTypes'
 import { TemplateDetailView, TEMPLATES } from '@/features/templates'
 import { DIALECT } from '../lib/dialect'
 import type { ConsoleTab } from '../hooks/useConsoleTabs'
@@ -16,8 +29,9 @@ const QueryEditor = lazy(() => import('./QueryEditor'))
 const WorkflowEditor = lazy(() => import('@/features/workflow/components/WorkflowEditor'))
 // Lazy — recharts + react-grid-layout; only load when a dashboard tab opens.
 const DashboardView = lazy(() => import('@/features/dashboard/components/DashboardView'))
-// Lazy — CodeMirror again; only load on a Redis connection's console tab.
+// Lazy — CodeMirror again; only load on a Redis or Kafka connection's console tab.
 const RedisConsole = lazy(() => import('@/features/redis/components/RedisConsole'))
+const KafkaConsole = lazy(() => import('@/features/kafka/components/KafkaConsole'))
 
 // Stable identity for unfiltered table tabs — TableView keys effects off `filters`.
 const EMPTY_FILTERS: any[] = []
@@ -31,12 +45,12 @@ type Props = {
   conn: any
   nsConn: any
   connectionId: string
-  isRedis: boolean
+  kind: ConsoleKind
   /** The connected database's tables, for the Export / Import tab. */
   tables: string[]
   /** Bumped whenever a commit changed data underneath — re-keys the data views. */
   dataVersion: number
-  /** Bumped whenever a Redis write invalidated the keyspace. */
+  /** Bumped whenever a Redis or Kafka write invalidated the sidebar. */
   keyspaceVersion: number
   queryState: Record<string, any>
   history: { list: any[]; loading: boolean; onRefresh: () => void; onClear: () => void; onDelete: (ids: string[]) => void }
@@ -51,6 +65,18 @@ type Props = {
   onNewQuery: (sql?: string) => void
   onKeyspaceMutated: () => void
   onKeyDeleted: (key: string) => void
+  onOpenTopic: (topic: string, view?: TopicSubView) => void
+  onOpenGroup: (group: string) => void
+  onProduce: (topic?: string, draft?: any) => void
+  /** A topic tab read its topic's description — for the status bar. */
+  onTopicDetail: (topic: string, detail: TopicDetail) => void
+  onGroupDeleted: (group: string) => void
+  /** Kafka's services: open a subject / connector tab (null = a new one). */
+  onOpenSubject: (subject: string | null) => void
+  onOpenConnector: (connector: string | null, draft?: ConnectorDraft) => void
+  /** A service tab changed what its sidebar lists. */
+  onServiceChanged: () => void
+  onCloseTab: (key: string) => void
   onDashboardRenamed: (id: string, name: string) => void
   onTemplateApplied: (res: any) => void
   onTransferModeChange: (mode: TransferMode) => void
@@ -70,7 +96,7 @@ export default function TabContent({
   conn,
   nsConn,
   connectionId,
-  isRedis,
+  kind,
   tables,
   dataVersion,
   keyspaceVersion,
@@ -87,6 +113,15 @@ export default function TabContent({
   onNewQuery,
   onKeyspaceMutated,
   onKeyDeleted,
+  onOpenTopic,
+  onOpenGroup,
+  onProduce,
+  onTopicDetail,
+  onGroupDeleted,
+  onOpenSubject,
+  onOpenConnector,
+  onServiceChanged,
+  onCloseTab,
   onDashboardRenamed,
   onTemplateApplied,
   onTransferModeChange,
@@ -115,7 +150,19 @@ export default function TabContent({
     case 'query':
       return (
         <Suspense fallback={<Loading what="editor" />}>
-          {isRedis ? (
+          {kind === 'stream' ? (
+            <KafkaConsole
+              key={t.key}
+              tabKey={t.key}
+              conn={nsConn}
+              initialCommand={t.sql ?? ''}
+              persisted={queryState[t.key]}
+              onPersist={onPersist}
+              onRan={onRan}
+              onSave={(sql: string) => onSaveQuery(sql, t.savedId)}
+              onMutated={onKeyspaceMutated}
+            />
+          ) : kind === 'keyspace' ? (
             <RedisConsole
               key={t.key}
               tabKey={t.key}
@@ -151,6 +198,77 @@ export default function TabContent({
           redisKey={t.redisKey}
           onRunCommand={onNewQuery}
           onDeleted={onKeyDeleted}
+        />
+      )
+    case 'kafkaTopic':
+      return (
+        <TopicView
+          key={`${t.key}:${keyspaceVersion}`}
+          conn={nsConn}
+          topic={t.topic}
+          view={t.view}
+          onProduce={onProduce}
+          onRunCommand={onNewQuery}
+          onOpenGroup={onOpenGroup}
+          onDetail={(detail) => onTopicDetail(t.topic, detail)}
+        />
+      )
+    case 'kafkaCluster':
+      return <ClusterView key={`${t.key}:${keyspaceVersion}`} conn={nsConn} panel={t.panel} />
+    case 'kafkaSubject':
+      return (
+        <SubjectView
+          key={t.key}
+          conn={nsConn}
+          subject={t.subject ?? null}
+          onOpenSubject={(subject) => {
+            // A new subject's tab gives way to the subject's own.
+            if (!t.subject) onCloseTab(t.key)
+            onOpenSubject(subject)
+          }}
+          onChanged={onServiceChanged}
+          onDeleted={() => onCloseTab(t.key)}
+        />
+      )
+    case 'kafkaConnector':
+      return (
+        <ConnectorView
+          key={t.key}
+          conn={nsConn}
+          name={t.connector ?? null}
+          draft={t.draft}
+          onOpenConnector={(connector, draft) => {
+            if (!t.connector && connector) onCloseTab(t.key)
+            onOpenConnector(connector, draft)
+          }}
+          onChanged={onServiceChanged}
+          onDeleted={() => onCloseTab(t.key)}
+        />
+      )
+    case 'kafkaKsql':
+      return (
+        <KsqlView
+          key={t.key}
+          conn={nsConn}
+          tabKey={t.key}
+          initialSql={t.sql}
+          autoRun={t.run}
+          persisted={queryState[t.key]}
+          onPersist={onPersist}
+          onChanged={onServiceChanged}
+        />
+      )
+    case 'kafkaGroup':
+      return <GroupView key={t.key} conn={nsConn} group={t.group} onOpenTopic={onOpenTopic} onDeleted={onGroupDeleted} />
+    case 'kafkaProduce':
+      return (
+        <ProduceView
+          key={t.key}
+          conn={nsConn}
+          topic={t.topic}
+          draft={t.draft}
+          onSaveCommand={(sql) => onSaveQuery(sql)}
+          onOpenTopic={(topic) => onOpenTopic(topic, 'messages')}
         />
       )
     case 'history':

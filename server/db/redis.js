@@ -477,6 +477,76 @@ export async function redisOverview(client) {
   return { database: `db${db}`, keyCount: size, version }
 }
 
+// ---- Command docs ------------------------------------------------------------
+
+// RESP2 hands maps back as flat [k1, v1, k2, v2, …] arrays.
+const pairs = (list) => {
+  const out = {}
+  for (let i = 0; Array.isArray(list) && i < list.length; i += 2) out[asText(list[i])] = list[i + 1]
+  return out
+}
+
+// One COMMAND DOCS argument → plain JSON, children included.
+function docArgument(raw) {
+  const a = pairs(raw)
+  const flags = (a.flags || []).map(asText)
+  return {
+    name: asText(a.name),
+    type: asText(a.type),
+    display: asText(a.display_text ?? a.name),
+    token: a.token != null ? asText(a.token) : null,
+    since: a.since != null ? asText(a.since) : null,
+    optional: flags.includes('optional'),
+    multiple: flags.includes('multiple'),
+    arguments: (a.arguments || []).map(docArgument),
+  }
+}
+
+/**
+ * The server's own reference for one command — what redis.io renders, from
+ * COMMAND DOCS (Redis 7+) and COMMAND INFO. Never throws: an older server, an
+ * ACL that forbids COMMAND or an unknown name answers `{ available: false }`
+ * with the reason, so the console's docs fall back to their static text.
+ */
+export async function redisCommandDocs(client, name) {
+  const lookup = String(name || '').toLowerCase()
+  try {
+    const [docsReply, infoReply, info] = await Promise.all([
+      client.call('COMMAND', 'DOCS', lookup),
+      client.call('COMMAND', 'INFO', lookup).catch(() => null),
+      client.info('server').catch(() => ''),
+    ])
+    const version = /redis_version:([^\r\n]+)/.exec(info || '')?.[1] || null
+    if (!Array.isArray(docsReply) || !docsReply.length) {
+      return { available: false, version, reason: `This server has no docs for ${lookup.toUpperCase()}.` }
+    }
+    const d = pairs(docsReply[1])
+    const meta = Array.isArray(infoReply?.[0]) ? infoReply[0] : null
+    return {
+      available: true,
+      version,
+      name: asText(docsReply[0]).toUpperCase(),
+      summary: asText(d.summary) || null,
+      since: d.since != null ? asText(d.since) : null,
+      group: d.group != null ? asText(d.group) : null,
+      complexity: d.complexity != null ? asText(d.complexity) : null,
+      deprecatedSince: d.deprecated_since != null ? asText(d.deprecated_since) : null,
+      replacedBy: d.replaced_by != null ? asText(d.replaced_by) : null,
+      history: (d.history || []).map(([v, change]) => ({ version: asText(v), change: asText(change) })),
+      arguments: (d.arguments || []).map(docArgument),
+      subcommands: Object.entries(pairs(d.subcommands)).map(([sub, raw]) => {
+        const s = pairs(raw)
+        return { name: sub.replace('|', ' ').toUpperCase(), summary: asText(s.summary) || null, since: s.since != null ? asText(s.since) : null }
+      }),
+      flags: meta ? (meta[2] || []).map(asText) : [],
+      aclCategories: meta ? (meta[6] || []).map(asText) : [],
+    }
+  } catch (error) {
+    // ERR unknown subcommand 'DOCS' (Redis < 7) or NOPERM.
+    return { available: false, version: null, reason: error.message }
+  }
+}
+
 // ---- Driver ----------------------------------------------------------------
 
 export const redisDriver = {
@@ -573,6 +643,8 @@ export const redisDriver = {
     return { ok: true }
   },
 
+  serverVersion: async (conn, ctx) => (await redisOverview(await client(conn, ctx))).version,
+
   namespaces: async (conn, ctx) => redisNamespaces(await client(conn, ctx)),
 
   runQuery: async (conn, ctx, text) => runRedisCommand(await client(conn, ctx), text),
@@ -583,6 +655,8 @@ export const redisDriver = {
   scanKeys: async (conn, ctx, options) => scanRedisKeys(await client(conn, ctx), options),
 
   readKey: async (conn, ctx, key, window) => readRedisKey(await client(conn, ctx), key, window),
+
+  commandDocs: async (conn, ctx, name) => redisCommandDocs(await client(conn, ctx), name),
 
   deleteKeys: async (conn, ctx, keys) => ({ deleted: await (await client(conn, ctx)).del(...keys) }),
 

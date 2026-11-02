@@ -1,3 +1,5 @@
+import { useCallback, useEffect, useRef } from 'react'
+
 export const Logo = (props) => (
   <svg viewBox="0 0 100 100" fill="none" role="img" aria-label="Tabletsgo app icon" {...props}>
     <defs>
@@ -129,12 +131,50 @@ export const PaletteIcon = (props) => (
   </svg>
 )
 
-export const RefreshIcon = (props) => (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-    strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
-    <path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6" />
-  </svg>
-)
+// Turns when the button it sits in is clicked, and keeps turning — a whole turn
+// at a time, so it always comes to rest upright — for as long as the refresh is
+// in flight: while `spinning` is set or the button is disabled (the buttons
+// that disable themselves while loading need nothing more). `RefreshButton`
+// sets `spinning` from the promise its handler returns.
+export const RefreshIcon = ({ spinning = false, ...props }) => {
+  const ref = useRef<SVGSVGElement>(null)
+  const busy = useRef(spinning)
+  busy.current = spinning
+  const turning = useRef(false)
+
+  const turn = useCallback(() => {
+    const svg = ref.current
+    if (!svg || turning.current) return
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+    turning.current = true
+    const once = () => {
+      const anim = svg.animate([{ transform: 'rotate(0deg)' }, { transform: 'rotate(360deg)' }], { duration: 700 })
+      anim.onfinish = () => {
+        if (svg.isConnected && (busy.current || svg.closest('button')?.disabled)) once()
+        else turning.current = false
+      }
+    }
+    once()
+  }, [])
+
+  useEffect(() => {
+    const button = ref.current?.closest('button')
+    if (!button) return
+    button.addEventListener('click', turn)
+    return () => button.removeEventListener('click', turn)
+  }, [turn])
+
+  useEffect(() => {
+    if (spinning) turn()
+  }, [spinning, turn])
+
+  return (
+    <svg ref={ref} width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+      <path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6" />
+    </svg>
+  )
+}
 
 // Two arrows chasing each other — "bring these two into step", as opposed to
 // RefreshIcon's single arrow ("read this again"). Used for the schema editor's
@@ -346,12 +386,46 @@ export const RedisLogo = (props) => (
   </svg>
 )
 
+// A generic event-log mark (brokers joined in a cluster), not the Apache logo.
+export const KafkaLogo = (props) => (
+  <svg viewBox="0 0 48 48" fill="none" {...props}>
+    <rect width="48" height="48" rx="11" fill="#1F1F1F" />
+    <g stroke="#fff" strokeWidth="2.2" strokeLinecap="round">
+      <path d="M24 15v5.5M24 27.5V33M27.3 22.2l5.4-3.2M27.3 25.8l5.4 3.2" />
+    </g>
+    <g stroke="#fff" strokeWidth="2.2" fill="none">
+      <circle cx="24" cy="11.5" r="3.5" />
+      <circle cx="24" cy="24" r="4.2" />
+      <circle cx="24" cy="36.5" r="3.5" />
+      <circle cx="35.5" cy="17.5" r="3" />
+      <circle cx="35.5" cy="30.5" r="3" />
+    </g>
+  </svg>
+)
+
 export function DbLogo({ type, ...props }) {
   if (type === 'postgresql') return <PostgresLogo {...props} />
   if (type === 'sqlite') return <SqliteLogo {...props} />
   if (type === 'redis') return <RedisLogo {...props} />
+  if (type === 'kafka') return <KafkaLogo {...props} />
   return <DatabaseIcon {...props} />
 }
+
+// Stream icons — a topic row (a log of lines) and producing a message.
+export const TopicIcon = (props) => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...props}>
+    <path d="M3 6h13M3 12h18M3 18h9" />
+  </svg>
+)
+
+export const SendIcon = (props) => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" {...props}>
+    <path d="M21 3 3 10.5l7.5 3L14 21z" />
+    <path d="m10.5 13.5 4-4" />
+  </svg>
+)
 
 // Keyspace icons — a Redis key row and the console/terminal tab.
 export const KeyIcon = (props) => (
@@ -476,6 +550,15 @@ export const InfoIcon = (props) => (
     strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
     <circle cx="12" cy="12" r="10" />
     <path d="M12 16v-4M12 8h.01" />
+  </svg>
+)
+
+// A question mark in a circle — the "what does this do?" help tip.
+export const HelpIcon = (props) => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+    strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...props}>
+    <circle cx="12" cy="12" r="10" />
+    <path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3M12 17h.01" />
   </svg>
 )
 

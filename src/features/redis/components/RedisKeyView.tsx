@@ -2,11 +2,12 @@ import { useEffect, useState } from 'react'
 import DataGrid from '@/shared/ui/table/DataGrid'
 import Button from '@/shared/ui/buttons/Button'
 import IconButton from '@/shared/ui/buttons/IconButton'
+import RefreshButton from '@/shared/ui/buttons/RefreshButton'
 import Tooltip from '@/shared/ui/overlay/Tooltip'
 import ConfirmDialog from '@/shared/ui/feedback/ConfirmDialog'
 import { Input } from '@/shared/ui/form/Input'
 import { useToast } from '@/shared/ui/feedback/Toast'
-import { ClockIcon, CodeIcon, RefreshIcon, TrashIcon } from '@/shared/ui/icons'
+import { ClockIcon, CodeIcon, TrashIcon } from '@/shared/ui/icons'
 import { deleteKeys, readKey, setKeyTtl, type RedisKeyValue } from '../lib/api'
 import { formatTtl, TYPE_COLOR, TYPE_LABEL } from '../lib/tree'
 
@@ -160,9 +161,7 @@ export default function RedisKeyView({
             </IconButton>
           </Tooltip>
           <Tooltip label="Reload" placement="bottom">
-            <IconButton size="toolbar" onClick={() => load()} aria-label="Reload key">
-              <RefreshIcon width={15} height={15} />
-            </IconButton>
+            <RefreshButton size="toolbar" iconSize={15} onRefresh={() => load()} busy={loading} aria-label="Reload key" />
           </Tooltip>
           <Tooltip label="Delete key" placement="bottom">
             <IconButton size="toolbar" onClick={() => setConfirmDelete(true)} aria-label="Delete key">

@@ -4,7 +4,9 @@ import { SplitHorizontalIcon, SplitVerticalIcon } from '@/shared/ui/icons'
 import type { ConsoleTab, SplitDir } from '../hooks/useConsoleTabs'
 
 /**
- * Right-clicking a tab. Every "close …" entry acts inside that tab's own pane —
+ * Right-clicking a tab — the same menu for every tab kind: close and split,
+ * nothing about what the tab shows (that lives in the tab and its sidebar row).
+ * Every "close …" entry acts inside that tab's own pane —
  * the other pane's tabs are a separate group and are never touched — and
  * splitting is just "move this tab to the other pane", so which side it lands
  * on is the split's orientation.

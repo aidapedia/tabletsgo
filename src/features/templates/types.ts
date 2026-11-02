@@ -5,7 +5,7 @@
 import type { WorkflowGraph } from '@/features/workflow'
 
 /** DB types a template can target — a subset of connections' DB_CATALOG ids. */
-export type TemplateDbType = 'postgresql' | 'sqlite'
+export type TemplateDbType = 'postgresql' | 'sqlite' | 'kafka'
 
 export type TemplateWorkflow = {
   /** Template-local key, referenced by other artifacts as `{{workflow:<key>}}`. */

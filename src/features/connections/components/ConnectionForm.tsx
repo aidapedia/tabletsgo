@@ -12,7 +12,7 @@ import TextButton from '@/shared/ui/buttons/TextButton'
 import PageHeader from '@/shared/ui/page/PageHeader'
 import PageTabs from '@/shared/ui/page/PageTabs'
 import Narrow from '@/shared/ui/page/Narrow'
-import { controlClass, Input } from '@/shared/ui/form/Input'
+import { controlClass, Input, Textarea } from '@/shared/ui/form/Input'
 import PasswordInput from '@/shared/ui/form/PasswordInput'
 import { FormField } from '@/shared/ui/form/Form'
 
@@ -20,6 +20,7 @@ const DB_TYPES = [
   { id: 'sqlite', label: 'SQLite', desc: 'A database file on this server', defaultPort: '' },
   { id: 'postgresql', label: 'PostgreSQL', desc: 'Relational, over the network', defaultPort: '5432' },
   { id: 'redis', label: 'Redis', desc: 'Key-value, over the network', defaultPort: '6379' },
+  { id: 'kafka', label: 'Kafka', desc: 'Event streaming, over the network', defaultPort: '9092' },
 ]
 
 // How a network database is reached. Stored as `sshGatewayId` — empty means
@@ -43,6 +44,38 @@ const ENVIRONMENTS = ['development', 'staging', 'production', 'local']
 const AUTH_MODES = [
   { value: 'password', label: 'User & Password' },
   { value: 'none', label: 'No authentication' },
+]
+// Kafka's login: none, or SASL. Every mechanism keeps its identity in
+// username/password — a client ID/secret for OAUTHBEARER, an access key for
+// AWS_MSK_IAM — so `SASL_LOGIN` only renames the two fields.
+const KAFKA_AUTH_MODES = [
+  { value: 'none', label: 'No authentication' },
+  { value: 'password', label: 'SASL' },
+]
+const SASL_MECHANISMS = [
+  { value: 'scram-sha-512', label: 'SCRAM-SHA-512' },
+  { value: 'scram-sha-256', label: 'SCRAM-SHA-256' },
+  { value: 'plain', label: 'PLAIN' },
+  { value: 'oauthbearer', label: 'OAUTHBEARER (OAuth 2.0 client credentials)' },
+  { value: 'aws_msk_iam', label: 'AWS_MSK_IAM (Amazon MSK IAM)' },
+]
+// The HTTP services beside a cluster; each is `<id>Url` / `<id>Username` /
+// `<id>Password` on the record (server/db/kafka-rest.js).
+const KAFKA_SERVICES = [
+  { id: 'schemaRegistry', label: 'Schema Registry', placeholder: 'http://schema-registry:8081', help: 'Decodes Avro, Protobuf and JSON Schema messages, and lets you browse and register schemas. Confluent Cloud: the API key and secret go in user/password.' },
+  { id: 'connect', label: 'Kafka Connect', placeholder: 'http://connect:8083', help: 'Manage connectors and their tasks.' },
+  { id: 'ksql', label: 'ksqlDB', placeholder: 'http://ksqldb:8088', help: 'Run KSQL statements and browse streams, tables and queries.' },
+]
+const SASL_LOGIN = {
+  oauthbearer: { user: 'Client ID', password: 'Client secret', placeholder: 'kafka-client' },
+  aws_msk_iam: { user: 'Access key ID', password: 'Secret access key', placeholder: 'AKIA…' },
+}
+// A client certificate for brokers that require mTLS. JKS isn't readable here —
+// convert it with `keytool -importkeystore -deststoretype PKCS12`.
+const CLIENT_CERT_FORMATS = [
+  { value: '', label: 'None' },
+  { value: 'pem', label: 'PEM certificate + key' },
+  { value: 'pkcs12', label: 'PKCS#12 file (.p12 / .pfx)' },
 ]
 const SSL_MODES = ['disable', 'allow', 'prefer', 'require', 'verify-full']
 // Redis's equivalent of sslmode — plain TCP, TLS, or TLS without cert checks.
@@ -100,7 +133,61 @@ const blankRedis = {
   tags: [],
 }
 
-const blankFor = (type) => (type === 'postgresql' ? blankPostgres : type === 'redis' ? blankRedis : blankSqlite)
+// Kafka reuses host/port (the first broker — what the SSH tunnel and the
+// handshake name), username/password (SASL) and `tls` (Redis's switch). The
+// bootstrap list itself has no counterpart, so it is its own field, `brokers`.
+const blankKafka = {
+  name: '',
+  type: 'kafka',
+  environment: 'development',
+  brokers: '',
+  host: '',
+  port: '9092',
+  auth: 'none',
+  saslMechanism: 'scram-sha-512',
+  username: '',
+  password: '',
+  tls: '',
+  caCert: '',
+  clientCertFormat: '',
+  clientCert: '',
+  clientKey: '',
+  clientPfx: '',
+  clientKeyPassphrase: '',
+  oauthTokenUrl: '',
+  oauthScope: '',
+  oauthExtensions: '',
+  awsRegion: '',
+  awsSessionToken: '',
+  schemaRegistryUrl: '',
+  schemaRegistryUsername: '',
+  schemaRegistryPassword: '',
+  connectUrl: '',
+  connectUsername: '',
+  connectPassword: '',
+  ksqlUrl: '',
+  ksqlUsername: '',
+  ksqlPassword: '',
+  clientId: '',
+  keychain: false,
+  sshGatewayId: '',
+  folder: '',
+  tags: [],
+}
+
+const blankFor = (type) =>
+  type === 'postgresql' ? blankPostgres : type === 'redis' ? blankRedis : type === 'kafka' ? blankKafka : blankSqlite
+
+// The bootstrap list as typed (commas, spaces or newlines; an optional
+// kafka:// prefix) → "host:port,host:port".
+function normalizeBrokers(text) {
+  return String(text || '')
+    .split(/[\s,]+/)
+    .map((b) => b.trim().replace(/^[a-z+]+:\/\//i, '').replace(/\/+$/, ''))
+    .filter(Boolean)
+    .map((b) => (/:\d+$/.test(b) ? b : `${b}:9092`))
+    .join(',')
+}
 
 // A row of fields owns the gap below it — FormField drops its own margin inside
 // a grid (see `.form-field` in index.css).
@@ -191,9 +278,10 @@ function OptionCard({
 // reaches the database, SSL/TLS included. Its own route, like the detail view:
 // the page owns the tab so `/connections/:id/edit/backup` is a real address.
 //
-// The engine is chosen once, at creation: everything filed under a connection
-// (dashboards, workflows, schema history) is written for it, so editing shows it
-// locked and the server refuses a change.
+// The engine is chosen once, in the type picker before this form: everything
+// filed under a connection (dashboards, workflows, schema history) is written for
+// it, so the form only shows it locked — create and edit alike — and the server
+// refuses a change.
 //
 // `onClose` is where cancelling lands (the record being edited, or the list for
 // a new one); `onList` is the list itself, which the breadcrumb needs as its
@@ -213,10 +301,13 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
   const [tagDraft, setTagDraft] = useState('')
   const [addingTag, setAddingTag] = useState(false)
   const [test, setTest] = useState(null) // { ok, message } | 'loading'
-  const [saving, setSaving] = useState(false)
+  const [saving, setSaving] = useState<false | 'save' | 'connect'>(false)
 
   const isSqlite = form.type === 'sqlite'
   const isRedis = form.type === 'redis'
+  const isKafka = form.type === 'kafka'
+  const mechanism = isKafka && (form.auth || 'password') === 'password' ? form.saslMechanism || 'scram-sha-512' : null
+  const login = SASL_LOGIN[mechanism] || null
   const viaSsh = !isSqlite && via === 'ssh'
 
   // The gateways a network connection may tunnel through — this workspace's.
@@ -250,13 +341,6 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
     setTest(null)
   }
 
-  const pickType = (id) => {
-    if (isEdit) return
-    setForm((f) => ({ ...blankFor(id), name: f.name, folder: f.folder, tags: f.tags }))
-    setVia('direct')
-    setTest(null)
-  }
-
   // Leaving the tunnel clears the host; entering it preselects the only one
   // there is, so the common single-bastion case is one click.
   const pickVia = (id) => {
@@ -277,32 +361,52 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
     // 127.0.0.1 from there), so only a direct connection must name one.
     (isSqlite
       ? form.filepath.trim()
-      : form.port.trim() && (viaSsh ? form.sshGatewayId : form.host.trim()))
+      : isKafka
+        ? normalizeBrokers(form.brokers) && (!viaSsh || form.sshGatewayId)
+        : form.port.trim() && (viaSsh ? form.sshGatewayId : form.host.trim()))
+
+  // Kafka's host/port mirror the first bootstrap broker.
+  const withFirstBroker = (f) => {
+    if (f.type !== 'kafka') return f
+    const brokers = normalizeBrokers(f.brokers)
+    const first = brokers.split(',')[0] || ''
+    const at = first.lastIndexOf(':')
+    return { ...f, brokers, host: at > 0 ? first.slice(0, at) : first, port: at > 0 ? first.slice(at + 1) : '9092' }
+  }
 
   const runTest = async () => {
     if (!valid) return
     setTest('loading')
-    const result = await testConnection(form)
+    const result = await testConnection(withFirstBroker(form))
     setTest(result)
     if (result?.ok) toast.success(result.message || 'Connection successful!')
     else toast.error(result?.message || 'Connection failed')
   }
 
-  const handleSave = async () => {
+  // `connect` (create only) also opens the console once saved. A plain save of a
+  // new connection skips the probe, so one can be stored while its database is
+  // unreachable (VPN down, server not up yet); editing always probes first.
+  const handleSave = async ({ connect = false } = {}) => {
     if (!valid || saving) return
     const payload = {
-      ...form,
+      ...withFirstBroker(form),
       name: form.name.trim(),
       // Spell out the tunnel's default so the detail view and lists show where
       // it actually goes.
-      host: form.host?.trim() || (viaSsh ? '127.0.0.1' : ''),
-      port: form.port?.trim() || '',
+      host: withFirstBroker(form).host?.trim() || (viaSsh ? '127.0.0.1' : ''),
+      port: withFirstBroker(form).port?.trim() || '',
       filepath: form.filepath?.trim() || '',
       database: form.database?.trim() || '',
       folder: form.folder.trim(),
     }
+    if (!isEdit && !connect) {
+      setSaving('save')
+      await onSave(payload, { connect: false })
+      setSaving(false)
+      return
+    }
     // Verify the connection works before saving so we never store a broken one.
-    setSaving(true)
+    setSaving('connect')
     const result = await testConnection(payload)
     setSaving(false)
     if (!result?.ok) {
@@ -312,7 +416,7 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
     }
     setTest(result)
     toast.success(`Connected — saving "${payload.name}".`)
-    onSave(payload)
+    onSave(payload, { connect })
   }
 
   const tags = form.tags || []
@@ -325,33 +429,19 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
         desc={
           isEdit
             ? 'The engine is fixed once a connection exists — create a new connection to use a different one.'
-            : 'The engine you are connecting to. It cannot be changed later.'
+            : 'Chosen in the previous step and fixed from here on — go back to Connections to pick a different one.'
         }
       >
-        {isEdit ? (
-          <div className="mb-4 flex items-center gap-3 rounded-soft border border-edge bg-elevated p-3.5">
-            <DbLogo type={form.type} className="h-9 w-9 shrink-0" />
-            <div className="min-w-0 flex-1">
-              <div className="text-[12px] font-semibold">{engine?.label || form.type}</div>
-              {engine && <div className="mt-0.5 text-[11px] text-ink-dim">{engine.desc}</div>}
-            </div>
-            <span className="rounded-[6px] border border-edge px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-ink-faint">
-              Locked
-            </span>
+        <div className="mb-4 flex items-center gap-3 rounded-soft border border-edge bg-elevated p-3.5">
+          <DbLogo type={form.type} className="h-9 w-9 shrink-0" />
+          <div className="min-w-0 flex-1">
+            <div className="text-[12px] font-semibold">{engine?.label || form.type}</div>
+            {engine && <div className="mt-0.5 text-[11px] text-ink-dim">{engine.desc}</div>}
           </div>
-        ) : (
-          <div className="mb-4 grid grid-cols-3 gap-3 max-[560px]:grid-cols-1">
-            {DB_TYPES.map((t) => (
-              <OptionCard
-                key={t.id}
-                selected={form.type === t.id}
-                onClick={() => pickType(t.id)}
-                icon={<DbLogo type={t.id} className="h-9 w-9" />}
-                title={t.label}
-              />
-            ))}
-          </div>
-        )}
+          <span className="rounded-[6px] border border-edge px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-ink-faint">
+            Locked
+          </span>
+        </div>
       </FormSection>
 
       <FormSection title="Details">
@@ -490,7 +580,9 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
           <FormSection
             title="Server"
             desc={
-              viaSsh ? (
+              isKafka ? (
+                'Where the cluster is reached first.'
+              ) : viaSsh ? (
                 <>
                   Dialed <span className="text-ink-dim">from the SSH host</span>. Leave the host empty when the database runs on the
                   SSH host itself; otherwise use the address it sees (a private IP or internal hostname).
@@ -500,64 +592,96 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
               )
             }
           >
-            <FormField label="Connection URI">
-              <Input
-                className="font-mono"
-                type="text"
-                placeholder={isRedis ? 'redis://user:password@host:6379/0' : 'postgresql://user:password@host:5432/database'}
-                value={form.uri || ''}
-                onChange={onUriChange}
-              />
-            </FormField>
-
-            <div className="mb-4 flex items-center gap-3 text-[11px] text-ink-faint">
-              <span className="h-px flex-1 bg-edge" /> or <span className="h-px flex-1 bg-edge" />
-            </div>
-
-            <div className={fieldRow}>
-              <FormField
-                label={
-                  viaSsh ? (
+            {isKafka ? (
+              <>
+                <FormField
+                  label="Bootstrap servers"
+                  hint={
+                    viaSsh
+                      ? 'As the SSH host sees them. Every broker the cluster advertises is tunneled through the same SSH login.'
+                      : 'host:port, separated by commas. The client discovers every other broker from these.'
+                  }
+                >
+                  <Textarea
+                    className="min-h-[64px] font-mono"
+                    placeholder="b-1.kafka.internal:9092, b-2.kafka.internal:9092"
+                    value={form.brokers || ''}
+                    onChange={set('brokers')}
+                  />
+                </FormField>
+                <FormField
+                  label={
                     <>
-                      Host <span className="text-ink-faint">(optional)</span>
+                      Client ID <span className="text-ink-faint">(optional)</span>
                     </>
-                  ) : (
-                    'Host'
-                  )
-                }
-              >
-                <Input
-                  type="text"
-                  placeholder={viaSsh ? '127.0.0.1 — the SSH host itself' : 'localhost'}
-                  value={form.host}
-                  onChange={set('host')}
-                  required={!viaSsh}
-                />
-              </FormField>
-              <FormField label="Port">
-                <Input type="text" placeholder={isRedis ? '6379' : '5432'} value={form.port} onChange={set('port')} required />
-              </FormField>
-            </div>
+                  }
+                  hint="Shown in broker logs and quotas. Defaults to tabletsgo."
+                >
+                  <Input className="font-mono" placeholder="tabletsgo" value={form.clientId || ''} onChange={set('clientId')} />
+                </FormField>
+              </>
+            ) : (
+              <>
+                <FormField label="Connection URI">
+                  <Input
+                    className="font-mono"
+                    type="text"
+                    placeholder={isRedis ? 'redis://user:password@host:6379/0' : 'postgresql://user:password@host:5432/database'}
+                    value={form.uri || ''}
+                    onChange={onUriChange}
+                  />
+                </FormField>
 
-            <FormField
-              label={
-                <>
-                  {isRedis ? 'Database index' : 'Database'} <span className="text-ink-faint">(optional)</span>
-                </>
-              }
-              hint={
-                isRedis
-                  ? 'The numeric database to open by default (0–15 on a stock server). You can switch databases from the console.'
-                  : undefined
-              }
-            >
-              <Input
-                type="text"
-                placeholder={isRedis ? '0' : 'Leave empty to select database after connecting'}
-                value={form.database}
-                onChange={set('database')}
-              />
-            </FormField>
+                <div className="mb-4 flex items-center gap-3 text-[11px] text-ink-faint">
+                  <span className="h-px flex-1 bg-edge" /> or <span className="h-px flex-1 bg-edge" />
+                </div>
+
+                <div className={fieldRow}>
+                  <FormField
+                    label={
+                      viaSsh ? (
+                        <>
+                          Host <span className="text-ink-faint">(optional)</span>
+                        </>
+                      ) : (
+                        'Host'
+                      )
+                    }
+                  >
+                    <Input
+                      type="text"
+                      placeholder={viaSsh ? '127.0.0.1 — the SSH host itself' : 'localhost'}
+                      value={form.host}
+                      onChange={set('host')}
+                      required={!viaSsh}
+                    />
+                  </FormField>
+                  <FormField label="Port">
+                    <Input type="text" placeholder={isRedis ? '6379' : '5432'} value={form.port} onChange={set('port')} required />
+                  </FormField>
+                </div>
+
+                <FormField
+                  label={
+                    <>
+                      {isRedis ? 'Database index' : 'Database'} <span className="text-ink-faint">(optional)</span>
+                    </>
+                  }
+                  hint={
+                    isRedis
+                      ? 'The numeric database to open by default (0–15 on a stock server). You can switch databases from the console.'
+                      : undefined
+                  }
+                >
+                  <Input
+                    type="text"
+                    placeholder={isRedis ? '0' : 'Leave empty to select database after connecting'}
+                    value={form.database}
+                    onChange={set('database')}
+                  />
+                </FormField>
+              </>
+            )}
           </FormSection>
 
           <FormSection title="Authentication">
@@ -566,30 +690,94 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
                 className={controlClass}
                 value={form.auth || 'password'}
                 onChange={(v) => setVal('auth', v)}
-                options={AUTH_MODES}
+                options={isKafka ? KAFKA_AUTH_MODES : AUTH_MODES}
               />
             </FormField>
+
+            {mechanism && (
+              <FormField label="SASL mechanism" hint="Managed clusters (MSK, Confluent Cloud, Aiven, Event Hubs) authenticate over TLS — turn TLS on below.">
+                <Select className={controlClass} value={mechanism} onChange={(v) => setVal('saslMechanism', v)} options={SASL_MECHANISMS} />
+              </FormField>
+            )}
+
+            {mechanism === 'oauthbearer' && (
+              <>
+                <FormField label="Token endpoint" hint="Your identity provider's OAuth 2.0 token URL — a token is fetched with the client-credentials grant and reused until it expires.">
+                  <Input type="url" placeholder="https://login.example.com/oauth2/token" value={form.oauthTokenUrl || ''} onChange={set('oauthTokenUrl')} required />
+                </FormField>
+                <div className={fieldRow}>
+                  <FormField
+                    label={
+                      <>
+                        Scope <span className="text-ink-faint">(optional)</span>
+                      </>
+                    }
+                  >
+                    <Input type="text" placeholder="kafka" value={form.oauthScope || ''} onChange={set('oauthScope')} />
+                  </FormField>
+                  <FormField
+                    label={
+                      <>
+                        Extensions <span className="text-ink-faint">(optional)</span>
+                      </>
+                    }
+                    help="SASL extensions as key=value, one per line or comma-separated. Confluent Cloud needs logicalCluster=lkc-… and identityPoolId=pool-…."
+                  >
+                    <Input type="text" placeholder="logicalCluster=lkc-abc12" value={form.oauthExtensions || ''} onChange={set('oauthExtensions')} />
+                  </FormField>
+                </div>
+              </>
+            )}
 
             {(form.auth || 'password') === 'password' && (
               <>
                 <FormField
                   label={
-                    <>
-                      User{isRedis && <span className="text-ink-faint"> (ACL — leave empty for a password-only server)</span>}
-                    </>
+                    login ? (
+                      login.user
+                    ) : (
+                      <>
+                        User{isRedis && <span className="text-ink-faint"> (ACL — leave empty for a password-only server)</span>}
+                      </>
+                    )
                   }
                 >
                   <Input
                     type="text"
-                    placeholder={isRedis ? 'default' : 'postgres'}
+                    placeholder={login ? login.placeholder : isRedis ? 'default' : isKafka ? 'svc-tabletsgo' : 'postgres'}
                     value={form.username}
                     onChange={set('username')}
                   />
                 </FormField>
 
-                <FormField label="Password" className="!mb-2">
+                <FormField label={login ? login.password : 'Password'} className={mechanism === 'aws_msk_iam' ? '' : '!mb-2'}>
                   <PasswordInput placeholder="••••••••" value={form.password} onChange={set('password')} />
                 </FormField>
+
+                {mechanism === 'aws_msk_iam' && (
+                  <div className={fieldRow}>
+                    <FormField
+                      label={
+                        <>
+                          Session token <span className="text-ink-faint">(optional)</span>
+                        </>
+                      }
+                      help="Only for temporary credentials (an assumed role or SSO session) — they expire, so update them here when they do."
+                    >
+                      <PasswordInput placeholder="••••••••" value={form.awsSessionToken || ''} onChange={set('awsSessionToken')} />
+                    </FormField>
+                    <FormField
+                      label={
+                        <>
+                          Region <span className="text-ink-faint">(optional)</span>
+                        </>
+                      }
+                      help="Read from the broker address (…kafka.eu-west-1.amazonaws.com) when left empty."
+                    >
+                      <Input type="text" placeholder="eu-west-1" value={form.awsRegion || ''} onChange={set('awsRegion')} />
+                    </FormField>
+                  </div>
+                )}
 
                 <TextButton
                   tone={form.keychain ? 'green' : 'faint'}
@@ -605,7 +793,34 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
           {/* Transport security between Tabletsgo (or the tunnel's end) and
               the database itself. */}
           <FormSection title="Security">
-            {isRedis ? (
+            {isKafka ? (
+              <>
+                <FormField
+                  label="TLS"
+                  hint="On for an SSL or SASL_SSL listener (every managed Kafka), off for PLAINTEXT. Only skip verification for a self-signed certificate you trust."
+                >
+                  <Select className={controlClass} value={form.tls || ''} onChange={(v) => setVal('tls', v)} options={TLS_MODES} />
+                </FormField>
+                {form.tls && (
+                  <FormField
+                    label={
+                      <>
+                        CA certificate <span className="text-ink-faint">(optional, PEM)</span>
+                      </>
+                    }
+                    hint="For brokers signed by a private CA."
+                  >
+                    <Textarea
+                      className="min-h-[72px] font-mono"
+                      placeholder="-----BEGIN CERTIFICATE-----"
+                      value={form.caCert || ''}
+                      onChange={set('caCert')}
+                    />
+                  </FormField>
+                )}
+                {form.tls && <ClientCertFields form={form} set={set} setVal={setVal} />}
+              </>
+            ) : isRedis ? (
               <FormField
                 label="TLS"
                 hint={
@@ -637,6 +852,17 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
               </FormField>
             )}
           </FormSection>
+
+          {isKafka && (
+            <FormSection
+              title="Ecosystem services"
+              desc="Optional. Each one named here gets its own entry in the console's icon rail. They are reached the same way as the brokers (SSH tunnel included) and trust the CA certificate above."
+            >
+              {KAFKA_SERVICES.map((svc) => (
+                <ServiceFields key={svc.id} svc={svc} form={form} set={set} />
+              ))}
+            </FormSection>
+          )}
         </>
       )}
 
@@ -652,12 +878,29 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
       )}
 
       <div className="flex justify-end gap-3 border-t border-edge pb-8 pt-5">
-        <Button type="button" variant="ghost" size="lg" onClick={runTest} disabled={!valid || test === 'loading' || saving}>
+        <Button type="button" variant="ghost" size="lg" onClick={runTest} disabled={!valid || test === 'loading' || !!saving}>
           {test === 'loading' ? 'Testing…' : 'Test Connection'}
         </Button>
-        <Button type="button" variant="primary" size="lg" onClick={handleSave} disabled={!valid || saving}>
-          {saving ? 'Connecting…' : `${isEdit ? 'Update' : 'Create'} Connection`}
-        </Button>
+        {isEdit ? (
+          <Button type="button" variant="primary" size="lg" onClick={() => handleSave()} disabled={!valid || !!saving}>
+            {saving ? 'Connecting…' : 'Update Connection'}
+          </Button>
+        ) : (
+          <>
+            <Button type="button" variant="ghost" size="lg" onClick={() => handleSave()} disabled={!valid || !!saving}>
+              {saving === 'save' ? 'Saving…' : 'Save'}
+            </Button>
+            <Button
+              type="button"
+              variant="primary"
+              size="lg"
+              onClick={() => handleSave({ connect: true })}
+              disabled={!valid || !!saving}
+            >
+              {saving === 'connect' ? 'Connecting…' : 'Connect'}
+            </Button>
+          </>
+        )}
       </div>
     </>
   )
@@ -686,7 +929,7 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
         desc={
           isEdit
             ? 'Update how Tabletsgo reaches this database.'
-            : 'Point Tabletsgo at a database — it is tested before it is saved.'
+            : 'Point Tabletsgo at a database. Connect tests it, saves it and opens it; Save just stores it.'
         }
       />
 
@@ -699,5 +942,90 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
         <div className="mt-7">{body}</div>
       )}
     </div>
+  )
+}
+
+// The client certificate a broker that requires mTLS checks: PEM text, or a
+// PKCS#12 bundle read from a file and kept as base64.
+function ClientCertFields({ form, set, setVal }) {
+  const toast = useToast()
+  const format = form.clientCertFormat || ''
+  const loadPfx = (file?: File) => {
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = () => setVal('clientPfx', String(reader.result).replace(/^data:[^,]*,/, ''))
+    reader.onerror = () => toast.error('Could not read that file.')
+    reader.readAsDataURL(file)
+  }
+  return (
+    <>
+      <FormField
+        label="Client certificate"
+        help="For brokers that require mutual TLS (ssl.client.auth=required). A Java keystore (JKS) converts to PKCS#12 with: keytool -importkeystore -srckeystore client.jks -destkeystore client.p12 -deststoretype PKCS12"
+      >
+        <Select className={controlClass} value={format} onChange={(v) => setVal('clientCertFormat', v)} options={CLIENT_CERT_FORMATS} />
+      </FormField>
+      {format === 'pem' && (
+        <>
+          <FormField label="Certificate (PEM)">
+            <Textarea className="min-h-[72px] font-mono" placeholder="-----BEGIN CERTIFICATE-----" value={form.clientCert || ''} onChange={set('clientCert')} />
+          </FormField>
+          <FormField label="Private key (PEM)">
+            <Textarea className="min-h-[72px] font-mono" placeholder="-----BEGIN PRIVATE KEY-----" value={form.clientKey || ''} onChange={set('clientKey')} />
+          </FormField>
+        </>
+      )}
+      {format === 'pkcs12' && (
+        <FormField label="Keystore file" hint={form.clientPfx ? `Loaded · ${Math.round((form.clientPfx.length * 3) / 4 / 1024) || 1} KB — choose another file to replace it.` : undefined}>
+          <Input type="file" accept=".p12,.pfx,application/x-pkcs12" onChange={(e) => loadPfx(e.target.files?.[0])} />
+        </FormField>
+      )}
+      {format && (
+        <FormField
+          label={
+            <>
+              {format === 'pkcs12' ? 'Keystore password' : 'Key passphrase'} <span className="text-ink-faint">(optional)</span>
+            </>
+          }
+        >
+          <PasswordInput placeholder="••••••••" value={form.clientKeyPassphrase || ''} onChange={set('clientKeyPassphrase')} />
+        </FormField>
+      )}
+    </>
+  )
+}
+
+// One ecosystem service: its URL, and Basic-auth credentials once there is one.
+function ServiceFields({ svc, form, set }) {
+  const url = form[`${svc.id}Url`] || ''
+  return (
+    <>
+      <FormField
+        label={
+          <>
+            {svc.label} URL <span className="text-ink-faint">(optional)</span>
+          </>
+        }
+        help={svc.help}
+      >
+        <Input type="url" placeholder={svc.placeholder} value={url} onChange={set(`${svc.id}Url`)} />
+      </FormField>
+      {url.trim() && (
+        <div className={fieldRow}>
+          <FormField
+            label={
+              <>
+                {svc.label} user <span className="text-ink-faint">(optional)</span>
+              </>
+            }
+          >
+            <Input type="text" value={form[`${svc.id}Username`] || ''} onChange={set(`${svc.id}Username`)} />
+          </FormField>
+          <FormField label="Password">
+            <PasswordInput placeholder="••••••••" value={form[`${svc.id}Password`] || ''} onChange={set(`${svc.id}Password`)} />
+          </FormField>
+        </div>
+      )}
+    </>
   )
 }

@@ -3,10 +3,10 @@ import { useEffect } from 'react'
 import { NodeDetail, ResourceTree, nodeHref, useResourceTree } from '@/features/resource-tree'
 import type { ResourceNode } from '@/features/resource-tree'
 import Button from '@/shared/ui/buttons/Button'
-import IconButton from '@/shared/ui/buttons/IconButton'
+import RefreshButton from '@/shared/ui/buttons/RefreshButton'
 import EmptyState from '@/shared/ui/feedback/EmptyState'
 import LoadingState from '@/shared/ui/feedback/LoadingState'
-import { FolderIcon, RefreshIcon, ShieldIcon } from '@/shared/ui/icons'
+import { FolderIcon, ShieldIcon } from '@/shared/ui/icons'
 import { PageHeader } from './ui'
 
 /**
@@ -45,9 +45,7 @@ export default function ResourceTreePage() {
         title="Resource Tree"
         desc="Every workspace, group and resource you can reach — and who has been granted what, at each level."
         action={
-          <IconButton onClick={refresh} aria-label="Refresh">
-            <RefreshIcon />
-          </IconButton>
+          <RefreshButton onRefresh={refresh} busy={loading} aria-label="Refresh" />
         }
       />
 
