@@ -12,6 +12,7 @@ import { controlClass, Input } from '@/shared/ui/form/Input'
 import { useToast } from '@/shared/ui/feedback/Toast'
 import { CodeIcon, CopyIcon, DownloadIcon, EyeIcon, FilterIcon, PlayIcon, SendIcon } from '@/shared/ui/icons'
 import { readMessages, type MessagePage, type MessageRow } from '../lib/api'
+import { highlight } from '@/shared/ui/highlight'
 import { bytes, prettyJson, shortTime } from '../lib/format'
 
 const FROM_OPTIONS = [
@@ -432,7 +433,7 @@ function MessageDetail({
           </div>
         ) : (
           <pre className="overflow-x-auto whitespace-pre-wrap break-all rounded-[8px] border border-edge bg-bg px-2.5 py-2 font-mono text-[11.5px] leading-relaxed">
-            {value.json ? highlightJson(value.text) : value.text}
+            {value.json ? highlight(value.text) : value.text}
           </pre>
         )}
       </Section>
@@ -481,33 +482,5 @@ function Section({ title, aside, children }: { title: string; aside?: ReactNode;
       {children}
     </section>
   )
-}
-
-// Pretty JSON with keys, strings, numbers and literals coloured — the same
-// palette the SQL editor uses, without pulling CodeMirror into this view.
-const TOKEN = /("(?:\\u[a-fA-F0-9]{4}|\\[^u]|[^\\"])*"(?:\s*:)?|\b(?:true|false|null)\b|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g
-function highlightJson(text: string) {
-  const out: ReactNode[] = []
-  let last = 0
-  let i = 0
-  for (const match of text.matchAll(TOKEN)) {
-    const t = match[0]
-    if (match.index! > last) out.push(text.slice(last, match.index))
-    const cls = t.startsWith('"')
-      ? t.trimEnd().endsWith(':')
-        ? 'text-[#9ecbff]'
-        : 'text-green-bright'
-      : /^(true|false|null)$/.test(t)
-        ? 'text-[#c49bff]'
-        : 'text-amber'
-    out.push(
-      <span key={i++} className={cls}>
-        {t}
-      </span>
-    )
-    last = match.index! + t.length
-  }
-  out.push(text.slice(last))
-  return out
 }
 

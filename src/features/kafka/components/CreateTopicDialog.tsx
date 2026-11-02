@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import Modal from '@/shared/ui/overlay/Modal'
 import Button from '@/shared/ui/buttons/Button'
 import IconButton from '@/shared/ui/buttons/IconButton'
@@ -10,7 +10,7 @@ import { controlClass, Input } from '@/shared/ui/form/Input'
 import { FormField } from '@/shared/ui/form/Form'
 import { useToast } from '@/shared/ui/feedback/Toast'
 import { CloseIcon, PlusSmall } from '@/shared/ui/icons'
-import { createTopic, describeTopic, type TopicSummary } from '../lib/api'
+import { createTopic, describeTopic, getOverview, listTopics, type TopicSummary } from '../lib/api'
 
 const RETENTION = [
   { value: '', label: 'Cluster default' },
@@ -32,21 +32,29 @@ const OWNED = new Set(['cleanup.policy', 'retention.ms', 'min.insync.replicas'])
  */
 export default function CreateTopicDialog({
   conn,
-  topics,
-  brokerCount,
+  topics: givenTopics,
+  brokerCount: givenBrokers,
+  cloneOf,
   onClose,
   onCreated,
   onOpenInConsole,
 }: {
   conn: any
-  topics: TopicSummary[]
-  brokerCount: number
+  /** The cluster's topics and broker count — read here when the caller hasn't them. */
+  topics?: TopicSummary[]
+  brokerCount?: number
+  /** Clone: name it "<topic>.copy" and copy that topic's settings in. */
+  cloneOf?: string
   onClose: () => void
   onCreated: (name: string) => void
   onOpenInConsole: (command: string) => void
 }) {
   const toast = useToast()
-  const [name, setName] = useState('')
+  const [loadedTopics, setLoadedTopics] = useState<TopicSummary[]>([])
+  const [loadedBrokers, setLoadedBrokers] = useState(1)
+  const topics = givenTopics || loadedTopics
+  const brokerCount = givenBrokers || loadedBrokers
+  const [name, setName] = useState(cloneOf ? `${cloneOf}.copy` : '')
   const [partitions, setPartitions] = useState<number | null>(3)
   const [replication, setReplication] = useState(Math.min(3, Math.max(brokerCount, 1)))
   const [cleanup, setCleanup] = useState('delete')
@@ -76,13 +84,13 @@ export default function CreateTopicDialog({
     Object.keys(configs).length ? ` WITH ${Object.entries(configs).map(([k, v]) => `${k}=${/[\s,]/.test(v) ? `'${v}'` : v}`).join(', ')}` : '',
   ].join('')
 
-  const copySettings = async (topic: string) => {
+  const copySettings = async (topic: string, brokers = brokerCount) => {
     setCopyFrom(topic)
     if (!topic) return
     try {
       const t = await describeTopic(conn, topic)
       setPartitions(t.partitions)
-      setReplication(Math.min(t.replication || 1, Math.max(brokerCount, 1)))
+      setReplication(Math.min(t.replication || 1, Math.max(brokers, 1)))
       const overrides = t.configs.filter((c) => !c.isDefault && !c.readOnly && !c.sensitive && c.value != null)
       const get = (k: string) => overrides.find((c) => c.name === k)?.value || ''
       const policy = get('cleanup.policy')
@@ -94,6 +102,17 @@ export default function CreateTopicDialog({
       toast.error(`Could not read ${topic}: ${e.message}`)
     }
   }
+
+  useEffect(() => {
+    if (!givenTopics) listTopics(conn).then(setLoadedTopics).catch(() => {})
+    // A clone's replication is capped by the broker count, so that comes first.
+    const brokers = givenBrokers ? Promise.resolve(givenBrokers) : getOverview(conn).then((o) => o.brokers.length).catch(() => 1)
+    brokers.then((n) => {
+      setLoadedBrokers(n)
+      if (cloneOf) copySettings(cloneOf, n)
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const submit = async () => {
     if (!validName || taken || saving) return
@@ -113,7 +132,7 @@ export default function CreateTopicDialog({
   const replicationOptions = Array.from({ length: Math.min(Math.max(brokerCount, 1), 5) }, (_, i) => ({ value: String(i + 1), label: String(i + 1) }))
 
   return (
-    <Modal title="Create topic" onClose={onClose} width={860}>
+    <Modal title={cloneOf ? `Clone topic "${cloneOf}"` : 'Create topic'} onClose={onClose} width={860}>
       <div className="flex flex-wrap gap-6">
         <div className="min-w-0 flex-[3_1_360px]">
           <FormField

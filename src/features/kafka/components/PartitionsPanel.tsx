@@ -1,5 +1,6 @@
 import type { TopicDetail } from '../lib/api'
 import { compact, num } from '../lib/format'
+import Tile from './Tile'
 
 /**
  * A topic's partitions: summary tiles over the per-partition table — leader,
@@ -91,21 +92,6 @@ export default function PartitionsPanel({ topic, detail, rate }: { conn: any; to
         </table>
       </div>
       <p className="mt-2.5 text-[11px] text-ink-faint">Refreshed every 10 s while this view is open.</p>
-    </div>
-  )
-}
-
-function Tile({ label, value, unit, sub, warn = false }: { label: string; value: string; unit?: string; sub: string; warn?: boolean }) {
-  return (
-    <div className={`rounded-card border px-4 py-3 ${warn ? 'border-amber/30 bg-amber/5' : 'border-edge bg-panel'}`}>
-      <p className={`text-[10px] font-semibold uppercase tracking-wide ${warn ? 'text-amber' : 'text-ink-faint'}`}>{label}</p>
-      <p className="mt-1 text-xl font-bold">
-        {value}
-        {unit && <span className="ml-1 text-[11px] font-medium text-ink-faint">{unit}</span>}
-      </p>
-      <p className="mt-0.5 truncate text-[11px] text-ink-faint" title={sub}>
-        {sub}
-      </p>
     </div>
   )
 }

@@ -4,12 +4,13 @@ import IconButton from '@/shared/ui/buttons/IconButton'
 import TextButton from '@/shared/ui/buttons/TextButton'
 import Select from '@/shared/ui/form/Select'
 import Toggle from '@/shared/ui/form/Toggle'
-import { controlClass, Input, Textarea } from '@/shared/ui/form/Input'
+import { controlClass, Input } from '@/shared/ui/form/Input'
+import CodeEditor from '@/shared/ui/CodeEditor'
 import { FormField } from '@/shared/ui/form/Form'
 import { useToast } from '@/shared/ui/feedback/Toast'
 import { formatCombo, useKeymap, useShortcut } from '@/features/keymap'
 import { CloseIcon, PlusSmall, SaveIcon, SendIcon } from '@/shared/ui/icons'
-import { describeTopic, listTopics, produceMessage, type TopicSummary } from '../lib/api'
+import { describeTopic, hasSchemaRegistry, listSchemas, listTopics, produceMessage, type SchemaSubject, type TopicSummary } from '../lib/api'
 import { quote } from '../lib/format'
 
 // One send's outcome: where it landed, or why it didn't.
@@ -60,12 +61,28 @@ export default function ProduceView({
   const [confirm, setConfirm] = useState('')
   const [sending, setSending] = useState(false)
   const [sent, setSent] = useState<Sent[]>([])
+  // With a Schema Registry, either side can be written with a subject's latest schema.
+  const registry = hasSchemaRegistry(conn)
+  const [subjects, setSubjects] = useState<SchemaSubject[]>([])
+  const [keySubject, setKeySubject] = useState('')
+  const [valueSubject, setValueSubject] = useState('')
+  const [valueMessage, setValueMessage] = useState('')
+  const valueType = subjects.find((s) => s.subject === valueSubject)?.type
 
   const production = conn?.environment === 'production'
 
   useEffect(() => {
     listTopics(conn).then(setTopics).catch(() => {})
-  }, [conn])
+    if (registry) listSchemas(conn).then((r) => setSubjects(r.subjects.filter((s) => s.id != null))).catch(() => {})
+  }, [conn, registry])
+
+  // The registry's naming convention: <topic>-key / <topic>-value, picked when present.
+  useEffect(() => {
+    if (!subjects.length || !topic) return
+    const has = (s: string) => subjects.some((x) => x.subject === s)
+    setKeySubject(has(`${topic}-key`) ? `${topic}-key` : '')
+    setValueSubject(has(`${topic}-value`) ? `${topic}-value` : '')
+  }, [subjects, topic])
 
   useEffect(() => {
     setPartition('')
@@ -77,7 +94,8 @@ export default function ProduceView({
 
   const jsonError = useMemo(() => {
     const t = value.trim()
-    if (tombstone || !t || !/^[[{]/.test(t)) return null
+    // Schema-written values are always JSON; otherwise only text that looks like it is checked.
+    if (tombstone || !t || (!valueSubject && !/^[[{]/.test(t))) return null
     try {
       JSON.parse(t)
       return null
@@ -103,6 +121,8 @@ export default function ProduceView({
         value: tombstone ? null : value,
         headers: headerObject(),
         partition: partition === '' ? null : Number(partition),
+        keySchema: keySubject ? { subject: keySubject } : null,
+        valueSchema: valueSubject ? { subject: valueSubject, ...(valueMessage.trim() ? { message: valueMessage.trim() } : {}) } : null,
       })
       setSent((s) => [{ ok: true, partition: r.partition, offset: r.offset, key: key || null, at: Date.now() }, ...s].slice(0, 20))
       toast.success(`Sent to ${topic} · partition ${r.partition} @ ${r.offset.toLocaleString()}`)
@@ -178,8 +198,43 @@ export default function ProduceView({
             </FormField>
           </div>
 
+          {registry && (
+            <div className="mb-4 grid grid-cols-2 gap-3.5 max-[640px]:grid-cols-1">
+              <FormField label="Key schema" help="Writes the key with this subject's latest schema — type the key as JSON. None sends it as plain text.">
+                <Select
+                  className={controlClass}
+                  value={keySubject}
+                  onChange={setKeySubject}
+                  searchable
+                  options={[{ value: '', label: 'None (plain text)' }, ...subjects.map((s) => ({ value: s.subject, label: s.subject, hint: `${s.type} · v${s.version}` }))]}
+                />
+              </FormField>
+              <FormField label="Value schema" help="Writes the value with this subject's latest schema, in the registry's wire format — type the value as JSON.">
+                <Select
+                  className={controlClass}
+                  value={valueSubject}
+                  onChange={setValueSubject}
+                  searchable
+                  options={[{ value: '', label: 'None (plain text)' }, ...subjects.map((s) => ({ value: s.subject, label: s.subject, hint: `${s.type} · v${s.version}` }))]}
+                />
+              </FormField>
+              {valueType === 'PROTOBUF' && (
+                <FormField
+                  label={
+                    <>
+                      Protobuf message <span className="text-ink-faint">(optional)</span>
+                    </>
+                  }
+                  hint="The fully-qualified message to write; the schema's first message when empty."
+                >
+                  <Input className="font-mono" placeholder="com.acme.Order" value={valueMessage} onChange={(e) => setValueMessage(e.target.value)} />
+                </FormField>
+              )}
+            </div>
+          )}
+
           <FormField label={<>Key <span className="text-ink-faint">(optional)</span></>}>
-            <Input className="font-mono" placeholder="ord_123" value={key} onChange={(e) => setKey(e.target.value)} />
+            <Input className="font-mono" placeholder={keySubject ? '{"id": "ord_123"}' : 'ord_123'} value={key} onChange={(e) => setKey(e.target.value)} />
           </FormField>
 
           <div className="mb-4">
@@ -229,15 +284,19 @@ export default function ProduceView({
                 </Button>
               </div>
             </div>
-            <Textarea
-              className="min-h-[220px] font-mono !text-[12px] leading-relaxed"
-              spellCheck={false}
+            <CodeEditor
+              wrapperClassName="min-h-[220px] rounded-soft border border-edge bg-elevated focus-within:border-green-dim focus-within:shadow-[0_0_0_3px_rgba(111,207,106,0.22)]"
+              className="font-mono text-[12px] leading-relaxed px-3 py-2"
               placeholder={'{\n  "orderId": "ord_123"\n}'}
               value={tombstone ? '' : value}
               disabled={tombstone}
-              onChange={(e) => setValue(e.target.value)}
+              onChange={setValue}
             />
-            {jsonError && <p className="mt-1.5 text-[11px] text-amber">Looks like JSON but doesn't parse: {jsonError}</p>}
+            {jsonError && (
+              <p className="mt-1.5 text-[11px] text-amber">
+                {valueSubject ? `A schema-written value is JSON, and this doesn't parse: ${jsonError}` : `Looks like JSON but doesn't parse: ${jsonError}`}
+              </p>
+            )}
             {tombstone && <p className="mt-1.5 text-[11px] text-ink-faint">On a compacted topic a tombstone deletes the key.</p>}
           </div>
 
@@ -251,7 +310,13 @@ export default function ProduceView({
               </label>
             )}
             <div className="ml-auto flex gap-2">
-              <Button variant="ghost" icon={SaveIcon} onClick={() => onSaveCommand(command())} disabled={!topic || (!tombstone && !value.trim())}>
+              <Button
+                variant="ghost"
+                icon={SaveIcon}
+                onClick={() => onSaveCommand(command())}
+                disabled={!topic || (!tombstone && !value.trim()) || Boolean(keySubject || valueSubject)}
+                title={keySubject || valueSubject ? "The console's PRODUCE writes plain text — it can't carry a schema." : undefined}
+              >
                 Save as command
               </Button>
               <Button variant="primary" icon={SendIcon} onClick={send} disabled={!ready || sending}>

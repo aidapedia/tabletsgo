@@ -195,8 +195,18 @@ without them answers 400 naming its type. Prefer this over a `/redis/*`-style
   name). A single-host engine never calls it.
 - **Record:** `brokers` (the bootstrap list) is the one new field; `host`/`port`
   mirror the first broker (what the tunnel probes and the handshake names),
-  `username`/`password` are SASL, `tls` is Redis's switch, plus `saslMechanism`,
-  `caCert`, `clientId`.
+  `username`/`password` are SASL — also the OAUTHBEARER client id/secret and the
+  AWS_MSK_IAM access key/secret — `tls` is Redis's switch, plus `saslMechanism`,
+  `caCert`, `clientId`, the client certificate (`clientCertFormat`, `clientCert`,
+  `clientKey`, `clientPfx`, `clientKeyPassphrase`), `oauthTokenUrl`/`oauthScope`/
+  `oauthExtensions`, `awsRegion`/`awsSessionToken` (all in `kafka-auth.js`).
+- **Ecosystem services** — Schema Registry, Kafka Connect, ksqlDB — are HTTP, named
+  by `<service>Url` (+ `Username`/`Password`) on the record and reached only through
+  `kafka-rest.js`, which dials them like the brokers (SSH tunnel via `forwardPort`,
+  the connection's CA and client cert). Their ops are generic contract entries
+  (`listSchemas`, `listConnectors`, `runStreamSql`, …); a connection without the
+  service answers 400. A ksqlDB query is bounded like `readMessages` — never hold a
+  push query open behind a request.
 - **Frontend:** `src/features/kafka`, swapped in on console kind `stream`
   (`consoleKindOf` in `shared/config/databaseTypes`) — branch on the kind, not on
   `conn.type`.

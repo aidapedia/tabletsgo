@@ -4,7 +4,7 @@ import { useToast } from '@/shared/ui/feedback/Toast'
 import Button from '@/shared/ui/buttons/Button'
 import TextButton from '@/shared/ui/buttons/TextButton'
 import Tooltip from '@/shared/ui/overlay/Tooltip'
-import JsonEditor from '@/shared/ui/JsonEditor'
+import CodeEditor from '@/shared/ui/CodeEditor'
 import NumberStepper from '@/shared/ui/form/NumberStepper'
 import DateTimeField from '@/shared/ui/form/DateTimeField'
 import { CloseIcon, ExternalLinkIcon } from '@/shared/ui/icons'
@@ -587,7 +587,7 @@ export default function DataGrid({
               </div>
 
               {kind === 'json' ? (
-                <JsonEditor
+                <CodeEditor
                   autoFocus
                   value={draft}
                   onChange={setDraft}

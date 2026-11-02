@@ -32,9 +32,13 @@ import { randomUUID } from 'crypto'
 import kafkajs from 'kafkajs'
 import { KAFKA_READ_MAX_BYTES, KAFKA_READ_MAX_MESSAGES, KAFKA_READ_TIMEOUT_MS } from '../config.js'
 import { classifyTransport } from './diagnose.js'
+import { clientCertOf, mskIamProvider, oauthBearerProvider } from './kafka-auth.js'
+import * as registry from './kafka-registry.js'
+import * as connect from './kafka-connect.js'
+import * as ksql from './kafka-ksql.js'
 import { compileFilter, parseCommand, splitCommands, topicMatcher } from './kafka-command.js'
 
-const { Kafka, logLevel, ConfigResourceTypes, Partitioners, AssignerProtocol } = kafkajs
+const { Kafka, logLevel, ConfigResourceTypes, Partitioners, AssignerProtocol, AclResourceTypes, AclOperationTypes, AclPermissionTypes, ResourcePatternTypes } = kafkajs
 const require = createRequire(import.meta.url)
 const Cluster = require('kafkajs/src/cluster')
 const { createLogger } = require('kafkajs/src/loggers')
@@ -62,20 +66,24 @@ export function brokersOf(conn) {
   return conn.host ? [`${conn.host}:${parseInt(conn.port) || DEFAULT_PORT}`] : []
 }
 
-// `tls` is the same '' | 'require' | 'insecure' switch Redis uses.
+// `tls` is the same '' | 'require' | 'insecure' switch Redis uses; a client
+// certificate (mTLS) rides on it — see ./kafka-auth.js.
 function sslOf(conn) {
   if (!conn.tls) return undefined
-  return { rejectUnauthorized: conn.tls !== 'insecure', ...(conn.caCert?.trim() ? { ca: [conn.caCert] } : {}) }
+  return { rejectUnauthorized: conn.tls !== 'insecure', ...(conn.caCert?.trim() ? { ca: [conn.caCert] } : {}), ...clientCertOf(conn) }
 }
 
-// PLAIN and SCRAM authenticate with the connection's username/password.
-const SASL_MECHANISMS = new Set(['plain', 'scram-sha-256', 'scram-sha-512'])
+// PLAIN and SCRAM authenticate with the connection's username/password;
+// OAUTHBEARER and AWS_MSK_IAM sign in through ./kafka-auth.js.
+const SASL_MECHANISMS = new Set(['plain', 'scram-sha-256', 'scram-sha-512', 'oauthbearer', 'aws_msk_iam'])
 function saslOf(conn) {
   const mechanism = String(conn.saslMechanism || '').toLowerCase()
   if (!mechanism || conn.auth === 'none') return undefined
   if (!SASL_MECHANISMS.has(mechanism)) {
-    throw Object.assign(new Error(`SASL mechanism "${conn.saslMechanism}" is not supported — use PLAIN, SCRAM-SHA-256 or SCRAM-SHA-512.`), { status: 400 })
+    throw Object.assign(new Error(`SASL mechanism "${conn.saslMechanism}" is not supported — use PLAIN, SCRAM-SHA-256, SCRAM-SHA-512, OAUTHBEARER or AWS_MSK_IAM.`), { status: 400 })
   }
+  if (mechanism === 'oauthbearer') return { mechanism, oauthBearerProvider: oauthBearerProvider(conn) }
+  if (mechanism === 'aws_msk_iam') return { mechanism: 'AWS_MSK_IAM', authenticationProvider: mskIamProvider(conn) }
   return { mechanism, username: conn.username || '', password: conn.password || '' }
 }
 
@@ -253,8 +261,9 @@ async function withAdmin(conn, subject, fn) {
 const DECODERS = new Set(['auto', 'json', 'string', 'hex', 'base64'])
 
 // Bytes → what the grid shows. `auto` reads UTF-8 text and falls back to hex for
-// binary; a Confluent Schema Registry payload (magic byte 0 + schema id) is
-// labelled so it isn't mistaken for garbage.
+// binary; a Confluent Schema Registry payload (magic byte 0 + schema id) the
+// connection's registry couldn't decode first (see readMessages) is labelled
+// so it isn't mistaken for garbage.
 function decodeBytes(buf, decode = 'auto') {
   if (buf == null) return null
   if (decode === 'hex') return buf.toString('hex')
@@ -416,6 +425,155 @@ async function deleteTopic(conn, topic) {
   return { ok: true }
 }
 
+/**
+ * Empty a topic (or some of its partitions) and keep it: DeleteRecords up to
+ * each partition's end, so its configs, ACLs and consumers stay. Kafka refuses
+ * this on a compact-only topic — compaction, not deletion, owns its log.
+ */
+async function clearTopic(conn, topic, { partitions } = {}) {
+  return withAdmin(conn, topic, async (admin) => {
+    // Reading the offsets first also loads the topic's leaders into the client.
+    const offsets = await admin.fetchTopicOffsets(topic)
+    const only = Array.isArray(partitions) && partitions.length ? new Set(partitions.map(Number)) : null
+    const targets = offsets.filter((o) => !only || only.has(o.partition))
+    if (!targets.length) throw Object.assign(new Error(`Topic "${topic}" has no such partition.`), { status: 404 })
+    try {
+      await admin.deleteTopicRecords({ topic, partitions: targets.map((o) => ({ partition: o.partition, offset: '-1' })) })
+    } catch (error) {
+      // kafkajs wraps the per-partition errors one level down.
+      const failed = (error.partitions || error.cause?.partitions)?.find((p) => p.error)?.error
+      const type = failed?.type || error.type
+      if (type === 'POLICY_VIOLATION' || /compact/i.test(failed?.message || '')) {
+        throw Object.assign(new Error(`Topic "${topic}" is compacted (cleanup.policy=compact), and Kafka only clears topics that delete old segments. Add "delete" to its cleanup.policy first, or delete and re-create it.`), { status: 409 })
+      }
+      throw failed ? Object.assign(failed, { type }) : error
+    }
+    return {
+      ok: true,
+      cleared: targets.reduce((n, o) => n + Math.max(Number(o.high) - Number(o.low), 0), 0),
+      partitions: targets.map((o) => o.partition),
+    }
+  })
+}
+
+// ---- Brokers -------------------------------------------------------------------
+
+// DescribeConfigs' configSource: an override set on this one broker.
+const DYNAMIC_BROKER_CONFIG = 2
+
+/**
+ * Every broker with what it carries: the partitions it leads and replicates,
+ * the replicas it has fallen out of sync on, and how far its leadership share
+ * is from an even split (skew) — read from the metadata of every topic.
+ */
+async function listBrokers(conn) {
+  return withAdmin(conn, null, async (admin) => {
+    const [{ brokers, controller, clusterId }, names] = await Promise.all([admin.describeCluster(), admin.listTopics()])
+    const { topics } = names.length ? await admin.fetchTopicMetadata({ topics: names }) : { topics: [] }
+    const stats = new Map(brokers.map((b) => [b.nodeId, { leaders: 0, replicas: 0, outOfSync: 0, offline: 0 }]))
+    let partitions = 0
+    let underReplicated = 0
+    let offlinePartitions = 0
+    for (const t of topics) {
+      for (const p of t.partitions) {
+        partitions += 1
+        if ((p.isr?.length || 0) < (p.replicas?.length || 0)) underReplicated += 1
+        if (p.leader < 0) offlinePartitions += 1
+        stats.get(p.leader) && (stats.get(p.leader).leaders += 1)
+        for (const r of p.replicas || []) {
+          const s = stats.get(r)
+          if (!s) continue
+          s.replicas += 1
+          if (!(p.isr || []).includes(r)) s.outOfSync += 1
+          if ((p.offlineReplicas || []).includes(r)) s.offline += 1
+        }
+      }
+    }
+    const even = brokers.length ? partitions / brokers.length : 0
+    return {
+      clusterId,
+      controller,
+      topics: topics.length,
+      partitions,
+      underReplicated,
+      offlinePartitions,
+      brokers: brokers
+        .map((b) => {
+          const s = stats.get(b.nodeId)
+          return {
+            nodeId: b.nodeId,
+            host: b.host,
+            port: b.port,
+            controller: b.nodeId === controller,
+            ...s,
+            // Leaders over an even share, as a percentage: 0 is balanced, +50 leads half again its share.
+            leaderSkew: even ? Math.round(((s.leaders - even) / even) * 100) : 0,
+          }
+        })
+        .sort((a, b) => a.nodeId - b.nodeId),
+    }
+  })
+}
+
+const configEntry = (c) => ({
+  name: c.configName,
+  value: c.isSensitive ? null : c.configValue,
+  isDefault: c.isDefault,
+  readOnly: c.readOnly,
+  sensitive: c.isSensitive,
+  dynamic: c.configSource === DYNAMIC_BROKER_CONFIG,
+})
+
+/** One broker's configuration; `dynamic` marks an override set on it at runtime. */
+async function describeBroker(conn, brokerId) {
+  return withAdmin(conn, null, async (admin) => {
+    const { brokers } = await admin.describeCluster()
+    const broker = brokers.find((b) => String(b.nodeId) === String(brokerId))
+    if (!broker) throw Object.assign(new Error(`Broker ${brokerId} is not in this cluster.`), { status: 404 })
+    const { resources } = await admin.describeConfigs({ includeSynonyms: false, resources: [{ type: ConfigResourceTypes.BROKER, name: String(broker.nodeId) }] })
+    return {
+      nodeId: broker.nodeId,
+      host: broker.host,
+      port: broker.port,
+      configs: (resources[0]?.configEntries || []).map(configEntry).sort((a, b) => a.name.localeCompare(b.name)),
+    }
+  })
+}
+
+/**
+ * Change a broker's dynamic (per-broker) configs at runtime. A change reaches
+ * DescribeConfigs a moment later (KRaft propagates it), so a caller re-reads
+ * after a short pause rather than at once. Like a topic's,
+ * AlterConfigs replaces the broker's whole dynamic set, so the current
+ * overrides are merged in — and a broker with a *sensitive* override (a
+ * listener's keystore password, say) is refused: its value is never returned,
+ * so it can't be carried over, and dropping it could take a listener down.
+ */
+async function alterBroker(conn, brokerId, { configs } = {}) {
+  if (!configs || !Object.keys(configs).length) throw Object.assign(new Error('Nothing to change — send configs.'), { status: 400 })
+  return withAdmin(conn, null, async (admin) => {
+    const name = String(brokerId)
+    const current = await admin.describeConfigs({ includeSynonyms: false, resources: [{ type: ConfigResourceTypes.BROKER, name }] })
+    const merged = {}
+    for (const c of current.resources[0]?.configEntries || []) {
+      if (c.configSource !== DYNAMIC_BROKER_CONFIG) continue
+      if (c.isSensitive) {
+        throw Object.assign(new Error(`Broker ${name} has a sensitive dynamic setting (${c.configName}) that can't be carried over — change it with kafka-configs.sh --alter instead.`), { status: 409 })
+      }
+      merged[c.configName] = c.configValue
+    }
+    for (const [k, v] of Object.entries(configs)) {
+      if (v === null || v === undefined || v === '') delete merged[k]
+      else merged[k] = String(v)
+    }
+    await admin.alterConfigs({
+      validateOnly: false,
+      resources: [{ type: ConfigResourceTypes.BROKER, name, configEntries: Object.entries(merged).map(([n, value]) => ({ name: n, value })) }],
+    })
+    return { ok: true }
+  })
+}
+
 // ---- Reading messages --------------------------------------------------------
 
 const clampLimit = (limit) => Math.min(Math.max(parseInt(limit) || 100, 1), KAFKA_READ_MAX_MESSAGES)
@@ -481,6 +639,9 @@ async function readMessages(conn, { topic, partition, from = 'latest', limit, fi
     const { newest, ranges } = await readPlan(admin, topic, parts, from, take, filtered)
     const cluster = await clusterFor(conn)
     await cluster.addTargetTopic(topic)
+    // Schema-framed keys and values read as JSON through the registry, when
+    // there is one and the format asks for text (auto / json).
+    const viaRegistry = format === 'auto' || format === 'json' ? registry.registryDecoder(conn) : null
 
     let bytes = 0
     let scanned = 0
@@ -533,8 +694,8 @@ async function readMessages(conn, { topic, partition, from = 'latest', limit, fi
           const size = (m.key?.length || 0) + (m.value?.length || 0)
           bytes += size
           scanned += 1
-          const key = decodeBytes(m.key, 'string')
-          const value = decodeBytes(m.value, format)
+          const key = (viaRegistry && (await viaRegistry(m.key))) ?? decodeBytes(m.key, 'string')
+          const value = (viaRegistry && (await viaRegistry(m.value))) ?? decodeBytes(m.value, format)
           const headers = decodeHeaders(m.headers)
           let parsed
           const row = {
@@ -615,17 +776,123 @@ async function readMessages(conn, { topic, partition, from = 'latest', limit, fi
 
 // ---- Producing ---------------------------------------------------------------
 
-async function produce(conn, { topic, partition, key = null, value, headers = null } = {}) {
+/**
+ * Send one message. `keySchema` / `valueSchema` ({ subject, version?, message? })
+ * write that side with a Schema Registry schema — the text given is its JSON.
+ */
+async function produce(conn, { topic, partition, key = null, value, headers = null, keySchema = null, valueSchema = null } = {}) {
   if (!topic) throw Object.assign(new Error('A topic is required.'), { status: 400 })
   if (value === undefined) throw Object.assign(new Error('A value is required (null sends a tombstone).'), { status: 400 })
+  const noKey = key === null || key === undefined || key === ''
   const message = {
-    key: key === null || key === undefined || key === '' ? null : String(key),
-    value: value === null ? null : typeof value === 'string' ? value : JSON.stringify(value),
+    key: noKey ? null : keySchema?.subject ? await registry.serializeWithSchema(conn, keySchema, key) : String(key),
+    value:
+      value === null
+        ? null
+        : valueSchema?.subject
+          ? await registry.serializeWithSchema(conn, valueSchema, value)
+          : typeof value === 'string'
+            ? value
+            : JSON.stringify(value),
     headers: headers ? Object.fromEntries(Object.entries(headers).map(([k, v]) => [k, String(v)])) : undefined,
     ...(partition === undefined || partition === null || partition === '' ? {} : { partition: Number(partition) }),
   }
   const [result] = await withAdmin(conn, topic, async () => (await producerFor(conn)).send({ topic, acks: -1, messages: [message] }))
   return { topic, partition: result.partition, offset: Number(result.baseOffset), timestamp: result.logAppendTime && result.logAppendTime !== '-1' ? Number(result.logAppendTime) : Date.now() }
+}
+
+// ---- ACLs ------------------------------------------------------------------------
+
+// ACL fields travel by name (TOPIC, READ, ALLOW, LITERAL); the protocol wants numbers.
+const ACL_ENUMS = {
+  resourceType: AclResourceTypes,
+  operation: AclOperationTypes,
+  permission: AclPermissionTypes,
+  patternType: ResourcePatternTypes,
+}
+const nameOf = (enumeration, n) => Object.keys(enumeration).find((k) => enumeration[k] === n) || 'UNKNOWN'
+
+function aclValue(field, value, fallback) {
+  const raw = String(value ?? fallback ?? '').toUpperCase().replace(/[\s-]+/g, '_')
+  const n = ACL_ENUMS[field][raw]
+  if (n === undefined || (fallback === undefined && raw === 'ANY')) {
+    const allowed = Object.keys(ACL_ENUMS[field]).filter((k) => k !== 'UNKNOWN' && k !== 'ANY' && k !== 'MATCH')
+    throw Object.assign(new Error(`${field} "${value}" is not one of ${allowed.join(', ')}.`), { status: 400 })
+  }
+  return n
+}
+
+// One binding as the protocol wants it — or, as a filter, with ANY for what's left out.
+function aclBinding(acl, filter = false) {
+  const any = filter ? 'ANY' : undefined
+  if (!filter && !String(acl.principal || '').includes(':')) {
+    throw Object.assign(new Error(`A principal is "<type>:<name>", e.g. User:alice — "${acl.principal || ''}" isn't.`), { status: 400 })
+  }
+  const resourceType = aclValue('resourceType', acl.resourceType, any)
+  return {
+    resourceType,
+    // The cluster resource has one name, and it is this one.
+    resourceName: resourceType === AclResourceTypes.CLUSTER ? 'kafka-cluster' : acl.resourceName || (filter ? undefined : ''),
+    resourcePatternType: aclValue('patternType', acl.patternType, filter ? 'ANY' : 'LITERAL'),
+    principal: acl.principal || undefined,
+    host: acl.host || (filter ? undefined : '*'),
+    operation: aclValue('operation', acl.operation, any),
+    permissionType: aclValue('permission', acl.permission, filter ? 'ANY' : 'ALLOW'),
+  }
+}
+
+const SECURITY_DISABLED = (error) => /SECURITY_DISABLED|No Authorizer is configured/i.test(`${error?.type} ${error?.message} ${rootCause(error)?.type}`)
+const aclError = (error) =>
+  SECURITY_DISABLED(error)
+    ? Object.assign(new Error('This cluster has no authorizer, so it keeps no ACLs (set authorizer.class.name on the brokers to use them).'), { status: 400, reason: 'security_disabled' })
+    : error
+
+/** Every ACL binding, narrowed by any of principal / resourceType / resourceName. */
+async function listAcls(conn, { principal, resourceType, resourceName } = {}) {
+  try {
+    const { resources } = await withAdmin(conn, null, (admin) =>
+      admin.describeAcls(aclBinding({ principal, resourceType: resourceType || 'ANY', resourceName }, true))
+    )
+    return resources
+      .flatMap((r) =>
+        r.acls.map((a) => ({
+          principal: a.principal,
+          host: a.host,
+          operation: nameOf(AclOperationTypes, a.operation),
+          permission: nameOf(AclPermissionTypes, a.permissionType),
+          resourceType: nameOf(AclResourceTypes, r.resourceType),
+          resourceName: r.resourceName,
+          patternType: nameOf(ResourcePatternTypes, r.resourcePatternType),
+        }))
+      )
+      .sort((a, b) => a.principal.localeCompare(b.principal) || a.resourceType.localeCompare(b.resourceType) || a.resourceName.localeCompare(b.resourceName) || a.operation.localeCompare(b.operation))
+  } catch (error) {
+    throw aclError(error)
+  }
+}
+
+/** Add bindings: [{ principal, host?, operation, permission?, resourceType, resourceName, patternType? }]. */
+async function createAcls(conn, acls = []) {
+  if (!Array.isArray(acls) || !acls.length) throw Object.assign(new Error('Send at least one ACL.'), { status: 400 })
+  const bindings = acls.map((a) => aclBinding(a))
+  try {
+    await withAdmin(conn, null, (admin) => admin.createAcls({ acl: bindings }))
+  } catch (error) {
+    throw aclError(error)
+  }
+  return { ok: true, created: bindings.length }
+}
+
+/** Remove exactly these bindings (each one matched on every field), in one request. */
+async function deleteAcls(conn, acls = []) {
+  if (!Array.isArray(acls) || !acls.length) throw Object.assign(new Error('Send at least one ACL.'), { status: 400 })
+  const filters = acls.map((a) => ({ ...aclBinding(a), host: a.host ?? '*' }))
+  try {
+    const { filterResponses } = await withAdmin(conn, null, (admin) => admin.deleteAcls({ filters }))
+    return { ok: true, deleted: (filterResponses || []).reduce((n, f) => n + (f.matchingAcls?.length || 0), 0) }
+  } catch (error) {
+    throw aclError(error)
+  }
 }
 
 // ---- Consumer groups ---------------------------------------------------------
@@ -952,11 +1219,34 @@ export const kafkaDriver = {
     // The diagnosis names `host` as the target; a bootstrap-only form has none yet.
     const conn = stored.host ? stored : { ...stored, host: brokersOf(stored)[0] || '' }
     const text = `${error?.name} ${error?.type || ''} ${error?.message} ${cause?.name} ${cause?.type || ''} ${cause?.message}`
+    // A form the driver itself refused (a SASL mechanism it doesn't know, a
+    // client certificate missing its key): the message already says what to fix.
+    if (error?.status === 400 && !error?.type) return { reason: 'unsupported', cause: error.message, hint: 'Fix it in the connection settings.' }
+    const mechanism = String(conn.saslMechanism || '').toUpperCase()
+    if (/ILLEGAL_SASL_STATE/.test(text)) {
+      return {
+        reason: 'auth',
+        cause: 'This listener does not take SASL logins.',
+        hint: 'Choose "No authentication" for a PLAINTEXT/SSL listener, or connect to the SASL listener — usually a different port.',
+      }
+    }
+    if (/UNSUPPORTED_SASL_MECHANISM|mechanism is not supported by the server/i.test(text)) {
+      return {
+        reason: 'auth',
+        cause: `The brokers don't offer ${mechanism} on this listener.`,
+        hint: 'Pick the mechanism the listener is configured for (sasl.enabled.mechanisms), or connect to the listener that offers it.',
+      }
+    }
     if (/SASL|Authentication failed|SaslAuthenticate/i.test(text)) {
       return {
         reason: 'auth',
         cause: 'The brokers rejected the SASL login.',
-        hint: 'Check the username, password and mechanism (PLAIN / SCRAM-SHA-256 / SCRAM-SHA-512) — managed clusters usually need SASL_SSL, i.e. TLS on as well.',
+        hint:
+          mechanism === 'OAUTHBEARER'
+            ? 'Check the token endpoint, client ID/secret, scope and extensions — Confluent Cloud also needs logicalCluster and identityPoolId.'
+            : mechanism === 'AWS_MSK_IAM'
+              ? "Check the access key, secret, session token and region, and that the IAM policy allows kafka-cluster:Connect. MSK's IAM listener is TLS on port 9098."
+              : 'Check the username, password and mechanism (PLAIN / SCRAM-SHA-256 / SCRAM-SHA-512) — managed clusters usually need SASL_SSL, i.e. TLS on as well.',
       }
     }
     if (/AUTHORIZATION_FAILED|not authorized/i.test(text)) {
@@ -966,8 +1256,23 @@ export const kafkaDriver = {
         hint: 'Grant at least DESCRIBE on the cluster and the topics you want to browse; producing needs WRITE, groups need DESCRIBE/READ.',
       }
     }
-    if (/is not supported/i.test(error?.message || '') && error?.status === 400) {
-      return { reason: 'unsupported', cause: error.message, hint: 'Pick another SASL mechanism in the connection settings.' }
+    // Client certificates (mTLS): one that couldn't be loaded, or none where the
+    // broker demands one — the generic TLS diagnosis would blame the server's cert.
+    if (/bad decrypt|mac verify failure|KEY_VALUES_MISMATCH|key values mismatch|bad password read|PEM_read|no start line/i.test(text)) {
+      return {
+        reason: 'tls',
+        cause: 'The client certificate could not be loaded.',
+        hint: 'Check the passphrase, and that the private key belongs to the certificate (PEM) or the keystore password is right (PKCS#12).',
+      }
+    }
+    if (/ALERT_BAD_CERTIFICATE|ALERT_CERTIFICATE_REQUIRED|alert bad certificate|certificate required|alert number (42|116)/i.test(text)) {
+      return {
+        reason: 'tls',
+        cause: conn.clientCertFormat ? "The brokers rejected this connection's client certificate." : 'The brokers require a client certificate (mutual TLS).',
+        hint: conn.clientCertFormat
+          ? "Check it's signed by a CA the brokers trust (ssl.truststore) and hasn't expired."
+          : 'Add the client certificate and key under Security → Client certificate.',
+      }
     }
     const transport = classifyTransport(cause, conn)
     const broker = cause?.broker || error?.broker
@@ -1031,6 +1336,27 @@ export const kafkaDriver = {
   createTopic: (conn, ctx, spec) => createTopic(conn, spec),
   alterTopic: (conn, ctx, topic, change) => alterTopic(conn, topic, change),
   deleteTopic: (conn, ctx, topic) => deleteTopic(conn, topic),
+  clearTopic: (conn, ctx, topic, options) => clearTopic(conn, topic, options),
+  listBrokers: (conn) => listBrokers(conn),
+  describeBroker: (conn, ctx, id) => describeBroker(conn, id),
+  alterBroker: (conn, ctx, id, change) => alterBroker(conn, id, change),
+  listAcls: (conn, ctx, filter) => listAcls(conn, filter),
+  createAcls: (conn, ctx, acls) => createAcls(conn, acls),
+  deleteAcls: (conn, ctx, acls) => deleteAcls(conn, acls),
+  listSchemas: (conn) => registry.listSchemas(conn),
+  describeSchema: (conn, ctx, subject) => registry.describeSchema(conn, subject),
+  registerSchema: (conn, ctx, subject, spec) => registry.registerSchema(conn, subject, spec),
+  deleteSchema: (conn, ctx, subject, options) => registry.deleteSchema(conn, subject, options),
+  setSchemaCompatibility: (conn, ctx, subject, level) => registry.setSchemaCompatibility(conn, subject, level),
+  listConnectors: (conn) => connect.listConnectors(conn),
+  describeConnector: (conn, ctx, name) => connect.describeConnector(conn, name),
+  listConnectorPlugins: (conn) => connect.listConnectorPlugins(conn),
+  validateConnector: (conn, ctx, name, config) => connect.validateConnector(conn, name, config),
+  saveConnector: (conn, ctx, name, config) => connect.saveConnector(conn, name, config),
+  connectorAction: (conn, ctx, name, action) => connect.connectorAction(conn, name, action),
+  deleteConnector: (conn, ctx, name) => connect.deleteConnector(conn, name),
+  runStreamSql: (conn, ctx, request) => ksql.runKsql(conn, request),
+  streamSqlCatalog: (conn) => ksql.ksqlCatalog(conn),
   readMessages: (conn, ctx, options) => readMessages(conn, options),
   produce: (conn, ctx, message) => produce(conn, message),
   listGroups: (conn) => listGroups(conn),

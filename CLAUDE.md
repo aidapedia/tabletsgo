@@ -68,7 +68,7 @@ src/
 | `workspace` | **the per-connection DB console** — DataGrid, TableView, QueryEditor, tabs, status bar |
 | `connections` | connection CRUD, access, type picker, switcher modal, export/import, connect handshake |
 | `redis` | the Redis-shaped console pieces: key tree sidebar + command console (console kind `keyspace`) |
-| `kafka` | the stream-shaped console pieces: topics/groups sidebar, topic/group/produce tabs, command console (console kind `stream`) |
+| `kafka` | the stream-shaped console pieces: topics sidebar, consumer-groups sidebar (own rail entry), topic/group/produce tabs, command console (console kind `stream`) |
 | `table-folders` | the connected DB's tables grouped by the generic folders tree (`type='table'`) |
 | `schema-designer` | React Flow ERD, table/column editors, schema history, DDL rollback |
 | `workflow` | node-graph automations: builder, scheduling, folders, JSON export/import |
@@ -91,6 +91,7 @@ respond**.
 ```
 prisma/<engine>/         # schema.prisma + migrations/ per engine (sqlite | postgresql) → skill meta-schema
 scripts/migrate.js       # `npm run migrate [-- --status]` — the migrator by hand (the app runs it on boot; the updater's one-shot container runs this)
+scripts/dev/kafka/       # local Kafka stacks (broker+ACLs, Schema Registry, Connect, ksqlDB) + seed.mjs sample data
 server.js                # express app: 172 routes, static frontend, schedulers, shutdown
 server/
 ├── config.js            # every env var + filesystem path, resolved once      → skill add-tunable

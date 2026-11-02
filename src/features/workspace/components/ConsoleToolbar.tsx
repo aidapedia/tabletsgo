@@ -5,6 +5,7 @@ import Tooltip from '@/shared/ui/overlay/Tooltip'
 import Popover from '@/shared/ui/overlay/Popover'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
 import { formatCombo } from '@/features/keymap'
+import { CLUSTER_PANELS, type ClusterPanel } from '@/features/kafka'
 import type { ConsoleKind } from '@/shared/config/databaseTypes'
 import {
   CodeIcon,
@@ -38,6 +39,8 @@ type Props = {
   onOpenHistory: () => void
   /** Kafka only: a blank produce form, no topic picked yet. */
   onProduce: () => void
+  /** Kafka only: a cluster-wide tab (brokers, ACLs). */
+  onOpenCluster: (panel: ClusterPanel) => void
   onOpenTransfer: () => void
   onOpenSchemaEditor: () => void
   onOpenSchemaHistory: () => void
@@ -69,6 +72,7 @@ export default function ConsoleToolbar({
   onOpenPalette,
   onOpenHistory,
   onProduce,
+  onOpenCluster,
   onOpenTransfer,
   onOpenSchemaEditor,
   onOpenSchemaHistory,
@@ -141,6 +145,14 @@ export default function ConsoleToolbar({
               <HistoryIcon width={16} height={16} />
             </IconButton>
           </Tooltip>
+          {kind === 'stream' &&
+            CLUSTER_PANELS.map(({ id, label, icon: Icon }) => (
+              <Tooltip key={id} label={label} placement="bottom">
+                <IconButton size="toolbar" onClick={() => onOpenCluster(id)} aria-label={label}>
+                  <Icon width={16} height={16} />
+                </IconButton>
+              </Tooltip>
+            ))}
           {kind === 'stream' && (
             <Tooltip label="Produce message" placement="bottom">
               <IconButton size="toolbar" onClick={onProduce} aria-label="Produce message">
@@ -170,7 +182,7 @@ export default function ConsoleToolbar({
           )}
         </div>
 
-        {/* Mobile overflow: the history/produce/transfer/schema entries hidden above. */}
+        {/* Mobile overflow: the history/produce/cluster/transfer/schema entries hidden above. */}
         <div className="hidden max-[720px]:block">
           <Popover
             align="right"
@@ -186,6 +198,12 @@ export default function ConsoleToolbar({
                 <MenuItem onClick={() => { onOpenHistory(); close() }}>
                   <HistoryIcon width={14} height={14} /> Query history
                 </MenuItem>
+                {kind === 'stream' &&
+                  CLUSTER_PANELS.map(({ id, label, icon: Icon }) => (
+                    <MenuItem key={id} onClick={() => { onOpenCluster(id); close() }}>
+                      <Icon width={14} height={14} /> {label}
+                    </MenuItem>
+                  ))}
                 {kind === 'stream' && (
                   <MenuItem onClick={() => { onProduce(); close() }}>
                     <SendIcon width={14} height={14} /> Produce message

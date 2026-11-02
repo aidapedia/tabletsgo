@@ -52,7 +52,7 @@ src/
 │   │   └── (root)                #   Avatar, Badge, PersonRow, RowLabel, HelpTip (a "?" whose hover
 │   │                             #     explains its neighbour — FormField's `help`), DragHandle (the grip a
 │   │                             #     reorderable list grabs by — pair with useDragReorder),
-│   │                             #     SaveQueryPanel, SqlEditor, JsonEditor, CommandReference (a command
+│   │                             #     SaveQueryPanel, SqlEditor, CodeEditor, CommandReference (a command
 │   │                             #     console's side panel: catalog rows → insert, chevron → that command's
 │   │                             #     docs in place, Back → the list), CommandDocView + CommandDoc (one
 │   │                             #     command's docs, any engine),
@@ -130,9 +130,10 @@ src/
 │   ├── kafka/                    # everything stream-shaped in the console (console kind `stream`,
 │   │   │                         #   see shared/config/databaseTypes). Like Redis it swaps the browser
 │   │   │                         #   sidebar and the query tab, and adds three tab kinds.
-│   │   ├── components/           #   KafkaSidebar (Topics | Groups switch: topics grouped by dotted
-│   │   │                         #     prefix, groups sorted by lag; New topic; a row's menu opens any of
-│   │   │                         #     its views), TopicView (one tab per view, TOPIC_VIEWS: MessageBrowser /
+│   │   ├── components/           #   KafkaSidebar (the topics, grouped by dotted
+│   │   │                         #     prefix; New topic; a row's menu opens any of its views),
+│   │   │                         #     ConsumerGroupsSidebar (its own rail entry under Topics: groups
+│   │   │                         #     sorted by lag, each unfolding its consumers via describeGroup), TopicView (one tab per view, TOPIC_VIEWS: MessageBrowser /
 │   │   │                         #     PartitionsPanel / TopicConsumersPanel / TopicConfigPanel — the "Kafka
 │   │   │                         #     Topic Overview" template has the same as a dashboard; no header — the
 │   │   │                         #     topic's shape goes up to the status bar via onDetail/topicFacts),
@@ -140,7 +141,16 @@ src/
 │   │   │                         #     the tab's right-click menu), GroupView + ResetOffsetsDialog (live dry
 │   │   │                         #     run; apply needs an empty group + the id typed back),
 │   │   │                         #     ProduceView (a produce tab; production asks for the topic name),
-│   │   │                         #     CreateTopicDialog, KafkaConsole + KafkaEditor (lazy, NOT in the
+│   │   │                         #     CreateTopicDialog (also Clone: `cloneOf`), ClearTopicDialog,
+│   │   │                         #     ClusterView (one tab per lib/services CLUSTER_PANELS entry, opened from the console toolbar: BrokersPanel,
+│   │   │                         #     AclsPanel). The services
+│   │   │                         #     beside it are rail entries (lib/services SERVICE_PANELS, shown
+│   │   │                         #     when the connection names one; kafkaPanelsFor puts Consumer
+│   │   │                         #     groups ahead of them), each a sidebar + a tab kind:
+│   │   │                         #     SchemaRegistrySidebar + SubjectView, ConnectSidebar +
+│   │   │                         #     ConnectorView, KsqlSidebar + KsqlView, ConfigList
+│   │   │                         #     (a topic's or broker's configs, shared), Tile,
+│   │   │                         #     KafkaConsole + KafkaEditor (lazy, NOT in the
 │   │   │                         #     barrel — CodeMirror; commands + topic/group completion)
 │   │   └── lib/                  #   api (/streams/* client), commands (catalog for completion, hints
 │   │                             #     and the reference panel), docs (kafkaCommandDoc: the reference panel's
@@ -504,6 +514,7 @@ prisma/
 ├── sqlite/               # schema.prisma + migrations/ (0_baseline = legacy v22) — Prisma Migrate's
 └── postgresql/           #   history is provider-locked, so one per engine; both declare the same models
 scripts/migrate.js        # `npm run migrate [-- --status]` — the migrator by hand (also the updater's one-shot container)
+scripts/dev/kafka/        # local Kafka stacks (broker+ACLs, Schema Registry, Connect, ksqlDB) + seed.mjs sample data
 server.js                 # express app: 108 routes, static frontend, schedulers, shutdown
 server/
 ├── config.js             # every env var + filesystem path, resolved once (imports nothing app-level)
@@ -599,7 +610,16 @@ server/
 │   ├── postgres.js
 │   ├── redis.js
 │   ├── kafka.js          #   Kafka: admin/producer/fetch clients per connection, the stream ops
-│   │                     #     (topics, bounded group-less reads, produce, groups, offset resets)
+│   │                     #     (topics, clear, bounded group-less reads, produce, groups, offset
+│   │                     #     resets, brokers + their configs, ACLs)
+│   ├── kafka-auth.js     #   client certificates (mTLS) + SASL OAUTHBEARER (client-credentials
+│   │                     #     token, cached) and AWS_MSK_IAM (SigV4-signed, no AWS SDK)
+│   ├── kafka-rest.js     #   the one HTTP client for the services beside a cluster: URL + Basic
+│   │                     #     auth per service, the connection's TLS, its SSH tunnel; bounded reads
+│   ├── kafka-registry.js #   Schema Registry: subjects/versions/compatibility + the wire format
+│   │                     #     (Avro, Protobuf message indexes, JSON Schema ↔ JSON), codecs by id
+│   ├── kafka-connect.js  #   Kafka Connect: connectors, plugins, validate/save, lifecycle actions
+│   ├── kafka-ksql.js     #   ksqlDB: statements via /ksql, bounded SELECT/PRINT via /query-stream
 │   └── kafka-command.js  #   pure parser: the console's command language + the WHERE filter
 ├── workflow.js           # the node-graph executor (vm sandbox, {{input.x}} substitution),
 │                         #   executeAndRecord, nextRunForGraph, runDueWorkflows

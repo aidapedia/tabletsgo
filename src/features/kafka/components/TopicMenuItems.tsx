@@ -1,6 +1,6 @@
 import MenuItem from '@/shared/ui/navigation/MenuItem'
 import { useToast } from '@/shared/ui/feedback/Toast'
-import { CodeIcon, CopyIcon, SendIcon, TrashIcon } from '@/shared/ui/icons'
+import { CodeIcon, CopyIcon, FolderPlusIcon, RefreshIcon, SendIcon, TrashIcon } from '@/shared/ui/icons'
 import { TOPIC_VIEWS, type TopicSubView } from './TopicView'
 
 /**
@@ -15,6 +15,8 @@ export default function TopicMenuItems({
   onOpenView,
   onProduce,
   onRunCommand,
+  onClone,
+  onClear,
   onDelete,
 }: {
   topic: string
@@ -23,6 +25,10 @@ export default function TopicMenuItems({
   onOpenView: (view: TopicSubView) => void
   onProduce: () => void
   onRunCommand: (command: string) => void
+  /** A new topic seeded from this one's partitions, replication and overrides. */
+  onClone: () => void
+  /** Empty it, keep it. */
+  onClear: () => void
   onDelete: () => void
 }) {
   const toast = useToast()
@@ -51,7 +57,13 @@ export default function TopicMenuItems({
       <MenuItem onClick={act(() => navigator.clipboard?.writeText(topic).then(() => toast.success('Copied.')))}>
         <CopyIcon width={14} height={14} /> Copy name
       </MenuItem>
+      <MenuItem onClick={act(onClone)}>
+        <FolderPlusIcon width={14} height={14} /> Clone topic…
+      </MenuItem>
       <div className="my-1 h-px bg-edge" />
+      <MenuItem danger onClick={act(onClear)}>
+        <RefreshIcon width={14} height={14} /> Clear messages…
+      </MenuItem>
       <MenuItem danger onClick={act(onDelete)}>
         <TrashIcon width={14} height={14} /> Delete topic…
       </MenuItem>

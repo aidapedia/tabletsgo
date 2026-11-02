@@ -45,15 +45,37 @@ const AUTH_MODES = [
   { value: 'password', label: 'User & Password' },
   { value: 'none', label: 'No authentication' },
 ]
-// Kafka's login: none, or SASL with the connection's username/password.
+// Kafka's login: none, or SASL. Every mechanism keeps its identity in
+// username/password — a client ID/secret for OAUTHBEARER, an access key for
+// AWS_MSK_IAM — so `SASL_LOGIN` only renames the two fields.
 const KAFKA_AUTH_MODES = [
   { value: 'none', label: 'No authentication' },
-  { value: 'password', label: 'SASL (username & password)' },
+  { value: 'password', label: 'SASL' },
 ]
 const SASL_MECHANISMS = [
   { value: 'scram-sha-512', label: 'SCRAM-SHA-512' },
   { value: 'scram-sha-256', label: 'SCRAM-SHA-256' },
   { value: 'plain', label: 'PLAIN' },
+  { value: 'oauthbearer', label: 'OAUTHBEARER (OAuth 2.0 client credentials)' },
+  { value: 'aws_msk_iam', label: 'AWS_MSK_IAM (Amazon MSK IAM)' },
+]
+// The HTTP services beside a cluster; each is `<id>Url` / `<id>Username` /
+// `<id>Password` on the record (server/db/kafka-rest.js).
+const KAFKA_SERVICES = [
+  { id: 'schemaRegistry', label: 'Schema Registry', placeholder: 'http://schema-registry:8081', help: 'Decodes Avro, Protobuf and JSON Schema messages, and lets you browse and register schemas. Confluent Cloud: the API key and secret go in user/password.' },
+  { id: 'connect', label: 'Kafka Connect', placeholder: 'http://connect:8083', help: 'Manage connectors and their tasks.' },
+  { id: 'ksql', label: 'ksqlDB', placeholder: 'http://ksqldb:8088', help: 'Run KSQL statements and browse streams, tables and queries.' },
+]
+const SASL_LOGIN = {
+  oauthbearer: { user: 'Client ID', password: 'Client secret', placeholder: 'kafka-client' },
+  aws_msk_iam: { user: 'Access key ID', password: 'Secret access key', placeholder: 'AKIA…' },
+}
+// A client certificate for brokers that require mTLS. JKS isn't readable here —
+// convert it with `keytool -importkeystore -deststoretype PKCS12`.
+const CLIENT_CERT_FORMATS = [
+  { value: '', label: 'None' },
+  { value: 'pem', label: 'PEM certificate + key' },
+  { value: 'pkcs12', label: 'PKCS#12 file (.p12 / .pfx)' },
 ]
 const SSL_MODES = ['disable', 'allow', 'prefer', 'require', 'verify-full']
 // Redis's equivalent of sslmode — plain TCP, TLS, or TLS without cert checks.
@@ -127,6 +149,25 @@ const blankKafka = {
   password: '',
   tls: '',
   caCert: '',
+  clientCertFormat: '',
+  clientCert: '',
+  clientKey: '',
+  clientPfx: '',
+  clientKeyPassphrase: '',
+  oauthTokenUrl: '',
+  oauthScope: '',
+  oauthExtensions: '',
+  awsRegion: '',
+  awsSessionToken: '',
+  schemaRegistryUrl: '',
+  schemaRegistryUsername: '',
+  schemaRegistryPassword: '',
+  connectUrl: '',
+  connectUsername: '',
+  connectPassword: '',
+  ksqlUrl: '',
+  ksqlUsername: '',
+  ksqlPassword: '',
   clientId: '',
   keychain: false,
   sshGatewayId: '',
@@ -265,6 +306,8 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
   const isSqlite = form.type === 'sqlite'
   const isRedis = form.type === 'redis'
   const isKafka = form.type === 'kafka'
+  const mechanism = isKafka && (form.auth || 'password') === 'password' ? form.saslMechanism || 'scram-sha-512' : null
+  const login = SASL_LOGIN[mechanism] || null
   const viaSsh = !isSqlite && via === 'ssh'
 
   // The gateways a network connection may tunnel through — this workspace's.
@@ -651,37 +694,90 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
               />
             </FormField>
 
-            {isKafka && (form.auth || 'password') === 'password' && (
-              <FormField label="SASL mechanism" hint="Managed clusters (MSK, Confluent Cloud, Aiven) usually want SCRAM or PLAIN over TLS — turn TLS on below.">
-                <Select
-                  className={controlClass}
-                  value={form.saslMechanism || 'scram-sha-512'}
-                  onChange={(v) => setVal('saslMechanism', v)}
-                  options={SASL_MECHANISMS}
-                />
+            {mechanism && (
+              <FormField label="SASL mechanism" hint="Managed clusters (MSK, Confluent Cloud, Aiven, Event Hubs) authenticate over TLS — turn TLS on below.">
+                <Select className={controlClass} value={mechanism} onChange={(v) => setVal('saslMechanism', v)} options={SASL_MECHANISMS} />
               </FormField>
+            )}
+
+            {mechanism === 'oauthbearer' && (
+              <>
+                <FormField label="Token endpoint" hint="Your identity provider's OAuth 2.0 token URL — a token is fetched with the client-credentials grant and reused until it expires.">
+                  <Input type="url" placeholder="https://login.example.com/oauth2/token" value={form.oauthTokenUrl || ''} onChange={set('oauthTokenUrl')} required />
+                </FormField>
+                <div className={fieldRow}>
+                  <FormField
+                    label={
+                      <>
+                        Scope <span className="text-ink-faint">(optional)</span>
+                      </>
+                    }
+                  >
+                    <Input type="text" placeholder="kafka" value={form.oauthScope || ''} onChange={set('oauthScope')} />
+                  </FormField>
+                  <FormField
+                    label={
+                      <>
+                        Extensions <span className="text-ink-faint">(optional)</span>
+                      </>
+                    }
+                    help="SASL extensions as key=value, one per line or comma-separated. Confluent Cloud needs logicalCluster=lkc-… and identityPoolId=pool-…."
+                  >
+                    <Input type="text" placeholder="logicalCluster=lkc-abc12" value={form.oauthExtensions || ''} onChange={set('oauthExtensions')} />
+                  </FormField>
+                </div>
+              </>
             )}
 
             {(form.auth || 'password') === 'password' && (
               <>
                 <FormField
                   label={
-                    <>
-                      User{isRedis && <span className="text-ink-faint"> (ACL — leave empty for a password-only server)</span>}
-                    </>
+                    login ? (
+                      login.user
+                    ) : (
+                      <>
+                        User{isRedis && <span className="text-ink-faint"> (ACL — leave empty for a password-only server)</span>}
+                      </>
+                    )
                   }
                 >
                   <Input
                     type="text"
-                    placeholder={isRedis ? 'default' : isKafka ? 'svc-tabletsgo' : 'postgres'}
+                    placeholder={login ? login.placeholder : isRedis ? 'default' : isKafka ? 'svc-tabletsgo' : 'postgres'}
                     value={form.username}
                     onChange={set('username')}
                   />
                 </FormField>
 
-                <FormField label="Password" className="!mb-2">
+                <FormField label={login ? login.password : 'Password'} className={mechanism === 'aws_msk_iam' ? '' : '!mb-2'}>
                   <PasswordInput placeholder="••••••••" value={form.password} onChange={set('password')} />
                 </FormField>
+
+                {mechanism === 'aws_msk_iam' && (
+                  <div className={fieldRow}>
+                    <FormField
+                      label={
+                        <>
+                          Session token <span className="text-ink-faint">(optional)</span>
+                        </>
+                      }
+                      help="Only for temporary credentials (an assumed role or SSO session) — they expire, so update them here when they do."
+                    >
+                      <PasswordInput placeholder="••••••••" value={form.awsSessionToken || ''} onChange={set('awsSessionToken')} />
+                    </FormField>
+                    <FormField
+                      label={
+                        <>
+                          Region <span className="text-ink-faint">(optional)</span>
+                        </>
+                      }
+                      help="Read from the broker address (…kafka.eu-west-1.amazonaws.com) when left empty."
+                    >
+                      <Input type="text" placeholder="eu-west-1" value={form.awsRegion || ''} onChange={set('awsRegion')} />
+                    </FormField>
+                  </div>
+                )}
 
                 <TextButton
                   tone={form.keychain ? 'green' : 'faint'}
@@ -722,6 +818,7 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
                     />
                   </FormField>
                 )}
+                {form.tls && <ClientCertFields form={form} set={set} setVal={setVal} />}
               </>
             ) : isRedis ? (
               <FormField
@@ -755,6 +852,17 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
               </FormField>
             )}
           </FormSection>
+
+          {isKafka && (
+            <FormSection
+              title="Ecosystem services"
+              desc="Optional. Each one named here gets its own entry in the console's icon rail. They are reached the same way as the brokers (SSH tunnel included) and trust the CA certificate above."
+            >
+              {KAFKA_SERVICES.map((svc) => (
+                <ServiceFields key={svc.id} svc={svc} form={form} set={set} />
+              ))}
+            </FormSection>
+          )}
         </>
       )}
 
@@ -834,5 +942,90 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
         <div className="mt-7">{body}</div>
       )}
     </div>
+  )
+}
+
+// The client certificate a broker that requires mTLS checks: PEM text, or a
+// PKCS#12 bundle read from a file and kept as base64.
+function ClientCertFields({ form, set, setVal }) {
+  const toast = useToast()
+  const format = form.clientCertFormat || ''
+  const loadPfx = (file?: File) => {
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = () => setVal('clientPfx', String(reader.result).replace(/^data:[^,]*,/, ''))
+    reader.onerror = () => toast.error('Could not read that file.')
+    reader.readAsDataURL(file)
+  }
+  return (
+    <>
+      <FormField
+        label="Client certificate"
+        help="For brokers that require mutual TLS (ssl.client.auth=required). A Java keystore (JKS) converts to PKCS#12 with: keytool -importkeystore -srckeystore client.jks -destkeystore client.p12 -deststoretype PKCS12"
+      >
+        <Select className={controlClass} value={format} onChange={(v) => setVal('clientCertFormat', v)} options={CLIENT_CERT_FORMATS} />
+      </FormField>
+      {format === 'pem' && (
+        <>
+          <FormField label="Certificate (PEM)">
+            <Textarea className="min-h-[72px] font-mono" placeholder="-----BEGIN CERTIFICATE-----" value={form.clientCert || ''} onChange={set('clientCert')} />
+          </FormField>
+          <FormField label="Private key (PEM)">
+            <Textarea className="min-h-[72px] font-mono" placeholder="-----BEGIN PRIVATE KEY-----" value={form.clientKey || ''} onChange={set('clientKey')} />
+          </FormField>
+        </>
+      )}
+      {format === 'pkcs12' && (
+        <FormField label="Keystore file" hint={form.clientPfx ? `Loaded · ${Math.round((form.clientPfx.length * 3) / 4 / 1024) || 1} KB — choose another file to replace it.` : undefined}>
+          <Input type="file" accept=".p12,.pfx,application/x-pkcs12" onChange={(e) => loadPfx(e.target.files?.[0])} />
+        </FormField>
+      )}
+      {format && (
+        <FormField
+          label={
+            <>
+              {format === 'pkcs12' ? 'Keystore password' : 'Key passphrase'} <span className="text-ink-faint">(optional)</span>
+            </>
+          }
+        >
+          <PasswordInput placeholder="••••••••" value={form.clientKeyPassphrase || ''} onChange={set('clientKeyPassphrase')} />
+        </FormField>
+      )}
+    </>
+  )
+}
+
+// One ecosystem service: its URL, and Basic-auth credentials once there is one.
+function ServiceFields({ svc, form, set }) {
+  const url = form[`${svc.id}Url`] || ''
+  return (
+    <>
+      <FormField
+        label={
+          <>
+            {svc.label} URL <span className="text-ink-faint">(optional)</span>
+          </>
+        }
+        help={svc.help}
+      >
+        <Input type="url" placeholder={svc.placeholder} value={url} onChange={set(`${svc.id}Url`)} />
+      </FormField>
+      {url.trim() && (
+        <div className={fieldRow}>
+          <FormField
+            label={
+              <>
+                {svc.label} user <span className="text-ink-faint">(optional)</span>
+              </>
+            }
+          >
+            <Input type="text" value={form[`${svc.id}Username`] || ''} onChange={set(`${svc.id}Username`)} />
+          </FormField>
+          <FormField label="Password">
+            <PasswordInput placeholder="••••••••" value={form[`${svc.id}Password`] || ''} onChange={set(`${svc.id}Password`)} />
+          </FormField>
+        </div>
+      )}
+    </>
   )
 }

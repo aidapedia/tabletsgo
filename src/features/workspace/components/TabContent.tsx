@@ -6,7 +6,18 @@ import QueryHistoryView from './QueryHistoryView'
 import SchemaHistoryView from './SchemaHistoryView'
 import DataTransferView, { type TransferMode } from './DataTransferView'
 import { RedisKeyView } from '@/features/redis'
-import { GroupView, ProduceView, TopicView, type TopicDetail, type TopicSubView } from '@/features/kafka'
+import {
+  ClusterView,
+  ConnectorView,
+  GroupView,
+  KsqlView,
+  ProduceView,
+  SubjectView,
+  TopicView,
+  type ConnectorDraft,
+  type TopicDetail,
+  type TopicSubView,
+} from '@/features/kafka'
 import type { ConsoleKind } from '@/shared/config/databaseTypes'
 import { TemplateDetailView, TEMPLATES } from '@/features/templates'
 import { DIALECT } from '../lib/dialect'
@@ -60,6 +71,12 @@ type Props = {
   /** A topic tab read its topic's description — for the status bar. */
   onTopicDetail: (topic: string, detail: TopicDetail) => void
   onGroupDeleted: (group: string) => void
+  /** Kafka's services: open a subject / connector tab (null = a new one). */
+  onOpenSubject: (subject: string | null) => void
+  onOpenConnector: (connector: string | null, draft?: ConnectorDraft) => void
+  /** A service tab changed what its sidebar lists. */
+  onServiceChanged: () => void
+  onCloseTab: (key: string) => void
   onDashboardRenamed: (id: string, name: string) => void
   onTemplateApplied: (res: any) => void
   onTransferModeChange: (mode: TransferMode) => void
@@ -101,6 +118,10 @@ export default function TabContent({
   onProduce,
   onTopicDetail,
   onGroupDeleted,
+  onOpenSubject,
+  onOpenConnector,
+  onServiceChanged,
+  onCloseTab,
   onDashboardRenamed,
   onTemplateApplied,
   onTransferModeChange,
@@ -190,6 +211,51 @@ export default function TabContent({
           onRunCommand={onNewQuery}
           onOpenGroup={onOpenGroup}
           onDetail={(detail) => onTopicDetail(t.topic, detail)}
+        />
+      )
+    case 'kafkaCluster':
+      return <ClusterView key={`${t.key}:${keyspaceVersion}`} conn={nsConn} panel={t.panel} />
+    case 'kafkaSubject':
+      return (
+        <SubjectView
+          key={t.key}
+          conn={nsConn}
+          subject={t.subject ?? null}
+          onOpenSubject={(subject) => {
+            // A new subject's tab gives way to the subject's own.
+            if (!t.subject) onCloseTab(t.key)
+            onOpenSubject(subject)
+          }}
+          onChanged={onServiceChanged}
+          onDeleted={() => onCloseTab(t.key)}
+        />
+      )
+    case 'kafkaConnector':
+      return (
+        <ConnectorView
+          key={t.key}
+          conn={nsConn}
+          name={t.connector ?? null}
+          draft={t.draft}
+          onOpenConnector={(connector, draft) => {
+            if (!t.connector && connector) onCloseTab(t.key)
+            onOpenConnector(connector, draft)
+          }}
+          onChanged={onServiceChanged}
+          onDeleted={() => onCloseTab(t.key)}
+        />
+      )
+    case 'kafkaKsql':
+      return (
+        <KsqlView
+          key={t.key}
+          conn={nsConn}
+          tabKey={t.key}
+          initialSql={t.sql}
+          autoRun={t.run}
+          persisted={queryState[t.key]}
+          onPersist={onPersist}
+          onChanged={onServiceChanged}
         />
       )
     case 'kafkaGroup':

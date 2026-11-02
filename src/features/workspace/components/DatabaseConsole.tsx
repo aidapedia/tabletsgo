@@ -7,12 +7,22 @@ import { useKeymap, useShortcut } from '@/features/keymap'
 import { RedisKeyTree } from '@/features/redis'
 import useServerVersion from '@/shared/hooks/useServerVersion'
 import {
+  CLUSTER_PANELS,
+  ClearTopicDialog,
+  ConnectSidebar,
+  ConsumerGroupsSidebar,
+  CreateTopicDialog,
   DeleteTopicDialog,
   KafkaSidebar,
+  KsqlSidebar,
+  SchemaRegistrySidebar,
+  kafkaPanelsFor,
   TOPIC_VIEWS,
   TopicMenuItems,
   getOverview,
   topicFacts,
+  type ClusterPanel,
+  type ConnectorDraft,
   type TopicDetail,
   type TopicSubView,
 } from '@/features/kafka'
@@ -302,6 +312,33 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
   const openTopic = (topic: string, view: TopicSubView = 'messages') =>
     tabs.openTab({ key: topicKey(topic, view), kind: 'kafkaTopic', topic, title: view === 'messages' ? topic : `${topic} · ${view}`, view })
   const openGroup = (group: string) => tabs.openTab({ key: `group:${group}`, kind: 'kafkaGroup', group, title: group })
+  const openCluster = (panel: ClusterPanel) =>
+    tabs.openTab({ key: `cluster:${panel}`, kind: 'kafkaCluster', panel, title: CLUSTER_PANELS.find((p) => p.id === panel)?.label || panel })
+  // The services beside the cluster (Schema Registry, Connect, ksqlDB) each have
+  // a rail entry and a sidebar; an item opens a tab, null opens a new one.
+  // Their sidebars re-read on `serviceVersion`, bumped when a tab changes them.
+  const [serviceVersion, setServiceVersion] = useState(0)
+  const onServiceChanged = () => setServiceVersion((v) => v + 1)
+  const openSubject = (subject: string | null) => {
+    queryCounter += 1
+    tabs.openTab(
+      subject
+        ? { key: `subject:${subject}`, kind: 'kafkaSubject', subject, title: subject }
+        : { key: `subject:new:${queryCounter}`, kind: 'kafkaSubject', subject: null, title: 'New subject' }
+    )
+  }
+  const openConnector = (connector: string | null, draft?: ConnectorDraft) => {
+    queryCounter += 1
+    tabs.openTab(
+      connector
+        ? { key: `connector:${connector}`, kind: 'kafkaConnector', connector, title: connector }
+        : { key: `connector:new:${queryCounter}`, kind: 'kafkaConnector', connector: null, draft, title: draft ? `${draft.name}` : 'New connector' }
+    )
+  }
+  const openKsql = (sql?: string, run = false) => {
+    queryCounter += 1
+    tabs.openTab({ key: `ksql:${queryCounter}`, kind: 'kafkaKsql', sql, run, title: `ksqlDB ${queryCounter}` })
+  }
   const openProduce = (topic?: string, draft?: any) => {
     queryCounter += 1
     tabs.openTab({ key: `produce:${queryCounter}`, kind: 'kafkaProduce', topic, draft, title: `Produce · ${topic || 'message'}` })
@@ -316,6 +353,8 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
   // in the tab's right-click menu (whose delete is confirmed here).
   const [topicDetails, setTopicDetails] = useState<Record<string, TopicDetail>>({})
   const [deletingTopic, setDeletingTopic] = useState<string | null>(null)
+  const [clearingTopic, setClearingTopic] = useState<string | null>(null)
+  const [cloningTopic, setCloningTopic] = useState<string | null>(null)
   const onTopicDetail = (topic: string, detail: TopicDetail) =>
     setTopicDetails((m) => (m[topic] === detail ? m : { ...m, [topic]: detail }))
   const currentTopic = tabs.current?.kind === 'kafkaTopic' ? tabs.current.topic : null
@@ -462,20 +501,47 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
     },
   })
 
+  // Kafka's rail entries under Topics: consumer groups, then the services the
+  // connection names. One it no longer names falls back to the browser.
+  const servicePanels = kind === 'stream' ? kafkaPanelsFor(conn) : []
+  const shownPanel = panel.startsWith('kafka-') && !servicePanels.some((p) => p.id === panel) ? 'browser' : panel
+
   const sidebarPanel =
-    panel === 'browser' && kind === 'stream' ? (
+    shownPanel === 'kafka-groups' ? (
+      <ConsumerGroupsSidebar
+        key={`${id}:${keyspaceVersion}`}
+        conn={nsConn}
+        activeGroup={current?.kind === 'kafkaGroup' ? current.group : null}
+        onOpenGroup={openGroup}
+      />
+    ) : shownPanel === 'kafka-schemas' ? (
+      <SchemaRegistrySidebar
+        key={`${id}:${serviceVersion}`}
+        conn={nsConn}
+        activeSubject={current?.kind === 'kafkaSubject' ? current.subject : null}
+        onOpenSubject={openSubject}
+      />
+    ) : shownPanel === 'kafka-connect' ? (
+      <ConnectSidebar
+        key={`${id}:${serviceVersion}`}
+        conn={nsConn}
+        activeConnector={current?.kind === 'kafkaConnector' ? current.connector : null}
+        onOpenConnector={(name) => openConnector(name)}
+      />
+    ) : shownPanel === 'kafka-ksql' ? (
+      <KsqlSidebar key={`${id}:${serviceVersion}`} conn={nsConn} onOpenKsql={openKsql} />
+    ) : shownPanel === 'browser' && kind === 'stream' ? (
       <KafkaSidebar
         key={`${id}:${keyspaceVersion}`}
         conn={nsConn}
         activeTopic={current?.kind === 'kafkaTopic' ? current.topic : null}
-        activeGroup={current?.kind === 'kafkaGroup' ? current.group : null}
         onOpenTopic={openTopic}
-        onOpenGroup={openGroup}
         onProduce={(topic) => openProduce(topic)}
         onRunCommand={openQuery}
         onTopicDeleted={onTopicDeleted}
+        onTopicCleared={() => setKeyspaceVersion((v) => v + 1)}
       />
-    ) : panel === 'browser' && kind === 'keyspace' ? (
+    ) : shownPanel === 'browser' && kind === 'keyspace' ? (
       <RedisKeyTree
         key={`${id}:${ns.database}:${keyspaceVersion}`}
         conn={nsConn}
@@ -483,7 +549,7 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
         onOpenKey={openRedisKey}
         onRunCommand={openQuery}
       />
-    ) : panel === 'browser' ? (
+    ) : shownPanel === 'browser' ? (
       <ObjectBrowser
         connectionId={id}
         objects={objects}
@@ -579,12 +645,14 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
           connections={connections}
           currentId={id}
           onBrowseConnections={() => setSwitcherOpen(true)}
-          active={tablesVisible ? panel : ''}
+          active={tablesVisible ? shownPanel : ''}
           onBrowser={() => selectPanel('browser')}
           onQueries={() => selectPanel('queries')}
           onWorkflows={() => selectPanel('workflows')}
           onDashboards={() => selectPanel('dashboards')}
           onTemplates={() => selectPanel('templates')}
+          extraPanels={servicePanels}
+          onPanel={selectPanel}
           onHome={() => navigate('/')}
           onLogout={logout}
           browserIcon={kind === 'keyspace' ? KeyIcon : kind === 'stream' ? TopicIcon : undefined}
@@ -617,6 +685,7 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
           onOpenPalette={() => setPaletteOpen(true)}
           onOpenHistory={openHistory}
           onProduce={() => openProduce()}
+          onOpenCluster={openCluster}
           onOpenTransfer={() => openTransfer()}
           onOpenSchemaEditor={openSchemaEditorPage}
           onOpenSchemaHistory={openSchemaHistory}
@@ -704,6 +773,10 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
               onOpenGroup={openGroup}
               onProduce={openProduce}
               onTopicDetail={onTopicDetail}
+              onOpenSubject={openSubject}
+              onOpenConnector={openConnector}
+              onServiceChanged={onServiceChanged}
+              onCloseTab={tabs.dropTab}
               onGroupDeleted={(group) => {
                 tabs.dropTab(`group:${group}`)
                 setKeyspaceVersion((v) => v + 1)
@@ -754,11 +827,39 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
                     onOpenView={(view) => openTopic(menuTab.topic, view)}
                     onProduce={() => openProduce(menuTab.topic)}
                     onRunCommand={openQuery}
+                    onClone={() => setCloningTopic(menuTab.topic)}
+                    onClear={() => setClearingTopic(menuTab.topic)}
                     onDelete={() => setDeletingTopic(menuTab.topic)}
                   />
                 )
               : undefined
           }
+        />
+      )}
+
+      {clearingTopic && (
+        <ClearTopicDialog
+          conn={nsConn}
+          topic={clearingTopic}
+          onClose={() => setClearingTopic(null)}
+          onCleared={() => setKeyspaceVersion((v) => v + 1)}
+        />
+      )}
+
+      {cloningTopic && (
+        <CreateTopicDialog
+          conn={nsConn}
+          cloneOf={cloningTopic}
+          onClose={() => setCloningTopic(null)}
+          onCreated={(name) => {
+            setCloningTopic(null)
+            setKeyspaceVersion((v) => v + 1)
+            openTopic(name)
+          }}
+          onOpenInConsole={(command) => {
+            setCloningTopic(null)
+            openQuery(command)
+          }}
         />
       )}
 

@@ -8,7 +8,7 @@ import { useSlideOver } from '@/shared/hooks/useSlideOver'
 import { Input, Textarea } from '@/shared/ui/form/Input'
 import NumberStepper from '@/shared/ui/form/NumberStepper'
 import DateTimeField from '@/shared/ui/form/DateTimeField'
-import JsonEditor from '@/shared/ui/JsonEditor'
+import CodeEditor from '@/shared/ui/CodeEditor'
 
 const NUMERIC = /int|real|numeric|decimal|float|double|serial/i
 const isJsonType = (t) => /json/i.test(t || '')
@@ -197,7 +197,7 @@ export default function RowEditorPanel({
       {loading ? (
         <div className="py-10 text-center text-xs text-ink-faint">Loading schema…</div>
       ) : tab === 'json' ? (
-        <JsonEditor
+        <CodeEditor
           wrapperClassName="min-h-[420px] bg-elevated border border-edge rounded-soft focus-within:border-green-dim focus-within:shadow-[0_0_0_3px_rgba(111,207,106,0.22)]"
           className="font-mono text-[11px] leading-relaxed px-3 py-2"
           value={jsonText}
@@ -257,7 +257,7 @@ export default function RowEditorPanel({
                   <span className="text-[10px] font-semibold text-ink-dim">Set value</span>
                 </button>
               ) : isJsonType(col.type) ? (
-                <JsonEditor
+                <CodeEditor
                   id={fid}
                   wrapperClassName="min-h-[90px] bg-elevated border border-edge rounded-soft focus-within:border-green-dim focus-within:shadow-[0_0_0_3px_rgba(111,207,106,0.22)]"
                   className="font-mono text-[11px] leading-relaxed px-3 py-2"

@@ -226,7 +226,14 @@ export default function ConnectionDetail({ conn, onBack, onOpen, onEdit, onDelet
                     <>
                       <DetailRow label="Bootstrap servers" value={conn.brokers} />
                       <DetailRow label="SASL" value={conn.auth === 'none' ? undefined : `${(conn.saslMechanism || '').toUpperCase()} · ${conn.username || ''}`} />
-                      <DetailRow label="TLS" value={conn.tls ? (conn.tls === 'insecure' ? 'enabled (unverified)' : 'enabled') : undefined} />
+                      <DetailRow
+                        label="TLS"
+                        value={
+                          conn.tls
+                            ? `${conn.tls === 'insecure' ? 'enabled (unverified)' : 'enabled'}${conn.clientCertFormat ? ' · client certificate' : ''}`
+                            : undefined
+                        }
+                      />
                       <DetailRow label="Client ID" value={conn.clientId} />
                       {conn.sshGatewayId && (
                         <DetailRow label="SSH tunnel" value={gateway ? `${gateway.name} (${addressOf(gateway)})` : 'host missing'} />
