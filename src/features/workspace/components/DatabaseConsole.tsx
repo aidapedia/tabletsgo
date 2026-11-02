@@ -22,6 +22,7 @@ import {
   topicFacts,
   type ClusterPanel,
   type ConnectorDraft,
+  type StreamOverview,
   type TopicDetail,
   type TopicSubView,
 } from '@/features/kafka'
@@ -127,19 +128,21 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
   // Shown in the status bar, for every engine that can report one.
   const serverVersion = useServerVersion(conn)
   const tableless = kind !== 'sql'
-  // A stream cluster's size, for the status bar ("3 brokers").
-  const [brokerCount, setBrokerCount] = useState<number | null>(null)
+  // A stream cluster's identity and size: the id heads the sidebar, the broker
+  // count goes to the status bar ("3 brokers").
+  const [cluster, setCluster] = useState<StreamOverview | null>(null)
   useEffect(() => {
-    setBrokerCount(null)
+    setCluster(null)
     if (!conn || kind !== 'stream') return
     let live = true
     getOverview(conn)
-      .then((o) => live && setBrokerCount(o.brokers.length))
+      .then((o) => live && setCluster(o))
       .catch(() => {})
     return () => {
       live = false
     }
   }, [conn?.id, kind])
+  const brokerCount = cluster ? cluster.brokers.length : null
 
   const [sidebarOpen, setSidebarOpen] = useState(false) // mobile drawer
   const [tablesVisible, setTablesVisible] = useState(true) // left panel visible
@@ -662,6 +665,7 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
           namespaces={namespaces}
           onDatabaseChange={browser.changeDatabase}
           onSchemaChange={browser.changeSchema}
+          clusterId={cluster?.clusterId}
           visible={tablesVisible}
         >
           {sidebarPanel}
