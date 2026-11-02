@@ -4,13 +4,11 @@ import { CodeIcon, CopyIcon, FolderPlusIcon, RefreshIcon, SendIcon, TrashIcon } 
 import { TOPIC_VIEWS, type TopicSubView } from './TopicView'
 
 /**
- * A topic's actions as menu entries — the sidebar row's ⋮ and a topic tab's
- * right-click menu list the same ones. `current` leaves out the view the tab
- * already shows. Every entry calls `close` after acting.
+ * A topic's actions as menu entries — the sidebar row's ⋮. Every entry calls
+ * `close` after acting.
  */
 export default function TopicMenuItems({
   topic,
-  current,
   close,
   onOpenView,
   onProduce,
@@ -20,7 +18,6 @@ export default function TopicMenuItems({
   onDelete,
 }: {
   topic: string
-  current?: TopicSubView
   close: () => void
   onOpenView: (view: TopicSubView) => void
   onProduce: () => void
@@ -39,7 +36,7 @@ export default function TopicMenuItems({
 
   return (
     <>
-      {TOPIC_VIEWS.filter((v) => v.id !== current).map(({ id, label, icon: Icon }) => (
+      {TOPIC_VIEWS.map(({ id, label, icon: Icon }) => (
         <MenuItem key={id} onClick={act(() => onOpenView(id))}>
           <Icon width={14} height={14} /> {label}
         </MenuItem>

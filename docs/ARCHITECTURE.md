@@ -139,8 +139,8 @@ src/
 │   │   │                         #     PartitionsPanel / TopicConsumersPanel / TopicConfigPanel — the "Kafka
 │   │   │                         #     Topic Overview" template has the same as a dashboard; no header — the
 │   │   │                         #     topic's shape goes up to the status bar via onDetail/topicFacts),
-│   │   │                         #     TopicMenuItems (the topic's actions, shared by the sidebar row ⋮ and
-│   │   │                         #     the tab's right-click menu), GroupView + ResetOffsetsDialog (live dry
+│   │   │                         #     TopicMenuItems (the topic's actions, in the sidebar row's ⋮ — a
+│   │   │                         #     tab's right-click menu is close/split only), GroupView + ResetOffsetsDialog (live dry
 │   │   │                         #     run; apply needs an empty group + the id typed back),
 │   │   │                         #     ProduceView (a produce tab; production asks for the topic name),
 │   │   │                         #     CreateTopicDialog (also Clone: `cloneOf`), ClearTopicDialog,

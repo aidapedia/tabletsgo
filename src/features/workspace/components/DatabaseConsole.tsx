@@ -18,7 +18,6 @@ import {
   SchemaRegistrySidebar,
   kafkaPanelsFor,
   TOPIC_VIEWS,
-  TopicMenuItems,
   getOverview,
   topicFacts,
   type ClusterPanel,
@@ -360,7 +359,6 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
   const currentTopic = tabs.current?.kind === 'kafkaTopic' ? tabs.current.topic : null
   const statusSubject =
     currentTopic && topicDetails[currentTopic] ? { name: currentTopic, facts: topicFacts(topicDetails[currentTopic]) } : null
-  const menuTab = tabs.tabMenu ? tabs.tabs.find((t) => t.key === tabs.tabMenu!.key) : null
 
   const openSchema = (table: string) =>
     tabs.openTab({ key: `schema:${table}`, kind: 'schema', table, title: `${table} · schema` })
@@ -817,23 +815,6 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
           onCloseToRight={tabs.closeTabsToRight}
           onCloseAll={tabs.closeAllTabs}
           onMoveToPane={tabs.moveTabToPane}
-          actions={
-            menuTab?.kind === 'kafkaTopic'
-              ? (close) => (
-                  <TopicMenuItems
-                    topic={menuTab.topic}
-                    current={menuTab.view}
-                    close={close}
-                    onOpenView={(view) => openTopic(menuTab.topic, view)}
-                    onProduce={() => openProduce(menuTab.topic)}
-                    onRunCommand={openQuery}
-                    onClone={() => setCloningTopic(menuTab.topic)}
-                    onClear={() => setClearingTopic(menuTab.topic)}
-                    onDelete={() => setDeletingTopic(menuTab.topic)}
-                  />
-                )
-              : undefined
-          }
         />
       )}
 
