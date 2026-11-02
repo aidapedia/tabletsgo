@@ -1,0 +1,67 @@
+name: Release publish
+
+# Step 2 of the release: fires when a release/* PR (opened by release.yml) is
+# MERGED into v0.x.x. It tags the merged commit — which already carries the
+# version-synced package.json + README — and builds/publishes the image from it,
+# guaranteeing the tag and the synced files are the exact same commit.
+on:
+  pull_request:
+    types: [closed]
+    branches: [v0.x.x]
+
+jobs:
+  tag:
+    # Only merged release/v* PRs — not closed-without-merge, not other branches.
+    if: >-
+      github.event.pull_request.merged == true &&
+      startsWith(github.event.pull_request.head.ref, 'release/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.info.outputs.version }}
+      sha: ${{ steps.info.outputs.sha }}
+    steps:
+      - name: Derive version + merged commit
+        id: info
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          V="${HEAD_REF#release/v}"
+          echo "$V" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
+            || { echo "::error::Bad release branch name: $HEAD_REF"; exit 1; }
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "sha=$MERGE_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout merged commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.info.outputs.sha }}
+          fetch-depth: 0
+
+      - name: Tag the merged commit
+        env:
+          VERSION: ${{ steps.info.outputs.version }}
+        run: |
+          if git ls-remote --tags --exit-code origin "refs/tags/v${VERSION}" >/dev/null 2>&1; then
+            echo "Tag v${VERSION} already exists; skipping tag push."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag "v${VERSION}"
+          git push origin "v${VERSION}"
+
+  # Build/publish from the exact merged (version-synced) commit. Called directly
+  # because a GITHUB_TOKEN tag push does not trigger docker-release's push:tags.
+  build:
+    needs: tag
+    permissions:
+      contents: write
+      packages: write
+    uses: ./.github/workflows/docker-release.yml
+    with:
+      version: ${{ needs.tag.outputs.version }}
+      ref: ${{ needs.tag.outputs.sha }}
+    secrets: inherit
