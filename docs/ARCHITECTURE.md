@@ -237,8 +237,9 @@ src/
 │   │   │                         #   Env + version live here only; the top toolbar no longer shows them)
 │   │   │                         #   DatabaseConsole (the shell itself — rail + sidebar + panes + status
 │   │   │                         #     bar, and nothing else: it wires the hooks below to the components
-│   │   │                         #     around it), ConsoleSidebar (the aside + namespace breadcrumb, with
-│   │   │                         #     the selected panel as children), ObjectBrowser (tables/views/
+│   │   │                         #     around it), ConsoleSidebar (the aside + namespace breadcrumb — a
+│   │   │                         #     stream engine's cluster id in its place — with the selected panel
+│   │   │                         #     as children), ObjectBrowser (tables/views/
 │   │   │                         #     functions accordion + table folders — owns its own filter, sort and
 │   │   │                         #     folders, none of which leave it), ConsoleToolbar, EditorPanes (both
 │   │   │                         #     panes + the drag divider; takes a renderContent render prop),
