@@ -3,16 +3,13 @@ import { getColumns, getTableData } from '@/shared/api/database'
 import { useSettings } from '@/features/settings'
 import { useShortcut } from '@/features/keymap'
 import DataGrid, { cellText } from '@/shared/ui/table/DataGrid'
+import { FilterPanel, SortPanel, ColumnsPanel, makeFilter, matchFilter, sortRows, cycleSortRules } from '@/shared/ui/table/GridRules'
 import RowEditorPanel from '@/features/workspace/components/RowEditorPanel'
 import { EXPORT_FORMATS, downloadRows, sqlValue, toCsv, toJson } from '@/features/workspace/lib/exportRows'
 import Button from '@/shared/ui/buttons/Button'
-import TextButton from '@/shared/ui/buttons/TextButton'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
-import Segmented from '@/shared/ui/form/Segmented'
-import Checkbox from '@/shared/ui/form/Checkbox'
 import Popover from '@/shared/ui/overlay/Popover'
 import ContextMenu, { ContextMenuSub } from '@/shared/ui/overlay/ContextMenu'
-import Select from '@/shared/ui/form/Select'
 import { useToast } from '@/shared/ui/feedback/Toast'
 import {
   ChevronLeft,
@@ -39,88 +36,11 @@ const NUMERIC_TYPE = /(int|serial|numeric|decimal|real|double|float)/i
 // identifies the exact row an edit targets. Keep in sync with server.js.
 const ROW_ID_COLUMN = '__tg_rowid'
 
-const OPERATORS = [
-  { value: 'contains', label: 'contains' },
-  { value: '=', label: '=' },
-  { value: '!=', label: '≠' },
-  { value: '>', label: '>' },
-  { value: '<', label: '<' },
-  { value: '>=', label: '≥' },
-  { value: '<=', label: '≤' },
-  { value: 'isnull', label: 'is null' },
-  { value: 'notnull', label: 'is not null' },
-]
 export const PAGE_SIZES = [25, 50, 100, 200]
 
-const ctl =
-  'rounded-soft border border-edge bg-bg px-2.5 py-1.5 text-[11px] text-ink outline-none focus:border-green-dim'
-
-let filterId = 0
-export const makeFilter = (col = '', op = 'contains', value = '') => ({ id: `f${++filterId}`, col, op, value, enabled: true })
-const blankFilter = () => makeFilter()
-
-export function matchFilter(row, f) {
-  if (!f.enabled || !f.col) return true
-  if (f.op !== 'isnull' && f.op !== 'notnull' && f.value === '') return true
-  const raw = row[f.col]
-  const v = raw == null ? '' : String(raw)
-  switch (f.op) {
-    case '=': return v === f.value
-    case '!=': return v !== f.value
-    case 'contains': return v.toLowerCase().includes(f.value.toLowerCase())
-    case '>': return Number(raw) > Number(f.value)
-    case '<': return Number(raw) < Number(f.value)
-    case '>=': return Number(raw) >= Number(f.value)
-    case '<=': return Number(raw) <= Number(f.value)
-    case 'isnull': return raw == null
-    case 'notnull': return raw != null
-    default: return true
-  }
-}
-
-// Multi-rule client-side sort shared by the data grid + history views. Rules
-// apply in priority order (first = primary); nulls always sort last. Numeric
-// when both values parse as numbers, else locale string compare. Returns the
-// input untouched when there are no active rules.
-export function sortRows(rows, sort) {
-  const rules = (sort || []).filter((s) => s.col && s.enabled !== false)
-  if (!rules.length) return rows
-  return [...rows].sort((a, b) => {
-    for (const { col, dir } of rules) {
-      const x = a[col]
-      const y = b[col]
-      if (x == null && y == null) continue
-      if (x == null) return 1
-      if (y == null) return -1
-      const nx = Number(x)
-      const ny = Number(y)
-      const c = !isNaN(nx) && !isNaN(ny) ? nx - ny : String(x).localeCompare(String(y))
-      if (c !== 0) return dir === 'desc' ? -c : c
-    }
-    return 0
-  })
-}
-
-// Reducer for a header click on `col`. Plain click = single-column sort cycling
-// asc → desc → off. Shift (additive) = add/toggle this column within the
-// multi-sort (asc → desc → removed), preserving the other rules and their order.
-// A rule the user disabled in the panel is re-enabled by the click that would
-// otherwise start its cycle — a header click always means "sort by this now".
-export function cycleSortRules(prev, col, additive) {
-  const existing = prev.find((s) => s.col === col)
-  const disabled = existing && existing.enabled === false
-  if (additive) {
-    if (!existing) return [...prev, makeSort(col, 'asc')]
-    if (disabled) return prev.map((s) => (s.col === col ? { ...s, enabled: true } : s))
-    if (existing.dir === 'asc') return prev.map((s) => (s.col === col ? { ...s, dir: 'desc' } : s))
-    return prev.filter((s) => s.col !== col)
-  }
-  if (existing && prev.length === 1) {
-    if (disabled) return [{ ...existing, enabled: true }]
-    return existing.dir === 'asc' ? [makeSort(col, 'desc')] : []
-  }
-  return [makeSort(col, 'asc')]
-}
+// The filter/sort/columns toolbar pieces live in shared/ui/table so grids
+// outside this feature can use them; re-exported for this feature's views.
+export { FilterPanel, SortPanel, ColumnsPanel, makeFilter, makeSort, matchFilter, sortRows, cycleSortRules } from '@/shared/ui/table/GridRules'
 
 // `filters` is owned by the parent tab so it survives the unmount that happens
 // when the user switches tabs (only the active tab is mounted).
@@ -380,11 +300,11 @@ export default function TableView({ conn, table, onChange, onOpenReference, filt
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       {/* Toolbar / action list — the left actions swap to Save/Discard while
           there are unsaved cell edits, or to bulk actions while rows are
-          selected; the right cluster (columns, pagination, page size) stays
-          visible in every state. */}
+          selected (keyed per mode, so the swap fades in); the right cluster
+          (columns, pagination, page size) stays visible in every state. */}
       <div className="flex flex-wrap items-center gap-2 border-b border-edge px-3 py-2">
         {editCount > 0 ? (
-          <>
+          <div key="edits" className="flex animate-fade flex-wrap items-center gap-2">
             <Button variant="primary" size="sm" icon={SaveIcon} onClick={saveEdits}>
               Save
             </Button>
@@ -397,9 +317,9 @@ export default function TableView({ conn, table, onChange, onOpenReference, filt
             <span className="text-[11px] font-semibold text-amber">
               {editCount} unsaved edit{editCount > 1 ? 's' : ''}
             </span>
-          </>
+          </div>
         ) : selCount > 0 ? (
-          <>
+          <div key="selection" className="flex animate-fade flex-wrap items-center gap-2">
             <Button variant="primary" size="sm" icon={TrashIcon} onClick={deleteSelected}
               className="!bg-red !text-white hover:!bg-red/90">
               Delete
@@ -415,9 +335,9 @@ export default function TableView({ conn, table, onChange, onOpenReference, filt
             <Button variant="subtle" size="sm" className="!px-2" onClick={clearSelection} aria-label="Clear selection">
               <CloseIcon width={16} height={16} />
             </Button>
-          </>
+          </div>
         ) : (
-          <>
+          <div key="default" className="flex animate-fade flex-wrap items-center gap-2">
             <Button variant="primary" size="sm" icon={PlusSmall} onClick={() => setShowInsert(true)} disabled={loading}>
               Insert
             </Button>
@@ -498,7 +418,7 @@ export default function TableView({ conn, table, onChange, onOpenReference, filt
                 </div>
               )}
             </Popover>
-          </>
+          </div>
         )}
 
         {/* Right cluster — columns / pagination / page size — always visible */}
@@ -707,233 +627,6 @@ export default function TableView({ conn, table, onChange, onOpenReference, filt
             </ContextMenu>
           )
         })()}
-    </div>
-  )
-}
-
-const GripIcon = (props) => (
-  <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor" aria-hidden {...props}>
-    <circle cx="4" cy="3" r="1" /><circle cx="8" cy="3" r="1" />
-    <circle cx="4" cy="6" r="1" /><circle cx="8" cy="6" r="1" />
-    <circle cx="4" cy="9" r="1" /><circle cx="8" cy="9" r="1" />
-  </svg>
-)
-
-// Drag-to-reorder shared by the filter + sort rule lists: a dragged rule takes
-// the slot of whichever rule it's hovering. Spread `rowProps(id)` on the rule
-// row and `handleProps(id)` on its grip; `dragId` fades the row being moved.
-function useRuleReorder(setDraft) {
-  const [dragId, setDragId] = useState(null)
-  const moveOnto = (targetId) => {
-    if (!dragId || dragId === targetId) return
-    setDraft((d) => {
-      const from = d.findIndex((x) => x.id === dragId)
-      const to = d.findIndex((x) => x.id === targetId)
-      if (from < 0 || to < 0) return d
-      const next = [...d]
-      const [moved] = next.splice(from, 1)
-      next.splice(to, 0, moved)
-      return next
-    })
-  }
-  return {
-    dragId,
-    rowProps: (id) => ({ onDragOver: (e) => { e.preventDefault(); moveOnto(id) } }),
-    handleProps: (id) => ({ draggable: true, onDragStart: () => setDragId(id), onDragEnd: () => setDragId(null) }),
-  }
-}
-
-const DragHandle = (props) => (
-  <span
-    className="flex shrink-0 cursor-grab items-center text-ink-faint hover:text-ink active:cursor-grabbing"
-    aria-label="Drag to reorder"
-    title="Drag to reorder"
-    {...props}
-  >
-    <GripIcon />
-  </span>
-)
-
-export function FilterPanel({ columns, initial, onApply, onClose }) {
-  const [draft, setDraft] = useState(() => (initial.length ? initial.map((f) => ({ ...f })) : [blankFilter()]))
-  const { dragId, rowProps, handleProps } = useRuleReorder(setDraft)
-  const update = (id, patch) => setDraft((d) => d.map((f) => (f.id === id ? { ...f, ...patch } : f)))
-
-  return (
-    <div className="p-3">
-      <div className="mb-2.5 flex items-center gap-2 text-xs font-semibold text-ink">
-        <FilterIcon className="text-ink-dim" /> Filter Data
-      </div>
-
-      <div className="flex flex-col gap-2">
-        {draft.map((f) => (
-          <div
-            key={f.id}
-            {...rowProps(f.id)}
-            className={`flex items-center gap-1.5 ${dragId === f.id ? 'opacity-40' : ''}`}
-          >
-            <DragHandle {...handleProps(f.id)} />
-            <Checkbox
-              checked={f.enabled}
-              onChange={(v) => update(f.id, { enabled: v })}
-              ariaLabel="Enable filter"
-            />
-            <Select
-              className={`${ctl} min-w-0 flex-1`}
-              value={f.col}
-              onChange={(v) => update(f.id, { col: v })}
-              placeholder="Column…"
-              options={[{ value: '', label: 'Column…' }, ...columns.map((c) => ({ value: c, label: c }))]}
-            />
-            <Select
-              className={`${ctl} w-[92px]`}
-              value={f.op}
-              onChange={(v) => update(f.id, { op: v })}
-              options={OPERATORS}
-            />
-            <input
-              className={`${ctl} w-[96px]`}
-              placeholder="Value…"
-              value={f.value}
-              onChange={(e) => update(f.id, { value: e.target.value })}
-            />
-            <TextButton
-              tone="faint"
-              className="shrink-0 hover:!text-red"
-              onClick={() => setDraft((d) => (d.length > 1 ? d.filter((x) => x.id !== f.id) : [blankFilter()]))}
-              aria-label="Remove filter"
-            >
-              <CloseIcon width={14} height={14} />
-            </TextButton>
-          </div>
-        ))}
-      </div>
-
-      <div className="mt-3 flex items-center justify-between">
-        <Button variant="subtle" size="sm" icon={PlusSmall} onClick={() => setDraft((d) => [...d, blankFilter()])}>
-          Add Filter
-        </Button>
-        <div className="flex gap-2">
-          <Button variant="ghost" size="sm" onClick={onClose}>
-            Cancel
-          </Button>
-          <Button
-            variant="primary"
-            size="sm"
-            onClick={() => {
-              onApply(draft)
-              onClose()
-            }}
-          >
-            Apply
-          </Button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-let sortId = 0
-export const makeSort = (col = '', dir = 'asc') => ({ id: `s${++sortId}`, col, dir, enabled: true })
-const blankSort = () => makeSort()
-
-export function SortPanel({ columns, initial, onApply, onClose }) {
-  const [draft, setDraft] = useState(() => (initial.length ? initial.map((s) => ({ ...s })) : [blankSort()]))
-  const { dragId, rowProps, handleProps } = useRuleReorder(setDraft)
-  const update = (id, patch) => setDraft((d) => d.map((s) => (s.id === id ? { ...s, ...patch } : s)))
-
-  return (
-    <div className="p-3">
-      <div className="mb-3 flex items-center gap-2 text-xs font-semibold text-ink">
-        <SortIcon className="text-ink-dim" /> Sort Data
-      </div>
-
-      <div className="flex flex-col gap-2">
-        {draft.map((s, i) => (
-          <div
-            key={s.id}
-            {...rowProps(s.id)}
-            className={`flex items-center gap-1.5 ${dragId === s.id ? 'opacity-40' : ''}`}
-          >
-            <DragHandle {...handleProps(s.id)} />
-            <Checkbox
-              checked={s.enabled !== false}
-              onChange={(v) => update(s.id, { enabled: v })}
-              ariaLabel="Enable sort"
-            />
-            <Select
-              className={`${ctl} min-w-0 flex-1`}
-              value={s.col}
-              onChange={(v) => update(s.id, { col: v })}
-              placeholder="Column…"
-              options={[{ value: '', label: 'Column…' }, ...columns.map((c) => ({ value: c, label: c }))]}
-            />
-            <Segmented
-              className="shrink-0"
-              value={s.dir}
-              onChange={(v) => update(s.id, { dir: v })}
-              options={[
-                { value: 'asc', label: 'Asc' },
-                { value: 'desc', label: 'Desc' },
-              ]}
-            />
-            <TextButton
-              tone="faint"
-              className="shrink-0 hover:!text-red"
-              onClick={() => setDraft((d) => (d.length > 1 ? d.filter((x) => x.id !== s.id) : [blankSort()]))}
-              aria-label="Remove sort"
-            >
-              <CloseIcon width={14} height={14} />
-            </TextButton>
-          </div>
-        ))}
-      </div>
-
-      <div className="mt-3 flex items-center justify-between">
-        <Button variant="subtle" size="sm" icon={PlusSmall} onClick={() => setDraft((d) => [...d, blankSort()])}>
-          Add Sort
-        </Button>
-        <div className="flex gap-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => {
-              onApply([])
-              onClose()
-            }}
-          >
-            Clear
-          </Button>
-          <Button
-            variant="primary"
-            size="sm"
-            onClick={() => {
-              onApply(draft.filter((s) => s.col))
-              onClose()
-            }}
-          >
-            Apply
-          </Button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-export function ColumnsPanel({ columns, hidden, onToggle }) {
-  return (
-    <div className="max-h-[300px] overflow-y-auto p-2">
-      <div className="px-1.5 pb-1.5 text-[11px] font-semibold text-ink-dim">Toggle columns</div>
-      {columns.map((c) => (
-        <div
-          key={c}
-          onClick={() => onToggle(c)}
-          className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1.5 text-[11px] text-ink-dim hover:bg-card-hover hover:text-ink"
-        >
-          <Checkbox checked={!hidden.includes(c)} onChange={() => onToggle(c)} ariaLabel={`Toggle ${c}`} />
-          <span className="truncate">{c}</span>
-        </div>
-      ))}
     </div>
   )
 }

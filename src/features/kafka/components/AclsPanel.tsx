@@ -1,33 +1,47 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import Button from '@/shared/ui/buttons/Button'
-import RefreshButton from '@/shared/ui/buttons/RefreshButton'
-import Tooltip from '@/shared/ui/overlay/Tooltip'
-import Modal from '@/shared/ui/overlay/Modal'
+import DataGrid from '@/shared/ui/table/DataGrid'
+import Popover from '@/shared/ui/overlay/Popover'
+import { FilterPanel, SortPanel, matchFilter, sortRows, cycleSortRules } from '@/shared/ui/table/GridRules'
+import SlideOverPanel from '@/shared/ui/overlay/SlideOverPanel'
+import { useSlideOver } from '@/shared/hooks/useSlideOver'
 import Select from '@/shared/ui/form/Select'
 import Segmented from '@/shared/ui/form/Segmented'
-import SearchInput from '@/shared/ui/form/SearchInput'
-import Checkbox from '@/shared/ui/form/Checkbox'
 import Toggle from '@/shared/ui/form/Toggle'
 import { controlClass, Input } from '@/shared/ui/form/Input'
 import { FormField } from '@/shared/ui/form/Form'
 import ConfirmDialog from '@/shared/ui/feedback/ConfirmDialog'
 import { useToast } from '@/shared/ui/feedback/Toast'
-import { PlusIcon, TrashIcon } from '@/shared/ui/icons'
+import { CloseIcon, FilterIcon, PlusSmall, RefreshIcon, SortIcon, TrashIcon } from '@/shared/ui/icons'
 import { ACL_OPERATIONS, ACL_RESOURCE_TYPES, createAcls, deleteAcls, listAcls, type Acl } from '../lib/api'
 
 const keyOf = (a: Acl) => [a.principal, a.host, a.operation, a.permission, a.resourceType, a.resourceName, a.patternType].join('|')
 
+const COLUMNS = ['Principal', 'Permission', 'Operation', 'Resource', 'Pattern', 'Host']
+const COLUMN_WIDTHS = { Principal: 220, Permission: 100, Operation: 150, Resource: 260, Pattern: 100, Host: 120 }
+const gridRow = (a: Acl) => ({
+  Principal: a.principal,
+  Permission: a.permission,
+  Operation: a.operation,
+  Resource: `${a.resourceType.toLowerCase()}:${a.resourceName}`,
+  Pattern: a.patternType,
+  Host: a.host,
+  acl: a,
+})
+
 /**
- * The cluster's access control lists: every binding, filterable, with a
- * multi-select for bulk deletes. New ones are added one at a time or from a
- * template — consumer, producer, Kafka Streams application — that expands into
- * the bindings that role needs, shown before they're created.
+ * The cluster's access control lists in the shared DataGrid, laid out like a
+ * table in the SQL console: the toolbar's left actions swap to bulk actions
+ * while rows are selected. New ones are added one at a time or from a
+ * template — consumer, producer, Kafka Streams application — in a slide-over
+ * that expands into the bindings that role needs, shown before they're created.
  */
 export default function AclsPanel({ conn }: { conn: any }) {
   const toast = useToast()
   const [acls, setAcls] = useState<Acl[] | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [filter, setFilter] = useState('')
+  const [filters, setFilters] = useState<any[]>([])
+  const [sort, setSort] = useState<any[]>([]) // [{ col, dir }] — ordered sort rules
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [adding, setAdding] = useState(false)
   const [confirming, setConfirming] = useState(false)
@@ -47,17 +61,28 @@ export default function AclsPanel({ conn }: { conn: any }) {
     load()
   }, [load])
 
-  const needle = filter.trim().toLowerCase()
-  const shown = useMemo(
-    () => (acls || []).filter((a) => !needle || `${a.principal} ${a.resourceType} ${a.resourceName} ${a.operation} ${a.permission}`.toLowerCase().includes(needle)),
-    [acls, needle]
+  // Filter rules, then sort rules — the same client-side pipeline as the
+  // query history grid, run over the grid's own row shape.
+  const rows = useMemo(
+    () => sortRows((acls || []).map(gridRow).filter((r) => filters.every((f) => matchFilter(r, f))), sort),
+    [acls, filters, sort]
   )
-  const allShown = shown.length > 0 && shown.every((a) => selected.has(keyOf(a)))
+  const shown = useMemo(() => rows.map((r) => r.acl), [rows])
+  const activeFilterCount = filters.filter((f) => f.enabled && f.col && f.value !== '').length
+  const activeSortCount = sort.filter((s) => s.col && s.enabled !== false).length
 
-  const toggle = (k: string) =>
+  const toggleRow = (row: any) =>
     setSelected((s) => {
+      const k = keyOf(row.acl)
       const next = new Set(s)
       next.has(k) ? next.delete(k) : next.add(k)
+      return next
+    })
+  const toggleAll = () =>
+    setSelected((s) => {
+      const all = shown.length > 0 && shown.every((a) => s.has(keyOf(a)))
+      const next = new Set(s)
+      for (const a of shown) all ? next.delete(keyOf(a)) : next.add(keyOf(a))
       return next
     })
 
@@ -79,103 +104,93 @@ export default function AclsPanel({ conn }: { conn: any }) {
     return <div className="mx-[18px] my-4 rounded-[9px] border border-red/25 bg-red/10 px-3.5 py-3 font-mono text-[11px] text-[#ff9b9b]">{error}</div>
   }
 
+  const selCount = selected.size
+
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto px-[18px] py-4">
-      <div className="mb-3 flex flex-wrap items-center gap-2">
-        <SearchInput className="w-[300px]" placeholder="Filter by principal, resource or operation" value={filter} onChange={(e) => setFilter(e.target.value)} />
-        <span className="text-[11px] text-ink-faint">{acls ? `${shown.length} of ${acls.length} binding${acls.length === 1 ? '' : 's'}` : ''}</span>
-        <div className="ml-auto flex items-center gap-2">
-          {selected.size > 0 && (
-            <Button variant="danger" size="sm" icon={TrashIcon} onClick={() => setConfirming(true)}>
-              Delete {selected.size}
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <div className="flex flex-wrap items-center gap-2 border-b border-edge px-3 py-2">
+        {/* Keyed on the mode, so swapping to bulk actions (and back) fades in. */}
+        {selCount > 0 ? (
+          <div key="selection" className="flex animate-fade flex-wrap items-center gap-2">
+            <Button variant="primary" size="sm" icon={TrashIcon} onClick={() => setConfirming(true)} className="!bg-red !text-white hover:!bg-red/90">
+              Delete
             </Button>
-          )}
-          <Tooltip label="Refresh" placement="bottom">
-            <RefreshButton size="sm" iconSize={13} aria-label="Refresh ACLs" onRefresh={load} />
-          </Tooltip>
-          <Button variant="primary" size="sm" icon={PlusIcon} onClick={() => setAdding(true)}>
-            Add ACLs
-          </Button>
+
+            <div className="mx-0.5 h-5 w-px bg-edge" />
+
+            <span className="text-[11px] font-semibold text-ink">{selCount} selected</span>
+
+            <Button variant="subtle" size="sm" className="!px-2" onClick={() => setSelected(new Set())} aria-label="Clear selection">
+              <CloseIcon width={16} height={16} />
+            </Button>
+          </div>
+        ) : (
+          <div key="default" className="flex animate-fade flex-wrap items-center gap-2">
+            <Button variant="primary" size="sm" icon={PlusSmall} onClick={() => setAdding(true)}>
+              Add ACLs
+            </Button>
+            <Button variant="subtle" size="sm" icon={RefreshIcon} onClick={load}>
+              Refresh
+            </Button>
+
+            <div className="mx-0.5 h-5 w-px bg-edge" />
+
+            <Popover
+              width={412}
+              trigger={({ open, toggle }) => (
+                <Button variant="subtle" size="sm" icon={FilterIcon} active={open || activeFilterCount > 0} onClick={toggle}>
+                  {activeFilterCount > 0 ? `Filtered by ${activeFilterCount} rule${activeFilterCount > 1 ? 's' : ''}` : 'Filter'}
+                </Button>
+              )}
+            >
+              {({ close }) => <FilterPanel columns={COLUMNS} initial={filters} onApply={setFilters} onClose={close} />}
+            </Popover>
+
+            <Popover
+              width={400}
+              trigger={({ open, toggle }) => (
+                <Button variant="subtle" size="sm" icon={SortIcon} active={open || activeSortCount > 0} onClick={toggle}>
+                  {activeSortCount > 0 ? `Sorted by ${activeSortCount} rule${activeSortCount > 1 ? 's' : ''}` : 'Sort'}
+                </Button>
+              )}
+            >
+              {({ close }) => <SortPanel columns={COLUMNS} initial={sort} onApply={setSort} onClose={close} />}
+            </Popover>
+          </div>
+        )}
+
+        <div className="ml-auto flex items-center gap-2">
+          <span className="pl-1 text-[11px] text-ink-faint">{acls ? `${shown.length} of ${acls.length} binding${acls.length === 1 ? '' : 's'}` : ''}</span>
         </div>
       </div>
 
-      <div className="overflow-x-auto rounded-card border border-edge bg-panel">
-        <table className="w-full min-w-[820px] border-collapse text-[12px]">
-          <thead>
-            <tr className="text-left text-[11px] text-ink-faint">
-              <th className="h-8 w-9 border-b border-edge px-3">
-                <Checkbox
-                  checked={allShown}
-                  onChange={(on: boolean) => setSelected((s) => {
-                    const next = new Set(s)
-                    for (const a of shown) on ? next.add(keyOf(a)) : next.delete(keyOf(a))
-                    return next
-                  })}
-                  ariaLabel="Select all shown"
-                />
-              </th>
-              {['Principal', 'Permission', 'Operation', 'Resource', 'Host'].map((h) => (
-                <th key={h} className="h-8 border-b border-edge px-3 font-semibold">
-                  {h}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {acls === null && (
-              <tr>
-                <td colSpan={6} className="p-6 text-center text-xs text-ink-faint">
-                  Reading ACLs…
-                </td>
-              </tr>
-            )}
-            {acls && !shown.length && (
-              <tr>
-                <td colSpan={6} className="p-6 text-center text-xs text-ink-faint">
-                  {needle ? 'No ACLs match.' : 'No ACLs on this cluster.'}
-                </td>
-              </tr>
-            )}
-            {shown.map((a) => {
-              const k = keyOf(a)
-              return (
-                <tr key={k} className={selected.has(k) ? 'bg-green/5' : ''}>
-                  <td className="h-[30px] border-b border-edge/60 px-3">
-                    <Checkbox checked={selected.has(k)} onChange={() => toggle(k)} ariaLabel="Select ACL" />
-                  </td>
-                  <td className="border-b border-edge/60 px-3 font-mono">{a.principal}</td>
-                  <td className={`border-b border-edge/60 px-3 font-semibold ${a.permission === 'DENY' ? 'text-red' : 'text-green-bright'}`}>{a.permission}</td>
-                  <td className="border-b border-edge/60 px-3 font-mono">{a.operation}</td>
-                  <td className="border-b border-edge/60 px-3 font-mono">
-                    <span className="text-ink-faint">{a.resourceType.toLowerCase()}:</span>
-                    {a.resourceName}
-                    {a.patternType === 'PREFIXED' && (
-                      <span className="ml-2 rounded-[5px] bg-elevated px-1.5 py-px font-sans text-[9px] font-bold uppercase text-ink-dim">prefix</span>
-                    )}
-                  </td>
-                  <td className="border-b border-edge/60 px-3 font-mono text-ink-dim">{a.host}</td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
-      </div>
+      {acls === null ? (
+        <div className="p-5 text-center text-xs text-ink-faint">Reading ACLs…</div>
+      ) : !shown.length ? (
+        <div className="p-[30px] text-center text-xs text-ink-faint">{activeFilterCount ? 'No ACLs match.' : 'No ACLs on this cluster.'}</div>
+      ) : (
+        <DataGrid
+          columns={COLUMNS}
+          rows={rows}
+          columnWidths={COLUMN_WIDTHS}
+          selectable
+          getRowKey={(row: any) => keyOf(row.acl)}
+          selectedKeys={selected}
+          onToggleRow={toggleRow}
+          onToggleAll={toggleAll}
+          sort={sort}
+          onSort={(col: string, additive: boolean) => setSort((prev) => cycleSortRules(prev, col, additive))}
+        />
+      )}
 
       {adding && (
-        <AddAclsDialog
-          conn={conn}
-          onClose={() => setAdding(false)}
-          onCreated={() => {
-            setAdding(false)
-            setTimeout(load, 800)
-          }}
-        />
+        <AddAclsPanel conn={conn} onClose={() => setAdding(false)} onCreated={() => setTimeout(load, 800)} />
       )}
 
       {confirming && (
         <ConfirmDialog
           danger
-          title={`Delete ${selected.size} ACL${selected.size === 1 ? '' : 's'}?`}
+          title={`Delete ${selCount} ACL${selCount === 1 ? '' : 's'}?`}
           message="Clients relying on these bindings lose that access at once (or regain it, for a DENY)."
           confirmLabel="Delete"
           onConfirm={removeSelected}
@@ -236,8 +251,11 @@ function expand(t: Template, f: Record<string, any>): Partial<Acl>[] {
   ]
 }
 
-function AddAclsDialog({ conn, onClose, onCreated }: { conn: any; onClose: () => void; onCreated: () => void }) {
+/** The inspector-style slide-over that composes new bindings. */
+function AddAclsPanel({ conn, onClose, onCreated }: { conn: any; onClose: () => void; onCreated: () => void }) {
   const toast = useToast()
+  const { show, close } = useSlideOver(onClose)
+  const [error, setError] = useState<string | null>(null)
   const [template, setTemplate] = useState<Template>('consumer')
   const [f, setF] = useState({
     principal: 'User:',
@@ -262,27 +280,47 @@ function AddAclsDialog({ conn, onClose, onCreated }: { conn: any; onClose: () =>
 
   const bindings = expand(template, f)
   const principalOk = /^[^:\s]+:\S+/.test(f.principal.trim())
+  // The field opens on a bare `User:` — only complain once there's more to it.
+  const principalBad = !principalOk && !/^([^:\s]+:)?$/.test(f.principal.trim())
   const ready = principalOk && bindings.length > 0 && bindings.every((b) => b.resourceName)
 
   const create = async () => {
     if (!ready || saving) return
     setSaving(true)
+    setError(null)
     try {
       const r = await createAcls(conn, bindings)
       toast.success(`Created ${r.created} ACL${r.created === 1 ? '' : 's'}.`)
-      onCreated()
+      close(onCreated)
     } catch (e: any) {
-      toast.error(e.message)
+      setError(e.message)
     } finally {
       setSaving(false)
     }
   }
 
   return (
-    <Modal title="Add ACLs" onClose={onClose} width={760}>
-      <Segmented className="mb-4 w-full [&>button]:flex-1" value={template} onChange={setTemplate} options={TEMPLATES} />
-      <div className="mb-1 grid grid-cols-[2fr_1fr] gap-3.5">
-        <FormField label="Principal" hint="<type>:<name> — usually User:<name>, as the broker authenticates it." error={f.principal.trim() && !principalOk ? 'Write it as User:alice.' : undefined}>
+    <SlideOverPanel
+      show={show}
+      close={close}
+      title="Add ACLs"
+      width={520}
+      error={error}
+      subheader={<Segmented className="w-full [&>button]:flex-1" value={template} onChange={setTemplate} options={TEMPLATES} />}
+      footer={
+        <>
+          <Button variant="subtle" onClick={() => close()}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={create} disabled={!ready || saving}>
+            {saving ? 'Creating…' : `Create ${bindings.length || ''} ACL${bindings.length === 1 ? '' : 's'}`}
+          </Button>
+        </>
+      }
+    >
+      {/* FormField drops its own margin inside a grid, so each grid row carries the gap. */}
+      <div className="mb-4 grid grid-cols-[2fr_1fr] gap-3.5">
+        <FormField label="Principal" hint="<type>:<name> — usually User:<name>, as the broker authenticates it." error={principalBad ? 'Write it as User:alice.' : undefined}>
           <Input autoFocus className="font-mono" value={f.principal} onChange={set('principal')} />
         </FormField>
         <FormField label="Host">
@@ -292,17 +330,17 @@ function AddAclsDialog({ conn, onClose, onCreated }: { conn: any; onClose: () =>
 
       {template === 'single' && (
         <>
-          <div className="grid grid-cols-3 gap-3.5">
+          <div className="mb-4 grid grid-cols-2 gap-3.5">
             <FormField label="Resource type">
               <Select className={controlClass} value={f.resourceType} onChange={set('resourceType')} options={ACL_RESOURCE_TYPES.map((t) => ({ value: t, label: t }))} />
             </FormField>
             <FormField label="Operation">
               <Select className={controlClass} value={f.operation} onChange={set('operation')} options={ACL_OPERATIONS.map((t) => ({ value: t, label: t }))} />
             </FormField>
-            <FormField label="Permission">
-              <Segmented className="w-full [&>button]:flex-1" value={f.permission} onChange={set('permission')} options={[{ value: 'ALLOW', label: 'Allow' }, { value: 'DENY', label: 'Deny' }]} />
-            </FormField>
           </div>
+          <FormField label="Permission">
+            <Segmented className="w-full [&>button]:flex-1" value={f.permission} onChange={set('permission')} options={[{ value: 'ALLOW', label: 'Allow' }, { value: 'DENY', label: 'Deny' }]} />
+          </FormField>
           {f.resourceType !== 'CLUSTER' && (
             <ResourceName label="Resource name" value={f.resourceName} onChange={set('resourceName')} prefixed={f.prefixed} onPrefixed={set('prefixed')} placeholder="orders or * for all" />
           )}
@@ -319,15 +357,13 @@ function AddAclsDialog({ conn, onClose, onCreated }: { conn: any; onClose: () =>
       {template === 'producer' && (
         <>
           <ResourceName label="Topics" value={f.topics} onChange={set('topics')} prefixed={f.prefixed} onPrefixed={set('prefixed')} placeholder="orders" />
-          <div className="grid grid-cols-2 gap-3.5">
-            <FormField label="Transactional ID (optional)" hint="For a transactional producer.">
-              <Input className="font-mono" value={f.transactionalId} onChange={set('transactionalId')} />
-            </FormField>
-            <label className="mt-6 flex items-center gap-2 text-[12px] text-ink-dim">
-              <Toggle checked={f.idempotent} onChange={set('idempotent')} ariaLabel="Idempotent writes" />
-              Idempotent writes (needed before Kafka 3.0)
-            </label>
-          </div>
+          <FormField label="Transactional ID (optional)" hint="For a transactional producer.">
+            <Input className="font-mono" value={f.transactionalId} onChange={set('transactionalId')} />
+          </FormField>
+          <label className="mb-4 flex items-center gap-2 text-[12px] text-ink-dim">
+            <Toggle checked={f.idempotent} onChange={set('idempotent')} ariaLabel="Idempotent writes" />
+            Idempotent writes (needed before Kafka 3.0)
+          </label>
         </>
       )}
 
@@ -336,7 +372,7 @@ function AddAclsDialog({ conn, onClose, onCreated }: { conn: any; onClose: () =>
           <FormField label="application.id" hint="Its internal topics and consumer group are named after it.">
             <Input className="font-mono" value={f.appId} onChange={set('appId')} placeholder="order-enricher" />
           </FormField>
-          <div className="grid grid-cols-2 gap-3.5">
+          <div className="mb-4 grid grid-cols-2 gap-3.5">
             <FormField label="Input topics">
               <Input className="font-mono" value={f.inputs} onChange={set('inputs')} placeholder="orders" />
             </FormField>
@@ -351,7 +387,8 @@ function AddAclsDialog({ conn, onClose, onCreated }: { conn: any; onClose: () =>
         </>
       )}
 
-      <div className="mb-4 max-h-[180px] overflow-y-auto rounded-soft border border-edge bg-elevated px-3 py-2 font-mono text-[11px]">
+      <div className="mb-1.5 text-[11px] font-semibold text-ink-dim">Bindings to create</div>
+      <div className="rounded-soft border border-edge bg-elevated px-3 py-2 font-mono text-[11px]">
         {bindings.length === 0 ? (
           <span className="text-ink-faint">Fill in the fields to see the bindings this creates.</span>
         ) : (
@@ -364,16 +401,7 @@ function AddAclsDialog({ conn, onClose, onCreated }: { conn: any; onClose: () =>
           ))
         )}
       </div>
-
-      <div className="flex justify-end gap-2">
-        <Button variant="ghost" onClick={onClose}>
-          Cancel
-        </Button>
-        <Button variant="primary" onClick={create} disabled={!ready || saving}>
-          {saving ? 'Creating…' : `Create ${bindings.length || ''} ACL${bindings.length === 1 ? '' : 's'}`}
-        </Button>
-      </div>
-    </Modal>
+    </SlideOverPanel>
   )
 }
 
@@ -393,14 +421,14 @@ function ResourceName({
   placeholder: string
 }) {
   return (
-    <div className="grid grid-cols-[1fr_auto] items-end gap-3.5">
-      <FormField label={label}>
-        <Input className="font-mono" value={value} onChange={onChange} placeholder={placeholder} />
-      </FormField>
-      <label className="mb-[22px] flex items-center gap-2 text-[12px] text-ink-dim">
-        <Toggle checked={prefixed} onChange={onPrefixed} ariaLabel={`${label} is a prefix`} />
-        Prefix
-      </label>
-    </div>
+    <FormField label={label}>
+      <div className="flex items-center gap-3.5">
+        <Input className="min-w-0 flex-1 font-mono" value={value} onChange={onChange} placeholder={placeholder} />
+        <label className="flex shrink-0 items-center gap-2 text-[12px] text-ink-dim">
+          <Toggle checked={prefixed} onChange={onPrefixed} ariaLabel={`${label} is a prefix`} />
+          Prefix
+        </label>
+      </div>
+    </FormField>
   )
 }

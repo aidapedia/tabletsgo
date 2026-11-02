@@ -39,7 +39,9 @@ src/
 │   │   │                         #     column — pages never cap themselves, HomeLayout owns the width)
 │   │   ├── overlay/              #   Popover, Tooltip, ContextMenu
 │   │   ├── feedback/             #   Toast, ConfirmDialog, TypeToConfirmDialog, LoadingState, EmptyState, Wizard
-│   │   ├── table/                #   DataGrid (editable console grid shared with Redis), DataTable
+│   │   ├── table/                #   DataGrid (editable console grid shared with Redis), GridRules
+│   │   │                         #   (a DataGrid's client-side Filter/Sort/Columns popovers + matchFilter/
+│   │   │                         #     sortRows/cycleSortRules — table tab, histories, Kafka ACLs), DataTable
 │   │   │                         #   (the shared list-as-table: sortable columns, row click,
 │   │   │                         #     pagination footer), Pagination, useDataTable (client-side
 │   │   │                         #     sort/paging state — spread its result into DataTable; pass the
