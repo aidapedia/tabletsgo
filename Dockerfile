@@ -52,11 +52,9 @@ ENV NODE_ENV=production
 ENV PORT=3000
 # SQLite default; set META_DB_TYPE=postgresql and META_DATABASE_URL for PostgreSQL.
 ENV META_DB=/app/data/app.db
-# NOTE: no default admin is baked in — a fresh instance shows the first-run
-# setup wizard. Set ADMIN_USERNAME + ADMIN_PASSWORD to pre-seed the instance
-# admin and skip the wizard (no workspace is created either way — the admin
-# makes the first one). SMTP_* enable invite emails. UPDATE_* wire the in-app
-# update checker (Docker-socket self-update). See .env.example.
+# NOTE: no admin is baked in — a fresh instance shows the first-run setup
+# wizard, which creates the instance admin. SMTP_* enable invite emails. See
+# .env.example.
 
 EXPOSE 3000
 # The app migrates the metadata schema on boot (server/migrator/boot.js), so a

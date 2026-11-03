@@ -45,7 +45,7 @@ import {
   PORT,
   SCHEDULER_ENABLED,
 } from './server/config.js'
-import { backupMeta, checkMetaIntegrity, closeMeta, db as meta, seedAdminFromEnv, transaction } from './server/meta.js'
+import { backupMeta, checkMetaIntegrity, closeMeta, db as meta, transaction } from './server/meta.js'
 import { sha256 } from './server/crypto.js'
 import { describeError, filterAsync, safeJson, sanitizeForKey } from './server/util.js'
 import {
@@ -302,7 +302,6 @@ let bootReady = false
 await loadPolicy()
 // Same for the instance's modules: the db layer asks on every dispatch.
 await loadModules()
-await seedAdminFromEnv()
 bootReady = true
 
 // The database/schema a request is aimed at. Every db layer call takes one, and

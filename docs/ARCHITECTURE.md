@@ -535,7 +535,7 @@ server/
 ├── meta-connection.js    # openMeta() (SQLite or PostgreSQL, the one place that picks) + snapshotMeta()
 ├── meta.js               # Prisma Client for the app's store: db() (the open transaction's client, or
 │                         #   the shared one), transaction(fn) (nested calls join), backupMeta(),
-│                         #   checkMetaIntegrity(), seedAdminFromEnv(). BIGINTs come back as numbers;
+│                         #   checkMetaIntegrity(). BIGINTs come back as numbers;
 │                         #   on SQLite a gate keeps other requests out of an open transaction. Never migrates —
 │                         #   boot.js has already, before this module is evaluated
 ├── postgres-meta.js      # synchronous PostgreSQL handle — only the migrator uses it now

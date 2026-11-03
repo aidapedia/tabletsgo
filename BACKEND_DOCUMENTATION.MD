@@ -555,10 +555,9 @@ CREATE TABLE app_settings (
 );
 ```
 
-**Seeds on first run:** user `admin` / `admin123` (system role `admin`), and a
-`demo-sqlite` connection pointing at `./demo.db` (auto-seeded with sample data
-when empty). Note the seeded admin is an *instance* admin, so the seeded
-workspace has no owner until the admin assigns one (`PUT /api/admin/workspaces/:id/members/:userId`).
+**First run:** nothing is seeded — the in-browser setup wizard creates the
+instance admin (system role `admin`), who then creates the first workspace and
+names its owner from Admin → Workspaces.
 
 ---
 

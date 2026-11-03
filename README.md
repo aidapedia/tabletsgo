@@ -93,7 +93,6 @@ Set these in `.env`. Everything else is optional.
 | `ENCRYPTION_KEY` | **Required.** Encrypts connection credentials at rest. |
 | `PORT` | Host port (default `3000`). |
 | `META_DB_TYPE` / `META_DATABASE_URL` | Metadata store: `sqlite` (default) or `postgresql` + its URL. |
-| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | Pre‑seed the instance admin instead of using the wizard. |
 | `SMTP_*` | Fallback mail server for invites and resets (admins can set one in the UI). |
 
 Full list: [docs/CONFIGURATION.md](docs/CONFIGURATION.md) and [`.env.example`](.env.example).
