@@ -90,19 +90,13 @@ SMTP/admin-seed fallbacks are the exception, read where they're used).
   here — add a `settings` entry on its module.
 
 ### Updates
-- `TABLETSGO_TAG` — **optional**. Published image tag `docker compose` runs (and
-  pulls on self-update). Default `latest`; one-click self-update works best on a
-  moving tag.
-- `UPDATE_AUTO_CHECK` — **optional**. Instance-wide default (truthy
-  `1/true/yes/on`; default off) for the per-user "auto-check for updates" toggle in
-  Settings > Updates, surfaced via `/api/system/version`'s `autoCheckUpdates`. Leave
-  off when an orchestrator (e.g. Coolify) manages updates; users can still override
-  per browser.
-- `UPDATE_IMAGE` / `UPDATE_REPO` / `UPDATE_HELPER_IMAGE` — **optional** in-app
-  update checker tuning (default to the official image/repo; override only for a
-  fork). The checker compares the running `(version, sha)` against the latest GitHub
-  Release + its `release.json` contract. Apply method is auto-detected: Docker socket
-  mounted ⇒ one-click self-update via `UPDATE_HELPER_IMAGE` (default `docker:cli`);
-  otherwise the wizard shows a manual `docker compose pull` command. `APP_VERSION` /
-  `GIT_SHA` are baked into the image at build time and reported by
-  `/api/system/version`.
+- `DOCKER_SOCKET` — **optional**. Path of the Docker socket the self-update
+  drives (default `/var/run/docker.sock`). Apply method is auto-detected: socket
+  mounted ⇒ one-click self-update; otherwise the wizard shows a manual
+  `docker compose pull` command. `APP_VERSION` / `GIT_SHA` are baked into the image
+  at build time and reported by `/api/system/version`.
+- **Not env vars** (removed): `TABLETSGO_TAG` (compose always runs `:latest`),
+  `UPDATE_IMAGE` / `UPDATE_REPO` / `UPDATE_HELPER_IMAGE` (constants in
+  `server/system-update.js` — the app only updates to its own official release)
+  and `UPDATE_AUTO_CHECK` (auto-check is a per-browser Settings > Updates toggle,
+  off by default). Don't reintroduce them.

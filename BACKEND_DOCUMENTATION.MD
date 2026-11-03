@@ -3936,16 +3936,14 @@ Reads (`/version`, `/update/check`) require any authenticated user. Mutating rou
 (`/backup`, `/backup/:file/download`, `/preflight`, `/update/apply`) require the caller
 to be an **admin of at least one workspace** — otherwise `403 { "error": "Admin access required" }`.
 
-Related env: `UPDATE_IMAGE` (default `ghcr.io/aidapedia/tabletsgo`), `UPDATE_REPO`
-(default `aidapedia/tabletsgo`), `DOCKER_SOCKET` (default `/var/run/docker.sock`),
-`UPDATE_HELPER_IMAGE` (default `docker:cli`).
+The image (`ghcr.io/aidapedia/tabletsgo`), release repo (`aidapedia/tabletsgo`) and
+helper image (`docker:cli`) are constants in `server/system-update.js`. Related env:
+`DOCKER_SOCKET` (default `/var/run/docker.sock`).
 
 ### GET `/api/system/version`
 The running app's identity (used by the wizard's verify-poll after a restart).
-`autoCheckUpdates` is the instance-wide default (from the `UPDATE_AUTO_CHECK` env)
-for the per-user "auto-check for updates" toggle in Settings > Updates.
 
-- **200:** `{ "name": "tabletsgo", "version": "0.15.2", "sha": "20f10b5", "autoCheckUpdates": false }`
+- **200:** `{ "name": "tabletsgo", "version": "0.15.2", "sha": "20f10b5" }`
 - **Example:** `GET http://localhost:3000/api/system/version`
 
 ### GET `/api/system/update/check?refresh=1`

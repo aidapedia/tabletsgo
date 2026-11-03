@@ -1,10 +1,10 @@
 services:
   tabletsgo:
     # Run the published image so `docker compose pull && up -d` upgrades in place
-    # (this is what the in-app update flow drives). Pin a version with TABLETSGO_TAG.
+    # (this is what the in-app update flow drives).
     # The app migrates the metadata DB on boot, so a pulled image upgrades the
     # store the first time it starts.
-    image: ghcr.io/aidapedia/tabletsgo:${TABLETSGO_TAG:-latest}
+    image: ghcr.io/aidapedia/tabletsgo:latest
     depends_on:
       # Only when the `postgresql` profile is enabled; ignored otherwise.
       metadata-postgres:
@@ -62,16 +62,6 @@ services:
       - LOGIN_ATTEMPT_WINDOW_MS=${LOGIN_ATTEMPT_WINDOW_MS:-}
       - LOGIN_LOCKOUT_MS=${LOGIN_LOCKOUT_MS:-}
       - LOGIN_ADMIN_COOLDOWN_MS=${LOGIN_ADMIN_COOLDOWN_MS:-}
-      # In-app update checker. UPDATE_IMAGE/UPDATE_REPO default to the official
-      # image + repo; override only for a fork. One-click apply needs the Docker
-      # socket mounted (see the volumes section) — otherwise the wizard shows the
-      # manual `docker compose pull` command.
-      - UPDATE_IMAGE=${UPDATE_IMAGE:-}
-      - UPDATE_REPO=${UPDATE_REPO:-}
-      # Default for the per-user "auto-check for updates" toggle (Settings >
-      # Updates). Off unless set truthy — handy to leave off when an orchestrator
-      # (e.g. Coolify) manages updates. Users can still override per browser.
-      - UPDATE_AUTO_CHECK=${UPDATE_AUTO_CHECK:-}
     volumes:
       # Persist app metadata (users / connections / saved queries) across
       # container restarts.

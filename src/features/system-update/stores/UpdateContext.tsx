@@ -6,10 +6,10 @@ import type { AppIdentity, UpdateInfo } from '../lib/types'
 // App-wide update state: one silent check after login (when auto-check is on),
 // exposed to the banner (HomeLayout) and the Settings > Updates panel.
 // Per-version dismissal is remembered so a dismissed banner doesn't reappear
-// until a newer version ships. Auto-check defaults to the instance's
-// UPDATE_AUTO_CHECK env (off unless enabled), and the Settings toggle overrides
-// that per browser — useful under an external orchestrator like Coolify.
-// Manual "Check for updates" always works regardless.
+// until a newer version ships. Auto-check is off unless turned on in the
+// Settings toggle (per browser) — so orchestrator-managed deployments (e.g.
+// Coolify) don't poll GitHub on every sign-in. Manual "Check for updates"
+// always works regardless.
 
 const DISMISS_KEY = 'dbm.update.dismissed'
 const AUTOCHECK_KEY = 'dbm.update.autocheck'
@@ -42,22 +42,15 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
       return null
     }
   })
-  // Per-browser override of the auto-check preference. `null` = follow the
-  // instance default (UPDATE_AUTO_CHECK env, loaded below); 'on'/'off' pin it.
-  const [autoCheckPref, setAutoCheckPref] = useState<boolean | null>(() => {
+  // Per-browser auto-check preference; off until the Settings toggle turns it on.
+  const [autoCheck, setAutoCheckState] = useState<boolean>(() => {
     try {
-      const v = localStorage.getItem(AUTOCHECK_KEY)
-      return v === 'on' ? true : v === 'off' ? false : null
+      return localStorage.getItem(AUTOCHECK_KEY) === 'on'
     } catch {
-      return null
+      return false
     }
   })
   const [identity, setIdentity] = useState<AppIdentity | null>(null)
-  const [serverDefault, setServerDefault] = useState<boolean | null>(null)
-
-  // Resolved preference: an explicit per-browser choice wins; otherwise the
-  // instance default; `false` while the default is still loading.
-  const autoCheck = autoCheckPref ?? serverDefault ?? false
 
   const setAutoCheck = useCallback((next: boolean) => {
     try {
@@ -65,11 +58,11 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
     } catch {
       // Ignore storage failures — preference just won't persist across reloads.
     }
-    setAutoCheckPref(next)
+    setAutoCheckState(next)
   }, [])
 
-  // Load the instance default once authenticated (cheap, local endpoint — it
-  // doesn't hit GitHub, so it's safe even when auto-check is off).
+  // Load the running build's identity once authenticated (cheap, local
+  // endpoint — it doesn't hit GitHub, so it's safe even when auto-check is off).
   useEffect(() => {
     if (!user) return
     let cancelled = false
@@ -78,7 +71,6 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
       // safeRequest's fallback ('0.0.0') means the endpoint didn't answer —
       // don't pass that off as the running version.
       setIdentity(v.version === '0.0.0' ? null : v)
-      setServerDefault(!!v.autoCheckUpdates)
     })
     return () => {
       cancelled = true
@@ -97,9 +89,8 @@ export function UpdateProvider({ children }: { children: ReactNode }) {
   }, [])
 
   // One quiet check once authenticated (handles landing on an already-updated
-  // image as well as a routine newer-release check). Runs only once the resolved
-  // auto-check preference is on — so it waits for the instance default to load,
-  // and flipping the toggle on later triggers a check via the autoCheck dep.
+  // image as well as a routine newer-release check). Runs only while auto-check
+  // is on; flipping the toggle on later triggers a check via the autoCheck dep.
   useEffect(() => {
     if (user && autoCheck && !info) check()
   }, [user, autoCheck, info, check])

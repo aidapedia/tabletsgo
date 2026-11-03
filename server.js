@@ -35,7 +35,6 @@ import cron from 'node-cron'
 import {
   APP_NAME,
   APP_VERSION,
-  AUTO_CHECK_UPDATES,
   BACKUPS_DIR,
   BACKUP_TMP_DIR,
   DIST_DIR,
@@ -3864,7 +3863,7 @@ app.get('/api/connections/:id/streams/sql/catalog', async (req, res) => {
 // The running app's identity — cheap; used by the wizard's verify-poll.
 app.get('/api/system/version', async (req, res) => {
   if (!requireAuth(req, res)) return
-  res.json({ name: APP_NAME, version: APP_VERSION, sha: GIT_SHA, autoCheckUpdates: AUTO_CHECK_UPDATES })
+  res.json({ name: APP_NAME, version: APP_VERSION, sha: GIT_SHA })
 })
 
 // Check for a newer release (cached ~30 min; ?refresh=1 bypasses the cache).

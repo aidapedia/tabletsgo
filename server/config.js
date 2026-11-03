@@ -63,14 +63,9 @@ function resolveAppVersion() {
 }
 
 // ---- In-app updates ----
-export const UPDATE_IMAGE = process.env.UPDATE_IMAGE || 'ghcr.io/aidapedia/tabletsgo'
-export const UPDATE_REPO = process.env.UPDATE_REPO || 'aidapedia/tabletsgo'
-export const UPDATE_HELPER_IMAGE = process.env.UPDATE_HELPER_IMAGE || 'docker:cli'
+// The image, release repo and helper image are constants in system-update.js —
+// the app only ever updates to its own official release.
 export const DOCKER_SOCKET = process.env.DOCKER_SOCKET || '/var/run/docker.sock'
-// Instance-wide default for the per-user "auto-check for updates" preference.
-// Off by default so orchestrator-managed deployments (e.g. Coolify) don't poll
-// GitHub on every sign-in; the Settings > Updates toggle overrides it per browser.
-export const AUTO_CHECK_UPDATES = /^(1|true|yes|on)$/i.test(String(process.env.UPDATE_AUTO_CHECK || ''))
 
 // ---- Sessions ----
 // There is no session infrastructure to configure: logins live in the meta DB

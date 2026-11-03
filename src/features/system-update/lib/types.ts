@@ -1,8 +1,6 @@
 // Shapes returned by the /api/system/* endpoints (see BACKEND_DOCUMENTATION.MD).
 
-// `autoCheckUpdates` is the instance-wide default (UPDATE_AUTO_CHECK env) for the
-// per-user auto-check preference; the Settings toggle overrides it per browser.
-export type AppIdentity = { name?: string; version: string; sha: string; autoCheckUpdates?: boolean }
+export type AppIdentity = { name?: string; version: string; sha: string }
 
 export type ReleaseNote = {
   version: string

@@ -10,14 +10,14 @@
 import fs from 'fs'
 import os from 'os'
 import http from 'http'
-import {
-  APP_VERSION,
-  DOCKER_SOCKET,
-  GIT_SHA,
-  UPDATE_HELPER_IMAGE,
-  UPDATE_IMAGE,
-  UPDATE_REPO,
-} from './config.js'
+import { APP_VERSION, DOCKER_SOCKET, GIT_SHA } from './config.js'
+
+// The official image + release repo — not configurable: an update only ever
+// moves to the next published release of this app.
+const UPDATE_IMAGE = 'ghcr.io/aidapedia/tabletsgo'
+const UPDATE_REPO = 'aidapedia/tabletsgo'
+// Short-lived container that performs the stop/rename/start swap.
+const UPDATE_HELPER_IMAGE = 'docker:cli'
 
 const UPDATE_CACHE_MS = 30 * 60 * 1000
 let updateCache = null // { at, data }
