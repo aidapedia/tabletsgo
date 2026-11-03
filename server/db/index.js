@@ -169,6 +169,7 @@ import fs from 'fs'
 import path from 'path'
 import { randomUUID } from 'crypto'
 import { BACKUP_TMP_DIR, HANDSHAKE_TIMEOUT_MS } from '../config.js'
+import { isModuleEnabled, moduleOffMessage } from '../module-registry.js'
 import { SessionLimitError, setReleaseHandler, touchConnectionSession } from '../sessions/index.js'
 import { diagnose, targetOf } from './diagnose.js'
 import { closeAllTunnels, closeTunnel, reach, withTunnel } from './tunnel.js'
@@ -195,9 +196,23 @@ export class UnsupportedError extends Error {
   }
 }
 
+// Thrown when the engine exists but an instance admin turned it off (Admin →
+// Modules). 403 rather than 400: the request is fine, this instance declines it.
+export class EngineDisabledError extends UnsupportedError {
+  constructor(type) {
+    super(moduleOffMessage(type))
+    this.name = 'EngineDisabledError'
+    this.status = 403
+  }
+}
+
+// Every dispatch goes through here, so a turned-off engine is refused once, in
+// one place — no route asks. (Turning one off is refused while connections use
+// it, so this mostly guards testing and creating one.)
 export function driverFor(conn) {
   const driver = conn && drivers[conn.type]
   if (!driver) throw new UnsupportedError(`Unsupported connection type: ${conn?.type}`)
+  if (!isModuleEnabled(conn.type)) throw new EngineDisabledError(conn.type)
   return driver
 }
 
@@ -325,9 +340,10 @@ export const testConnection = (config) => {
   return withTunnel(config, driver.defaultPort, (reached) => driver.testConnection(reached))
 }
 export const prewarmConnection = optional('prewarm', undefined)
-const releaseHandles = optional('release', undefined)
 export const releaseConnection = (conn) => {
-  releaseHandles(conn)
+  // Straight to the driver, not through driverFor: letting go of a handle must
+  // work even for an engine that has since been turned off.
+  drivers[conn?.type]?.release?.(conn)
   if (conn?.id) closeTunnel(conn.id)
 }
 export const closeAllConnections = () => {
@@ -345,7 +361,7 @@ export const dataTypesFor = (conn) => drivers[conn?.type]?.dataTypes || []
 // this list, rather than a second place naming engines by hand.
 export const designableEngines = () =>
   Object.values(drivers)
-    .filter((d) => d.dataTypes?.length)
+    .filter((d) => d.dataTypes?.length && isModuleEnabled(d.type))
     .map((d) => ({ type: d.type, label: d.label, dataTypes: d.dataTypes }))
 
 // ---- Introspection ----
@@ -383,7 +399,9 @@ export async function handshake(conn, ctx) {
     return { ok: true, latencyMs: Date.now() - started, ...base }
   } catch (error) {
     let failure
-    if (error instanceof UnsupportedError) {
+    if (error instanceof EngineDisabledError) {
+      failure = { reason: 'disabled', cause: error.message, hint: 'Ask an instance administrator to turn it back on in Admin → Modules.', detail: error.message }
+    } else if (error instanceof UnsupportedError) {
       failure = { reason: 'unsupported', cause: error.message, hint: 'Update TabletsGo or pick a supported database type.', detail: error.message }
     } else if (error instanceof SessionLimitError) {
       // Reachable, just full — say so in the same shape as any other failure,

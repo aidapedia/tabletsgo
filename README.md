@@ -30,6 +30,7 @@ Browse data, write queries, design schemas, automate workflows and back up to S3
 - **Data export / import** — CSV, JSON or SQL, with a dry‑run preview.
 - **SSH tunnels** — reach private databases through a bastion (plain SSH, Railway, Cloudflare Access).
 - **Teams** — workspaces, groups, email invites and permission‑based roles on a resource tree.
+- **Modules** — the instance admin chooses which databases (PostgreSQL, SQLite, Redis, Kafka) and features (Backups) the instance offers, in the setup wizard and later under **Administration → Modules**, and sets their instance-wide settings — each database's query timeout and table row limit, Kafka's read caps. Workspaces only see what's on. Turning off a database that connections still use locks those connections instead of deleting them, and notifies their owners by email.
 - **Secure by default** — credentials encrypted at rest (AES‑256‑GCM), brute‑force login protection.
 - **In‑app updates**, split view, configurable keymap, light/dark theme.
 
@@ -63,7 +64,7 @@ node -e "console.log('ENCRYPTION_KEY='+require('crypto').randomBytes(32).toStrin
 docker compose up -d
 ```
 
-Open **http://localhost:3000** and finish the setup wizard. It creates the **instance admin**, who then creates the first workspace (and names its owner) under **Administration → Workspaces**. The owner adds connections.
+Open **http://localhost:3000** and finish the setup wizard. It creates the **instance admin** and asks which databases and features the instance offers (change them later under **Administration → Modules**). The admin then creates the first workspace (and names its owner) under **Administration → Workspaces**. The owner adds connections.
 
 > Keep `ENCRYPTION_KEY` safe — losing or changing it makes saved credentials unreadable.
 
@@ -92,9 +93,7 @@ Set these in `.env`. Everything else is optional.
 | `ENCRYPTION_KEY` | **Required.** Encrypts connection credentials at rest. |
 | `PORT` | Host port (default `3000`). |
 | `META_DB_TYPE` / `META_DATABASE_URL` | Metadata store: `sqlite` (default) or `postgresql` + its URL. |
-| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | Pre‑seed the instance admin instead of using the wizard. |
 | `SMTP_*` | Fallback mail server for invites and resets (admins can set one in the UI). |
-| `KAFKA_READ_MAX_MESSAGES` / `_MAX_BYTES` / `_TIMEOUT_MS` | Caps on one Kafka read (defaults 500 rows / 16 MiB / 8000 ms). |
 
 Full list: [docs/CONFIGURATION.md](docs/CONFIGURATION.md) and [`.env.example`](.env.example).
 

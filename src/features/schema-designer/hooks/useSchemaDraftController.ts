@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { useAuth } from '@/features/auth'
 import { useWorkspaces } from '@/features/workspaces'
-import { useSettings } from '@/features/settings'
+import { useModules } from '@/features/modules'
 import { getDiagram, recordSchemaMigration, runQuery } from '@/shared/api/database'
 import { createSchemaDraft, deleteSchemaDraft, getWorkspaceSchema, updateSchemaDraft } from '../lib/api'
 import { buildCreateTableSql } from '../lib/rollback'
@@ -36,7 +36,8 @@ export default function useSchemaDraftController({ connections, connectionsLoadi
   // theirs, and stamping it locally is what keeps the header honest without a
   // refetch (the row on the server carries the same id — see `persist`).
   const { user } = useAuth()
-  const { queryTimeout } = useSettings()
+  // The release target is picked at release time, so its engine's timeout is too.
+  const { limitsFor } = useModules()
 
   const [draft, setDraft] = useState<SchemaDraftDetail | null>(null)
   const [loading, setLoading] = useState(true)
@@ -466,7 +467,7 @@ export default function useSchemaDraftController({ connections, connectionsLoadi
     let failure: string | null = null
     try {
       for (const item of statements) {
-        const res: any = await runQuery(targetConn, item.sql, { timeoutMs: queryTimeout * 1000 })
+        const res: any = await runQuery(targetConn, item.sql, { timeoutMs: limitsFor(target.type).queryTimeoutSec * 1000 })
         if (res?.error) {
           failure = res.error
           break

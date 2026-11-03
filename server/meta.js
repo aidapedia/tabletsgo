@@ -17,9 +17,7 @@
 import fs from 'fs'
 import path from 'path'
 import { AsyncLocalStorage } from 'async_hooks'
-import { randomUUID } from 'crypto'
 import { META_DATABASE_URL, META_DB_PATH, META_DB_TYPE } from './config.js'
-import { sha256 } from './crypto.js'
 import { openMeta, snapshotMeta } from './meta-connection.js'
 
 const isPostgres = META_DB_TYPE === 'postgresql'
@@ -166,26 +164,4 @@ export async function checkMetaIntegrity() {
   if (isPostgres) return (await db().$queryRaw`SELECT 1 AS ok`)[0]?.ok === 1 ? 'ok' : 'failed'
   const rows = await db().$queryRawUnsafe('PRAGMA integrity_check')
   return rows.map((r) => r.integrity_check).join('; ')
-}
-
-// Optional pre-seed from env — skips the first-run setup wizard. Seeds the
-// instance administrator and nothing else, exactly like the wizard: an admin
-// administers workspaces but never belongs to one (CLAUDE.md "AUTH MODEL"), so
-// a workspace created here could only be ownerless. The admin signs in and
-// creates the first workspace with a real owner (Admin → Workspaces).
-export async function seedAdminFromEnv() {
-  const hasUsers = !!(await db().users.findFirst({ select: { id: true } }))
-  if (hasUsers || !process.env.ADMIN_USERNAME || !process.env.ADMIN_PASSWORD) return
-
-  await db().users.create({
-    data: {
-      id: randomUUID(),
-      username: process.env.ADMIN_USERNAME,
-      password_hash: sha256(process.env.ADMIN_PASSWORD),
-      name: 'Admin',
-      role: 'admin',
-      status: 'active',
-    },
-  })
-  console.log(`🌱 Seeded admin ${process.env.ADMIN_USERNAME} (create your first workspace from Admin → Workspaces)`)
 }

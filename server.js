@@ -35,7 +35,6 @@ import cron from 'node-cron'
 import {
   APP_NAME,
   APP_VERSION,
-  AUTO_CHECK_UPDATES,
   BACKUPS_DIR,
   BACKUP_TMP_DIR,
   DIST_DIR,
@@ -46,7 +45,7 @@ import {
   PORT,
   SCHEDULER_ENABLED,
 } from './server/config.js'
-import { backupMeta, checkMetaIntegrity, closeMeta, db as meta, seedAdminFromEnv, transaction } from './server/meta.js'
+import { backupMeta, checkMetaIntegrity, closeMeta, db as meta, transaction } from './server/meta.js'
 import { sha256 } from './server/crypto.js'
 import { describeError, filterAsync, safeJson, sanitizeForKey } from './server/util.js'
 import {
@@ -145,6 +144,9 @@ import {
   smtpConfig,
 } from './server/mail.js'
 import { clearGlobalSmtp, publicGlobalSmtp, saveGlobalSmtp } from './server/app-settings.js'
+import { assertModuleEnabled, isModuleEnabled, moduleOffMessage, optionalModuleSetting } from './server/module-registry.js'
+import { adminModules, loadModules, publicModules, updateModules } from './server/module-settings.js'
+import { notifyModuleOwners } from './server/module-notices.js'
 import {
   bumpSchemaVersion,
   deleteConnectionMetadata,
@@ -298,7 +300,8 @@ app.use(sessionMiddleware)
 let bootReady = false
 // The role policy is read once here; every permission check reads it from memory.
 await loadPolicy()
-await seedAdminFromEnv()
+// Same for the instance's modules: the db layer asks on every dispatch.
+await loadModules()
 bootReady = true
 
 // The database/schema a request is aimed at. Every db layer call takes one, and
@@ -861,9 +864,56 @@ app.post('/api/admin/smtp/test', async (req, res) => {
   }
 })
 
+// ---- Modules ----
+// Which databases and features this instance offers, and their instance-wide
+// settings (see server/module-registry.js). The first-run wizard writes them
+// with the new admin's token, through these same routes.
+
+app.get('/api/admin/modules', async (_req, res) => res.json({ modules: await adminModules() }))
+
+// A refused change (an engine that connections still use, without `force`)
+// answers 409 with the connections, so the admin can turn it off anyway.
+const sendModuleError = (res, error) =>
+  res.status(error.status || 500).json({ error: error.message, module: error.module, connections: error.connections })
+
+// Batch: { modules: { [id]: { enabled?, settings? } }, force? } — what the wizard sends.
+app.put('/api/admin/modules', async (req, res) => {
+  try {
+    res.json({ modules: await updateModules(req.body?.modules, { force: req.body?.force === true }) })
+  } catch (error) {
+    sendModuleError(res, error)
+  }
+})
+
+// One module: { enabled?, settings?, force?, notify? } — what Admin → Modules
+// sends. `force` turns off an engine connections still use (they are locked,
+// not deleted); `notify` then notifies their owners by email, one per unique
+// address. The switch stands even if that fails — `notified` says how it went.
+app.put('/api/admin/modules/:id', async (req, res) => {
+  const { enabled, settings, force, notify } = req.body || {}
+  let modules
+  try {
+    modules = await updateModules({ [req.params.id]: { enabled, settings } }, { force: force === true })
+  } catch (error) {
+    return sendModuleError(res, error)
+  }
+  let notified
+  if (force === true && notify === true && enabled === false) {
+    notified = await notifyModuleOwners(req.params.id).catch((error) => ({ error: error.message }))
+  }
+  res.json({ modules, notified })
+})
+
 // ============================================================================
 // Workspaces
 // ============================================================================
+
+// What's turned on, for any signed-in user — the client hides the rest (the
+// server refuses it either way).
+app.get('/api/modules', (req, res) => {
+  if (!requireAuth(req, res)) return
+  res.json({ modules: publicModules() })
+})
 
 // The instance's role catalog, readable by any signed-in user: a workspace owner
 // needs the names to assign one, and the client needs the permission lists to
@@ -1511,7 +1561,9 @@ app.get('/api/connections', async (req, res) => {
   const workspaceId = req.query.workspace
   if (!workspaceId) return res.json([])
   if (!(await isMember(workspaceId, user.id))) return res.status(403).json({ error: 'Forbidden' })
-  res.json(await openableConnections(workspaceId, user.id))
+  // `locked`: its database is turned off on this instance — listed, so nobody
+  // wonders where it went, but nothing on it works until it's back on.
+  res.json((await openableConnections(workspaceId, user.id)).map((c) => ({ ...c, locked: !isModuleEnabled(c.type) })))
 })
 
 // May this caller tunnel a probe through `gatewayId`? A gateway is a way into
@@ -1555,6 +1607,7 @@ app.post('/api/connections', async (req, res) => {
   const user = await requirePermission(req, res, workspaceId, 'connections.create')
   if (!user) return
   try {
+    assertModuleEnabled(req.body.type)
     await assertGatewayForWorkspace(req.body.sshGatewayId, workspaceId)
   } catch (error) {
     return fail(res, error)
@@ -1581,6 +1634,7 @@ app.post('/api/connections/import', async (req, res) => {
   const user = await requirePermission(req, res, workspaceId, 'connections.create')
   if (!user) return
   try {
+    assertModuleEnabled(document?.connection?.type)
     const imported = await importConnectionDoc(document, { workspaceId, ownerId: user.id, name, settings })
     await createResourceNode('connection', imported.id, { name: imported.name, ownerId: user.id, workspaceId })
     res.json(imported)
@@ -1766,6 +1820,14 @@ app.use('/api/connections/:id', async (req, res, next) => {
   const conn = await getConnection(req.params.id)
   if (!conn) return res.status(404).json({ error: 'Connection not found' })
   if (conn.workspaceId && !(await userCanAccessConnection(conn, user.id))) return res.status(403).json({ error: 'Forbidden' })
+  // Its database turned off in Admin → Modules: the connection is locked —
+  // kept exactly as it is, but nothing opens, edits, exports or backs it up.
+  // Deleting it is the one way out, so its owner can still clean up. The
+  // handshake passes too: the db layer refuses the engine before dialing and
+  // answers `reason: 'disabled'`, which is how the console explains the lock.
+  const deleting = req.method === 'DELETE' && (req.path === '/' || req.path === '')
+  const diagnosing = req.method === 'GET' && req.path === '/handshake'
+  if (!isModuleEnabled(conn.type) && !deleting && !diagnosing) return res.status(403).json({ error: moduleOffMessage(conn.type), locked: true })
   next()
 })
 
@@ -2236,6 +2298,9 @@ app.all('/api/hooks/wf/:wid/:token', async (req, res) => {
   if (!ok) return res.status(401).json({ error: 'Invalid webhook token' })
   const conn = await getConnection(workflow.connectionId)
   if (!conn) return res.status(404).json({ error: 'Connection not found' })
+  // Outside the connection guard, so the lock is checked here too: a workflow on
+  // a connection whose database is turned off doesn't run.
+  if (!isModuleEnabled(conn.type)) return res.status(403).json({ error: moduleOffMessage(conn.type), locked: true })
   // The request body seeds the trigger; query params are exposed too so simple
   // GET pings can pass data without a body.
   const input = { body: req.body ?? null, query: req.query || {}, headers: req.headers, method: req.method }
@@ -2512,6 +2577,17 @@ app.delete('/api/connections/:id/dashboards/:did', async (req, res) => {
 // Backup (standalone system: own schedule + run history, independent of the
 // generic workflow engine — see server/backup/)
 // ============================================================================
+
+// Every backup and restore route is the Backup module's: off, they answer 403.
+// Schedules and run history stay put and resume when it's turned back on.
+app.use(['/api/connections/:id/backup', '/api/connections/:id/restore'], (_req, res, next) => {
+  try {
+    assertModuleEnabled('backup')
+    next()
+  } catch (error) {
+    fail(res, error)
+  }
+})
 
 // Current backup schedule for this connection (null if none has been created yet).
 app.get('/api/connections/:id/backup/schedule', async (req, res) => {
@@ -3032,7 +3108,11 @@ app.get('/api/connections/:id/table/:table', async (req, res) => {
   const conn = await connOr404(req, res)
   if (!conn) return
   try {
-    res.json(await db.getTableData(conn, queryCtx(req), { table: req.params.table, limit: parseInt(req.query.limit) || 200 }))
+    // Opening a table fetches at most the engine's row limit (Admin → Modules),
+    // whatever the client asks for. Export pages through the db layer, not here.
+    const cap = optionalModuleSetting(conn.type, 'tableRowLimit') ?? Infinity
+    const limit = Math.min(parseInt(req.query.limit) || 200, cap)
+    res.json(await db.getTableData(conn, queryCtx(req), { table: req.params.table, limit }))
   } catch (error) {
     fail(res, error)
   }
@@ -3782,7 +3862,7 @@ app.get('/api/connections/:id/streams/sql/catalog', async (req, res) => {
 // The running app's identity — cheap; used by the wizard's verify-poll.
 app.get('/api/system/version', async (req, res) => {
   if (!requireAuth(req, res)) return
-  res.json({ name: APP_NAME, version: APP_VERSION, sha: GIT_SHA, autoCheckUpdates: AUTO_CHECK_UPDATES })
+  res.json({ name: APP_NAME, version: APP_VERSION, sha: GIT_SHA })
 })
 
 // Check for a newer release (cached ~30 min; ?refresh=1 bypasses the cache).
@@ -3918,7 +3998,7 @@ app.use((error, req, res, next) => {
 if (SCHEDULER_ENABLED) {
   cron.schedule('* * * * *', () => {
     runDueWorkflows().catch((e) => console.error('Scheduler tick error:', e.message))
-    runDueBackups().catch((e) => console.error('Backup scheduler tick error:', e.message))
+    if (isModuleEnabled('backup')) runDueBackups().catch((e) => console.error('Backup scheduler tick error:', e.message))
   })
 }
 

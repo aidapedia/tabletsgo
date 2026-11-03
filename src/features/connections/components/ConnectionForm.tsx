@@ -2,6 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { useConnections } from '../stores/ConnectionsContext'
 import { BackupConfigForm } from '@/features/backup'
+import { useModules } from '@/features/modules'
 import { addressOf, listSshGateways, type SshGateway } from '@/features/ssh'
 import { useWorkspaces } from '@/features/workspaces'
 import { useToast } from '@/shared/ui/feedback/Toast'
@@ -317,8 +318,10 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
   useEffect(() => {
     if (workspaceId) listSshGateways(workspaceId).then(setGateways)
   }, [workspaceId])
-  // Only the dump-based engines can be backed up; Redis has no SQL export.
-  const backupSupported = isEdit && (form.type === 'sqlite' || form.type === 'postgresql')
+  // Only the dump-based engines can be backed up; Redis has no SQL export. And
+  // only while the Backup module is on.
+  const { isEnabled } = useModules()
+  const backupSupported = isEdit && isEnabled('backup') && (form.type === 'sqlite' || form.type === 'postgresql')
   const tabs = [
     { id: 'general', label: 'General' },
     ...(backupSupported ? [{ id: 'backup', label: 'Backup' }] : []),

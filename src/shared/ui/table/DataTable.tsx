@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { Fragment, type ReactNode } from 'react'
 import EmptyState from '@/shared/ui/feedback/EmptyState'
 import LoadingState from '@/shared/ui/feedback/LoadingState'
 import { ChevronDown } from '@/shared/ui/icons'
@@ -23,6 +23,10 @@ import type { ListView } from './useListView'
  * The card is built from the columns: the first is its title, a trailing
  * column with an empty header is its action footer, and the rest are labelled
  * fields. Pass `renderCard` when a list wants a card of its own.
+ *
+ * `renderExpanded(row)` (list view) draws a full-width detail row under a row
+ * whenever it returns something — which rows are open is the caller's state,
+ * so pair it with `onRowClick` (or a chevron cell) that toggles it.
  */
 export type Sort = { key: string; dir: 'asc' | 'desc' }
 
@@ -63,6 +67,8 @@ export type DataTableProps<T> = {
   view?: ListView
   /** Grid view only: draw this row's card yourself instead of the generic one. */
   renderCard?: (row: T) => ReactNode
+  /** List view only: a detail row under this row, or null/undefined while it's collapsed. */
+  renderExpanded?: (row: T) => ReactNode
   className?: string
 }
 
@@ -94,6 +100,7 @@ export default function DataTable<T>({
   onPageSizeChange,
   view = 'list',
   renderCard,
+  renderExpanded,
   className = '',
 }: DataTableProps<T>) {
   // Nothing to page through on an empty/loading table — the footer would just
@@ -179,24 +186,35 @@ export default function DataTable<T>({
             </tr>
           </thead>
           <tbody>
-            {rows.map((row) => (
-              <tr
-                key={rowKey(row)}
-                onClick={onRowClick ? () => onRowClick(row) : undefined}
-                className={`border-b border-edge/60 last:border-b-0 transition-colors ${
-                  onRowClick ? 'cursor-pointer hover:bg-card-hover' : ''
-                } ${rowClassName?.(row) || ''}`}
-              >
-                {columns.map((col) => (
-                  <td
-                    key={col.key}
-                    className={`px-4 py-3 align-middle ${ALIGN[col.align || 'left']} ${col.className || ''}`}
+            {rows.map((row) => {
+              const expanded = renderExpanded?.(row)
+              return (
+                <Fragment key={rowKey(row)}>
+                  <tr
+                    onClick={onRowClick ? () => onRowClick(row) : undefined}
+                    className={`border-b border-edge/60 last:border-b-0 transition-colors ${
+                      onRowClick ? 'cursor-pointer hover:bg-card-hover' : ''
+                    } ${rowClassName?.(row) || ''}`}
                   >
-                    {col.render ? col.render(row) : ((row as any)[col.key] ?? '—')}
-                  </td>
-                ))}
-              </tr>
-            ))}
+                    {columns.map((col) => (
+                      <td
+                        key={col.key}
+                        className={`px-4 py-3 align-middle ${ALIGN[col.align || 'left']} ${col.className || ''}`}
+                      >
+                        {col.render ? col.render(row) : ((row as any)[col.key] ?? '—')}
+                      </td>
+                    ))}
+                  </tr>
+                  {expanded != null && expanded !== false && (
+                    <tr className="border-b border-edge/60 bg-elevated/30 last:border-b-0">
+                      <td colSpan={columns.length} className="p-0">
+                        {expanded}
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              )
+            })}
           </tbody>
         </table>
       </div>

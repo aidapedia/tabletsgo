@@ -1,6 +1,7 @@
 import { ThemeProvider } from './ThemeContext'
 import { ToastProvider } from '@/shared/ui/feedback/Toast'
 import { AuthProvider } from '@/features/auth'
+import { ModulesProvider } from '@/features/modules'
 import { WorkspaceProvider } from '@/features/workspaces'
 import { ConnectionsProvider } from '@/features/connections'
 import { SettingsProvider } from '@/features/settings'
@@ -16,11 +17,13 @@ export function AppProviders({ children }: { children: React.ReactNode }) {
         <KeymapProvider>
           <ToastProvider>
             <AuthProvider>
-              <UpdateProvider>
-                <WorkspaceProvider>
-                  <ConnectionsProvider>{children}</ConnectionsProvider>
-                </WorkspaceProvider>
-              </UpdateProvider>
+              <ModulesProvider>
+                <UpdateProvider>
+                  <WorkspaceProvider>
+                    <ConnectionsProvider>{children}</ConnectionsProvider>
+                  </WorkspaceProvider>
+                </UpdateProvider>
+              </ModulesProvider>
             </AuthProvider>
           </ToastProvider>
         </KeymapProvider>

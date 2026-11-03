@@ -11,7 +11,7 @@ import { useToast } from '@/shared/ui/feedback/Toast'
 import { ChevronDown, GaugeIcon, InfoIcon, SaveIcon, WandIcon } from '@/shared/ui/icons'
 import useServerVersion from '@/shared/hooks/useServerVersion'
 import { formatCombo, useKeymap, useShortcut } from '@/features/keymap'
-import { useSettings } from '@/features/settings'
+import { useEngineLimits } from '@/features/modules'
 import { sqlCommandDoc, sqlReferenceFor, sqlReferenceGroups } from '../lib/sql-reference'
 
 const MIN_PANE = 100 // px — floor for both the editor and results panes while dragging
@@ -26,7 +26,7 @@ function primaryTable(sql) {
 export default function QueryEditor({ conn, dialect, initialSql, tabKey, persisted, onPersist, onRan, onSave, onAnalyze }) {
   const toast = useToast()
   const { bindings } = useKeymap()
-  const { queryTimeout } = useSettings()
+  const { queryTimeoutSec } = useEngineLimits(conn?.type)
   // Seed from the persisted snapshot (restored on tab switch) when present,
   // otherwise from initialSql for a fresh tab.
   const [sql, setSql] = useState(persisted?.sql ?? initialSql ?? '')
@@ -122,7 +122,7 @@ export default function QueryEditor({ conn, dialect, initialSql, tabKey, persist
     const trimmed = text.trim()
     const table = primaryTable(trimmed)
     try {
-      const queryResult = await runQuery(conn, text, { timeoutMs: queryTimeout * 1000 })
+      const queryResult = await runQuery(conn, text, { timeoutMs: queryTimeoutSec * 1000 })
       const ms = Math.round(performance.now() - startedAt)
       setElapsedMs(ms)
       if (queryResult.error) {

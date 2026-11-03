@@ -36,12 +36,9 @@ SMTP/admin-seed fallbacks are the exception, read where they're used).
   without it.
 
 ### First-run seeding
-- `ADMIN_USERNAME` (email) / `ADMIN_PASSWORD` — **optional** pre-seed of the
-  instance admin, and **only** that: neither this nor the wizard creates a
-  workspace, because an admin can't belong to one. Unset ⇒ the in-browser
-  first-run setup wizard runs (default). **Don't bake defaults into the
-  Dockerfile.** (`WORKSPACE_NAME` was removed in 0.21.3 along with the ownerless
-  seeded workspace.)
+- **None.** The in-browser first-run setup wizard creates the instance admin;
+  there is no env pre-seed (`ADMIN_USERNAME` / `ADMIN_PASSWORD` were removed, as
+  was `WORKSPACE_NAME` in 0.21.3). Don't reintroduce one.
 
 ### Mail
 - `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` /
@@ -83,26 +80,20 @@ SMTP/admin-seed fallbacks are the exception, read where they're used).
   handshake (`GET /api/connections/:id/handshake`) waits for a database before
   reporting a timeout. Default `8000`; it runs while the user waits on the "Connect"
   button, so keep it short.
-- `KAFKA_READ_MAX_MESSAGES` / `KAFKA_READ_MAX_BYTES` / `KAFKA_READ_TIMEOUT_MS` —
-  **optional**. Caps on one Kafka read (topic browser, `CONSUME`, workflow and
-  dashboard queries): rows returned (default `500`), bytes fetched from the
-  brokers — what a `WHERE` filter scans through (default 16 MiB), and time (default
-  `8000`). A read stops at whichever it hits first and reports which.
+- Kafka's read caps are **not** env vars (`KAFKA_READ_*` were removed): an
+  instance admin sets them in Admin → Modules → Kafka, as module settings (see
+  `server/module-registry.js`). So are each engine's query timeout and table row
+  limit. A value an admin should change without a redeploy belongs there, not
+  here — add a `settings` entry on its module.
 
 ### Updates
-- `TABLETSGO_TAG` — **optional**. Published image tag `docker compose` runs (and
-  pulls on self-update). Default `latest`; one-click self-update works best on a
-  moving tag.
-- `UPDATE_AUTO_CHECK` — **optional**. Instance-wide default (truthy
-  `1/true/yes/on`; default off) for the per-user "auto-check for updates" toggle in
-  Settings > Updates, surfaced via `/api/system/version`'s `autoCheckUpdates`. Leave
-  off when an orchestrator (e.g. Coolify) manages updates; users can still override
-  per browser.
-- `UPDATE_IMAGE` / `UPDATE_REPO` / `UPDATE_HELPER_IMAGE` — **optional** in-app
-  update checker tuning (default to the official image/repo; override only for a
-  fork). The checker compares the running `(version, sha)` against the latest GitHub
-  Release + its `release.json` contract. Apply method is auto-detected: Docker socket
-  mounted ⇒ one-click self-update via `UPDATE_HELPER_IMAGE` (default `docker:cli`);
-  otherwise the wizard shows a manual `docker compose pull` command. `APP_VERSION` /
-  `GIT_SHA` are baked into the image at build time and reported by
-  `/api/system/version`.
+- `DOCKER_SOCKET` — **optional**. Path of the Docker socket the self-update
+  drives (default `/var/run/docker.sock`). Apply method is auto-detected: socket
+  mounted ⇒ one-click self-update; otherwise the wizard shows a manual
+  `docker compose pull` command. `APP_VERSION` / `GIT_SHA` are baked into the image
+  at build time and reported by `/api/system/version`.
+- **Not env vars** (removed): `TABLETSGO_TAG` (compose always runs `:latest`),
+  `UPDATE_IMAGE` / `UPDATE_REPO` / `UPDATE_HELPER_IMAGE` (constants in
+  `server/system-update.js` — the app only updates to its own official release)
+  and `UPDATE_AUTO_CHECK` (auto-check is a per-browser Settings > Updates toggle,
+  off by default). Don't reintroduce them.

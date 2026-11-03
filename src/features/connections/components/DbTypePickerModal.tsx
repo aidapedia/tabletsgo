@@ -1,11 +1,17 @@
 import IconButton from '@/shared/ui/buttons/IconButton'
 import { CloseIcon, DatabaseIcon, DbLogo } from '@/shared/ui/icons'
 import { DB_CATALOG } from '@/shared/config/databaseTypes'
+import { useModules } from '@/features/modules'
 
 export { DB_CATALOG, TYPE_LABEL } from '@/shared/config/databaseTypes'
 
 // Full-screen "choose a database type" modal shown before the create form.
+// An engine an instance admin turned off isn't offered at all (the server would
+// refuse it anyway); the "Soon" placeholders stay, since nobody can turn those on.
 export default function DbTypePickerModal({ onClose, onPick }: { onClose: () => void; onPick: (typeId: string) => void }) {
+  const { isEnabled } = useModules()
+  const offered = DB_CATALOG.filter((db) => !db.available || isEnabled(db.id))
+  const someOff = offered.length < DB_CATALOG.length
   return (
     <div
       className="fixed inset-0 z-50 flex animate-fade items-center justify-center bg-black/60 p-6 backdrop-blur-[3px]"
@@ -25,7 +31,7 @@ export default function DbTypePickerModal({ onClose, onPick }: { onClose: () => 
           </IconButton>
         </div>
         <div className="mt-5 grid grid-cols-3 gap-3 max-[560px]:grid-cols-2 max-[400px]:grid-cols-1">
-          {DB_CATALOG.map((db) => (
+          {offered.map((db) => (
             <button
               key={db.id}
               disabled={!db.available}
@@ -55,6 +61,11 @@ export default function DbTypePickerModal({ onClose, onPick }: { onClose: () => 
             </button>
           ))}
         </div>
+        {someOff && (
+          <p className="mt-4 text-[11px] leading-relaxed text-ink-faint">
+            Don’t see your database? Your instance administrator chooses which databases are available.
+          </p>
+        )}
       </div>
     </div>
   )

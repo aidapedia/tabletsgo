@@ -8,7 +8,7 @@ import Tooltip from '@/shared/ui/overlay/Tooltip'
 import { useToast } from '@/shared/ui/feedback/Toast'
 import { ChevronDown, InfoIcon, SaveIcon } from '@/shared/ui/icons'
 import { formatCombo, useKeymap, useShortcut } from '@/features/keymap'
-import { useSettings } from '@/features/settings'
+import { useEngineLimits } from '@/features/modules'
 import RedisEditor from './RedisEditor'
 import { liveRedisDoc, redisCommandDoc } from '../lib/docs'
 import { isWriteCommand, meetsVersion, REDIS_COMMANDS, REDIS_GROUP_LABELS } from '../lib/commands'
@@ -60,7 +60,7 @@ export default function RedisConsole({
 }: any) {
   const toast = useToast()
   const { bindings } = useKeymap()
-  const { queryTimeout } = useSettings()
+  const { queryTimeoutSec } = useEngineLimits(conn?.type)
   const [command, setCommand] = useState(persisted?.sql ?? initialCommand ?? '')
   const [result, setResult] = useState(persisted?.result ?? null)
   const [error, setError] = useState(persisted?.error ?? null)
@@ -136,7 +136,7 @@ export default function RedisConsole({
     try {
       // The server takes Redis command text on the same /query route the SQL
       // engines use, and answers in the same shape.
-      const res: any = await runQuery(conn, text, { timeoutMs: queryTimeout * 1000 })
+      const res: any = await runQuery(conn, text, { timeoutMs: queryTimeoutSec * 1000 })
       const ms = Math.round(performance.now() - startedAt)
       setElapsedMs(ms)
       const first = trimmed.split(/\r?\n/).find((l) => l.trim() && !l.trim().startsWith('#')) || trimmed

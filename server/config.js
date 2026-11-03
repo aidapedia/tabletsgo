@@ -63,14 +63,9 @@ function resolveAppVersion() {
 }
 
 // ---- In-app updates ----
-export const UPDATE_IMAGE = process.env.UPDATE_IMAGE || 'ghcr.io/aidapedia/tabletsgo'
-export const UPDATE_REPO = process.env.UPDATE_REPO || 'aidapedia/tabletsgo'
-export const UPDATE_HELPER_IMAGE = process.env.UPDATE_HELPER_IMAGE || 'docker:cli'
+// The image, release repo and helper image are constants in system-update.js —
+// the app only ever updates to its own official release.
 export const DOCKER_SOCKET = process.env.DOCKER_SOCKET || '/var/run/docker.sock'
-// Instance-wide default for the per-user "auto-check for updates" preference.
-// Off by default so orchestrator-managed deployments (e.g. Coolify) don't poll
-// GitHub on every sign-in; the Settings > Updates toggle overrides it per browser.
-export const AUTO_CHECK_UPDATES = /^(1|true|yes|on)$/i.test(String(process.env.UPDATE_AUTO_CHECK || ''))
 
 // ---- Sessions ----
 // There is no session infrastructure to configure: logins live in the meta DB
@@ -121,13 +116,8 @@ export const LOGIN_ADMIN_COOLDOWN_MS = envInt('LOGIN_ADMIN_COOLDOWN_MS', 15 * 60
 // otherwise ride the driver's own multi-minute TCP timeout.
 export const HANDSHAKE_TIMEOUT_MS = parseInt(process.env.HANDSHAKE_TIMEOUT_MS, 10) || 8000
 
-// Every Kafka read (the topic browser, CONSUME, a workflow or dashboard query)
-// is bounded — there is no long-lived consumer behind a request. It stops at
-// whichever comes first: this many rows returned, this many bytes fetched from
-// the brokers (what a WHERE filter scans through), or this much time.
-export const KAFKA_READ_MAX_MESSAGES = parseInt(process.env.KAFKA_READ_MAX_MESSAGES, 10) || 500
-export const KAFKA_READ_MAX_BYTES = parseInt(process.env.KAFKA_READ_MAX_BYTES, 10) || 16 * 1024 * 1024
-export const KAFKA_READ_TIMEOUT_MS = parseInt(process.env.KAFKA_READ_TIMEOUT_MS, 10) || 8000
+// Kafka's read caps (messages / bytes / time per read) are not env vars: an
+// instance admin sets them in Admin → Modules — see server/module-registry.js.
 
 // ---- Schedulers ----
 export const SCHEDULER_ENABLED = process.env.WORKFLOW_SCHEDULER_ENABLED !== 'false'

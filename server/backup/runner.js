@@ -11,6 +11,7 @@ import fs from 'fs'
 import { randomUUID } from 'crypto'
 import { db } from '../meta.js'
 import { getConnection } from '../connections.js'
+import { isModuleEnabled } from '../module-registry.js'
 import { computeNextRun, describeError, safeJson, sleep } from '../util.js'
 import { exportDatabaseToFile } from '../db/index.js'
 import { LOCAL_STORAGE_ID, storeFile } from '../storage.js'
@@ -112,7 +113,8 @@ export async function runDueBackups() {
       data: { next_run_at: computeNextRun(schedule.frequency, schedule.hour_of_day) },
     })
     const conn = await getConnection(schedule.connection_id)
-    if (!conn) continue
+    // Locked (its database turned off in Admin → Modules): skip, don't fail and email.
+    if (!conn || !isModuleEnabled(conn.type)) continue
     runBackupWithRetries(schedule, conn).catch((e) => console.error(`Scheduled backup failed for connection ${schedule.connection_id}:`, e.message))
   }
 }

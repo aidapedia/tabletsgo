@@ -20,9 +20,10 @@
  * fetch path uses its internal Cluster/Broker — the same machinery its own
  * Consumer drives — which is why `kafkajs` is pinned to an exact version.
  *
- * Every read is bounded by KAFKA_READ_MAX_MESSAGES / _BYTES / _TIMEOUT_MS: there
- * is no long-lived consumer behind a request, the same reason the Redis driver
- * refuses SUBSCRIBE.
+ * Every read is bounded by the Kafka module's read limits (messages / bytes /
+ * time — Admin → Modules, see server/module-registry.js):
+ * there is no long-lived consumer behind a request, the same reason the Redis
+ * driver refuses SUBSCRIBE.
  */
 
 import { createRequire } from 'module'
@@ -30,7 +31,7 @@ import net from 'net'
 import tls from 'tls'
 import { randomUUID } from 'crypto'
 import kafkajs from 'kafkajs'
-import { KAFKA_READ_MAX_BYTES, KAFKA_READ_MAX_MESSAGES, KAFKA_READ_TIMEOUT_MS } from '../config.js'
+import { moduleSetting } from '../module-registry.js'
 import { classifyTransport } from './diagnose.js'
 import { clientCertOf, mskIamProvider, oauthBearerProvider } from './kafka-auth.js'
 import * as registry from './kafka-registry.js'
@@ -576,7 +577,8 @@ async function alterBroker(conn, brokerId, { configs } = {}) {
 
 // ---- Reading messages --------------------------------------------------------
 
-const clampLimit = (limit) => Math.min(Math.max(parseInt(limit) || 100, 1), KAFKA_READ_MAX_MESSAGES)
+// Read per call, not at import: an admin can change them without a restart.
+const clampLimit = (limit) => Math.min(Math.max(parseInt(limit) || 100, 1), moduleSetting('kafka', 'readMaxMessages'))
 
 /**
  * Where each partition's read starts and stops, for a `from` position:
@@ -628,7 +630,8 @@ async function readMessages(conn, { topic, partition, from = 'latest', limit, fi
   const predicate = compileFilter(filter)
   const filtered = Boolean(String(filter || '').trim())
   const started = Date.now()
-  const deadline = started + KAFKA_READ_TIMEOUT_MS
+  const deadline = started + moduleSetting('kafka', 'readTimeoutMs')
+  const maxBytes = moduleSetting('kafka', 'readMaxBytes')
 
   return withAdmin(conn, topic, async (admin) => {
     const offsets = await admin.fetchTopicOffsets(topic)
@@ -657,7 +660,7 @@ async function readMessages(conn, { topic, partition, from = 'latest', limit, fi
       let retried = false
       while (offset < to) {
         if (Date.now() > deadline) { cappedBy = 'time'; return collected }
-        if (bytes >= KAFKA_READ_MAX_BYTES) { cappedBy = 'bytes'; return collected }
+        if (bytes >= maxBytes) { cappedBy = 'bytes'; return collected }
         if (collected >= enough) return collected
         const range = { partition: partitionId, end: to }
 
@@ -670,7 +673,7 @@ async function readMessages(conn, { topic, partition, from = 'latest', limit, fi
             isolationLevel: 0,
             maxWaitTime: 50,
             minBytes: 1,
-            maxBytes: Math.min(4 * 1024 * 1024, KAFKA_READ_MAX_BYTES),
+            maxBytes: Math.min(4 * 1024 * 1024, maxBytes),
             topics: [{ topic, partitions: [{ partition: range.partition, fetchOffset: String(offset), maxBytes: 1024 * 1024 }] }],
           })
         } catch (error) {

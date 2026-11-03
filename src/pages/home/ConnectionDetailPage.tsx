@@ -9,6 +9,7 @@ import {
   useConnectHandshake,
 } from '@/features/connections'
 import { useWorkspaces } from '@/features/workspaces'
+import { useModules } from '@/features/modules'
 import ConfirmDialog from '@/shared/ui/feedback/ConfirmDialog'
 import LoadingState from '@/shared/ui/feedback/LoadingState'
 import EmptyState from '@/shared/ui/feedback/EmptyState'
@@ -40,7 +41,8 @@ export default function ConnectionDetailPage() {
   // runs before the connection is known to exist, so an unresolved connection
   // gets the full list and `useTabRoute` only redirects once there is a type
   // saying the segment doesn't belong here.
-  const { active, onTab } = useTabRoute(`/connections/${id}`, detailTabs(conn?.type), tab)
+  const { isEnabled } = useModules()
+  const { active, onTab } = useTabRoute(`/connections/${id}`, detailTabs(conn?.type, { backup: isEnabled('backup'), locked: conn?.locked }), tab)
 
   if (loading || workspaceLoading) return <LoadingState className="py-20 text-center" />
   if (!conn) {

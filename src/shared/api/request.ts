@@ -41,7 +41,9 @@ export async function request<T = any>(path: string, { method = 'GET', body, sig
     // A 401 on a call that carried a session token means that token is
     // expired/invalid — tell the auth store to sign out and bounce to login.
     if (res.status === 401 && token) window.dispatchEvent(new Event('auth:unauthorized'))
-    throw new Error((data as any)?.error || `${method} ${path} failed (${res.status})`)
+    // `status` and `data` ride along for the callers that act on more than the
+    // message (a 409 that lists what blocked it).
+    throw Object.assign(new Error((data as any)?.error || `${method} ${path} failed (${res.status})`), { status: res.status, data })
   }
   return data as T
 }
