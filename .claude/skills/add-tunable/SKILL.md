@@ -83,11 +83,11 @@ SMTP/admin-seed fallbacks are the exception, read where they're used).
   handshake (`GET /api/connections/:id/handshake`) waits for a database before
   reporting a timeout. Default `8000`; it runs while the user waits on the "Connect"
   button, so keep it short.
-- `KAFKA_READ_MAX_MESSAGES` / `KAFKA_READ_MAX_BYTES` / `KAFKA_READ_TIMEOUT_MS` —
-  **optional**. Caps on one Kafka read (topic browser, `CONSUME`, workflow and
-  dashboard queries): rows returned (default `500`), bytes fetched from the
-  brokers — what a `WHERE` filter scans through (default 16 MiB), and time (default
-  `8000`). A read stops at whichever it hits first and reports which.
+- Kafka's read caps are **not** env vars (`KAFKA_READ_*` were removed): an
+  instance admin sets them in Admin → Modules → Kafka, as module settings (see
+  `server/module-registry.js`). So are each engine's query timeout and table row
+  limit. A value an admin should change without a redeploy belongs there, not
+  here — add a `settings` entry on its module.
 
 ### Updates
 - `TABLETSGO_TAG` — **optional**. Published image tag `docker compose` runs (and

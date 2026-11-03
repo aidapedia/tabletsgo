@@ -1463,6 +1463,94 @@ with the password AES-256-GCM encrypted at rest — it is never returned.
 - **Example:** `PUT http://localhost:3000/api/admin/smtp` body
   `{ "host": "smtp.example.com", "port": 587, "secure": false, "user": "apikey", "pass": "s3cret", "from": "Tabletsgo <no-reply@example.com>" }`.
 
+### Modules
+
+Which databases and features this instance offers, and their instance-wide
+settings. Every module ships in the build; an instance admin switches them on
+or off — in the first-run wizard (which calls these routes with the new admin's
+token) and later in Admin → Modules. Two kinds:
+
+- `engine` — a connection type; its `id` is the connection `type`
+  (`postgresql`, `sqlite`, `redis`, `kafka`).
+- `feature` — a capability across connections (`backup`).
+
+Stored in `app_settings` under the key `modules`
+(`{ enabled: { [id]: bool }, settings: { [id]: { [key]: number } } }`) and
+cached in memory (`server/module-registry.js`). **A module with no stored choice
+is on**, so an upgraded instance hides nothing.
+
+Rules the server enforces:
+
+- **An engine can't be turned off while any connection uses it** → `409` with
+  the connections (below). Turning a module off never deletes anything.
+- **At least one engine stays on** → `400`.
+
+What "off" does: a turned-off **engine** is refused by the db layer on every
+dispatch (`403`, e.g. `POST /api/connections`, `/api/connections/import`,
+`/api/test-connection`; the handshake reports `reason: "disabled"`) and drops
+out of `GET /api/schema-engines`. A turned-off **Backup** answers `403` on every
+`/api/connections/:id/backup/*` and `/restore/*` route and its scheduler tick is
+skipped; schedules, run history and stored files stay and resume when it's
+turned back on.
+
+Settings per module (all integers; `null` resets one to its default):
+
+| Module | Setting | Default | Notes |
+| --- | --- | --- | --- |
+| postgresql, sqlite | `tableRowLimit` | `50000` (1–1,000,000) | The most rows opening a table fetches — enforced by `GET /table/:table`. |
+| postgresql, sqlite, redis, kafka | `queryTimeoutSec` | `30` (1–3600) | How long the console waits before giving up. Client-side: the browser stops waiting; a statement already running may still finish. |
+| kafka | `readMaxMessages` / `readMaxBytes` / `readTimeoutMs` | `500` / 16 MiB / `8000` ms | Server-side caps on one read. These replaced the `KAFKA_READ_*` env vars, which are no longer read. |
+
+These replaced the per-browser "Table row limit" and "Query timeout" in
+Settings → Data; each engine has its own value.
+
+#### GET `/api/modules` (any signed-in user)
+What's on, for hiding what isn't, and the settings in effect, for applying them.
+- **200:** `{ "modules": [{ "id": "sqlite", "kind": "engine", "label": "SQLite", "enabled": true, "settings": { "tableRowLimit": 50000, "queryTimeoutSec": 30 } }, …] }`
+- **401** without a token.
+- **Example:** `GET http://localhost:3000/api/modules`
+
+#### GET `/api/admin/modules`
+The admin view: identity, state, settings and — for an engine — who uses it.
+- **200:**
+  ```json
+  { "modules": [
+    { "id": "kafka", "kind": "engine", "label": "Kafka", "description": "Event streaming: …", "enabled": true,
+      "usage": { "connections": 4, "workspaces": 2 },
+      "settings": [
+        { "key": "readMaxMessages", "label": "Messages per read", "help": "…", "unit": "messages", "type": "int",
+          "min": 1, "max": 100000, "step": 100, "value": 1000, "default": 500 },
+        { "key": "readTimeoutMs", "label": "Read time limit", "help": "…", "unit": "ms", "type": "int",
+          "min": 500, "max": 120000, "step": 1000, "value": 8000, "default": 8000 }
+      ] },
+    { "id": "backup", "kind": "feature", "label": "Backup", "description": "…", "enabled": true, "usage": null, "settings": [] }
+  ] }
+  ```
+  `usage` is `null` for a feature. `step` is what one click of the admin form's
+  stepper moves a setting by.
+- **Example:** `GET http://localhost:3000/api/admin/modules`
+
+#### PUT `/api/admin/modules`
+Change several modules at once — what the wizard sends. The whole patch is
+validated before any of it is saved.
+- **Body:** `{ "modules": { "<id>": { "enabled"?: boolean, "settings"?: { "<key>": number | string | null } } } }`
+  — a setting of `null` goes back to its default.
+- **200:** `{ "modules": [...] }` — the same shape as `GET /api/admin/modules`.
+- **400:** `{ "error": "Unknown module: mysql" }`, `{ "error": "Messages per read must be a whole number from 1 to 100000." }`,
+  `{ "error": "Keep at least one database turned on — workspaces need something to connect to." }`
+- **409** (an engine still in use):
+  ```json
+  { "error": "Kafka can’t be turned off while 1 connection uses it. Remove it first.", "module": "kafka",
+    "connections": [{ "id": "06f0…", "name": "orders-events", "workspaceId": "a4a7…", "workspaceName": "Payments", "ownerName": "Rina" }] }
+  ```
+- **Example:** `PUT http://localhost:3000/api/admin/modules` body
+  `{ "modules": { "redis": { "enabled": false }, "kafka": { "settings": { "readMaxMessages": 1000 } } } }`
+
+#### PUT `/api/admin/modules/:id`
+One module — what Admin → Modules sends. Same rules and responses as the batch.
+- **Body:** `{ "enabled"?: boolean, "settings"?: { "<key>": number | string | null } }`
+- **Example:** `PUT http://localhost:3000/api/admin/modules/backup` body `{ "enabled": false }`
+
 ---
 
 ## Connections
@@ -1487,6 +1575,7 @@ Test connectivity without saving. Body is a connection-shaped object.
   (Redis: `{ "ok": true, "message": "Connected to Redis 7.4.2 · 128 key(s) in db0." }`)
 - **200 (failure):** `{ "ok": false, "message": "<driver error>" }` (note: failures still return HTTP 200)
 - **400:** `{ "ok": false, "message": "Unsupported connection type: mysql" }`
+- **403:** `{ "ok": false, "message": "Redis is turned off on this instance. An instance administrator can turn it on in Admin → Modules." }` — the engine's module is off (see Modules).
 - **SSH tunnel:** add `"sshGatewayId"` to test through a gateway (a throwaway tunnel, closed afterwards). This form **requires auth**: the caller must be a member of the gateway's workspace and hold `connections.create` there, or own/manage the existing connection named by the body's `id`. **401** without a token; **403** `{ "ok": false, "message": "That SSH host is not available to you." }` otherwise. A tunnel failure is a normal `200 { "ok": false, "message": "The SSH host 10.0.0.5:22 rejected user \"ubuntu\"." }`.
 - **Example:** `POST http://localhost:3000/api/test-connection`
 
@@ -1508,6 +1597,7 @@ The response includes the resolved `ownerName` / `ownerEmail`.
 - **Body:** connection object **without** `id` (see Data models); `ownerId` optional
 - **200:** the created connection (with `id`, `ownerId`, `ownerName`, `ownerEmail`)
 - **403:** `{ "error": "You do not have permission to do that.", "permission": "connections.create" }`
+- **403:** `{ "error": "Redis is turned off on this instance. …" }` — the type's module is off (see Modules). Import (`POST /api/connections/import`) refuses the same way.
 - **Example:** `POST http://localhost:3000/api/connections`
 
 ### PUT `/api/connections/:id`
@@ -2556,6 +2646,10 @@ success). Requires `ssh.manage`. Never fails with a 5xx.
 
 ## Backup (per connection)
 
+The **Backup module** (see Modules): while an instance admin has it turned off,
+every route below answers `403 { "error": "Backup is turned off on this
+instance. …" }` and the scheduler skips its tick. Nothing is deleted.
+
 A standalone system — its own tables (`backup_schedules`, `backup_runs`) and
 scheduler tick, **not** a workflow. It reuses the same export/upload/encrypt/
 retention primitives a `storage` workflow node uses, but orchestrates them
@@ -2816,7 +2910,8 @@ Never returns a 5xx: a failed handshake is a normal 200 payload. Times out after
   ```
   - `reason` is one of `dns` | `refused` | `timeout` | `network` | `tls` | `auth` |
     `permission` | `missing_database` | `missing_file` | `busy` | `unsupported` |
-    `ssh` | `unknown`. `ssh` means the connection's SSH tunnel failed before the
+    `disabled` | `ssh` | `unknown`. `disabled` means an instance admin turned the
+    connection's database type off (Admin → Modules). `ssh` means the connection's SSH tunnel failed before the
     database was reached (gateway unreachable, login rejected, host key changed,
     or the gateway can't reach the database host). `cause`/`hint` are prose meant to be rendered as-is, so a client
     that doesn't know a newer `reason` still shows something useful.
@@ -2938,7 +3033,9 @@ Empty for engines without listable functions (e.g. SQLite).
 ### GET `/api/connections/:id/table/:table`
 Read rows from a table (capped by `limit`).
 
-- **Query:** `limit` (default `200`), `offset` (default `0`), plus optional `database`, `schema`
+- **Query:** `limit` (default `200`), `offset` (default `0`), plus optional `database`, `schema`.
+  `limit` is capped at the engine's **table row limit** (Admin → Modules, default
+  `50000`) whatever the client asks for.
 - **200:** `{ "columns": ["id", "name"], "rows": [ {…} ] }`
   - On a DB error the body is `{ "columns": [], "rows": [], "error": "<msg>" }` (HTTP 200)
 - **Row order:** ordered by primary key when the table has one. Postgres writes a
@@ -3420,9 +3517,10 @@ back as `confirm`. Broker errors carry a status: `404` unknown topic/group, `409
 already exists / group not empty, `403` the cluster's ACLs refused, `400` invalid.
 
 Reads are bounded: no consumer group is joined and nothing is committed, and every
-read stops at `KAFKA_READ_MAX_MESSAGES` rows (default 500),
-`KAFKA_READ_MAX_BYTES` fetched (default 16 MiB) or `KAFKA_READ_TIMEOUT_MS`
-(default 8000).
+read stops at the Kafka module's **messages per read** (default 500), **bytes
+fetched per read** (default 16 MiB) or **read time limit** (default 8000 ms). An
+instance admin sets these in Admin → Modules → Kafka (`PUT /api/admin/modules/kafka`),
+without a restart.
 
 ### GET `/api/connections/:id/streams/overview`
 Cluster summary for the sidebar header.
@@ -3503,7 +3601,7 @@ A bounded read, returned in the grid shape every engine uses.
 - **Query:**
   - `partition` — one partition (default: all)
   - `from` — `latest` (default; the newest `limit` per partition), `earliest`, `-N` (the last N per partition), `offset:N`, `ts:<ISO time or epoch ms>`
-  - `limit` — rows returned (1–`KAFKA_READ_MAX_MESSAGES`, default 100)
+  - `limit` — rows returned (1–the module's messages per read, default 100)
   - `filter` — a WHERE clause: `key`, `value`, `value.<json.path>`, `header.<name>`, `partition`, `offset`, `timestamp` compared with `= != > >= < <=` or `~` (case-insensitive contains), joined by `AND`. With a filter, newest-first reads walk back through the topic until they have `limit` matches or hit a cap.
   - `decode` — `auto` (UTF-8, hex for binary, Schema Registry payloads labelled), `string`, `hex`, `base64`
 - **200:**
@@ -3755,7 +3853,7 @@ Delete a connector. Topics it wrote and offsets it committed stay.
 Run KSQL. Statements (CREATE, SHOW, DESCRIBE, DROP, TERMINATE, …) run together in one
 call and each answers on its own; a `SELECT` or `PRINT` must be sent alone and is
 **bounded like a topic read** — a push query (`EMIT CHANGES`) returns what arrived
-within `limit` rows (max `KAFKA_READ_MAX_MESSAGES`) or `KAFKA_READ_TIMEOUT_MS`, then
+within `limit` rows (max the module's messages per read) or its read time limit, then
 stops. `properties` are streams properties.
 
 - **Body:** `{ "sql": "SELECT * FROM pageviews EMIT CHANGES;", "properties": { "auto.offset.reset": "earliest" }, "limit": 100 }`

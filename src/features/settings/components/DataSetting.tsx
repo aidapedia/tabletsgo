@@ -1,60 +1,23 @@
-import {
-  useSettings,
-  MIN_TABLE_ROW_LIMIT,
-  MAX_TABLE_ROW_LIMIT,
-  MIN_QUERY_TIMEOUT,
-  MAX_QUERY_TIMEOUT,
-} from '@/features/settings'
-import NumberStepper from '@/shared/ui/form/NumberStepper'
+import { useSettings } from '@/features/settings'
 import SettingRow from '@/shared/ui/form/SettingRow'
 import Toggle from '@/shared/ui/form/Toggle'
 
-// Step amount for the row-limit stepper buttons.
-const ROW_LIMIT_STEP = 1000
-
-// Data / query-execution settings (no section chrome).
+// Data / query-execution settings (no section chrome). The table row limit and
+// query timeout aren't here: an instance admin sets them per database type.
 export default function DataSetting() {
-  const { tableRowLimit, setTableRowLimit, queryTimeout, setQueryTimeout, directExecute, setDirectExecute } =
-    useSettings()
+  const { directExecute, setDirectExecute } = useSettings()
 
   return (
     <div className="space-y-3">
-      <SettingRow
-        title="Table row limit"
-        desc={`Maximum rows fetched when opening a table tab (1–${MAX_TABLE_ROW_LIMIT.toLocaleString()}).`}
-      >
-        <NumberStepper
-          value={tableRowLimit}
-          onChange={setTableRowLimit}
-          min={MIN_TABLE_ROW_LIMIT}
-          max={MAX_TABLE_ROW_LIMIT}
-          step={ROW_LIMIT_STEP}
-          ariaLabel="row limit"
-          className="w-36 shrink-0"
-        />
-      </SettingRow>
-
-      <SettingRow
-        title="Query timeout"
-        desc={`Abort a running query after this many seconds (${MIN_QUERY_TIMEOUT}–${MAX_QUERY_TIMEOUT.toLocaleString()}).`}
-      >
-        <NumberStepper
-          value={queryTimeout}
-          onChange={setQueryTimeout}
-          min={MIN_QUERY_TIMEOUT}
-          max={MAX_QUERY_TIMEOUT}
-          step={5}
-          ariaLabel="query timeout in seconds"
-          className="w-36 shrink-0"
-        />
-      </SettingRow>
-
       <SettingRow
         title="Direct execute"
         desc="Run data and schema changes immediately instead of staging them in the Changes panel for a later commit."
       >
         <Toggle checked={directExecute} onChange={setDirectExecute} ariaLabel="direct execute" />
       </SettingRow>
+      <p className="text-[11px] leading-relaxed text-ink-faint">
+        The table row limit and query timeout are set per database type by your instance administrator.
+      </p>
     </div>
   )
 }

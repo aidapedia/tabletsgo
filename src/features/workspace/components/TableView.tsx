@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { getColumns, getTableData } from '@/shared/api/database'
 import { useSettings } from '@/features/settings'
+import { useEngineLimits } from '@/features/modules'
 import { useShortcut } from '@/features/keymap'
 import DataGrid, { cellText } from '@/shared/ui/table/DataGrid'
 import { FilterPanel, SortPanel, ColumnsPanel, makeFilter, matchFilter, sortRows, cycleSortRules } from '@/shared/ui/table/GridRules'
@@ -46,7 +47,8 @@ export { FilterPanel, SortPanel, ColumnsPanel, makeFilter, makeSort, matchFilter
 // when the user switches tabs (only the active tab is mounted).
 export default function TableView({ conn, table, onChange, onOpenReference, filters, onFiltersChange }) {
   const toast = useToast()
-  const { tableRowLimit, directExecute } = useSettings()
+  const { directExecute } = useSettings()
+  const { tableRowLimit } = useEngineLimits(conn?.type)
   // With Direct execute on, the parent runs the change immediately and toasts
   // the result, so the "added to changes" confirmations here would be misleading.
   const stagedInfo = (msg) => {

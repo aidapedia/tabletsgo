@@ -121,13 +121,8 @@ export const LOGIN_ADMIN_COOLDOWN_MS = envInt('LOGIN_ADMIN_COOLDOWN_MS', 15 * 60
 // otherwise ride the driver's own multi-minute TCP timeout.
 export const HANDSHAKE_TIMEOUT_MS = parseInt(process.env.HANDSHAKE_TIMEOUT_MS, 10) || 8000
 
-// Every Kafka read (the topic browser, CONSUME, a workflow or dashboard query)
-// is bounded — there is no long-lived consumer behind a request. It stops at
-// whichever comes first: this many rows returned, this many bytes fetched from
-// the brokers (what a WHERE filter scans through), or this much time.
-export const KAFKA_READ_MAX_MESSAGES = parseInt(process.env.KAFKA_READ_MAX_MESSAGES, 10) || 500
-export const KAFKA_READ_MAX_BYTES = parseInt(process.env.KAFKA_READ_MAX_BYTES, 10) || 16 * 1024 * 1024
-export const KAFKA_READ_TIMEOUT_MS = parseInt(process.env.KAFKA_READ_TIMEOUT_MS, 10) || 8000
+// Kafka's read caps (messages / bytes / time per read) are not env vars: an
+// instance admin sets them in Admin → Modules — see server/module-registry.js.
 
 // ---- Schedulers ----
 export const SCHEDULER_ENABLED = process.env.WORKFLOW_SCHEDULER_ENABLED !== 'false'

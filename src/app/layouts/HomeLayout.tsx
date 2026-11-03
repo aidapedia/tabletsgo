@@ -78,6 +78,7 @@ const ADMIN_NAV = {
       items: [
         { label: 'Users', Icon: UsersIcon, path: '/admin/users' },
         { label: 'Email', Icon: MailIcon, path: '/admin/email' },
+        { label: 'Modules', Icon: GridIcon, path: '/admin/modules' },
         { label: 'Resource Tree', Icon: TreeIcon, path: '/resource-tree' },
       ],
     },

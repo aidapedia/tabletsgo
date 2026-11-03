@@ -145,6 +145,8 @@ import {
   smtpConfig,
 } from './server/mail.js'
 import { clearGlobalSmtp, publicGlobalSmtp, saveGlobalSmtp } from './server/app-settings.js'
+import { assertModuleEnabled, isModuleEnabled, optionalModuleSetting } from './server/module-registry.js'
+import { adminModules, loadModules, publicModules, updateModules } from './server/module-settings.js'
 import {
   bumpSchemaVersion,
   deleteConnectionMetadata,
@@ -298,6 +300,8 @@ app.use(sessionMiddleware)
 let bootReady = false
 // The role policy is read once here; every permission check reads it from memory.
 await loadPolicy()
+// Same for the instance's modules: the db layer asks on every dispatch.
+await loadModules()
 await seedAdminFromEnv()
 bootReady = true
 
@@ -861,9 +865,46 @@ app.post('/api/admin/smtp/test', async (req, res) => {
   }
 })
 
+// ---- Modules ----
+// Which databases and features this instance offers, and their instance-wide
+// settings (see server/module-registry.js). The first-run wizard writes them
+// with the new admin's token, through these same routes.
+
+app.get('/api/admin/modules', async (_req, res) => res.json({ modules: await adminModules() }))
+
+// A blocked change (an engine that connections still use) answers 409 with the
+// connections, so the admin can tell their owners what to remove.
+const sendModuleError = (res, error) =>
+  res.status(error.status || 500).json({ error: error.message, module: error.module, connections: error.connections })
+
+// Batch: { modules: { [id]: { enabled?, settings? } } } — what the wizard sends.
+app.put('/api/admin/modules', async (req, res) => {
+  try {
+    res.json({ modules: await updateModules(req.body?.modules) })
+  } catch (error) {
+    sendModuleError(res, error)
+  }
+})
+
+// One module: { enabled?, settings? } — what Admin → Modules sends.
+app.put('/api/admin/modules/:id', async (req, res) => {
+  try {
+    res.json({ modules: await updateModules({ [req.params.id]: req.body || {} }) })
+  } catch (error) {
+    sendModuleError(res, error)
+  }
+})
+
 // ============================================================================
 // Workspaces
 // ============================================================================
+
+// What's turned on, for any signed-in user — the client hides the rest (the
+// server refuses it either way).
+app.get('/api/modules', (req, res) => {
+  if (!requireAuth(req, res)) return
+  res.json({ modules: publicModules() })
+})
 
 // The instance's role catalog, readable by any signed-in user: a workspace owner
 // needs the names to assign one, and the client needs the permission lists to
@@ -1555,6 +1596,7 @@ app.post('/api/connections', async (req, res) => {
   const user = await requirePermission(req, res, workspaceId, 'connections.create')
   if (!user) return
   try {
+    assertModuleEnabled(req.body.type)
     await assertGatewayForWorkspace(req.body.sshGatewayId, workspaceId)
   } catch (error) {
     return fail(res, error)
@@ -1581,6 +1623,7 @@ app.post('/api/connections/import', async (req, res) => {
   const user = await requirePermission(req, res, workspaceId, 'connections.create')
   if (!user) return
   try {
+    assertModuleEnabled(document?.connection?.type)
     const imported = await importConnectionDoc(document, { workspaceId, ownerId: user.id, name, settings })
     await createResourceNode('connection', imported.id, { name: imported.name, ownerId: user.id, workspaceId })
     res.json(imported)
@@ -2513,6 +2556,17 @@ app.delete('/api/connections/:id/dashboards/:did', async (req, res) => {
 // generic workflow engine — see server/backup/)
 // ============================================================================
 
+// Every backup and restore route is the Backup module's: off, they answer 403.
+// Schedules and run history stay put and resume when it's turned back on.
+app.use(['/api/connections/:id/backup', '/api/connections/:id/restore'], (_req, res, next) => {
+  try {
+    assertModuleEnabled('backup')
+    next()
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
 // Current backup schedule for this connection (null if none has been created yet).
 app.get('/api/connections/:id/backup/schedule', async (req, res) => {
   res.json({ schedule: await getBackupSchedule(req.params.id) })
@@ -3032,7 +3086,11 @@ app.get('/api/connections/:id/table/:table', async (req, res) => {
   const conn = await connOr404(req, res)
   if (!conn) return
   try {
-    res.json(await db.getTableData(conn, queryCtx(req), { table: req.params.table, limit: parseInt(req.query.limit) || 200 }))
+    // Opening a table fetches at most the engine's row limit (Admin → Modules),
+    // whatever the client asks for. Export pages through the db layer, not here.
+    const cap = optionalModuleSetting(conn.type, 'tableRowLimit') ?? Infinity
+    const limit = Math.min(parseInt(req.query.limit) || 200, cap)
+    res.json(await db.getTableData(conn, queryCtx(req), { table: req.params.table, limit }))
   } catch (error) {
     fail(res, error)
   }
@@ -3918,7 +3976,7 @@ app.use((error, req, res, next) => {
 if (SCHEDULER_ENABLED) {
   cron.schedule('* * * * *', () => {
     runDueWorkflows().catch((e) => console.error('Scheduler tick error:', e.message))
-    runDueBackups().catch((e) => console.error('Backup scheduler tick error:', e.message))
+    if (isModuleEnabled('backup')) runDueBackups().catch((e) => console.error('Backup scheduler tick error:', e.message))
   })
 }
 

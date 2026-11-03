@@ -5,6 +5,7 @@ import { TYPE_LABEL } from './DbTypePickerModal'
 import { BackupPanel } from '@/features/backup'
 import { addressOf, listSshGateways, type SshGateway } from '@/features/ssh'
 import { listTopics } from '@/features/kafka'
+import { useModules } from '@/features/modules'
 import { consoleKindOf } from '@/shared/config/databaseTypes'
 // Deep import, not the `@/features/schema-designer` barrel: that barrel's
 // WorkspaceSchemaList reads TYPE_LABEL back out of *this* feature, so going
@@ -47,13 +48,14 @@ import {
  * `/connections/:id/schema` isn't bounced to Data before the connection that
  * would justify the tab has even arrived.
  */
-export function detailTabs(type?: string) {
+export function detailTabs(type?: string, { backup = true }: { backup?: boolean } = {}) {
   return [
     { id: 'data', label: 'Data Connection' },
     { id: 'access', label: 'Access' },
     // Schemaless engines (Redis, Kafka) never run DDL, so they have no history.
     ...(consoleKindOf(type) !== 'sql' ? [] : [{ id: 'schema', label: 'Schema history' }]),
-    { id: 'backup', label: 'Backup' },
+    // The Backup module, when an instance admin hasn't turned it off.
+    ...(backup ? [{ id: 'backup', label: 'Backup' }] : []),
   ]
 }
 
@@ -110,6 +112,7 @@ function DetailRow({ label, value }: { label: string; value?: string }) {
 export default function ConnectionDetail({ conn, onBack, onOpen, onEdit, onDelete, onExport, onRefresh, connecting, tab = 'data', onTab }: any) {
   const toast = useToast()
   const { connections } = useConnections()
+  const { isEnabled } = useModules()
   const [status, setStatus] = useState<'checking' | 'connected' | 'offline'>('checking')
   const [tableCount, setTableCount] = useState<number | null>(null)
   const [sessions, setSessions] = useState<SessionStats | null>(null)
@@ -206,7 +209,7 @@ export default function ConnectionDetail({ conn, onBack, onOpen, onEdit, onDelet
         }
       />
 
-      <PageTabs tabs={detailTabs(conn.type)} active={tab} onTab={onTab}>
+      <PageTabs tabs={detailTabs(conn.type, { backup: isEnabled('backup') })} active={tab} onTab={onTab}>
         {tab === 'data' ? (
           <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
             {/* Main */}

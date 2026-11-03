@@ -177,8 +177,9 @@ without them answers 400 naming its type. Prefer this over a `/redis/*`-style
 - **Reads never join a consumer group or commit.** kafkajs's public Consumer can
   only read by joining a group, so the fetch path uses its internal
   `Cluster`/`Broker.fetch` — which is why `kafkajs` is pinned to an exact version.
-  Every read is bounded by `KAFKA_READ_MAX_MESSAGES` / `_BYTES` / `_TIMEOUT_MS`;
-  never add a long-lived consumer behind a request.
+  Every read is bounded by the Kafka module's read caps (messages / bytes / time,
+  `moduleSetting('kafka', …)` — set in Admin → Modules, read per call); never add
+  a long-lived consumer behind a request.
 - **kafkajs clients remember every topic they touched** and refresh metadata for
   all of them; one that stops existing (deleted elsewhere, or a typo looked up)
   makes every later call fail with `UNKNOWN_TOPIC_OR_PARTITION`. `withAdmin`

@@ -31,6 +31,7 @@ const WorkspacePage = lazy(() => import('@/pages/console/WorkspacePage'))
 const AdminWorkspacesPage = lazy(() => import('@/pages/admin/AdminWorkspacesPage'))
 const AdminUsersPage = lazy(() => import('@/pages/admin/AdminUsersPage'))
 const AdminEmailPage = lazy(() => import('@/pages/admin/AdminEmailPage'))
+const AdminModulesPage = lazy(() => import('@/pages/admin/AdminModulesPage'))
 
 const routeFallback = <div role="status" className="p-8 text-center text-sm text-ink-dim">Loading…</div>
 
@@ -76,7 +77,11 @@ export function AppRoutes() {
   // accounts but no admin is *not* forced through it: the people who already
   // have accounts still need the login page, so the wizard stays reachable at
   // /setup and the login page points at it.
-  if (setup.needsSetup && !setup.hasUsers && !user) {
+  //
+  // Not keyed on `user`: creating the admin signs them in, and the wizard then
+  // carries on (pick modules, configure them) under that session — so this
+  // branch has to keep the same page mounted until it calls `setupDone`.
+  if (setup.needsSetup && !setup.hasUsers) {
     return (
       <Suspense fallback={routeFallback}><Routes>
         <Route path="/setup" element={<SetupPage onComplete={setupDone} />} />
@@ -106,6 +111,7 @@ export function AppRoutes() {
         <Route path="/admin" element={<AdminWorkspacesPage />} />
         <Route path="/admin/users" element={<AdminUsersPage />} />
         <Route path="/admin/email" element={<AdminEmailPage />} />
+        <Route path="/admin/modules" element={<AdminModulesPage />} />
       </Route>
       {/* Home shell — each sidebar section is its own page rendered into the layout's <Outlet/>. */}
       <Route

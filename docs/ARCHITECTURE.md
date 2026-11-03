@@ -85,6 +85,13 @@ src/
 │   │                             #   and AdminSmtpPanel + SmtpForm (the instance's one mail server —
 │   │                             #     the only place SMTP is configurable; see `auth-sessions` skill).
 │   │                             #   Reaches nothing inside a workspace — an admin has no membership
+│   ├── modules/                  # which databases/features the instance offers (server/module-registry.js):
+│   │                             #   ModulesContext (useModules().isEnabled — the type picker and the
+│   │                             #   Backup tabs hide what's off; useEngineLimits(type) — the consoles'
+│   │                             #   query timeout and the table view's row limit), AdminModulesPanel (Admin → Modules:
+│   │                             #   toggles, the blocked-engine dialog, the settings slide-over),
+│   │                             #   ModulePicker + ModuleSettingsFields (also the setup wizard's steps;
+│   │                             #   fields are drawn from the schema the server sends)
 │   ├── workspaces/               # org/tenant layer (multi-workspace): WorkspaceContext (current
 │   │                             #   workspace + switch), WorkspaceSwitcher, MembersPanel,
 │   │                             #   NotificationSettings (backup-failure emails — the mail server
@@ -397,7 +404,7 @@ src/
     ├── admin/                    # the instance-admin area, one file per sidebar section (same rule
     │                             #   as home/): AdminWorkspacesPage (/admin), AdminUsersPage
     │                             #   (/admin/users) + AdminEmailPage (/admin/email — the instance-wide
-    │                             #   SMTP config) — no tabs, the sidebar switches. Only reachable
+    │                             #   SMTP config) + AdminModulesPage (/admin/modules) — no tabs, the sidebar switches. Only reachable
     │                             #   with the system role 'admin'; AppRoutes' RequireSystemAdmin /
     │                             #   RequireWorkspaceUser send each audience to the other's home
     ├── console/                  # WorkspacePage — the route /connection/:id. Thin: it reads the :id and
@@ -574,6 +581,16 @@ server/
 ├── login-guard.js        # sign-in brute-force protection: counts consecutive failures on
 │                         #   the account and blocks it past the threshold. An instance admin
 │                         #   only ever gets a self-expiring cooldown — see the `auth-sessions` skill
+├── module-registry.js    # leaf (imports nothing): the module catalog — engines (postgresql,
+│                         #   sqlite, redis, kafka) and features (backup) — plus an in-memory copy of
+│                         #   the admin's on/off choices and settings. isModuleEnabled / moduleSetting
+│                         #   are sync reads: the db layer's driverFor refuses a turned-off engine,
+│                         #   the Kafka driver reads its read caps here; every engine has its own query
+│                         #   timeout, and the SQL ones a table row limit the /table route enforces.
+│                         #   Settings have no env var under them — Admin → Modules is the only source
+├── module-settings.js    # loads/saves those choices (`app_settings` key 'modules'), the admin view
+│                         #   with per-engine usage, and the rule only it can check: an engine can't
+│                         #   be turned off while any connection uses it (409 + the connections)
 ├── app-settings.js       # instance-wide settings (`app_settings`, key → JSON): the admin-owned
 │                         #   counterpart of workspaces.settings. Today one key, 'smtp' — the global
 │                         #   mail server, its password sealed under its own scrypt namespace

@@ -96,6 +96,34 @@ export const listConnections = async () => {
 
 export const getConnection = async (id) => (id ? rowToConnection(await db().connections.findUnique({ where: { id } })) : null)
 
+// How many connections each engine has, and across how many workspaces:
+// { [type]: { connections, workspaces } }. Reads no credentials.
+export const connectionUsageByType = async () => {
+  const groups = await db().connections.groupBy({ by: ['type', 'workspace_id'], _count: { _all: true } })
+  const usage = {}
+  for (const g of groups) {
+    const u = (usage[g.type] ||= { connections: 0, workspaces: 0 })
+    u.connections += Number(g._count._all)
+    if (g.workspace_id) u.workspaces += 1
+  }
+  return usage
+}
+
+// The connections of one engine — who still uses it — without decrypting a
+// single credentials blob: [{ id, name, workspaceId, ownerName }].
+export const connectionsOfType = async (type) => {
+  const rows = await db().connections.findMany({
+    where: { type },
+    select: { id: true, name: true, workspace_id: true, owner_id: true },
+    orderBy: { created_at: 'asc' },
+  })
+  const owners = await ownersOf(rows)
+  return rows.map((r) => {
+    const u = r.owner_id ? owners.get(r.owner_id) : null
+    return { id: r.id, name: r.name, workspaceId: r.workspace_id || null, ownerName: u ? u.name || u.username : null }
+  })
+}
+
 export const saveConnection = async (conn) => {
   const { id, ...row } = connectionToRow(conn)
   const now = Date.now()

@@ -40,6 +40,7 @@ working in that area — it has the reasoning and the full rules.
 - **`server/config.js` is the only place that reads `process.env`** for tunables. → skill `add-tunable`
 - **A new per-connection resource goes in the export bundle** and the `DELETE /api/connections/:id` cascade, together. → skill `connection-transfer`
 - **Always `SCAN`, never `KEYS`** on Redis. → skill `db-engine`
+- **An instance admin switches modules; the server enforces them** — a turned-off engine is refused in `driverFor` (never re-check it in a route), a feature's routes go through `assertModuleEnabled`, and an engine can't be turned off while any connection uses it. The UI only hides (`useModules`). Module settings live only in Admin → Modules — no env var under them. → `server/module-registry.js`
 
 ## WHERE THINGS ARE
 Full annotated file map: **`docs/ARCHITECTURE.md`** — read it when you need to know
@@ -64,6 +65,7 @@ src/
 | --- | --- |
 | `auth` | AuthContext, login/setup/invite, the caller's own account settings |
 | `admin` | instance-admin area (system role `admin`): workspaces, users, the one SMTP config |
+| `modules` | which databases/features the instance offers: `useModules().isEnabled(id)`, Admin → Modules panel, the wizard's module picker + settings fields |
 | `workspaces` | org/tenant layer: current workspace, members (roster on the workspace node), notifications, general settings |
 | `workspace` | **the per-connection DB console** — DataGrid, TableView, QueryEditor, tabs, status bar |
 | `connections` | connection CRUD, access, type picker, switcher modal, export/import, connect handshake |
@@ -106,6 +108,8 @@ server/
 ├── sessions/            # ★ logins (durable) + connection sessions (cache)    → skill auth-sessions
 ├── login-guard.js       # sign-in brute-force blocking                        → skill auth-sessions
 ├── users.js  workspaces.js  app-settings.js  mail.js                          → skill auth-sessions
+├── module-registry.js   # leaf: the module catalog (engines + features) + in-memory on/off and settings
+├── module-settings.js   # loads/saves them (`app_settings` key `modules`); refuses turning off an engine in use
 ├── connections.js       # connection records (encrypted credentials blob)
 ├── folders.js           # the polymorphic folder tree (4 types, depth caps)
 ├── schema-drafts.js     # from-scratch schema drafts: a diagram a *workspace* owns, no connection
@@ -139,7 +143,7 @@ server/
 
 ### Backend
 - A module owns its table(s): if a route is writing raw SQL against `backup_schedules` or `storage_destinations`, that belongs in the module.
-- Dependencies point one way: `config → crypto → meta-connection → meta → sessions → permissions-catalog → permissions → resource-tree → {auth, workspaces, app-settings, connections, folders, storage} → ssh → mail → db → workflow/backup/transfer → server.js`; `migrator/` sits beside them on `config → crypto → meta-connection → permissions-catalog` and never imports `meta.js` (its handle would lock the SQLite file Prisma needs). `resource-tree` owns `node_members` and exports `groupIdsFor`, which `auth.js` imports — never the other way round, because `auth.js` depends on it. No cycles — `sessions` never imports `db`; the db layer hands it a release callback instead (`setReleaseHandler`), which is what lets the sweeper close idle handles. Also `backup/schedule.js` is split out from the runner precisely so `connection-transfer.js` can read a schedule without importing the pipeline.
+- Dependencies point one way: `module-registry` is a leaf (imports nothing) the db layer reads; `config → crypto → meta-connection → meta → sessions → permissions-catalog → permissions → resource-tree → {auth, workspaces, app-settings, connections, folders, storage, module-settings} → ssh → mail → db → workflow/backup/transfer → server.js`; `migrator/` sits beside them on `config → crypto → meta-connection → permissions-catalog` and never imports `meta.js` (its handle would lock the SQLite file Prisma needs). `resource-tree` owns `node_members` and exports `groupIdsFor`, which `auth.js` imports — never the other way round, because `auth.js` depends on it. No cycles — `sessions` never imports `db`; the db layer hands it a release callback instead (`setReleaseHandler`), which is what lets the sweeper close idle handles. Also `backup/schedule.js` is split out from the runner precisely so `connection-transfer.js` can read a schedule without importing the pipeline.
 
 ## EXTRA ACTION
 - Every time you add endpoint on server, create a structure of request response and sample url on BACKEND_DOCUMENTATION.MD

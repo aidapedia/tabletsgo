@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuth } from '@/features/auth'
 import { useConnections, ConnectionSwitcherModal } from '@/features/connections'
 import { useSettings } from '@/features/settings'
+import { useEngineLimits } from '@/features/modules'
 import { useKeymap, useShortcut } from '@/features/keymap'
 import { RedisKeyTree } from '@/features/redis'
 import useServerVersion from '@/shared/hooks/useServerVersion'
@@ -116,8 +117,9 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
   const { user, logout } = useAuth()
   const toast = useToast()
   const { connections, patchLocalConnection } = useConnections()
-  const { queryTimeout, directExecute } = useSettings()
+  const { directExecute } = useSettings()
   const conn = connections.find((c: any) => c.id === id)
+  const { queryTimeoutSec } = useEngineLimits(conn?.type)
   const { bindings } = useKeymap()
 
   // The console's shape. Redis and Kafka are schemaless and tableless: no
@@ -180,7 +182,7 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
   const changes = useStagedChanges({
     connectionId: id,
     nsConn,
-    queryTimeout,
+    queryTimeout: queryTimeoutSec,
     directExecute,
     toast,
     patchLocalConnection,

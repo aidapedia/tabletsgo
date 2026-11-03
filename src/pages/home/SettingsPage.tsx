@@ -11,8 +11,8 @@ import useTabRoute from './useTabRoute'
  *
  * Both halves of the app share this page, but not every tab applies to both
  * audiences (see AUTH MODEL): an instance admin holds no workspace membership
- * and never opens a database console, so neither Data (row limits, query
- * timeout) nor Keymap (console shortcuts) has anything to act on; conversely
+ * and never opens a database console, so neither Data (direct execute) nor
+ * Keymap (console shortcuts) has anything to act on; conversely
  * only an admin can apply an update, so a workspace user gets no Updates tab.
  * Account is the one tab that is identical for everyone — it acts on the
  * caller's own row in `users`, not on a role.

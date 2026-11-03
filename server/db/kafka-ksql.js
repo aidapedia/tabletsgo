@@ -5,12 +5,12 @@
  *
  * Every answer is the grid shape the rest of the app uses ({ type: 'rows',
  * columns, rows } | { type: 'message', message }). A push query (EMIT CHANGES)
- * never ends on its own, so a query is bounded like a topic read — by
- * KAFKA_READ_MAX_MESSAGES rows and KAFKA_READ_TIMEOUT_MS — and reports whether
- * it was cut off. No query outlives its request.
+ * never ends on its own, so a query is bounded like a topic read — by the Kafka
+ * module's messages-per-read and read time limit — and reports whether it was
+ * cut off. No query outlives its request.
  */
 
-import { KAFKA_READ_MAX_MESSAGES, KAFKA_READ_TIMEOUT_MS } from '../config.js'
+import { moduleSetting } from '../module-registry.js'
 import { restRequest } from './kafka-rest.js'
 
 const call = (conn, path, options = {}) => restRequest(conn, 'ksql', { path, ...options })
@@ -78,7 +78,7 @@ function entityResult(e) {
   return { statement, type: 'message', message: Object.keys(rest).length ? JSON.stringify(rest) : kind || 'Done.' }
 }
 
-const clampLimit = (limit) => Math.min(Math.max(parseInt(limit) || 100, 1), KAFKA_READ_MAX_MESSAGES)
+const clampLimit = (limit) => Math.min(Math.max(parseInt(limit) || 100, 1), moduleSetting('kafka', 'readMaxMessages'))
 
 async function runQuery(conn, sql, { properties = {}, limit } = {}) {
   const take = clampLimit(limit)
@@ -89,7 +89,7 @@ async function runQuery(conn, sql, { properties = {}, limit } = {}) {
     body: { sql: `${sql};`, properties },
     headers: { accept: 'application/vnd.ksqlapi.delimited.v1' },
     // The header line, then one line per row.
-    bounded: { maxMs: KAFKA_READ_TIMEOUT_MS, enough: (t) => lines(t).length > take },
+    bounded: { maxMs: moduleSetting('kafka', 'readTimeoutMs'), enough: (t) => lines(t).length > take },
   })
   const [head, ...body] = lines(text)
   let header

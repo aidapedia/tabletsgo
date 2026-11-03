@@ -6,7 +6,9 @@
       "ClaudeInChromeDomain(localhost:3999)",
       "ClaudeInChromeDomain(localhost:5173)",
       "mcp__claude-in-chrome__tabs_create_mcp",
-      "ClaudeInChromeDomain(localhost:3311)"
+      "ClaudeInChromeDomain(localhost:3311)",
+      "ClaudeInChromeDomain(localhost:3998)",
+      "ClaudeInChromeDomain(localhost:3996)"
     ]
   },
   "hooks": {
