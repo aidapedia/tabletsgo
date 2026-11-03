@@ -40,7 +40,7 @@ working in that area — it has the reasoning and the full rules.
 - **`server/config.js` is the only place that reads `process.env`** for tunables. → skill `add-tunable`
 - **A new per-connection resource goes in the export bundle** and the `DELETE /api/connections/:id` cascade, together. → skill `connection-transfer`
 - **Always `SCAN`, never `KEYS`** on Redis. → skill `db-engine`
-- **An instance admin switches modules; the server enforces them** — a turned-off engine is refused in `driverFor` (never re-check it in a route), a feature's routes go through `assertModuleEnabled`, and an engine can't be turned off while any connection uses it. The UI only hides (`useModules`). Module settings live only in Admin → Modules — no env var under them. → `server/module-registry.js`
+- **An instance admin switches modules; the server enforces them** — a turned-off engine is refused in `driverFor` (never re-check it in a route), a feature's routes go through `assertModuleEnabled`, and an engine still in use is only turned off with `force` — its connections are then **locked, never deleted**: the `/api/connections/:id` guard refuses everything but `DELETE` and the handshake, the webhook route checks too, and the schedulers skip them. The UI only hides (`useModules`). Module settings live only in Admin → Modules — no env var under them. → `server/module-registry.js`
 
 ## WHERE THINGS ARE
 Full annotated file map: **`docs/ARCHITECTURE.md`** — read it when you need to know

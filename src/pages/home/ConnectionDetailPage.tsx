@@ -42,7 +42,7 @@ export default function ConnectionDetailPage() {
   // gets the full list and `useTabRoute` only redirects once there is a type
   // saying the segment doesn't belong here.
   const { isEnabled } = useModules()
-  const { active, onTab } = useTabRoute(`/connections/${id}`, detailTabs(conn?.type, { backup: isEnabled('backup') }), tab)
+  const { active, onTab } = useTabRoute(`/connections/${id}`, detailTabs(conn?.type, { backup: isEnabled('backup'), locked: conn?.locked }), tab)
 
   if (loading || workspaceLoading) return <LoadingState className="py-20 text-center" />
   if (!conn) {

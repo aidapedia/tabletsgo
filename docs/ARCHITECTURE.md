@@ -589,8 +589,12 @@ server/
 │                         #   timeout, and the SQL ones a table row limit the /table route enforces.
 │                         #   Settings have no env var under them — Admin → Modules is the only source
 ├── module-settings.js    # loads/saves those choices (`app_settings` key 'modules'), the admin view
-│                         #   with per-engine usage, and the rule only it can check: an engine can't
-│                         #   be turned off while any connection uses it (409 + the connections)
+│                         #   with per-engine usage, and the rule only it can check: an engine in use
+│                         #   is only turned off with `force` (else 409 + the connections). Forced, its
+│                         #   connections are locked, not deleted — server.js's connection guard
+│                         #   refuses all but DELETE + handshake, the schedulers skip them
+├── module-notices.js     # notifies the owners of an engine's connections by email — one per unique
+│                         #   address — that a forced turn-off locked them
 ├── app-settings.js       # instance-wide settings (`app_settings`, key → JSON): the admin-owned
 │                         #   counterpart of workspaces.settings. Today one key, 'smtp' — the global
 │                         #   mail server, its password sealed under its own scrypt namespace

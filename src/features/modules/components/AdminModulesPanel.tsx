@@ -1,7 +1,12 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import Badge from '@/shared/ui/Badge'
 import Button from '@/shared/ui/buttons/Button'
 import Toggle from '@/shared/ui/form/Toggle'
+import Checkbox from '@/shared/ui/form/Checkbox'
+import PersonRow from '@/shared/ui/PersonRow'
+import DataTable, { type Column } from '@/shared/ui/table/DataTable'
+import useDataTable from '@/shared/ui/table/useDataTable'
+import { ChevronDown } from '@/shared/ui/icons'
 import ConfirmDialog from '@/shared/ui/feedback/ConfirmDialog'
 import LoadingState from '@/shared/ui/feedback/LoadingState'
 import { useToast } from '@/shared/ui/feedback/Toast'
@@ -12,7 +17,7 @@ import { useModules } from '../stores/ModulesContext'
 import ModuleIcon from './ModuleIcon'
 import ModuleSettingsFields, { draftOf, patchOf } from './ModuleSettingsFields'
 import { blockingConnections, getAdminModules, updateModule } from '../api'
-import type { AdminModule, BlockingConnection, ModulePatch } from '../api'
+import type { AdminModule, BlockingConnection, ModulePatch, OwnerNotice } from '../api'
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
 
@@ -28,7 +33,8 @@ const SECTIONS = [
  * The server decides what may change. Turning on is immediate; turning off a
  * feature asks first; turning off an engine is simply attempted — when
  * connections still use it the server refuses with the list, and that list is
- * what the blocked dialog shows. Nothing here guesses at the rule.
+ * what the in-use dialog shows. From there the admin can turn it off anyway:
+ * the connections are locked, not deleted, and their owners are notified.
  */
 export default function AdminModulesPanel() {
   const toast = useToast()
@@ -49,7 +55,7 @@ export default function AdminModulesPanel() {
   const apply = async (m: AdminModule, patch: ModulePatch, done: string) => {
     setBusy(m.id)
     try {
-      setModules(await updateModule(m.id, patch))
+      setModules((await updateModule(m.id, patch)).modules)
       refresh()
       toast.success(done)
       return true
@@ -67,6 +73,23 @@ export default function AdminModulesPanel() {
     if (!m.enabled) return apply(m, { enabled: true }, `${m.label} turned on — workspaces can use it right away.`)
     if (m.kind === 'feature') return setConfirmOff(m)
     apply(m, { enabled: false }, `${m.label} turned off — it’s gone from the connection picker in every workspace.`)
+  }
+
+  // Turn an engine off while connections use it: they're locked, not deleted.
+  const forceOff = async (m: AdminModule, notify: boolean) => {
+    setBusy(m.id)
+    try {
+      const { modules: next, notified } = await updateModule(m.id, { enabled: false }, { force: true, notify })
+      setModules(next)
+      setBlocked(null)
+      refresh()
+      toast.success(`${m.label} turned off — its connections are locked, not deleted.`)
+      if (notified) reportNotice(toast, notified)
+    } catch (err) {
+      toast.error(err.message)
+    } finally {
+      setBusy(null)
+    }
   }
 
   if (!modules) return <LoadingState className="" />
@@ -99,7 +122,8 @@ export default function AdminModulesPanel() {
       })}
 
       <p className="max-w-[680px] text-[11px] leading-relaxed text-ink-faint">
-        A database can only be turned off once no connection uses it — turning a module off never deletes anyone’s work.
+        Turning a database off that connections still use locks them — nobody can open or change them until it’s back
+        on, but nothing is deleted.
       </p>
 
       {confirmOff && (
@@ -117,7 +141,14 @@ export default function AdminModulesPanel() {
         />
       )}
 
-      {blocked && <BlockedDialog {...blocked} onClose={() => setBlocked(null)} />}
+      {blocked && (
+        <InUseDialog
+          {...blocked}
+          busy={busy === blocked.module.id}
+          onForce={(notify) => forceOff(blocked.module, notify)}
+          onClose={() => setBlocked(null)}
+        />
+      )}
 
       {configuring && (
         <ModuleSettingsPanel
@@ -133,12 +164,126 @@ export default function AdminModulesPanel() {
 function usageOf(m: AdminModule) {
   if (m.usage) {
     const { connections, workspaces } = m.usage
-    return {
-      line: connections ? `${plural(connections, 'connection')} · ${plural(workspaces, 'workspace')}` : 'Not in use',
-      hint: m.enabled && connections ? 'Remove its connections to turn it off' : '',
-    }
+    if (!connections) return { line: 'Not in use', hint: '', warn: false }
+    const where = `${plural(connections, 'connection')} · ${plural(workspaces, 'workspace')}`
+    return m.enabled
+      ? { line: where, hint: 'Turning it off locks them', warn: false }
+      : { line: `${plural(connections, 'connection')} locked`, hint: 'Deleted by their owners, or back when it’s on', warn: true }
   }
-  return { line: m.enabled ? 'On for every workspace' : 'Paused', hint: '' }
+  return { line: m.enabled ? 'On for every workspace' : 'Paused', hint: '', warn: false }
+}
+
+// After notifying owners: say how many were reached, and name who wasn't.
+function reportNotice(toast: ReturnType<typeof useToast>, notice: OwnerNotice | { error: string }) {
+  if ('error' in notice) return toast.error(`Couldn’t notify the owners: ${notice.error}`)
+  if (notice.owners) toast.success(`Notified ${plural(notice.owners, 'owner')} by email.`)
+  if (notice.failed.length) toast.error(`Couldn’t notify ${notice.failed.map((f) => f.email).join(', ')}.`)
+}
+
+// The dialog's connections by owner — the same rule the server sends by (one
+// recipient per address, trimmed and lower-cased), so what the admin sees is
+// who gets an email. Connections without an owner address go last, unnotified.
+type OwnerGroup = { key: string; email: string | null; name: string | null; connections: BlockingConnection[]; workspaces: string[] }
+
+function byOwner(connections: BlockingConnection[]): OwnerGroup[] {
+  const groups = new Map<string, OwnerGroup>()
+  for (const c of connections) {
+    const email = (c.ownerEmail || '').trim().toLowerCase()
+    const key = email || 'no-owner'
+    if (!groups.has(key)) groups.set(key, { key, email: email || null, name: c.ownerName, connections: [], workspaces: [] })
+    const g = groups.get(key)!
+    g.connections.push(c)
+    const ws = c.workspaceName || 'No workspace'
+    if (!g.workspaces.includes(ws)) g.workspaces.push(ws)
+  }
+  return [...groups.values()].sort((a, b) => Number(!a.email) - Number(!b.email))
+}
+
+// The in-use owners as a paged table: one row per owner (who gets one email),
+// expanding to the connections they own.
+function OwnersTable({ groups }: { groups: OwnerGroup[] }) {
+  const [open, setOpen] = useState<Set<string>>(() => new Set())
+  const toggle = (key: string) =>
+    setOpen((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+
+  const columns = useMemo<Column<OwnerGroup>[]>(
+    () => [
+      {
+        key: 'owner',
+        header: 'Owner',
+        sortable: true,
+        sortValue: (g) => g.name || g.email || '',
+        render: (g) => (
+          <div className="flex min-w-0 items-center gap-2.5">
+            <button
+              type="button"
+              aria-expanded={open.has(g.key)}
+              aria-label={`${open.has(g.key) ? 'Collapse' : 'Expand'} ${g.name || g.email || 'connections without an owner'}`}
+              onClick={(e) => {
+                e.stopPropagation()
+                toggle(g.key)
+              }}
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] text-ink-dim transition-colors hover:bg-card-hover hover:text-ink"
+            >
+              <ChevronDown width={14} height={14} className={`transition-transform ${open.has(g.key) ? '' : '-rotate-90'}`} />
+            </button>
+            {g.email ? (
+              <PersonRow name={g.name || undefined} email={g.email} stacked />
+            ) : (
+              <span className="text-[12px] text-ink-dim">No owner to notify</span>
+            )}
+          </div>
+        ),
+      },
+      {
+        key: 'connections',
+        header: 'Connections',
+        sortable: true,
+        sortValue: (g) => g.connections.length,
+        align: 'right',
+        width: 110,
+        render: (g) => <span className="text-[12px] text-ink-dim">{g.connections.length}</span>,
+      },
+      {
+        key: 'workspaces',
+        header: 'Workspaces',
+        className: 'max-[560px]:hidden',
+        render: (g) => <span className="block truncate text-[12px] text-ink-dim">{g.workspaces.join(', ')}</span>,
+      },
+    ],
+    [open]
+  )
+  const table = useDataTable({ rows: groups, columns, pageSize: 5 })
+
+  return (
+    <DataTable
+      columns={columns}
+      rowKey={(g) => g.key}
+      onRowClick={(g) => toggle(g.key)}
+      renderExpanded={(g) =>
+        open.has(g.key) ? (
+          <ul className="divide-y divide-edge/60">
+            {g.connections.map((c) => (
+              <li key={c.id} className="flex flex-wrap items-center gap-x-3 gap-y-0.5 py-2 pl-[54px] pr-4 text-[12px]">
+                <span>{c.name}</span>
+                <span className="ml-auto text-ink-faint">{c.workspaceName || 'No workspace'}</span>
+              </li>
+            ))}
+          </ul>
+        ) : null
+      }
+      className="mt-3"
+      {...table}
+      // A dialog pages five owners at a time; a rows-per-page menu would only
+      // drop out of the modal's scrolling body.
+      onPageSizeChange={undefined}
+    />
+  )
 }
 
 function ModuleRow({
@@ -164,7 +309,7 @@ function ModuleRow({
         <p className="mt-0.5 text-[11px] leading-relaxed text-ink-dim">{m.description}</p>
       </div>
       <div className="w-[210px] text-[11px] max-[720px]:w-auto">
-        <div className="text-ink">{usage.line}</div>
+        <div className={usage.warn ? 'text-amber' : 'text-ink'}>{usage.line}</div>
         {usage.hint && <div className="mt-0.5 text-ink-faint">{usage.hint}</div>}
       </div>
       {/* Fixed width, so the usage column lines up whether or not a row has Configure. */}
@@ -180,56 +325,69 @@ function ModuleRow({
   )
 }
 
-// What still uses an engine the admin tried to turn off. An instance admin
-// can't open workspace connections, so this names where each lives and who owns
-// it — the owner is who removes it.
-function BlockedDialog({
+// What still uses an engine the admin tried to turn off, grouped by owner, and
+// the way on: turn it off anyway — the connections are locked, not deleted, and
+// the confirm step notifies their owners (one email each). An instance admin
+// can't open workspace connections, so each owner's row names where theirs live.
+function InUseDialog({
   module: m,
   connections,
+  busy,
+  onForce,
   onClose,
 }: {
   module: AdminModule
   connections: BlockingConnection[]
+  busy: boolean
+  onForce: (notify: boolean) => void
   onClose: () => void
 }) {
-  const toast = useToast()
+  const [step, setStep] = useState<'list' | 'confirm'>('list')
+  const [notify, setNotify] = useState(true)
+  const n = connections.length
   const workspaces = new Set(connections.map((c) => c.workspaceId)).size
+  const groups = byOwner(connections)
+  const owners = groups.filter((g) => g.email).length
 
-  const copy = async () => {
-    const lines = connections.map((c) => `${c.name} — ${c.workspaceName || 'no workspace'} — owner: ${c.ownerName || 'unknown'}`)
-    try {
-      await navigator.clipboard.writeText(lines.join('\n'))
-      toast.success('Owner list copied.')
-    } catch {
-      toast.error('Couldn’t copy — select the list and copy it by hand.')
-    }
+  if (step === 'confirm') {
+    return (
+      <Modal title={`Turn off ${m.label} and lock ${plural(n, 'connection')}?`} onClose={onClose} width={520}>
+        <p className="text-[12px] leading-relaxed text-ink-dim">
+          {n === 1 ? 'The connection stays' : `All ${n} connections stay`} exactly as {n === 1 ? 'it is' : 'they are'}, but
+          locked: nobody can open, edit, export or back {n === 1 ? 'it' : 'them'} up, and scheduled workflows and backups on{' '}
+          {n === 1 ? 'it' : 'them'} are skipped. Owners can still delete {n === 1 ? 'it' : 'them'}. Turning {m.label} back on
+          unlocks everything as it was.
+        </p>
+        <label className="mt-4 flex cursor-pointer items-center gap-2.5 text-[12px]">
+          <Checkbox checked={notify} onChange={setNotify} ariaLabel="Notify the owners" disabled={!owners} />
+          Notify {owners === 1 ? 'the owner' : `the ${plural(owners, 'owner')}`} by email that {n === 1 ? 'their connection is' : 'their connections are'} locked
+        </label>
+        <div className="mt-5 flex justify-end gap-2">
+          <Button variant="subtle" size="sm" disabled={busy} onClick={() => setStep('list')}>
+            Back
+          </Button>
+          <Button variant="primary" size="sm" className="!bg-red !text-white hover:!bg-red/90" disabled={busy} onClick={() => onForce(notify)}>
+            {busy ? 'Turning off…' : `Turn off and lock ${plural(n, 'connection')}`}
+          </Button>
+        </div>
+      </Modal>
+    )
   }
 
   return (
-    <Modal title={`${m.label} can’t be turned off yet`} onClose={onClose} width={520}>
+    <Modal title={`${m.label} is still in use`} onClose={onClose} width={600}>
       <p className="text-[12px] leading-relaxed text-ink-dim">
-        {plural(connections.length, 'connection')} in {plural(workspaces, 'workspace')} still{' '}
-        {connections.length === 1 ? 'uses' : 'use'} {m.label}. Remove {connections.length === 1 ? 'it' : 'them'} first —
-        turning a database off never deletes anyone’s work.
+        {plural(n, 'connection')} in {plural(workspaces, 'workspace')} still {n === 1 ? 'uses' : 'use'} {m.label}. Turning it
+        off anyway locks them — nothing is deleted — and notifies {owners === 1 ? 'the owner' : `the ${plural(owners, 'owner')}`}{' '}
+        with one email each, listing their connections.
       </p>
-      <ul className="mt-3 divide-y divide-edge overflow-hidden rounded-soft border border-edge">
-        {connections.map((c) => (
-          <li key={c.id} className="flex flex-wrap items-center gap-x-3 gap-y-0.5 px-3 py-2 text-[12px]">
-            <span className="font-mono">{c.name}</span>
-            <span className="text-ink-dim">{c.workspaceName || 'No workspace'}</span>
-            <span className="ml-auto text-ink-faint">Owner: {c.ownerName || 'unknown'}</span>
-          </li>
-        ))}
-      </ul>
-      <p className="mt-3 text-[11px] leading-relaxed text-ink-faint">
-        An instance admin can’t open workspace connections, so ask each owner to delete theirs, then try again.
-      </p>
-      <div className="mt-4 flex justify-end gap-2">
-        <Button variant="subtle" size="sm" onClick={copy}>
-          Copy owner list
+      <OwnersTable groups={groups} />
+      <div className="mt-4 flex flex-wrap justify-end gap-2">
+        <Button variant="subtle" size="sm" onClick={onClose}>
+          Cancel
         </Button>
-        <Button variant="primary" size="sm" onClick={onClose}>
-          Got it
+        <Button variant="danger" size="sm" onClick={() => setStep('confirm')}>
+          Turn off anyway
         </Button>
       </div>
     </Modal>

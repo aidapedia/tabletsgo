@@ -48,7 +48,10 @@ import {
  * `/connections/:id/schema` isn't bounced to Data before the connection that
  * would justify the tab has even arrived.
  */
-export function detailTabs(type?: string, { backup = true }: { backup?: boolean } = {}) {
+export function detailTabs(type?: string, { backup = true, locked = false }: { backup?: boolean; locked?: boolean } = {}) {
+  // Locked (its database turned off on this instance): every other tab would
+  // only show the server refusing — the record itself is all there is to see.
+  if (locked) return [{ id: 'data', label: 'Data Connection' }]
   return [
     { id: 'data', label: 'Data Connection' },
     { id: 'access', label: 'Access' },
@@ -65,9 +68,11 @@ const STATUS = {
   checking: { dot: 'bg-ink-faint animate-pulse', text: 'text-ink-faint', label: 'Checking…' },
   connected: { dot: 'bg-status-ok', text: 'text-ink-dim', label: 'Connected' },
   offline: { dot: 'bg-red', text: 'text-ink-dim', label: 'Offline' },
+  // Its database is turned off on this instance (Admin → Modules).
+  locked: { dot: 'bg-amber', text: 'text-amber', label: 'Locked' },
 }
 
-// Live-connectivity dot + label ("Connected" / "Offline" / "Checking…").
+// Live-connectivity dot + label ("Connected" / "Offline" / "Checking…" / "Locked").
 export function StatusBadge({ status }: { status?: string }) {
   const s = STATUS[status] || STATUS.checking
   return (
@@ -113,7 +118,7 @@ export default function ConnectionDetail({ conn, onBack, onOpen, onEdit, onDelet
   const toast = useToast()
   const { connections } = useConnections()
   const { isEnabled } = useModules()
-  const [status, setStatus] = useState<'checking' | 'connected' | 'offline'>('checking')
+  const [status, setStatus] = useState<'checking' | 'connected' | 'offline' | 'locked'>('checking')
   const [tableCount, setTableCount] = useState<number | null>(null)
   const [sessions, setSessions] = useState<SessionStats | null>(null)
   const [gateway, setGateway] = useState<SshGateway | null>(null)
@@ -126,8 +131,12 @@ export default function ConnectionDetail({ conn, onBack, onOpen, onEdit, onDelet
 
   useEffect(() => {
     let alive = true
-    setStatus('checking')
     setTableCount(null)
+    if (conn.locked) {
+      setStatus('locked')
+      return
+    }
+    setStatus('checking')
     pingConnection(conn).then((r) => {
       if (!alive) return
       setStatus(r.ok ? 'connected' : 'offline')
@@ -145,7 +154,7 @@ export default function ConnectionDetail({ conn, onBack, onOpen, onEdit, onDelet
   // (opened by that ping) is already counted.
   useEffect(() => {
     let alive = true
-    listConnectionSessions(conn).then((s) => alive && setSessions(s))
+    if (!conn.locked) listConnectionSessions(conn).then((s) => alive && setSessions(s))
     return () => {
       alive = false
     }
@@ -169,9 +178,11 @@ export default function ConnectionDetail({ conn, onBack, onOpen, onEdit, onDelet
         desc={subtitleParts.join(' · ')}
         action={
           <>
-            <Button variant="subtle" size="lg" icon={EditIcon} onClick={() => onEdit(conn)}>
-              Edit
-            </Button>
+            {!conn.locked && (
+              <Button variant="subtle" size="lg" icon={EditIcon} onClick={() => onEdit(conn)}>
+                Edit
+              </Button>
+            )}
             <Popover
               align="right"
               width={180}
@@ -186,7 +197,7 @@ export default function ConnectionDetail({ conn, onBack, onOpen, onEdit, onDelet
                   <MenuItem onClick={() => { copyUrl(); close() }}>
                     <CopyIcon width={14} height={14} /> Copy as URL
                   </MenuItem>
-                  {onExport && (
+                  {onExport && !conn.locked && (
                     <MenuItem onClick={() => { close(); onExport(conn) }}>
                       <DownloadIcon width={14} height={14} /> Export as JSON
                     </MenuItem>
@@ -202,14 +213,25 @@ export default function ConnectionDetail({ conn, onBack, onOpen, onEdit, onDelet
                 </div>
               )}
             </Popover>
-            <Button variant="primary" size="lg" icon={ExternalLinkIcon} disabled={connecting} onClick={() => onOpen(conn)}>
+            <Button variant="primary" size="lg" icon={ExternalLinkIcon} disabled={connecting || conn.locked} onClick={() => onOpen(conn)}>
               {connecting ? 'Connecting…' : 'Connect'}
             </Button>
           </>
         }
       />
 
-      <PageTabs tabs={detailTabs(conn.type, { backup: isEnabled('backup') })} active={tab} onTab={onTab}>
+      {conn.locked && (
+        <div role="status" className="mt-5 rounded-card border border-amber/30 bg-amber/10 px-4 py-3 text-[12px] leading-relaxed text-ink">
+          <span className="font-semibold">This connection is locked.</span>{' '}
+          <span className="text-ink-dim">
+            An instance administrator turned {TYPE_LABEL[conn.type] || conn.type} off, so it can’t be opened, edited or backed
+            up. Nothing was deleted — it comes back as it was when {TYPE_LABEL[conn.type] || conn.type} is turned on again. You
+            can still delete it.
+          </span>
+        </div>
+      )}
+
+      <PageTabs tabs={detailTabs(conn.type, { backup: isEnabled('backup'), locked: conn.locked })} active={tab} onTab={onTab}>
         {tab === 'data' ? (
           <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
             {/* Main */}

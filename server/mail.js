@@ -112,3 +112,25 @@ export const sendResetEmail = (cfg, { to, link }) =>
     text: `Reset your Tabletsgo password: ${link}\nThis link expires in 1 hour. If you didn't request this, ignore this email.`,
     html: `<p>We received a request to reset your Tabletsgo password.</p><p><a href="${link}">Reset your password</a></p><p style="color:#888">This link expires in 1 hour. If you didn't request this, you can safely ignore this email.</p>`,
   })
+
+// Connection names and workspaces are user-typed — never raw into HTML.
+const escapeHtml = (s) =>
+  String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c])
+
+/**
+ * Tell one owner that an instance admin turned off a database their
+ * connections use, so those connections are locked. `connections`:
+ * [{ name, workspaceName }].
+ */
+export const sendModuleNoticeEmail = (cfg, { to, moduleLabel, connections }) => {
+  const subject = `${moduleLabel} was turned off on Tabletsgo`
+  const lead = `An instance administrator turned off ${moduleLabel}. These connections you own use it and are now locked — nobody can open, edit or back them up:`
+  const tail = `Nothing was deleted: they come back as they were if ${moduleLabel} is turned on again. You can still delete them.`
+  const line = (c) => `${c.name}${c.workspaceName ? ` (${c.workspaceName})` : ''}`
+  return sendMail(cfg, {
+    to,
+    subject,
+    text: `${lead}\n\n${connections.map((c) => `- ${line(c)}`).join('\n')}\n\n${tail}`,
+    html: `<p>${escapeHtml(lead)}</p><ul>${connections.map((c) => `<li>${escapeHtml(line(c))}</li>`).join('')}</ul><p style="color:#888">${escapeHtml(tail)}</p>`,
+  })
+}

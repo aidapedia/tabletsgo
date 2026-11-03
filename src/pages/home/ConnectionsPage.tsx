@@ -74,6 +74,8 @@ export default function ConnectionsPage() {
   useEffect(() => {
     let alive = true
     connections.forEach((c) => {
+      // Its database is turned off on this instance — nothing to probe.
+      if (c.locked) return setStatuses((s) => ({ ...s, [c.id]: 'locked' }))
       setStatuses((s) => ({ ...s, [c.id]: 'checking' }))
       pingConnection(c).then((r) => {
         if (alive) setStatuses((s) => ({ ...s, [c.id]: r.ok ? 'connected' : 'offline' }))
@@ -185,7 +187,8 @@ export default function ConnectionsPage() {
       <Button
         variant="primary"
         size="sm"
-        disabled={connectingId === c.id}
+        disabled={connectingId === c.id || c.locked}
+        title={c.locked ? `${TYPE_LABEL[c.type] || c.type} is turned off on this instance` : undefined}
         onClick={() => connect(c)}
       >
         {connectingId === c.id ? 'Connecting…' : 'Connect'}
@@ -198,7 +201,9 @@ export default function ConnectionsPage() {
             </MenuItem>
             {/* Changing the connection *record* — whoever manages every
                 connection here, or whoever owns this one. */}
-            {canManageConn(c) && (
+            {/* A locked connection can only be deleted — editing or exporting
+                it is refused until its database is turned back on. */}
+            {canManageConn(c) && !c.locked && (
               <MenuItem onClick={() => { close(); openEdit(c) }}>
                 <EditIcon width={14} height={14} /> Edit
               </MenuItem>
@@ -206,7 +211,7 @@ export default function ConnectionsPage() {
             <MenuItem onClick={() => { close(); copyUrl(c) }}>
               <CopyIcon width={14} height={14} /> Copy as URL
             </MenuItem>
-            {canManageConn(c) && (
+            {canManageConn(c) && !c.locked && (
               <MenuItem onClick={() => { close(); setExporting(c) }}>
                 <DownloadIcon width={14} height={14} /> Export as JSON
               </MenuItem>

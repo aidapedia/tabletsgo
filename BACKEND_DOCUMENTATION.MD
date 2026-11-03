@@ -1481,8 +1481,10 @@ is on**, so an upgraded instance hides nothing.
 
 Rules the server enforces:
 
-- **An engine can't be turned off while any connection uses it** → `409` with
-  the connections (below). Turning a module off never deletes anything.
+- **An engine still in use is only turned off on purpose** → without `force`,
+  `409` with the connections (below), so the admin can turn it off anyway
+  (`force`) — which also notifies their owners when asked (`notify`). Forced, those connections are **locked, not deleted** (below).
+  Turning a module off never deletes anything.
 - **At least one engine stays on** → `400`.
 
 What "off" does: a turned-off **engine** is refused by the db layer on every
@@ -1492,6 +1494,15 @@ out of `GET /api/schema-engines`. A turned-off **Backup** answers `403` on every
 `/api/connections/:id/backup/*` and `/restore/*` route and its scheduler tick is
 skipped; schedules, run history and stored files stay and resume when it's
 turned back on.
+
+**Locked connections.** A connection whose engine is off stays as it is, but:
+`GET /api/connections` lists it with `"locked": true`; every
+`/api/connections/:id` and `/api/connections/:id/*` route answers
+`403 { "error": "SQLite is turned off on this instance. …", "locked": true }` —
+except `DELETE /api/connections/:id` (its owner can still delete it) and
+`GET /:id/handshake` (which reports `reason: "disabled"`); its webhook
+(`/api/hooks/wf/…`) answers the same `403`; and the schedulers skip its
+workflows and backups. Turning the engine back on unlocks all of it as it was.
 
 Settings per module (all integers; `null` resets one to its default):
 
@@ -1540,16 +1551,27 @@ validated before any of it is saved.
   `{ "error": "Keep at least one database turned on — workspaces need something to connect to." }`
 - **409** (an engine still in use):
   ```json
-  { "error": "Kafka can’t be turned off while 1 connection uses it. Remove it first.", "module": "kafka",
-    "connections": [{ "id": "06f0…", "name": "orders-events", "workspaceId": "a4a7…", "workspaceName": "Payments", "ownerName": "Rina" }] }
+  { "error": "1 connection uses Kafka. Turn it off anyway to lock it — nothing is deleted.", "module": "kafka",
+    "connections": [{ "id": "06f0…", "name": "orders-events", "workspaceId": "a4a7…", "workspaceName": "Payments", "ownerName": "Rina", "ownerEmail": "rina@acme.com" }] }
   ```
 - **Example:** `PUT http://localhost:3000/api/admin/modules` body
   `{ "modules": { "redis": { "enabled": false }, "kafka": { "settings": { "readMaxMessages": 1000 } } } }`
 
 #### PUT `/api/admin/modules/:id`
 One module — what Admin → Modules sends. Same rules and responses as the batch.
-- **Body:** `{ "enabled"?: boolean, "settings"?: { "<key>": number | string | null } }`
-- **Example:** `PUT http://localhost:3000/api/admin/modules/backup` body `{ "enabled": false }`
+- **Body:** `{ "enabled"?: boolean, "settings"?: { "<key>": number | string | null }, "force"?: boolean, "notify"?: boolean }`
+  — `force` turns off an engine connections still use (they are locked);
+  `notify` with it notifies their owners by email that their connections are
+  locked — **one email per unique recipient address** (trimmed,
+  case-insensitive), listing every connection that address owns. Sent through
+  the instance mail server (Administration → Email).
+- **200:** `{ "modules": [...], "notified"?: { "owners": 2, "connections": 4, "failed": [] } }` —
+  `notified` only when `force` + `notify` turned an engine off; it is
+  `{ "error": "No mail server is configured — …" }` when the email couldn't be
+  sent (the engine is off either way).
+- **Example:** `PUT http://localhost:3000/api/admin/modules/kafka` body `{ "enabled": false, "force": true, "notify": true }`
+
+The batch route takes `force` at the top level: `{ "modules": { … }, "force": true }`.
 
 ---
 

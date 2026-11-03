@@ -15,6 +15,23 @@ const { saveConnection, deleteConnectionMetadata } = await import('../server/con
 const { adminModules, loadModules, publicModules, updateModules } = await import('../server/module-settings.js')
 const { assertModuleEnabled, isModuleEnabled, moduleSetting, optionalModuleSetting } = await import('../server/module-registry.js')
 const db = await import('../server/db/index.js')
+const { groupByRecipient, notifyModuleOwners } = await import('../server/module-notices.js')
+
+test('owners are notified once per unique address, with all of their connections', () => {
+  const groups = groupByRecipient([
+    { name: 'orders-events', ownerName: 'Rina', ownerEmail: 'rina@acme.com' },
+    { name: 'payments-cdc', ownerName: 'Rina', ownerEmail: ' Rina@Acme.com ' },
+    { name: 'clickstream', ownerName: 'Dimas', ownerEmail: 'dimas@acme.com' },
+    { name: 'orphan', ownerName: null, ownerEmail: null },
+  ])
+  assert.deepEqual(
+    groups.map((g) => [g.email, g.connections.map((c) => c.name)]),
+    [
+      ['rina@acme.com', ['orders-events', 'payments-cdc']],
+      ['dimas@acme.com', ['clickstream']],
+    ]
+  )
+})
 
 await loadModules()
 
@@ -34,7 +51,23 @@ test('an engine nobody uses turns off, and the db layer then refuses it', async 
   assert.ok(db.driverFor({ type: 'redis' }))
 })
 
-test('an engine with connections can’t be turned off, and the refusal names them', async () => {
+test('forced off, an engine in use keeps its connections; the notice needs a mail server', async () => {
+  await saveConnection({ id: 'k2', type: 'kafka', name: 'audit-log', workspaceId: null, brokers: 'localhost:9092' })
+  await updateModules({ kafka: { enabled: false } }, { force: true })
+  assert.equal(isModuleEnabled('kafka'), false)
+  // Locked, not deleted: the connection is still there and still counted.
+  const kafka = (await adminModules()).find((m) => m.id === 'kafka')
+  assert.equal(kafka.usage.connections, 1)
+  assert.throws(() => db.driverFor({ type: 'kafka' }), (e) => e.status === 403)
+
+  // No SMTP in this test instance — the notice says so instead of pretending.
+  await assert.rejects(notifyModuleOwners('kafka'), /No connection on Kafka has an owner|No mail server/)
+
+  await updateModules({ kafka: { enabled: true } })
+  await deleteConnectionMetadata('k2')
+})
+
+test('an engine with connections isn’t turned off without force, and the refusal names them', async () => {
   await saveConnection({ id: 'k1', type: 'kafka', name: 'orders-events', workspaceId: null, brokers: 'localhost:9092' })
   await assert.rejects(updateModules({ kafka: { enabled: false } }), (e) => {
     assert.equal(e.status, 409)

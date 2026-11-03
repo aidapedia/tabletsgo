@@ -13,6 +13,7 @@ import vm from 'node:vm'
 import { createHash, createHmac, randomUUID, timingSafeEqual } from 'crypto'
 import { db } from './meta.js'
 import { getConnection } from './connections.js'
+import { isModuleEnabled } from './module-registry.js'
 import { computeNextRun, jsonPreview, safeJson } from './util.js'
 import { exportDatabaseToFile, runQueryOrThrow } from './db/index.js'
 import { storeFile } from './storage.js'
@@ -303,7 +304,9 @@ export async function runDueWorkflows() {
     }
     await db().workflows.updateMany({ where: { id: wf.id }, data: { next_run_at: nextRun } })
     const conn = await getConnection(wf.connection_id)
-    if (!conn) continue
+    // A connection whose database an admin turned off is locked: skip this slot
+    // rather than record a failure that nobody can act on.
+    if (!conn || !isModuleEnabled(conn.type)) continue
     executeAndRecord(wf.id, wf.connection_id, conn, graph, 'schedule').catch((e) =>
       console.error(`Scheduled run failed for workflow ${wf.id}:`, e.message)
     )

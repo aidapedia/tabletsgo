@@ -145,8 +145,9 @@ import {
   smtpConfig,
 } from './server/mail.js'
 import { clearGlobalSmtp, publicGlobalSmtp, saveGlobalSmtp } from './server/app-settings.js'
-import { assertModuleEnabled, isModuleEnabled, optionalModuleSetting } from './server/module-registry.js'
+import { assertModuleEnabled, isModuleEnabled, moduleOffMessage, optionalModuleSetting } from './server/module-registry.js'
 import { adminModules, loadModules, publicModules, updateModules } from './server/module-settings.js'
+import { notifyModuleOwners } from './server/module-notices.js'
 import {
   bumpSchemaVersion,
   deleteConnectionMetadata,
@@ -872,27 +873,37 @@ app.post('/api/admin/smtp/test', async (req, res) => {
 
 app.get('/api/admin/modules', async (_req, res) => res.json({ modules: await adminModules() }))
 
-// A blocked change (an engine that connections still use) answers 409 with the
-// connections, so the admin can tell their owners what to remove.
+// A refused change (an engine that connections still use, without `force`)
+// answers 409 with the connections, so the admin can turn it off anyway.
 const sendModuleError = (res, error) =>
   res.status(error.status || 500).json({ error: error.message, module: error.module, connections: error.connections })
 
-// Batch: { modules: { [id]: { enabled?, settings? } } } — what the wizard sends.
+// Batch: { modules: { [id]: { enabled?, settings? } }, force? } — what the wizard sends.
 app.put('/api/admin/modules', async (req, res) => {
   try {
-    res.json({ modules: await updateModules(req.body?.modules) })
+    res.json({ modules: await updateModules(req.body?.modules, { force: req.body?.force === true }) })
   } catch (error) {
     sendModuleError(res, error)
   }
 })
 
-// One module: { enabled?, settings? } — what Admin → Modules sends.
+// One module: { enabled?, settings?, force?, notify? } — what Admin → Modules
+// sends. `force` turns off an engine connections still use (they are locked,
+// not deleted); `notify` then notifies their owners by email, one per unique
+// address. The switch stands even if that fails — `notified` says how it went.
 app.put('/api/admin/modules/:id', async (req, res) => {
+  const { enabled, settings, force, notify } = req.body || {}
+  let modules
   try {
-    res.json({ modules: await updateModules({ [req.params.id]: req.body || {} }) })
+    modules = await updateModules({ [req.params.id]: { enabled, settings } }, { force: force === true })
   } catch (error) {
-    sendModuleError(res, error)
+    return sendModuleError(res, error)
   }
+  let notified
+  if (force === true && notify === true && enabled === false) {
+    notified = await notifyModuleOwners(req.params.id).catch((error) => ({ error: error.message }))
+  }
+  res.json({ modules, notified })
 })
 
 // ============================================================================
@@ -1552,7 +1563,9 @@ app.get('/api/connections', async (req, res) => {
   const workspaceId = req.query.workspace
   if (!workspaceId) return res.json([])
   if (!(await isMember(workspaceId, user.id))) return res.status(403).json({ error: 'Forbidden' })
-  res.json(await openableConnections(workspaceId, user.id))
+  // `locked`: its database is turned off on this instance — listed, so nobody
+  // wonders where it went, but nothing on it works until it's back on.
+  res.json((await openableConnections(workspaceId, user.id)).map((c) => ({ ...c, locked: !isModuleEnabled(c.type) })))
 })
 
 // May this caller tunnel a probe through `gatewayId`? A gateway is a way into
@@ -1809,6 +1822,14 @@ app.use('/api/connections/:id', async (req, res, next) => {
   const conn = await getConnection(req.params.id)
   if (!conn) return res.status(404).json({ error: 'Connection not found' })
   if (conn.workspaceId && !(await userCanAccessConnection(conn, user.id))) return res.status(403).json({ error: 'Forbidden' })
+  // Its database turned off in Admin → Modules: the connection is locked —
+  // kept exactly as it is, but nothing opens, edits, exports or backs it up.
+  // Deleting it is the one way out, so its owner can still clean up. The
+  // handshake passes too: the db layer refuses the engine before dialing and
+  // answers `reason: 'disabled'`, which is how the console explains the lock.
+  const deleting = req.method === 'DELETE' && (req.path === '/' || req.path === '')
+  const diagnosing = req.method === 'GET' && req.path === '/handshake'
+  if (!isModuleEnabled(conn.type) && !deleting && !diagnosing) return res.status(403).json({ error: moduleOffMessage(conn.type), locked: true })
   next()
 })
 
@@ -2279,6 +2300,9 @@ app.all('/api/hooks/wf/:wid/:token', async (req, res) => {
   if (!ok) return res.status(401).json({ error: 'Invalid webhook token' })
   const conn = await getConnection(workflow.connectionId)
   if (!conn) return res.status(404).json({ error: 'Connection not found' })
+  // Outside the connection guard, so the lock is checked here too: a workflow on
+  // a connection whose database is turned off doesn't run.
+  if (!isModuleEnabled(conn.type)) return res.status(403).json({ error: moduleOffMessage(conn.type), locked: true })
   // The request body seeds the trigger; query params are exposed too so simple
   // GET pings can pass data without a body.
   const input = { body: req.body ?? null, query: req.query || {}, headers: req.headers, method: req.method }

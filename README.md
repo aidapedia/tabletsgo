@@ -30,7 +30,7 @@ Browse data, write queries, design schemas, automate workflows and back up to S3
 - **Data export / import** — CSV, JSON or SQL, with a dry‑run preview.
 - **SSH tunnels** — reach private databases through a bastion (plain SSH, Railway, Cloudflare Access).
 - **Teams** — workspaces, groups, email invites and permission‑based roles on a resource tree.
-- **Modules** — the instance admin chooses which databases (PostgreSQL, SQLite, Redis, Kafka) and features (Backups) the instance offers, in the setup wizard and later under **Administration → Modules**, and sets their instance-wide settings — each database's query timeout and table row limit, Kafka's read caps. Workspaces only see what's on; a database can only be turned off once no connection uses it.
+- **Modules** — the instance admin chooses which databases (PostgreSQL, SQLite, Redis, Kafka) and features (Backups) the instance offers, in the setup wizard and later under **Administration → Modules**, and sets their instance-wide settings — each database's query timeout and table row limit, Kafka's read caps. Workspaces only see what's on. Turning off a database that connections still use locks those connections instead of deleting them, and notifies their owners by email.
 - **Secure by default** — credentials encrypted at rest (AES‑256‑GCM), brute‑force login protection.
 - **In‑app updates**, split view, configurable keymap, light/dark theme.
 

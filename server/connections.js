@@ -110,7 +110,7 @@ export const connectionUsageByType = async () => {
 }
 
 // The connections of one engine — who still uses it — without decrypting a
-// single credentials blob: [{ id, name, workspaceId, ownerName }].
+// single credentials blob: [{ id, name, workspaceId, ownerName, ownerEmail }].
 export const connectionsOfType = async (type) => {
   const rows = await db().connections.findMany({
     where: { type },
@@ -120,7 +120,13 @@ export const connectionsOfType = async (type) => {
   const owners = await ownersOf(rows)
   return rows.map((r) => {
     const u = r.owner_id ? owners.get(r.owner_id) : null
-    return { id: r.id, name: r.name, workspaceId: r.workspace_id || null, ownerName: u ? u.name || u.username : null }
+    return {
+      id: r.id,
+      name: r.name,
+      workspaceId: r.workspace_id || null,
+      ownerName: u ? u.name || u.username : null,
+      ownerEmail: u?.username || null,
+    }
   })
 }
 

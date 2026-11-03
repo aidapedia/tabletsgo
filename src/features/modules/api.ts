@@ -31,8 +31,18 @@ export type AdminModule = Omit<PublicModule, 'settings'> & {
   settings: ModuleSetting[]
 }
 
-/** A connection that keeps an engine from being turned off. */
-export type BlockingConnection = { id: string; name: string; workspaceId: string | null; workspaceName: string | null; ownerName: string | null }
+/** A connection on an engine the admin is turning off — locked once it's off. */
+export type BlockingConnection = {
+  id: string
+  name: string
+  workspaceId: string | null
+  workspaceName: string | null
+  ownerName: string | null
+  ownerEmail: string | null
+}
+
+/** How notifying the owners went: how many recipients were reached (one email per address), and who it failed for. */
+export type OwnerNotice = { owners: number; connections: number; failed: { email: string; error: string }[] }
 
 /** A setting goes as typed (the server checks the range); null puts it back to its default. */
 export type ModulePatch = { enabled?: boolean; settings?: Record<string, number | string | null> }
@@ -50,9 +60,18 @@ export async function updateModules(modules: Record<string, ModulePatch>) {
   return (await request<{ modules: AdminModule[] }>('/admin/modules', { method: 'PUT', body: { modules } })).modules
 }
 
-export async function updateModule(id: string, patch: ModulePatch) {
-  return (await request<{ modules: AdminModule[] }>(`/admin/modules/${encodeURIComponent(id)}`, { method: 'PUT', body: patch })).modules
+/**
+ * One module. `force` turns off an engine connections still use — they are
+ * locked, not deleted — and `notify` then notifies their owners; `notified` is how
+ * that went (`{ error }` when it couldn't send — the switch stands regardless).
+ */
+export async function updateModule(id: string, patch: ModulePatch, { force = false, notify = false } = {}) {
+  return request<{ modules: AdminModule[]; notified?: OwnerNotice | { error: string } }>(`/admin/modules/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    body: { ...patch, ...(force ? { force, notify } : {}) },
+  })
 }
+
 
 /** The connections a refused switch-off listed, or null when the error was something else. */
 export const blockingConnections = (error: any): BlockingConnection[] | null =>
