@@ -67,19 +67,25 @@ const NAV = {
 }
 
 // An instance admin belongs to no workspace, so none of the sections above have
-// anything to show them — `/admin` is their home, so it takes the pinned row,
-// and the instance-wide sections (accounts, the one mail server, the node
-// hierarchy) group under it, plus the same personal settings.
+// anything to show them — `/admin` is their home, so it takes the pinned row.
+// Below it the groups read as: who can get in and what they may reach, then how
+// the instance itself is set up, plus the same personal settings.
 const ADMIN_NAV = {
   pinned: [{ label: 'Workspaces', Icon: BuildingIcon, path: '/admin', exact: true }],
   groups: [
     {
-      group: 'Administration',
+      group: 'Access',
       items: [
         { label: 'Users', Icon: UsersIcon, path: '/admin/users' },
-        { label: 'Email', Icon: MailIcon, path: '/admin/email' },
-        { label: 'Modules', Icon: GridIcon, path: '/admin/modules' },
+        { label: 'Sign-in Methods', Icon: KeyIcon, path: '/admin/sign-in' },
         { label: 'Resource Tree', Icon: TreeIcon, path: '/resource-tree' },
+      ],
+    },
+    {
+      group: 'Instance',
+      items: [
+        { label: 'Modules', Icon: GridIcon, path: '/admin/modules' },
+        { label: 'Email Server', Icon: MailIcon, path: '/admin/email' },
       ],
     },
     {

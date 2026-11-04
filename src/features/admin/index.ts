@@ -9,6 +9,7 @@ export { default as AdminUsersPanel } from './components/AdminUsersPanel'
 // inside the admin panel that also uses it.
 export { default as CreateWorkspaceDialog } from './components/CreateWorkspaceDialog'
 export { default as AdminSmtpPanel } from './components/AdminSmtpPanel'
+export { default as AdminSignInPanel } from './components/AdminSignInPanel'
 export type { AdminUser, AdminWorkspace, AdminWorkspaceMember, GlobalSmtp, GlobalSmtpInfo, SystemRole } from './api'
 export {
   listAllWorkspaces,

@@ -654,6 +654,67 @@ change.
   `{ "error": "The new password must be different from the current one." }`
 - **Example:** `POST http://localhost:3000/api/auth/password`
 
+### GET `/api/auth/providers`
+Public. What the sign-in pages offer. `registration.email` is false without a
+mail server, because the emailed link is what proves the address; sign-up then
+only works through a provider.
+- **200:** `{ "providers": [{ "kind": "google", "label": "Google" }], "registration": { "open": true, "email": true } }`
+- **Example:** `GET http://localhost:3000/api/auth/providers`
+
+### POST `/api/auth/register`
+Public, while the `registration` module is on. Asks for an account: a pending one
+is created and a link to `/invite/:token` is emailed, where the person chooses a
+password. No password is taken here, so nobody can claim an address that isn't
+theirs. **Same 200 whether or not the address has an account.** An address with
+no account or a pending one gets the email, at most once a minute; an active
+account gets nothing.
+- **Body:** `{ "email": "rina@acme.com", "name": "Rina" }` (`name` optional)
+- **200:** `{ "ok": true }`
+- **400:** `{ "error": "Enter a valid email address." }` · **403:** registration
+  is off · **503:** no mail server
+- **Example:** `POST http://localhost:3000/api/auth/register`
+
+### POST `/api/auth/oauth/:kind/start`
+Public. Begins a Google or GitHub sign-in (`:kind` is `google` | `github`). Sets
+the `tg_oauth` cookie that ties the callback to this browser, and returns the URL
+to send the browser to. With `invite`, a successful sign-in accepts that invite.
+- **Body:** `{ "invite": "<invite token>" }` (optional)
+- **200:** `{ "url": "https://accounts.google.com/o/oauth2/v2/auth?…" }`
+- **403:** the provider is off · **404:** unknown provider
+- **Example:** `POST http://localhost:3000/api/auth/oauth/google/start`
+
+### GET `/api/auth/oauth/callback`
+Where the provider sends the browser back, for sign-in, linking and invites.
+Register this URL with the provider. Always answers with a redirect:
+- signed in → `/login/complete?code=<one-time code>` (valid 60 s)
+- linked → `/settings/account?linked=google`
+- refused → the page it started from with `?error=<code>`: `not_linked`,
+  `email_unverified`, `already_linked`, `provider_taken`, `provider_off`,
+  `invite_invalid`, `expired`, `cancelled` or `failed`
+
+### POST `/api/auth/oauth/exchange`
+Public. Trades the one-time code for a session, the same shape as
+`/api/auth/login`. The session token never appears in a URL.
+- **Body:** `{ "code": "<one-time code>" }`
+- **200:** `{ "user", "token" }` · **404:** `{ "error": "This sign-in has expired. Please try again." }` (unknown, expired or already used)
+- **Example:** `POST http://localhost:3000/api/auth/oauth/exchange`
+
+### GET `/api/auth/identities`
+The caller's linked Google and GitHub accounts, plus what they could still link.
+- **200:** `{ "identities": [{ "id", "provider": "google", "email", "createdAt", "lastUsedAt" }], "hasPassword": true, "providers": [{ "kind", "label" }] }`
+- **Example:** `GET http://localhost:3000/api/auth/identities`
+
+### POST `/api/auth/identities/:kind/link`
+Begins linking a provider account to the caller. Same answer as
+`/api/auth/oauth/:kind/start`; the result arrives at the callback.
+- **200:** `{ "url" }` · **401** · **403:** the provider is off
+- **Example:** `POST http://localhost:3000/api/auth/identities/github/link`
+
+### DELETE `/api/auth/identities/:id`
+Unlinks one of the caller's own accounts.
+- **200:** `{ "ok": true }` · **400:** it is their only way to sign in · **404:** not theirs
+- **Example:** `DELETE http://localhost:3000/api/auth/identities/8c1f…`
+
 ### POST `/api/auth/forgot`
 Request a password-reset link. **Always 200** `{ "ok": true }` — never reveals
 whether the email exists. When SMTP is available (the global/env config, else
@@ -1520,6 +1581,23 @@ What's on, for hiding what isn't, and the settings in effect, for applying them.
 - **401** without a token.
 - **Example:** `GET http://localhost:3000/api/modules`
 
+#### GET `/api/admin/identity-providers`
+Both sign-in providers and how many people linked each. Secrets are write-only:
+reads report `hasSecret`.
+- **200:** `{ "providers": [{ "kind": "google", "label": "Google", "clientId", "hasSecret": true, "enabled": true, "linked": 12 }], "callbackUrl": "https://db.acme.com/api/auth/oauth/callback" }`
+- **Example:** `GET http://localhost:3000/api/admin/identity-providers`
+
+#### PUT `/api/admin/identity-providers/:kind`
+Save a provider's app. An omitted or blank `clientSecret` keeps the saved one.
+- **Body:** `{ "clientId": "…", "clientSecret": "…", "enabled": true }` (all optional)
+- **200:** `{ "providers": [ … ] }` · **400:** turned on without a client ID and secret · **404:** unknown provider
+- **Example:** `PUT http://localhost:3000/api/admin/identity-providers/google`
+
+#### DELETE `/api/admin/identity-providers/:kind`
+Removes the app. Linked accounts stay linked and work again once it is set up.
+- **200:** `{ "providers": [ … ] }`
+- **Example:** `DELETE http://localhost:3000/api/admin/identity-providers/github`
+
 #### GET `/api/admin/modules`
 The admin view: identity, state, settings and — for an engine — who uses it.
 - **200:**
@@ -1563,7 +1641,7 @@ One module — what Admin → Modules sends. Same rules and responses as the bat
   `notify` with it notifies their owners by email that their connections are
   locked — **one email per unique recipient address** (trimmed,
   case-insensitive), listing every connection that address owns. Sent through
-  the instance mail server (Administration → Email).
+  the instance mail server (Administration → Email Server).
 - **200:** `{ "modules": [...], "notified"?: { "owners": 2, "connections": 4, "failed": [] } }` —
   `notified` only when `force` + `notify` turned an engine off; it is
   `{ "error": "No mail server is configured — …" }` when the email couldn't be
@@ -4024,6 +4102,17 @@ Liveness probe. Also reports boot readiness and the running identity.
 | Method | Path                                      | Purpose                         |
 | ------ | ----------------------------------------- | ------------------------------- |
 | POST   | `/api/auth/login`                         | Validate credentials            |
+| GET    | `/api/auth/providers`                     | What the sign-in pages offer    |
+| POST   | `/api/auth/register`                      | Ask for an account by email     |
+| POST   | `/api/auth/oauth/:kind/start`             | Begin Google/GitHub sign-in     |
+| GET    | `/api/auth/oauth/callback`                | Provider redirect target        |
+| POST   | `/api/auth/oauth/exchange`                | One-time code → session         |
+| GET    | `/api/auth/identities`                    | Your linked accounts            |
+| POST   | `/api/auth/identities/:kind/link`         | Begin linking an account        |
+| DELETE | `/api/auth/identities/:id`                | Unlink an account               |
+| GET    | `/api/admin/identity-providers`           | Sign-in providers (admin)       |
+| PUT    | `/api/admin/identity-providers/:kind`     | Save a provider (admin)         |
+| DELETE | `/api/admin/identity-providers/:kind`     | Remove a provider (admin)       |
 | POST   | `/api/auth/forgot`                        | Request password-reset link     |
 | GET    | `/api/auth/reset/:token`                  | Validate reset token            |
 | POST   | `/api/auth/reset/:token`                  | Set new password + log in       |

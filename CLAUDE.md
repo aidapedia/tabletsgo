@@ -36,6 +36,9 @@ working in that area — it has the reasoning and the full rules.
 - **There is no external session store**, and adding one is not the answer to a new requirement. → skill `auth-sessions`
 - **Meta migrations are append-only and additive-only** — Prisma Migrate owns them (`prisma/<engine>/migrations`, one history per engine, edited together); never edit a shipped migration or the frozen legacy steps, never `DROP`/rename, never add `NOT NULL` without a default. → skill `meta-schema`
 - **The app migrates on boot, before anything opens the meta DB** — `import './server/migrator/boot.js'` stays the *first* import of `server.js`. On SQLite Prisma Migrate can't work on a file another connection holds, and `server/meta.js` opens its client the moment it is evaluated; never migrate from anywhere that runs after it. → skill `meta-schema`
+- **A self-registered account can do nothing until its mailbox answers** — inviting an existing account adds it to the workspace directly, so an unproven address would be a way in. `registerByEmail` creates a pending account and the password is chosen from the emailed link, never taken at sign-up. → `server/users.js`
+- **A Google or GitHub profile only matches an account by an address the provider verified, and never an instance admin's** — an admin links from Settings; nothing ever confirmed the address typed into the wizard. Links are keyed on the provider's user id, not the email. → `server/identity/accounts.js`
+- **An account from a provider may have no password** — `password_hash` is `''`. Unlinking must never remove someone's last way in, and removing a provider's setup never deletes links. → `server/identity/`
 - **`workspaces.settings.smtp` is dead data** — never read it. SMTP is instance-level. → skill `auth-sessions`
 - **`server/config.js` is the only place that reads `process.env`** for tunables. → skill `add-tunable`
 - **A new per-connection resource goes in the export bundle** and the `DELETE /api/connections/:id` cascade, together. → skill `connection-transfer`
@@ -63,8 +66,8 @@ src/
 
 | Feature | What it owns |
 | --- | --- |
-| `auth` | AuthContext, login/setup/invite, the caller's own account settings |
-| `admin` | instance-admin area (system role `admin`): workspaces, users, the one SMTP config |
+| `auth` | AuthContext, login/setup/invite/registration, Google and GitHub sign-in buttons, the caller's own account settings and linked accounts |
+| `admin` | instance-admin area (system role `admin`): workspaces, users, the one SMTP config, the Google and GitHub apps |
 | `modules` | which databases/features the instance offers: `useModules().isEnabled(id)`, Admin → Modules panel, the wizard's module picker + settings fields |
 | `workspaces` | org/tenant layer: current workspace, members (roster on the workspace node), notifications, general settings |
 | `workspace` | **the per-connection DB console** — DataGrid, TableView, QueryEditor, tabs, status bar |
@@ -106,6 +109,7 @@ server/
 ├── permissions.js       # ★ the role catalog + requirement criteria, in-memory cache → skill auth-sessions
 ├── resource-tree.js     # ★ the node hierarchy + grants; resolves every permission → skill auth-sessions
 ├── sessions/            # ★ logins (durable) + connection sessions (cache)    → skill auth-sessions
+├── identity/            # Google and GitHub sign-in: links, apps, the round trip, what a profile means → skill auth-sessions
 ├── login-guard.js       # sign-in brute-force blocking                        → skill auth-sessions
 ├── users.js  workspaces.js  app-settings.js  mail.js                          → skill auth-sessions
 ├── module-registry.js   # leaf: the module catalog (engines + features) + in-memory on/off and settings

@@ -32,6 +32,7 @@
  */
 
 import { randomUUID } from 'crypto'
+import { PUBLIC_URL } from './config.js'
 import { createAuthSession, destroyAuthSession, readAuthSession } from './sessions/index.js'
 import { db, transaction } from './meta.js'
 import { OWNER_PERMISSION } from './permissions.js'
@@ -300,4 +301,6 @@ export const userCanAccessConnection = async (conn, userId) => {
 }
 
 // Absolute base URL of the frontend, for building invite links.
-export const baseUrl = (req) => req.headers.origin || `${req.protocol}://${req.get('host')}`
+// `PUBLIC_URL` when set; the request can't be trusted to name the instance behind
+// a proxy, and on a public route it is whatever the sender says.
+export const baseUrl = (req) => PUBLIC_URL || req.headers.origin || `${req.protocol}://${req.get('host')}`

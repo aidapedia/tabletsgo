@@ -14,7 +14,8 @@
  * permissions-catalog.js). Loading and saving the choices is
  * server/module-settings.js, which hands the result here via `setModuleState`.
  *
- * A module with no stored choice is on, so an upgrade hides nothing.
+ * A module with no stored choice is on, so an upgrade hides nothing — except one
+ * marked `offByDefault`, where being on is what would surprise an instance.
  */
 
 /**
@@ -98,6 +99,14 @@ export const MODULES = [
     label: 'Backup',
     description: 'Scheduled dumps of PostgreSQL and SQLite connections to S3-compatible or local storage, with restore.',
   },
+  {
+    id: 'registration',
+    kind: 'feature',
+    label: 'Registration',
+    description: 'Anyone can create an account, then waits for a workspace owner to add them. Email sign-up needs a mail server; without one, people sign up with Google or GitHub.',
+    // On, a private instance would start accepting strangers the moment it upgraded.
+    offByDefault: true,
+  },
 ]
 
 const byId = new Map(MODULES.map((m) => [m.id, m]))
@@ -119,7 +128,7 @@ export function setModuleState(raw) {
 export const getModuleState = () => structuredClone(state)
 
 // An id the catalog doesn't define isn't this registry's to refuse.
-export const isModuleEnabled = (id) => state.enabled[id] !== false
+export const isModuleEnabled = (id) => state.enabled[id] ?? !byId.get(id)?.offByDefault
 
 const resolve = (spec, stored) => (stored === undefined ? spec.default : stored)
 

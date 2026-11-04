@@ -1,6 +1,6 @@
 import { useParams } from 'react-router-dom'
 import { AppearanceSetting, DensitySetting, DataSetting } from '@/features/settings'
-import { useAuth, ProfileSetting, PasswordSetting } from '@/features/auth'
+import { useAuth, ProfileSetting, PasswordSetting, SignInMethods } from '@/features/auth'
 import { KeymapSetting } from '@/features/keymap'
 import { UpdatePanel } from '@/features/system-update'
 import { Narrow, SubHead, TabbedSection } from './ui'
@@ -33,6 +33,10 @@ export default function SettingsPage() {
           <div className="mt-10 border-t border-edge pt-8">
             <SubHead title="Password" desc="Change the password you sign in with." />
             <PasswordSetting />
+          </div>
+          <div className="mt-10 border-t border-edge pt-8">
+            <SubHead title="Sign-in methods" desc="Google and GitHub accounts you can sign in with." />
+            <SignInMethods />
           </div>
         </Narrow>
       ),

@@ -110,15 +110,61 @@ blocked account can't be probed, and a correct password doesn't bypass the block
 > `locked_until` that always expires) instead. Keep that asymmetry if you touch
 > this — it is what stops an attacker from locking the operator out on purpose.
 
+## Registration, Google and GitHub sign-in
+
+Registration is the `registration` module: it appears in the setup wizard and
+Admin → Modules like any other, but it is `offByDefault`, because an upgrade must
+not start accepting strangers. The apps live in `app_settings` under
+`sign_in_providers`, set up in Admin → Sign-in Methods. All of it is instance-wide: a
+workspace has no sign-in settings, and joining one still takes an invite.
+
+| Module | Owns |
+| --- | --- |
+| `server/identity/identities.js` | `user_identities`. Imports only `meta.js`, because `users.js` imports it |
+| `server/identity/providers.js` | The apps and their sealed secrets |
+| `server/identity/oauth.js` | The round trip. Knows no accounts |
+| `server/identity/accounts.js` | What a confirmed profile means |
+
+`signIn` decides in this order, and the order matters:
+
+1. An existing link wins; nothing else about the profile counts.
+2. Otherwise only an address the provider verified can match anything.
+3. A match on an account links it, and on a pending one also accepts the invite,
+   since the person has just proved that mailbox. **An instance admin never
+   matches**: nothing confirmed the address typed into the wizard, so an admin
+   links from Settings.
+4. No account: created if `registration` is on, otherwise refused.
+
+Rules that are easy to break:
+
+- **Email sign-up takes no password.** `registerByEmail` makes a pending account
+  and the emailed link leads to the invite page, where the password is chosen.
+  Inviting an existing account adds it straight to the workspace, so a usable
+  account on an unproven address is a way into any workspace that invites it.
+- **An invite can be accepted with any provider account**, whatever its email:
+  holding the link is the proof, the same as choosing a password from it.
+- **The session token never goes in a URL.** A sign-in ends in a one-time code
+  (`putOneTime`/`takeOneTime`, the durable `oauth` namespace) the page exchanges.
+- **The flow cookie is what stops login CSRF.** `state` alone would let someone
+  hand a victim a callback link and sign them in as the attacker.
+- **`password_hash` is `''` on an account with no password**, and it sets one
+  through "Forgot password". `unlink` refuses to remove the last way in.
+- **Brute-force blocks guard the password only.** A Google or GitHub sign-in
+  doesn't use it, so a blocked account can still sign in that way.
+- **Removing a provider's setup keeps the links**: provider user ids outlive an
+  app, and an account may have no other way in.
+
 ## Sessions
 
-Two things share one store (`server/sessions`) but are **stored differently, on
+Three things share one store (`server/sessions`) but are **stored differently, on
 purpose**:
 
 - **Logins** (bearer tokens) are *durable*: the meta DB's `sessions` table is the
   source of truth (`sessions/db.js`), read through a cache (`sessions/hybrid.js`).
   A login survives a restart and a dropped cache — a cache failure degrades to a
   slower DB read and warns once; it never signs anyone out.
+- **Sign-in redirects** (the `oauth` namespace) are *durable* too and single-use:
+  the provider may send the browser back to a different replica.
 - **Connection sessions** are *cache-only*: one describes a live driver handle in
   one process, so persisting it would let a restart resurrect sessions whose
   sockets are gone, and the limit count phantoms. Losing them on restart is correct.
@@ -191,7 +237,7 @@ workspace**.
 
 | Layer | Where it lives | Who edits it |
 | --- | --- | --- |
-| Admin config | `app_settings` key `'smtp'` (`server/app-settings.js`) | an instance admin (`/api/admin/smtp`, Administration → Email) |
+| Admin config | `app_settings` key `'smtp'` (`server/app-settings.js`) | an instance admin (`/api/admin/smtp`, Administration → Email Server) |
 | Env | `SMTP_*` | whoever deploys the container |
 
 `smtpConfig()` in `server/mail.js` is the only resolver: the admin config if it

@@ -37,6 +37,9 @@ services:
       - SMTP_PASS=${SMTP_PASS:-}
       - SMTP_FROM=${SMTP_FROM:-}
       - SMTP_SECURE=${SMTP_SECURE:-}
+      # The address people reach this instance at. Set it behind a reverse proxy:
+      # emailed links and the Google/GitHub callback URL use it.
+      - PUBLIC_URL=${PUBLIC_URL:-}
       # How long (ms) the pre-flight connection handshake waits before it reports
       # a timeout. Raise only for databases behind a slow tunnel/VPN.
       - HANDSHAKE_TIMEOUT_MS=${HANDSHAKE_TIMEOUT_MS:-}

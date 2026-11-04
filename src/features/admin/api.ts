@@ -54,6 +54,8 @@ export type AdminUser = {
   blockedAt: number | null
   blockedUntil: number | null
   failedAttempts: number
+  hasPassword: boolean
+  identities: { id: string; provider: 'google' | 'github'; email: string | null; createdAt: number; lastUsedAt: number | null }[]
   // `roleName` is the role's display name and `isOwner` whether it carries
   // workspace.manage — both resolved server-side, since a role slug means
   // whatever an admin has defined it to mean.
@@ -167,4 +169,25 @@ export async function clearGlobalSmtp() {
 
 export async function testGlobalSmtp(body: { to?: string; smtp?: any }) {
   return request<{ ok: true }>('/admin/smtp/test', { method: 'POST', body })
+}
+
+// ---- Sign-in providers ----
+
+export type AdminIdentityProvider = {
+  kind: 'google' | 'github'
+  label: string
+  clientId: string
+  hasSecret: boolean
+  enabled: boolean
+  linked: number
+}
+
+export async function getIdentityProviders() {
+  return request<{ providers: AdminIdentityProvider[]; callbackUrl: string }>('/admin/identity-providers')
+}
+export async function saveIdentityProvider(kind: string, body: { clientId?: string; clientSecret?: string; enabled?: boolean }) {
+  return request<{ providers: AdminIdentityProvider[] }>(`/admin/identity-providers/${kind}`, { method: 'PUT', body })
+}
+export async function clearIdentityProvider(kind: string) {
+  return request<{ providers: AdminIdentityProvider[] }>(`/admin/identity-providers/${kind}`, { method: 'DELETE' })
 }

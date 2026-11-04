@@ -356,6 +356,19 @@ model teams {
   created_at   BigInt?
 }
 
+model user_identities {
+  id           String  @id
+  user_id      String
+  provider     String
+  subject      String
+  email        String?
+  created_at   BigInt
+  last_used_at BigInt?
+
+  @@unique([provider, subject], map: "idx_user_identities_subject")
+  @@unique([user_id, provider], map: "idx_user_identities_user")
+}
+
 model users {
   id               String  @id
   username         String  @unique

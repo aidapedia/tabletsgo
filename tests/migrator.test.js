@@ -14,6 +14,9 @@ const migrate = (file, ...args) => spawnSync(process.execPath, ['scripts/migrate
   encoding: 'utf8',
   env: { ...process.env, ENCRYPTION_KEY: 'migrator-test-key', META_DB_TYPE: 'sqlite', META_DB: file },
 })
+// Everything shipped, in order — the baseline first.
+const shippedMigrations = () =>
+  fs.readdirSync('prisma/sqlite/migrations', { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name).sort()
 const appliedNames = (db) => db.prepare('SELECT migration_name FROM _prisma_migrations WHERE finished_at IS NOT NULL').all().map((r) => r.migration_name)
 
 test('a fresh database is built from the Prisma baseline and seeded', () => {
@@ -23,7 +26,7 @@ test('a fresh database is built from the Prisma baseline and seeded', () => {
   assert.equal(run.status, 0, run.stderr)
 
   const db = new Database(file, { readonly: true })
-  assert.deepEqual(appliedNames(db), ['0_baseline'])
+  assert.deepEqual(appliedNames(db).sort(), shippedMigrations())
   assert.deepEqual(db.prepare('SELECT slug FROM roles WHERE builtin = 1 ORDER BY slug').all().map((r) => r.slug), ['member', 'owner'])
   assert.equal(db.prepare("SELECT path FROM resource_nodes WHERE id = 'root'").get().path, '/root')
   // An image from before Prisma must see this database as already at v22.
@@ -55,7 +58,7 @@ test('a pre-Prisma install runs the legacy steps, then adopts the baseline witho
   assert.match(run.stdout, /Recorded 0_baseline as applied/)
 
   const db = new Database(file, { readonly: true })
-  assert.deepEqual(appliedNames(db), ['0_baseline'])
+  assert.deepEqual(appliedNames(db).sort(), shippedMigrations())
   assert.ok(db.prepare('PRAGMA table_info(ssh_gateways)').all().some((c) => c.name === 'transport'), 'v22 ran')
   assert.equal(db.prepare('SELECT COUNT(*) AS c FROM users').get().c, 1, 'data survives')
   db.close()

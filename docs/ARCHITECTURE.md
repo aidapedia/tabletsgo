@@ -78,10 +78,14 @@ src/
 │   │                             #   `auth-sessions` skill.
 │   │                             #   components/ProfileSetting + PasswordSetting: the caller's own
 │   │                             #     account (rename / change password), rendered by Setting > Account.
+│   │                             #   components/SignInMethods (link/unlink Google or GitHub, same tab) and
+│   │                             #     ProviderButtons ("Continue with …", on login, register and invite);
+│   │                             #     lib/signInErrors turns the callback's ?error= code into a sentence.
 │   │                             #     Email and system role stay read-only — an admin changes those
 │   ├── admin/                    # the instance-admin area (system role 'admin' only): AdminWorkspacesPanel
 │   │                             #   (every workspace + who owns it; create/rename/delete, grant ownership)
 │   │                             #   AdminUsersPanel (accounts, system role, invites, password reset)
+│   │                             #   AdminSignInPanel (the Google and GitHub apps people sign in through)
 │   │                             #   and AdminSmtpPanel + SmtpForm (the instance's one mail server —
 │   │                             #     the only place SMTP is configurable; see `auth-sessions` skill).
 │   │                             #   Reaches nothing inside a workspace — an admin has no membership
@@ -400,11 +404,12 @@ src/
 │
 └── pages/                        # route-level composition (thin — just assemble features), grouped by area
     ├── auth/                     # unauthenticated flows: LoginPage, SetupPage, AcceptInvitePage,
-    │                             #   ForgotPasswordPage, ResetPasswordPage
+    │                             #   ForgotPasswordPage, ResetPasswordPage, RegisterPage,
+    │                             #   LoginCompletePage (where a Google/GitHub sign-in lands) + AuthCard
     ├── admin/                    # the instance-admin area, one file per sidebar section (same rule
     │                             #   as home/): AdminWorkspacesPage (/admin), AdminUsersPage
     │                             #   (/admin/users) + AdminEmailPage (/admin/email — the instance-wide
-    │                             #   SMTP config) + AdminModulesPage (/admin/modules) — no tabs, the sidebar switches. Only reachable
+    │                             #   SMTP config) + AdminSignInPage (/admin/sign-in) + AdminModulesPage (/admin/modules) — no tabs, the sidebar switches. Only reachable
     │                             #   with the system role 'admin'; AppRoutes' RequireSystemAdmin /
     │                             #   RequireWorkspaceUser send each audience to the other's home
     ├── console/                  # WorkspacePage — the route /connection/:id. Thin: it reads the :id and
@@ -578,11 +583,17 @@ server/
 │                         #   "Owner" = holds `workspace.manage`, never a role-name comparison
 ├── users.js              # the instance user directory (`users`): system roles, invites,
 │                         #   promote/demote (promoting to admin strips every membership)
+├── identity/             # Google and GitHub sign-in
+│   ├── identities.js     #   owns `user_identities`: who a provider account belongs to, keyed on
+│   │                     #     the provider's user id. Leaf on meta.js, because users.js imports it
+│   ├── providers.js      #   the apps: `app_settings` key 'sign_in_providers', secret sealed like SMTP's
+│   ├── oauth.js          #   the round trip: start, callback state, code → profile. Knows no accounts
+│   └── accounts.js       #   what a confirmed profile means: sign in, link, accept an invite, register
 ├── login-guard.js        # sign-in brute-force protection: counts consecutive failures on
 │                         #   the account and blocks it past the threshold. An instance admin
 │                         #   only ever gets a self-expiring cooldown — see the `auth-sessions` skill
 ├── module-registry.js    # leaf (imports nothing): the module catalog — engines (postgresql,
-│                         #   sqlite, redis, kafka) and features (backup) — plus an in-memory copy of
+│                         #   sqlite, redis, kafka) and features (backup, registration) — plus an in-memory copy of
 │                         #   the admin's on/off choices and settings. isModuleEnabled / moduleSetting
 │                         #   are sync reads: the db layer's driverFor refuses a turned-off engine,
 │                         #   the Kafka driver reads its read caps here; every engine has its own query
@@ -596,8 +607,9 @@ server/
 ├── module-notices.js     # notifies the owners of an engine's connections by email — one per unique
 │                         #   address — that a forced turn-off locked them
 ├── app-settings.js       # instance-wide settings (`app_settings`, key → JSON): the admin-owned
-│                         #   counterpart of workspaces.settings. Today one key, 'smtp' — the global
-│                         #   mail server, its password sealed under its own scrypt namespace
+│                         #   counterpart of workspaces.settings. Keys: 'smtp' (the global mail server,
+│                         #   its password sealed under its own scrypt namespace), 'modules',
+│                         #   'sign_in_providers'
 ├── sessions/             # ★ the session store — logins + open-connection sessions
 │   ├── index.js          #   the registry: auth tokens, connection sessions, the limit, the sweeper
 │   ├── db.js             #   durable backend: the meta DB's `sessions` table — the source of

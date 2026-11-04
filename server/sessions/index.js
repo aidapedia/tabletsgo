@@ -49,7 +49,11 @@ const AUTH_NS = 'auth'
 // process cache is a file plus a line here if one is ever needed again.
 export const cache = memoryStore()
 
-export const store = hybridStore({ cache, source: dbStore(), durable: [AUTH_NS] })
+// Sign-in redirects: durable, because the provider may send the browser back to
+// a different replica than the one that started the round trip.
+const ONE_TIME_NS = 'oauth'
+
+export const store = hybridStore({ cache, source: dbStore(), durable: [AUTH_NS, ONE_TIME_NS] })
 const connNs = (connectionId) => `conn:${connectionId}`
 
 // Raised when a connection is already at its session limit. 429 rather than 403:
@@ -88,6 +92,19 @@ export async function destroyAuthSessionsForUser(userId) {
   const ids = await store.idsForUser(userId, AUTH_NS)
   await Promise.all(ids.map((id) => store.del(AUTH_NS, id)))
   return ids.length
+}
+
+// ---- Single-use records ---------------------------------------------------
+
+export const putOneTime = (id, value, ttlMs) => store.put(ONE_TIME_NS, id, value, ttlMs)
+
+// Read and burn. `del` is what decides: of two racing callers only one removes
+// the row, so the record is handed to exactly one of them.
+export async function takeOneTime(id) {
+  if (!id) return null
+  const value = await store.get(ONE_TIME_NS, id)
+  if (!value) return null
+  return (await store.del(ONE_TIME_NS, id)) ? value : null
 }
 
 // ---- Connection sessions --------------------------------------------------

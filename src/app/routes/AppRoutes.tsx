@@ -8,6 +8,8 @@ import { useAuth, getSetupStatus } from '@/features/auth'
 const LoginPage = lazy(() => import('@/pages/auth/LoginPage'))
 const SetupPage = lazy(() => import('@/pages/auth/SetupPage'))
 const AcceptInvitePage = lazy(() => import('@/pages/auth/AcceptInvitePage'))
+const RegisterPage = lazy(() => import('@/pages/auth/RegisterPage'))
+const LoginCompletePage = lazy(() => import('@/pages/auth/LoginCompletePage'))
 const ForgotPasswordPage = lazy(() => import('@/pages/auth/ForgotPasswordPage'))
 const ResetPasswordPage = lazy(() => import('@/pages/auth/ResetPasswordPage'))
 const HomeLayout = lazy(() => import('@/app/layouts/HomeLayout'))
@@ -32,6 +34,7 @@ const AdminWorkspacesPage = lazy(() => import('@/pages/admin/AdminWorkspacesPage
 const AdminUsersPage = lazy(() => import('@/pages/admin/AdminUsersPage'))
 const AdminEmailPage = lazy(() => import('@/pages/admin/AdminEmailPage'))
 const AdminModulesPage = lazy(() => import('@/pages/admin/AdminModulesPage'))
+const AdminSignInPage = lazy(() => import('@/pages/admin/AdminSignInPage'))
 
 const routeFallback = <div role="status" className="p-8 text-center text-sm text-ink-dim">Loading…</div>
 
@@ -97,6 +100,8 @@ export function AppRoutes() {
         element={setup.needsSetup ? <SetupPage hasUsers onComplete={setupDone} /> : <Navigate to="/" replace />}
       />
       <Route path="/invite/:token" element={<AcceptInvitePage />} />
+      <Route path="/register" element={user ? <Navigate to="/" replace /> : <RegisterPage />} />
+      <Route path="/login/complete" element={<LoginCompletePage />} />
       <Route path="/forgot" element={user ? <Navigate to="/" replace /> : <ForgotPasswordPage />} />
       <Route path="/reset/:token" element={<ResetPasswordPage />} />
       <Route path="/login" element={user ? <Navigate to="/" replace /> : <LoginPage adminless={setup.needsSetup} />} />
@@ -111,6 +116,7 @@ export function AppRoutes() {
         <Route path="/admin" element={<AdminWorkspacesPage />} />
         <Route path="/admin/users" element={<AdminUsersPage />} />
         <Route path="/admin/email" element={<AdminEmailPage />} />
+        <Route path="/admin/sign-in" element={<AdminSignInPage />} />
         <Route path="/admin/modules" element={<AdminModulesPage />} />
       </Route>
       {/* Home shell — each sidebar section is its own page rendered into the layout's <Outlet/>. */}

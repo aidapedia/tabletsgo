@@ -9,7 +9,8 @@
       "ClaudeInChromeDomain(localhost:3311)",
       "ClaudeInChromeDomain(localhost:3998)",
       "ClaudeInChromeDomain(localhost:3996)",
-      "ClaudeInChromeDomain(localhost:3994)"
+      "ClaudeInChromeDomain(localhost:3994)",
+      "ClaudeInChromeDomain(localhost:3977)"
     ]
   },
   "hooks": {

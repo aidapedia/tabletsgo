@@ -20,7 +20,7 @@ import useDataTable from '@/shared/ui/table/useDataTable'
 import useListView from '@/shared/ui/table/useListView'
 import ViewToggle from '@/shared/ui/table/ViewToggle'
 import { CopyIcon, KeyIcon, PlusIcon, TrashIcon, UnlockIcon } from '@/shared/ui/icons'
-import { useAuth } from '@/features/auth'
+import { PROVIDER_ICONS, useAuth } from '@/features/auth'
 import { createUser, deleteUser, listUsers, unblockUser, updateUser, type AdminUser, type SystemRole } from '../api'
 
 /**
@@ -372,6 +372,28 @@ function UserDetailDialog({ user, onClose }: { user: AdminUser; onClose: () => v
         </div>
         {/* The block is the one thing that needs the story, not just the badge. */}
         {user.blocked && <p className="text-[11px] leading-relaxed text-ink-dim">{blockedHint(user)}</p>}
+      </div>
+
+      <div className="mt-4">
+        <Label>Sign-in methods</Label>
+        <div className="flex flex-col divide-y divide-edge rounded-soft border border-edge">
+          <div className="flex items-center justify-between gap-3 bg-elevated/30 px-3 py-2.5">
+            <span className="text-[12px] text-ink">Password</span>
+            <Badge tone={user.hasPassword ? 'green' : 'neutral'}>{user.hasPassword ? 'set' : 'not set'}</Badge>
+          </div>
+          {user.identities.map((i) => {
+            const Icon = PROVIDER_ICONS[i.provider]
+            return (
+              <div key={i.id} className="flex items-center gap-2.5 bg-elevated/30 px-3 py-2.5">
+                <Icon width={14} height={14} className="shrink-0" />
+                <span className="min-w-0 flex-1 truncate text-[12px] text-ink">{i.email || 'Linked'}</span>
+                <span className="shrink-0 text-[11px] text-ink-faint">
+                  {i.lastUsedAt ? `Last used ${new Date(i.lastUsedAt).toLocaleDateString()}` : 'Never used'}
+                </span>
+              </div>
+            )
+          })}
+        </div>
       </div>
 
       {/* One workspace per line, its role badged beside the name it applies to.
