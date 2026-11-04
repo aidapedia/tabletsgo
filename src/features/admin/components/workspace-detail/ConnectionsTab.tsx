@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import Badge from '@/shared/ui/Badge'
 import SearchInput from '@/shared/ui/form/SearchInput'
 import Segmented from '@/shared/ui/form/Segmented'
-import { DatabaseIcon } from '@/shared/ui/icons'
+import { DbLogo } from '@/shared/ui/icons'
 import DataTable, { type Column } from '@/shared/ui/table/DataTable'
 import useDataTable from '@/shared/ui/table/useDataTable'
 import useListView from '@/shared/ui/table/useListView'
@@ -48,11 +48,9 @@ export default function ConnectionsTab({ workspaceId }: { workspaceId: string })
       sortable: true,
       render: (c) => (
         <div className="flex items-center gap-2.5">
-          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] border border-edge bg-elevated text-ink-dim">
-            <DatabaseIcon width={14} height={14} />
-          </span>
+          <DbLogo type={c.type} className="h-7 w-7 shrink-0" />
           <div className="min-w-0">
-            <div className="truncate font-mono text-[12px] font-medium text-ink">{c.name}</div>
+            <div className="truncate text-[12px] font-medium text-ink">{c.name}</div>
             <div className="text-[11px] text-ink-dim">{engineLabel(c.type)}</div>
           </div>
         </div>

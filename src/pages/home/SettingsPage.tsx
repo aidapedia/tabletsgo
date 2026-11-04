@@ -1,6 +1,6 @@
 import { useParams } from 'react-router-dom'
 import { AppearanceSetting, DensitySetting, DataSetting } from '@/features/settings'
-import { useAuth, ProfileSetting, PasswordSetting, SignInMethods } from '@/features/auth'
+import { useAuth, ProfileSetting, PasswordSetting, SignInMethods, TimeZoneSetting } from '@/features/auth'
 import { KeymapSetting } from '@/features/keymap'
 import { UpdatePanel } from '@/features/system-update'
 import { Narrow, SubHead, TabbedSection } from './ui'
@@ -14,8 +14,8 @@ import useTabRoute from './useTabRoute'
  * and never opens a database console, so neither Data (direct execute) nor
  * Keymap (console shortcuts) has anything to act on; conversely
  * only an admin can apply an update, so a workspace user gets no Updates tab.
- * Account is the one tab that is identical for everyone — it acts on the
- * caller's own row in `users`, not on a role.
+ * Profile, Security and Preferences are identical for everyone — they act on the
+ * caller's own account and browser, not on a role.
  */
 export default function SettingsPage() {
   const { sub } = useParams()
@@ -24,16 +24,22 @@ export default function SettingsPage() {
 
   const tabs = [
     {
-      id: 'account',
-      label: 'Account',
+      id: 'profile',
+      label: 'Profile',
       body: (
         <Narrow>
-          <SubHead title="Profile" desc="Your name, sign-in email and time zone." />
+          <SubHead title="Profile" desc="Your name and sign-in email." />
           <ProfileSetting />
-          <div className="mt-10 border-t border-edge pt-8">
-            <SubHead title="Password" desc="Change the password you sign in with." />
-            <PasswordSetting />
-          </div>
+        </Narrow>
+      ),
+    },
+    {
+      id: 'security',
+      label: 'Security',
+      body: (
+        <Narrow>
+          <SubHead title="Password" desc="Change the password you sign in with." />
+          <PasswordSetting />
           <div className="mt-10 border-t border-edge pt-8">
             <SubHead title="Sign-in methods" desc="Google and GitHub accounts you can sign in with." />
             <SignInMethods />
@@ -42,11 +48,15 @@ export default function SettingsPage() {
       ),
     },
     {
-      id: 'theme',
-      label: 'Theme',
+      id: 'preferences',
+      label: 'Preferences',
       body: (
         <Narrow>
-          <AppearanceSetting />
+          <SubHead title="Time zone" desc="Times across the app show in this zone." />
+          <TimeZoneSetting />
+          <div className="mt-10 border-t border-edge pt-8">
+            <AppearanceSetting />
+          </div>
           <div className="mt-8">
             <SubHead title="Density" desc="Adjust spacing and text size across the app." />
             <DensitySetting />

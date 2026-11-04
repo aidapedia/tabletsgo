@@ -114,8 +114,8 @@ function ProviderCard({ provider, onChange }: { provider: AdminIdentityProvider;
       </FormField>
 
       <div className="flex items-center gap-2.5">
-        <Toggle checked={enabled} onChange={setEnabled} ariaLabel={`Turn on ${provider.label} sign-in`} />
-        <span className="text-[12px] text-ink-dim">Show on the sign-in page</span>
+        <Toggle checked={enabled} onChange={setEnabled} ariaLabel={`Enable ${provider.label} sign-in`} />
+        <span className="text-[12px] text-ink-dim">Enable</span>
         <div className="ml-auto flex items-center gap-2">
           {isSetUp && (
             <Button type="button" size="sm" variant="subtle" onClick={() => setRemoving(true)}>

@@ -682,7 +682,7 @@ app.post('/api/auth/oauth/exchange', async (req, res) => {
   res.json({ user: publicUser(user), token: await createSession(user.id, sessionContext(req)) })
 })
 
-// The caller's own linked accounts — Settings → Account.
+// The caller's own linked accounts — Settings → Security.
 app.get('/api/auth/identities', async (req, res) => {
   const user = requireAuth(req, res)
   if (!user) return

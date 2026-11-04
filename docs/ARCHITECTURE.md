@@ -77,8 +77,9 @@ src/
 │   │                             #   `user.role` is the SYSTEM role ('admin' | 'user') — see the
 │   │                             #   `auth-sessions` skill.
 │   │                             #   components/ProfileSetting + PasswordSetting: the caller's own
-│   │                             #     account (rename / change password), rendered by Setting > Account.
-│   │                             #   components/SignInMethods (link/unlink Google or GitHub, same tab) and
+│   │                             #     account (rename / change password), rendered by Setting > Profile and Security.
+│   │                             #   components/TimeZoneSetting: the account's display zone, on Setting > Preferences.
+│   │                             #   components/SignInMethods (link/unlink Google or GitHub, Security tab) and
 │   │                             #     ProviderButtons ("Continue with …", on login, register and invite);
 │   │                             #     lib/signInErrors turns the callback's ?error= code into a sentence.
 │   │                             #     Email and system role stay read-only — an admin changes those
