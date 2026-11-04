@@ -7,6 +7,7 @@ import { FormField } from '@/shared/ui/form/Form'
 import { useToast } from '@/shared/ui/feedback/Toast'
 import { resetOffsets, type ResetRow, type ResetStrategy } from '../lib/api'
 import { compact, num } from '../lib/format'
+import { displayTimeZone, timeZoneOffset, zonedInputToDate } from '@/shared/lib/datetime'
 
 const STRATEGIES: { id: ResetStrategy; label: string; desc: string }[] = [
   { id: 'earliest', label: 'Earliest', desc: 'Re-read everything still retained' },
@@ -48,7 +49,7 @@ export default function ResetOffsetsDialog({
   const needsValue = strategy === 'timestamp' || strategy === 'offset' || strategy === 'shift'
   const valueReady = !needsValue || value.trim() !== ''
   const spec = useMemo(
-    () => ({ topic, strategy, value: strategy === 'timestamp' && value ? new Date(value).toISOString() : value.trim() || undefined }),
+    () => ({ topic, strategy, value: strategy === 'timestamp' && value ? zonedInputToDate(value).toISOString() : value.trim() || undefined }),
     [topic, strategy, value]
   )
 
@@ -134,7 +135,7 @@ export default function ResetOffsetsDialog({
             ))}
           </div>
           {needsValue && (
-            <FormField label={strategy === 'timestamp' ? 'Time' : strategy === 'offset' ? 'Offset' : 'Shift by'} className="mt-3">
+            <FormField label={strategy === 'timestamp' ? `Time (${timeZoneOffset(displayTimeZone())})` : strategy === 'offset' ? 'Offset' : 'Shift by'} className="mt-3">
               {strategy === 'timestamp' ? (
                 <Input type="datetime-local" step="1" value={value} onChange={(e) => setValue(e.target.value)} />
               ) : (

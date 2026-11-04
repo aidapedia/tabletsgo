@@ -9,6 +9,7 @@ import useListView from '@/shared/ui/table/useListView'
 import ViewToggle from '@/shared/ui/table/ViewToggle'
 import { DatabaseIcon, ExternalLinkIcon, WorkflowIcon } from '@/shared/ui/icons'
 import { relativeTime } from '@/shared/lib/recents'
+import { formatDateTime } from '@/shared/lib/datetime'
 import { listWorkspaceWorkflows, type WorkspaceWorkflow } from '../lib/api'
 
 /**
@@ -94,7 +95,7 @@ export default function WorkspaceWorkflowList({
         row.scheduleEnabled ? (
           <span className="flex flex-col gap-0.5">
             <Badge tone="green">On</Badge>
-            {row.nextRunAt && <span className="text-[10px] text-ink-faint">Next {new Date(row.nextRunAt).toLocaleString()}</span>}
+            {row.nextRunAt && <span className="text-[10px] text-ink-faint">Next {formatDateTime(row.nextRunAt)}</span>}
           </span>
         ) : (
           <Badge tone="faint">Manual</Badge>

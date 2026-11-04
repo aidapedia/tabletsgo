@@ -630,13 +630,18 @@ role) is an instance-admin action via `PUT /api/admin/users/:id`.
 
 #### GET `/api/auth/me`
 The caller's own profile, re-read from the DB (clients cache it in localStorage).
-- **200:** `{ "user": { "id", "email", "name", "role" } }` · **401:** unauthenticated
+- **200:** `{ "user": { "id", "email", "name", "role", "timezone" } }` · **401:** unauthenticated
 - **Example:** `GET http://localhost:3000/api/auth/me`
 
+`timezone` is an IANA zone, or `null` to follow the browser. Every `{ user }` an auth
+route returns carries it.
+
 #### PATCH `/api/auth/profile`
-Rename yourself. `name` is the only self-editable profile field.
-- **Body:** `{ "name": "Ada Lovelace" }`
-- **200:** `{ "user": { … } }` · **400:** `{ "error": "A name is required." }` (empty/blank)
+Update your own name and display time zone; send either or both. The zone only
+changes how the frontend renders times: the server stores and sends UTC milliseconds,
+and backup schedules stay defined in UTC.
+- **Body:** `{ "name": "Ada Lovelace", "timezone": "Asia/Jakarta" }` (`"timezone": null` goes back to the browser's zone)
+- **200:** `{ "user": { … } }` · **400:** `{ "error": "A name is required." }` (blank), `{ "error": "Unknown time zone." }`, or `{ "error": "Nothing to update." }`
 - **Example:** `PATCH http://localhost:3000/api/auth/profile`
 
 #### POST `/api/auth/password`
@@ -1415,9 +1420,12 @@ be stranded.
 
 Every route below requires an account whose **system** role is `admin`; anything
 else gets `403 { "error": "Admin access required" }`. The surface is deliberately
-narrow — which workspaces exist and who runs them, plus the accounts on the
-instance. An instance admin holds no workspace membership, so there is no route
-here that reaches a connection or a database.
+narrow — which workspaces exist, who runs them and what they hold, plus the
+accounts on the instance. An instance admin holds no workspace membership, so
+there is no route here that reaches a connection or a database: the workspace
+detail routes report metadata only (`server/workspace-insights.js` names the
+columns it reads, so credentials, query text, run logs and error messages are
+never loaded).
 
 ### Workspaces
 
@@ -1447,8 +1455,66 @@ here that reaches a connection or a database.
 - `DELETE /api/admin/workspaces/:id` → `{ ok: true, connectionsDeleted }`. Releases
   the live driver handles and ends the sessions first, then cascades the metadata
   (connections, queries, folders, workflows, dashboards, history, groups, storage
-  destinations).
-- `GET /api/admin/workspaces/:id/members` → `[{ userId, email, name, role, permissions, isOwner, status, systemRole, createdAt }]`.
+  destinations, SSH hosts and keys).
+- `GET /api/admin/workspaces/:id/members` → `[{ userId, email, name, role, permissions, isOwner, status, systemRole, createdAt, blocked, signIn, groupCount }]`.
+  `role` is null for a member holding no grant. `blocked` is the brute-force guard's
+  block, `signIn` lists how the account can get in (`password`, `google`, `github`),
+  and `groupCount` is how many of this workspace's groups they are on.
+- `GET /api/admin/workspaces/:id/overview` → the header and Overview tab. `404` if
+  the workspace doesn't exist. `queries.days` is always 30 entries, oldest first,
+  bucketed by UTC day.
+  ```
+  GET /api/admin/workspaces/7f3a91c2-5e0b-4d6e-a18c-2b94e6d0c417/overview
+  {
+    "workspace": { "id": "7f3a…", "name": "Meridian", "createdAt": 1793000000000, "lastActivityAt": 1793760000000,
+                   "maxSessionsPerConnection": 5, "backupFailureAlerts": true },
+    "owners": [{ "userId": "…", "name": "Amara Okafor", "email": "amara@meridian.example" }],
+    "counts": { "members": 24, "pendingMembers": 3, "connections": 12, "lockedConnections": 2, "groups": 4,
+                "dashboards": 18, "workflows": 9, "scheduledWorkflows": 4, "savedQueries": 143, "schemaDrafts": 3,
+                "storageDestinations": 2, "sshHosts": 2, "sshKeys": 3 },
+    "queries": { "days": [{ "day": "2026-10-06", "total": 1980, "failed": 19 }], "total": 48845, "failed": 573 },
+    "backups": { "runs": 94, "succeeded": 90 },
+    "engines": [{ "type": "postgresql", "count": 6, "locked": false }],
+    "environments": [{ "environment": "production", "count": 5 }],
+    "attention": {
+      "lockedConnections": ["events-main"],
+      "failingBackups": [{ "connectionId": "…", "name": "billing-prod", "consecutiveFailures": 2, "lastSuccessAt": 1793500000000 }]
+    }
+  }
+  ```
+- `GET /api/admin/workspaces/:id/connections` → what each connection is, never what's
+  in it. `canOpen` is resolved person by person through `userCanAccessConnection`;
+  `state` is `locked` when the engine is turned off in Modules; `backup` is null with
+  no enabled schedule.
+  ```
+  GET /api/admin/workspaces/7f3a91c2-5e0b-4d6e-a18c-2b94e6d0c417/connections
+  [{ "id": "…", "name": "billing-prod", "type": "postgresql", "environment": "production", "state": "active",
+     "ownerName": "Amara Okafor", "canOpen": 6, "createdAt": 1793000000000,
+     "backup": { "frequency": "daily", "hourOfDay": 2, "consecutiveFailures": 2 } }]
+  ```
+- `GET /api/admin/workspaces/:id/resources` → what the workspace holds.
+  ```
+  GET /api/admin/workspaces/7f3a91c2-5e0b-4d6e-a18c-2b94e6d0c417/resources
+  {
+    "totals": { "dashboards": { "total": 18, "connections": 7 }, "workflows": { "total": 9, "connections": 5 },
+                "savedQueries": { "total": 143, "connections": 8 }, "scheduledWorkflows": 4, "schemaDrafts": 3 },
+    "groups": [{ "id": "…", "name": "Platform", "people": 8, "connections": 5 }],
+    "storage": [{ "id": "…", "name": "Primary backups", "bucket": "meridian-db-backups", "region": "eu-west-1", "schedules": 3 }],
+    "sshHosts": [{ "id": "…", "name": "prod-bastion", "host": "bastion.meridian.example", "port": 22, "transport": "tcp", "hostKeyPinned": true }],
+    "sshKeys": [{ "id": "…", "name": "prod-deploy", "algorithm": "ed25519", "fingerprint": "SHA256:…" }]
+  }
+  ```
+- `GET /api/admin/workspaces/:id/activity` → counts over the last 30 days (top 5 of
+  each) and the 50 newest backup and workflow runs. `name` is null on a backup run.
+  ```
+  GET /api/admin/workspaces/7f3a91c2-5e0b-4d6e-a18c-2b94e6d0c417/activity
+  {
+    "busiestConnections": [{ "id": "…", "name": "orders-prod", "queries": 16420 }],
+    "activeMembers": [{ "id": "…", "name": "Diego Ramos", "queries": 9240 }],
+    "runs": [{ "id": "…", "kind": "backup", "name": null, "connectionId": "…", "connectionName": "billing-prod",
+               "trigger": "schedule", "status": "failed", "startedAt": 1793760000000, "finishedAt": 1793760072000 }]
+  }
+  ```
 - `PUT /api/admin/workspaces/:id/members/:userId` `{ role }` → `{ ok: true, role }`.
   `role` is any slug from the catalog (`400` otherwise). Adds the user to the
   workspace if they aren't in it yet — this is how an admin rescues a workspace

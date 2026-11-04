@@ -21,6 +21,7 @@ import {
 import { TYPE_LABEL } from '@/shared/config/databaseTypes'
 import { relativeTime } from '@/shared/lib/recents'
 import { deleteWorkspaceSchema, listWorkspaceSchemas } from '../lib/api'
+import { formatDate } from '@/shared/lib/datetime'
 import type { WorkspaceSchemaDraft } from '../types'
 
 // The person who started a draft: the initial bubble the rest of the app uses,
@@ -225,7 +226,7 @@ export default function WorkspaceSchemaList({
       width: 170,
       className: 'max-[900px]:hidden',
       sortValue: (row) => row.createdByName || '',
-      render: (row) => <AuthorCell name={row.createdByName} when={new Date(row.createdAt).toLocaleDateString()} />,
+      render: (row) => <AuthorCell name={row.createdByName} when={formatDate(row.createdAt)} />,
     },
     {
       key: 'statementCount',

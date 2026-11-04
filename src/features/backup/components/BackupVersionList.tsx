@@ -12,10 +12,11 @@ import { ChevronLeft, ChevronRight, CloseIcon, DownloadIcon, HistoryIcon, Restor
 import { deleteBackupUpload, downloadBackupUpload, listBackupRuns, listStorages, restoreBackup } from '@/features/backup/lib/api'
 import type { BackupRun, BackupUpload, StorageDestination } from '@/features/backup/lib/types'
 import LoadingState from '@/shared/ui/feedback/LoadingState'
+import { formatDateTime } from '@/shared/lib/datetime'
 
 const PAGE_SIZE = 20
 
-const fmtDate = (ts: number) => new Date(ts).toLocaleString()
+const fmtDate = (ts: number) => formatDateTime(ts)
 const fmtBytes = (n?: number) => {
   if (!n) return '—'
   const units = ['B', 'KB', 'MB', 'GB']

@@ -385,6 +385,7 @@ model users {
   last_failed_at   BigInt?
   locked_at        BigInt?
   locked_until     BigInt?
+  timezone         String?
 }
 
 model workflow_runs {

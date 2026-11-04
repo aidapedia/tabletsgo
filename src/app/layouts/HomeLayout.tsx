@@ -71,7 +71,7 @@ const NAV = {
 // Below it the groups read as: who can get in and what they may reach, then how
 // the instance itself is set up, plus the same personal settings.
 const ADMIN_NAV = {
-  pinned: [{ label: 'Workspaces', Icon: BuildingIcon, path: '/admin', exact: true }],
+  pinned: [{ label: 'Workspaces', Icon: BuildingIcon, path: '/admin', exact: true, also: '/admin/workspaces' }],
   groups: [
     {
       group: 'Access',
@@ -95,8 +95,10 @@ const ADMIN_NAV = {
   ],
 }
 
-const isActive = (pathname: string, path: string, exact?: boolean) =>
-  exact ? pathname === path : pathname === path || pathname.startsWith(`${path}/`)
+// `also` is a second address the row owns: `/admin` can't own everything under
+// it, because the other admin sections live there too.
+const isActive = (pathname: string, { path, exact, also }: { path: string; exact?: boolean; also?: string }) =>
+  (exact ? pathname === path : pathname === path || pathname.startsWith(`${path}/`)) || (!!also && pathname.startsWith(`${also}/`))
 
 function Sidebar({ pathname, onNavigate, user, onLogout, open, onClose, isAdmin, collapsed, onToggleCollapse }: any) {
   const nav = isAdmin ? ADMIN_NAV : NAV
@@ -120,14 +122,14 @@ function Sidebar({ pathname, onNavigate, user, onLogout, open, onClose, isAdmin,
             icon={item.Icon}
             label={item.label}
             href={item.path}
-            active={isActive(pathname, item.path, item.exact)}
+            active={isActive(pathname, item)}
             onClick={(e: MouseEvent) => onNavigate(e, item.path)}
           />
         ) : (
           <NavItem
             key={item.path}
             href={item.path}
-            active={isActive(pathname, item.path, item.exact)}
+            active={isActive(pathname, item)}
             icon={item.Icon}
             onClick={(e: MouseEvent) => onNavigate(e, item.path)}
           >

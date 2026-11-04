@@ -30,7 +30,7 @@ export async function acceptInvite(token: string, payload: { name: string; passw
 export async function getMe() {
   return request<{ user: any }>('/auth/me')
 }
-export async function updateProfile(payload: { name: string }) {
+export async function updateProfile(payload: { name?: string; timezone?: string | null }) {
   return request<{ user: any }>('/auth/profile', { method: 'PATCH', body: payload })
 }
 // Resolves to a fresh { user, token }: changing the password invalidates every

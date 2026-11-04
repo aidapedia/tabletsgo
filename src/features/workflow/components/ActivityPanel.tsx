@@ -5,6 +5,7 @@ import LoadingState from '@/shared/ui/feedback/LoadingState'
 import EmptyState from '@/shared/ui/feedback/EmptyState'
 import { listWorkflowRuns } from '@/features/workflow/lib/api'
 import type { TriggerKind, WorkflowRunSummary } from '@/features/workflow/lib/api'
+import { formatDateTime } from '@/shared/lib/datetime'
 
 // Human labels + accent for each trigger kind, shown as a pill per run.
 const TRIGGER_LABEL: Record<TriggerKind, string> = {
@@ -19,7 +20,7 @@ const fmtWhen = (ms: number) => {
   if (diff < 60_000) return 'just now'
   if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`
   if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`
-  return new Date(ms).toLocaleString()
+  return formatDateTime(ms)
 }
 
 // Bottom drawer listing this workflow's run history (all triggers). Clicking a

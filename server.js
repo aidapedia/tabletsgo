@@ -47,7 +47,7 @@ import {
 } from './server/config.js'
 import { backupMeta, checkMetaIntegrity, closeMeta, db as meta, transaction } from './server/meta.js'
 import { sha256 } from './server/crypto.js'
-import { describeError, filterAsync, safeJson, sanitizeForKey } from './server/util.js'
+import { describeError, filterAsync, isTimeZone, safeJson, sanitizeForKey } from './server/util.js'
 import {
   authUser,
   baseUrl,
@@ -87,6 +87,13 @@ import {
   renameWorkspace,
   setMemberRole as setWorkspaceMemberRole,
 } from './server/workspaces.js'
+import {
+  workspaceActivity,
+  workspaceConnections,
+  workspaceMembersDetail,
+  workspaceOverview,
+  workspaceResources,
+} from './server/workspace-insights.js'
 import {
   NODE_TYPES,
   PERMISSIONS,
@@ -364,7 +371,7 @@ app.post('/api/auth/login', async (req, res) => {
   const row = username
     ? await meta().users.findUnique({
         where: { username: String(username) },
-        select: { id: true, username: true, name: true, role: true, status: true, password_hash: true, ...LOCK_FIELDS },
+        select: { id: true, username: true, name: true, role: true, status: true, password_hash: true, timezone: true, ...LOCK_FIELDS },
       })
     : null
   if (row) {
@@ -402,13 +409,18 @@ app.get('/api/auth/me', async (req, res) => {
   res.json({ user: publicUser(user) })
 })
 
-// Rename yourself. Name is the only self-editable profile field.
+// Your name and time zone are the self-editable profile fields; send either.
+// `timezone: null` goes back to whatever zone the browser is in.
 app.patch('/api/auth/profile', async (req, res) => {
   const user = requireAuth(req, res)
   if (!user) return
-  const name = (req.body?.name ?? '').trim()
-  if (!name) return res.status(400).json({ error: 'A name is required.' })
-  await updateUser(user.id, { name })
+  const { name, timezone } = req.body || {}
+  if (name === undefined && timezone === undefined) return res.status(400).json({ error: 'Nothing to update.' })
+  if (name !== undefined && !String(name).trim()) return res.status(400).json({ error: 'A name is required.' })
+  if (timezone !== undefined && timezone !== null && !isTimeZone(timezone)) {
+    return res.status(400).json({ error: 'Unknown time zone.' })
+  }
+  await updateUser(user.id, { name: name === undefined ? undefined : String(name).trim(), timezone })
   res.json({ user: publicUser(await userRow(user.id)) })
 })
 
@@ -697,10 +709,10 @@ app.delete('/api/auth/identities/:id', async (req, res) => {
 // ============================================================================
 // Instance administration (system admins only)
 //
-// The admin area is deliberately narrow: workspaces and accounts, nothing
-// inside them. An admin holds no workspace membership, so every route below
-// this section's guard already denies them — that's the separation, not an
-// oversight. See CLAUDE.md "AUTH MODEL".
+// The admin area is deliberately narrow: workspaces and accounts, and metadata
+// about what a workspace holds, never a way in. An admin holds no workspace
+// membership, so every route below this section's guard already denies them —
+// that's the separation, not an oversight. See CLAUDE.md "AUTH MODEL".
 // ============================================================================
 
 app.use('/api/admin', (req, res, next) => {
@@ -771,7 +783,30 @@ app.delete('/api/admin/workspaces/:id', async (req, res) => {
 // without joining it.
 app.get('/api/admin/workspaces/:id/members', async (req, res) => {
   if (!(await getWorkspaceRow(req.params.id))) return res.status(404).json({ error: 'Workspace not found' })
-  res.json(await listWorkspaceMembers(req.params.id))
+  res.json(await workspaceMembersDetail(req.params.id))
+})
+
+// The workspace detail page: metadata about what a workspace holds, for an admin
+// who can't enter it. server/workspace-insights.js is what keeps this to metadata.
+app.get('/api/admin/workspaces/:id/overview', async (req, res) => {
+  const overview = await workspaceOverview(req.params.id)
+  if (!overview) return res.status(404).json({ error: 'Workspace not found' })
+  res.json(overview)
+})
+
+app.get('/api/admin/workspaces/:id/connections', async (req, res) => {
+  if (!(await getWorkspaceRow(req.params.id))) return res.status(404).json({ error: 'Workspace not found' })
+  res.json(await workspaceConnections(req.params.id))
+})
+
+app.get('/api/admin/workspaces/:id/resources', async (req, res) => {
+  if (!(await getWorkspaceRow(req.params.id))) return res.status(404).json({ error: 'Workspace not found' })
+  res.json(await workspaceResources(req.params.id))
+})
+
+app.get('/api/admin/workspaces/:id/activity', async (req, res) => {
+  if (!(await getWorkspaceRow(req.params.id))) return res.status(404).json({ error: 'Workspace not found' })
+  res.json(await workspaceActivity(req.params.id))
 })
 
 // Grant or revoke ownership. This is the admin's lever over a workspace they

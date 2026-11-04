@@ -56,3 +56,15 @@ export function computeNextRun(frequency, hourOfDay, from = Date.now()) {
   if (d.getTime() <= from) d.setUTCDate(d.getUTCDate() + 1)
   return d.getTime()
 }
+
+// Is this an IANA zone the runtime knows? Intl is the only list that matters: a
+// zone it can't format is one the browser couldn't render either.
+export const isTimeZone = (zone) => {
+  if (!zone || typeof zone !== 'string') return false
+  try {
+    new Intl.DateTimeFormat('en', { timeZone: zone })
+    return true
+  } catch {
+    return false
+  }
+}

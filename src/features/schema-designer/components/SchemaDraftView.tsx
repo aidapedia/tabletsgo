@@ -11,6 +11,7 @@ import Badge from '@/shared/ui/Badge'
 import Tooltip from '@/shared/ui/overlay/Tooltip'
 import { ChevronLeft, LinkIcon, SyncIcon, UnlinkIcon } from '@/shared/ui/icons'
 import useSchemaDraftController from '../hooks/useSchemaDraftController'
+import { formatDate, formatDateTime } from '@/shared/lib/datetime'
 
 // Keep the canvas out of the route chunk until a draft is opened.
 const SchemaEditor = lazy(() => import('./SchemaEditor'))
@@ -24,7 +25,7 @@ function syncedAgo(at: number, now: number) {
   if (mins < 60) return `${mins}m ago`
   const hours = Math.floor(mins / 60)
   if (hours < 24) return `${hours}h ago`
-  return new Date(at).toLocaleDateString()
+  return formatDate(at)
 }
 
 export default function SchemaDraftView({ connections, connectionsLoading, patchLocalConnection }: {
@@ -92,9 +93,9 @@ export default function SchemaDraftView({ connections, connectionsLoading, patch
             <Tooltip
               placement="bottom"
               multiline
-              label={`Created by ${draft.createdByName || 'an account that no longer exists'} on ${new Date(
+              label={`Created by ${draft.createdByName || 'an account that no longer exists'} on ${formatDateTime(
                 draft.createdAt
-              ).toLocaleString()}\nLast saved ${new Date(draft.ts).toLocaleString()}`}
+              )}\nLast saved ${formatDateTime(draft.ts)}`}
             >
               <span className="cursor-default">
                 · updated by {draft.updatedByName || 'someone unknown'} {relativeTime(draft.ts)}

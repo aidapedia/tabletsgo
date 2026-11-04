@@ -1,4 +1,5 @@
 import type { TopicDetail, TopicSummary } from './api'
+import { formatDate, formatTime, isSameDay } from '@/shared/lib/datetime'
 
 /** 48213004 → "48.2M"; small numbers keep their digits. */
 export function compact(n: number | null | undefined) {
@@ -22,10 +23,10 @@ export function bytes(n: number) {
 export function shortTime(iso: string) {
   const d = new Date(iso)
   if (Number.isNaN(d.getTime())) return iso
-  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+  const time = formatTime(d, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
   const ms = String(d.getMilliseconds()).padStart(3, '0')
-  const today = new Date().toDateString() === d.toDateString()
-  return today ? `${time}.${ms}` : `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${time}`
+  const today = isSameDay(d, Date.now())
+  return today ? `${time}.${ms}` : `${formatDate(d, { month: 'short', day: 'numeric' })} ${time}`
 }
 
 // A consumer group's state as a dot colour and a badge tone. Kafka's states:

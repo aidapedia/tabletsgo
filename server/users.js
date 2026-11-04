@@ -164,8 +164,9 @@ export const activateUser = async (id, { name } = {}) => {
   })
 }
 
-export const updateUser = async (id, { name, password }) => {
+export const updateUser = async (id, { name, password, timezone }) => {
   if (name !== undefined) await db().users.updateMany({ where: { id }, data: { name } })
+  if (timezone !== undefined) await db().users.updateMany({ where: { id }, data: { timezone } })
   if (password) {
     await db().users.updateMany({ where: { id }, data: { password_hash: sha256(password), status: 'active' } })
     // A new password hands the account back to its owner — the failed-attempt

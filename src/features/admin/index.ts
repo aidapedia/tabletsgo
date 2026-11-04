@@ -1,8 +1,9 @@
 // Public API for the instance-administration feature — the `/admin/*` area,
 // reachable only by accounts whose system role is 'admin'. It manages
-// workspaces and accounts and deliberately reaches nothing inside a workspace;
-// see CLAUDE.md "AUTH MODEL".
+// workspaces and accounts, and can describe what a workspace holds, but
+// deliberately opens nothing inside one; see CLAUDE.md "AUTH MODEL".
 export { default as AdminWorkspacesPanel } from './components/AdminWorkspacesPanel'
+export { default as AdminWorkspaceDetail, WORKSPACE_DETAIL_TABS } from './components/workspace-detail/AdminWorkspaceDetail'
 export { default as AdminUsersPanel } from './components/AdminUsersPanel'
 // The resource tree offers this on the application root — the one node a
 // workspace can be filed under — so the dialog lives on its own rather than

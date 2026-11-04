@@ -164,7 +164,7 @@ export default function DataTable<T>({
                       <button
                         type="button"
                         onClick={() => onSortChange(nextSort(sort, col.key))}
-                        className={`group inline-flex items-center gap-1 transition-colors hover:text-ink ${
+                        className={`group inline-flex items-center gap-1 uppercase tracking-wide transition-colors hover:text-ink ${
                           sorted ? 'text-ink' : ''
                         }`}
                       >

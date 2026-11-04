@@ -56,7 +56,7 @@ export const bearerToken = (req) => {
   return h.startsWith('Bearer ') ? h.slice(7) : null
 }
 
-const USER_FIELDS = { id: true, username: true, name: true, role: true, status: true }
+const USER_FIELDS = { id: true, username: true, name: true, role: true, status: true, timezone: true }
 
 export const userRow = async (id) => (id ? await db().users.findUnique({ where: { id }, select: USER_FIELDS }) : null)
 
@@ -86,7 +86,7 @@ export async function sessionMiddleware(req, _res, next) {
 export const authUser = (req) => req.authUser || null
 
 // Public shape returned to the client (never the password hash).
-export const publicUser = (u) => (u ? { id: u.id, email: u.username, name: u.name, role: u.role } : null)
+export const publicUser = (u) => (u ? { id: u.id, email: u.username, name: u.name, role: u.role, timezone: u.timezone || null } : null)
 
 // Require an authenticated caller; sends 401 and returns null otherwise.
 export const requireAuth = (req, res) => {

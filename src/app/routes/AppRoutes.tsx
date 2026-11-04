@@ -31,6 +31,7 @@ const SchemasPage = lazy(() => import('@/pages/home/SchemasPage'))
 const SchemaDraftPage = lazy(() => import('@/pages/home/SchemaDraftPage'))
 const WorkspacePage = lazy(() => import('@/pages/console/WorkspacePage'))
 const AdminWorkspacesPage = lazy(() => import('@/pages/admin/AdminWorkspacesPage'))
+const AdminWorkspaceDetailPage = lazy(() => import('@/pages/admin/AdminWorkspaceDetailPage'))
 const AdminUsersPage = lazy(() => import('@/pages/admin/AdminUsersPage'))
 const AdminEmailPage = lazy(() => import('@/pages/admin/AdminEmailPage'))
 const AdminModulesPage = lazy(() => import('@/pages/admin/AdminModulesPage'))
@@ -114,6 +115,8 @@ export function AppRoutes() {
         }
       >
         <Route path="/admin" element={<AdminWorkspacesPage />} />
+        <Route path="/admin/workspaces/:id" element={<AdminWorkspaceDetailPage />} />
+        <Route path="/admin/workspaces/:id/:tab" element={<AdminWorkspaceDetailPage />} />
         <Route path="/admin/users" element={<AdminUsersPage />} />
         <Route path="/admin/email" element={<AdminEmailPage />} />
         <Route path="/admin/sign-in" element={<AdminSignInPage />} />

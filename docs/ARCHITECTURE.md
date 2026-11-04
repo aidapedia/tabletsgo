@@ -67,7 +67,7 @@ src/
 │   │                             #   measure on drop, play the delta with transforms). Native HTML5
 │   │                             #   drag, so keep it out of a React Flow canvas, whose own d3-drag
 │   │                             #   suppresses native drag events)
-│   ├── lib/                      # helpers: recents, schemaDraft, toggleId, version (meetsVersion)
+│   ├── lib/                      # helpers: datetime (every time the app shows, in the account's zone), recents, schemaDraft, toggleId, version (meetsVersion)
 │   ├── api/                      # backend client: request.ts (fetch wrapper) + database.ts
 │   ├── config/                   # runtime API_URL and shared database type catalog/labels
 │   └── types/                    # ambient/shared TS types (globals.d.ts)
@@ -83,7 +83,9 @@ src/
 │   │                             #     lib/signInErrors turns the callback's ?error= code into a sentence.
 │   │                             #     Email and system role stay read-only — an admin changes those
 │   ├── admin/                    # the instance-admin area (system role 'admin' only): AdminWorkspacesPanel
-│   │                             #   (every workspace + who owns it; create/rename/delete, grant ownership)
+│   │                             #   (every workspace + who owns it; a row opens the detail page)
+│   │                             #   workspace-detail/ (AdminWorkspaceDetail + one file per tab: Overview, Members,
+│   │                             #     Connections, Resources, Activity, Settings; metadata only, nothing opens a database)
 │   │                             #   AdminUsersPanel (accounts, system role, invites, password reset)
 │   │                             #   AdminSignInPanel (the Google and GitHub apps people sign in through)
 │   │                             #   and AdminSmtpPanel + SmtpForm (the instance's one mail server —
@@ -407,7 +409,8 @@ src/
     │                             #   ForgotPasswordPage, ResetPasswordPage, RegisterPage,
     │                             #   LoginCompletePage (where a Google/GitHub sign-in lands) + AuthCard
     ├── admin/                    # the instance-admin area, one file per sidebar section (same rule
-    │                             #   as home/): AdminWorkspacesPage (/admin), AdminUsersPage
+    │                             #   as home/): AdminWorkspacesPage (/admin), AdminWorkspaceDetailPage
+    │                             #   (/admin/workspaces/:id/:tab), AdminUsersPage
     │                             #   (/admin/users) + AdminEmailPage (/admin/email — the instance-wide
     │                             #   SMTP config) + AdminSignInPage (/admin/sign-in) + AdminModulesPage (/admin/modules) — no tabs, the sidebar switches. Only reachable
     │                             #   with the system role 'admin'; AppRoutes' RequireSystemAdmin /
@@ -581,6 +584,7 @@ server/
 ├── workspaces.js         # workspaces + their roster on the workspace node: the admin listing, ownership
 │                         #   changes, and the one delete cascade both delete routes share.
 │                         #   "Owner" = holds `workspace.manage`, never a role-name comparison
+├── workspace-insights.js # read-only: what an instance admin sees about a workspace. Names every column, so secrets, query text and logs are never loaded
 ├── users.js              # the instance user directory (`users`): system roles, invites,
 │                         #   promote/demote (promoting to admin strips every membership)
 ├── identity/             # Google and GitHub sign-in

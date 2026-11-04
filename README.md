@@ -30,6 +30,8 @@ Browse data, write queries, design schemas, automate workflows and back up to S3
 - **Data export / import** — CSV, JSON or SQL, with a dry‑run preview.
 - **SSH tunnels** — reach private databases through a bastion (plain SSH, Railway, Cloudflare Access).
 - **Teams** — workspaces, groups, email invites and permission‑based roles on a resource tree.
+- **Workspace administration** — the instance admin gets a detail page for every workspace: what needs attention, members and roles, connections, resources and recent activity. It shows metadata only, so admins still can't open a connection or read its credentials or queries.
+- **Time zones** — each person picks a time zone in **Setting → Account**, and times across the app show in it. Values stored in your databases are shown exactly as stored.
 - **Sign-in** — sign in with Google or GitHub alongside a password. The instance admin sets up the apps under **Administration → Sign-in Methods**; each person links their accounts in **Setting → Account**. Open registration is an optional module, off by default.
 - **Modules** — the instance admin chooses which databases (PostgreSQL, SQLite, Redis, Kafka) and features (Backups, Registration) the instance offers, in the setup wizard and later under **Administration → Modules**, and sets their instance-wide settings — each database's query timeout and table row limit, Kafka's read caps. Workspaces only see what's on. Turning off a database that connections still use locks those connections instead of deleting them, and notifies their owners by email.
 - **Secure by default** — credentials encrypted at rest (AES‑256‑GCM), brute‑force login protection.

@@ -28,7 +28,7 @@ export default function SettingsPage() {
       label: 'Account',
       body: (
         <Narrow>
-          <SubHead title="Profile" desc="Your name and sign-in email." />
+          <SubHead title="Profile" desc="Your name, sign-in email and time zone." />
           <ProfileSetting />
           <div className="mt-10 border-t border-edge pt-8">
             <SubHead title="Password" desc="Change the password you sign in with." />

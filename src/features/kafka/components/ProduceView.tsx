@@ -12,6 +12,7 @@ import { formatCombo, useKeymap, useShortcut } from '@/features/keymap'
 import { CloseIcon, PlusSmall, SaveIcon, SendIcon } from '@/shared/ui/icons'
 import { describeTopic, hasSchemaRegistry, listSchemas, listTopics, produceMessage, type SchemaSubject, type TopicSummary } from '../lib/api'
 import { quote } from '../lib/format'
+import { formatTime } from '@/shared/lib/datetime'
 
 // One send's outcome: where it landed, or why it didn't.
 type Sent = { ok: boolean; partition?: number; offset?: number; key?: string | null; error?: string; at: number }
@@ -357,7 +358,7 @@ export default function ProduceView({
                           </p>
                           <p className="text-[11px] text-ink-faint">
                             {s.key ? `key ${s.key} · ` : ''}
-                            {new Date(s.at).toLocaleTimeString()}
+                            {formatTime(s.at)}
                           </p>
                         </>
                       ) : (

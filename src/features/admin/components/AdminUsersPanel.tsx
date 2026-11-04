@@ -22,6 +22,7 @@ import ViewToggle from '@/shared/ui/table/ViewToggle'
 import { CopyIcon, KeyIcon, PlusIcon, TrashIcon, UnlockIcon } from '@/shared/ui/icons'
 import { PROVIDER_ICONS, useAuth } from '@/features/auth'
 import { createUser, deleteUser, listUsers, unblockUser, updateUser, type AdminUser, type SystemRole } from '../api'
+import { formatDate, formatDateTime } from '@/shared/lib/datetime'
 
 /**
  * Every account on the instance.
@@ -38,7 +39,7 @@ import { createUser, deleteUser, listUsers, unblockUser, updateUser, type AdminU
 // out); the ordinary one waits for an admin.
 const blockedHint = (u: AdminUser) =>
   u.blockedUntil
-    ? `Too many failed sign-in attempts (${u.failedAttempts}). Signing in is blocked until ${new Date(u.blockedUntil).toLocaleString()}.`
+    ? `Too many failed sign-in attempts (${u.failedAttempts}). Signing in is blocked until ${formatDateTime(u.blockedUntil)}.`
     : `Blocked after ${u.failedAttempts} failed sign-in attempts. Unblock or set a new password to let them back in.`
 
 /**
@@ -317,7 +318,7 @@ export default function AdminUsersPanel({
         <ConfirmDialog
           title="Unblock this account?"
           message={`${unblocking.name || unblocking.email} was blocked after ${unblocking.failedAttempts} failed sign-in attempts${
-            unblocking.blockedAt ? ` on ${new Date(unblocking.blockedAt).toLocaleString()}` : ''
+            unblocking.blockedAt ? ` on ${formatDateTime(unblocking.blockedAt)}` : ''
           }. Unblocking clears the counter and lets them sign in with their existing password — if you're not sure it was them, set a new password instead.`}
           confirmLabel="Unblock"
           onConfirm={confirmUnblock}
@@ -388,7 +389,7 @@ function UserDetailDialog({ user, onClose }: { user: AdminUser; onClose: () => v
                 <Icon width={14} height={14} className="shrink-0" />
                 <span className="min-w-0 flex-1 truncate text-[12px] text-ink">{i.email || 'Linked'}</span>
                 <span className="shrink-0 text-[11px] text-ink-faint">
-                  {i.lastUsedAt ? `Last used ${new Date(i.lastUsedAt).toLocaleDateString()}` : 'Never used'}
+                  {i.lastUsedAt ? `Last used ${formatDate(i.lastUsedAt)}` : 'Never used'}
                 </span>
               </div>
             )

@@ -67,7 +67,7 @@ src/
 | Feature | What it owns |
 | --- | --- |
 | `auth` | AuthContext, login/setup/invite/registration, Google and GitHub sign-in buttons, the caller's own account settings and linked accounts |
-| `admin` | instance-admin area (system role `admin`): workspaces, users, the one SMTP config, the Google and GitHub apps |
+| `admin` | instance-admin area (system role `admin`): workspaces and their detail page, users, the one SMTP config, the Google and GitHub apps |
 | `modules` | which databases/features the instance offers: `useModules().isEnabled(id)`, Admin → Modules panel, the wizard's module picker + settings fields |
 | `workspaces` | org/tenant layer: current workspace, members (roster on the workspace node), notifications, general settings |
 | `workspace` | **the per-connection DB console** — DataGrid, TableView, QueryEditor, tabs, status bar |
@@ -112,6 +112,7 @@ server/
 ├── identity/            # Google and GitHub sign-in: links, apps, the round trip, what a profile means → skill auth-sessions
 ├── login-guard.js       # sign-in brute-force blocking                        → skill auth-sessions
 ├── users.js  workspaces.js  app-settings.js  mail.js                          → skill auth-sessions
+├── workspace-insights.js  # read-only: what an instance admin sees about a workspace; names its columns so no secret is ever loaded
 ├── module-registry.js   # leaf: the module catalog (engines + features) + in-memory on/off and settings
 ├── module-settings.js   # loads/saves them (`app_settings` key `modules`); refuses turning off an engine in use
 ├── connections.js       # connection records (encrypted credentials blob)
@@ -137,6 +138,7 @@ server/
 - **A route shell lives in `app/layouts/`, never under the section that uses it first.** `HomeLayout` is the shell for the home, admin *and* account routes; filing it under `pages/home/` said it belonged to one of them.
 - **A page is composition, not logic.** If a route file grows state engines and panel wiring, that belongs in its feature — `pages/console/WorkspacePage.tsx` reads the `:id` and renders `features/workspace`'s `DatabaseConsole`, which is where the console's hooks and components live.
 - **Anything a user can be looking at has an address.** A detail view, a create/edit form and a tab are routes (`/connections/:id/:tab`, `/connections/:id/edit/:tab`), not `useState` on the list page — so a refresh keeps you there and a link lands there. Use `useTabRoute` to bind a tab bar to its segment. Transient dialogs (confirm, export, picker) stay local state.
+- **A time the app recorded is formatted through `shared/lib/datetime`** (`formatDateTime`, `formatDate`, `formatTime`, `isSameDay`, `zonedInputToDate` for a `datetime-local` input), never `toLocaleString` on a Date — that is what makes it follow the zone in the person's account. A value read from someone's own database stays as stored, and a day bucket the server cut in UTC stays UTC.
 - All backend calls go through `shared/api/request.ts`: use `request()` for mutations (throws on failure — caller `try/catch`es and toasts) and `safeRequest(path, fallback)` for reads that should degrade quietly. Don't call `fetch` directly or re-declare `API_URL`.
 - UI styling lives in `shared/ui` components — `Button`, `IconButton`, `Input`/`Textarea`, `Form`/`FormField`/`Label`. Use those instead of shared class-string helpers (the old `shared/lib/styles.ts` is gone). `controlClass` (exported from `shared/ui/form/Input`) is **only** for non-`<input>` controls that need the field look (e.g. `Select`) — never put it on a raw `<input>`/`<textarea>`; use `Input`/`Textarea`.
 - Reuse the shared micro-components instead of re-styling inline: `Avatar` (initial bubble), `Badge` (uppercase pill), `PersonRow` (avatar+name+email), `CheckboxRow` (bordered selectable row), `HelpTip` (a "?" whose hover explains the thing beside it — for a field, pass `FormField`'s `help` instead of a `hint` when the text is advice rather than something needed to fill it in), `SearchInput` (input with search icon), `LoadingState`/`EmptyState` (faint placeholders), `ConfirmDialog` (never `window.confirm`), `toggleId` (selection-list toggle), `DragHandle` + `useDragReorder` (drag-to-reorder a list of cards — the grip starts the drag, the whole card is the drop target, and the cards animate into place on drop; spread `listProps` on the container and give `itemProps(i, id)` a stable id, never the index; native HTML5 drag, so it does **not** work inside a React Flow canvas, whose d3-drag suppresses native drag events), `AccountTile` (the signed-in person's gradient mark; `presence` notches the online dot into it — pass the `surface` it sits on), `AccountMenu` (name/email/sign-out popover), `RailItem`/`RailDivider` (a row of a 56px icon rail), `Breadcrumb` (the `root / … / here` trail — see below).

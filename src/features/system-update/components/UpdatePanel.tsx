@@ -7,6 +7,7 @@ import { MarkdownText } from '@/features/dashboard'
 import { useAuth } from '@/features/auth'
 import { useUpdate } from '../stores/UpdateContext'
 import UpdateWizard from './UpdateWizard'
+import { formatTime } from '@/shared/lib/datetime'
 
 // Settings > Updates: current vs latest, manual re-check, changelog, and the
 // entry point into the guided update wizard.
@@ -59,7 +60,7 @@ export default function UpdatePanel() {
                 : info?.updateAvailable
                   ? `v${info.latest?.version} is available`
                   : lastChecked
-                    ? `Last checked ${new Date(lastChecked).toLocaleTimeString()}`
+                    ? `Last checked ${formatTime(lastChecked)}`
                     : 'Not checked for updates yet.'}
           </div>
         </div>
