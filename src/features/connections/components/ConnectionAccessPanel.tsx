@@ -3,7 +3,7 @@ import { useToast } from '@/shared/ui/feedback/Toast'
 import CheckboxRow from '@/shared/ui/form/CheckboxRow'
 import Button from '@/shared/ui/buttons/Button'
 import { EditIcon } from '@/shared/ui/icons'
-import Avatar from '@/shared/ui/Avatar'
+import PersonAvatar from '@/shared/ui/PersonAvatar'
 import Badge from '@/shared/ui/Badge'
 import PersonRow from '@/shared/ui/PersonRow'
 import { useWorkspaces, can, listMembers, type Member } from '@/features/workspaces'
@@ -141,7 +141,7 @@ export default function ConnectionAccessPanel({ conn, onChange }: { conn: any; o
         <div className="mb-3 text-[13px] font-bold">Owner</div>
         {ownerName ? (
           <div className="flex items-center gap-2.5">
-            <Avatar label={ownerName} />
+            <PersonAvatar seed={ownerName} />
             <div className="min-w-0">
               <div className="truncate text-[12px] font-medium text-ink">{ownerName}</div>
               {conn.ownerEmail && <div className="truncate text-[11px] text-ink-faint">{conn.ownerEmail}</div>}

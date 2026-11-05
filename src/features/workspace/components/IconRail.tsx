@@ -76,7 +76,7 @@ export default function IconRail({
               >
                 {/* The rail sits on `bg`, so that is the surface the dot's
                     ring is punched out of. */}
-                <AccountTile label={user?.name} size={30} presence surface="bg" />
+                <AccountTile label={user?.name || user?.email} size={30} presence surface="bg" />
               </button>
             </Tooltip>
           )}

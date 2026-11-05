@@ -1,5 +1,6 @@
-// Initial bubble for a person (or any named thing): first letter of `label`
-// in the brand-green tint. Sizes match the two variants used across the app.
+// Initial bubble for a named thing that isn't a person (a workspace, a group):
+// first letter of `label` in the brand-green tint. People get `PersonAvatar`.
+// Sizes match the two variants used across the app.
 const SIZES = {
   sm: 'h-6 w-6 text-[10px]',
   md: 'h-7 w-7 text-[11px]',

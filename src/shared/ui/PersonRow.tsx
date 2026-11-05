@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import Avatar from '@/shared/ui/Avatar'
+import PersonAvatar from '@/shared/ui/PersonAvatar'
 
 // The avatar + name + email trio used in member/people lists. Renders a
 // fragment so it can sit inside any flex row (plain rows, CheckboxRow, …);
@@ -26,7 +26,7 @@ export default function PersonRow({
   if (stacked)
     return (
       <>
-        <Avatar size={size} label={name || email} />
+        <PersonAvatar size={size} seed={name || email} />
         <span className="flex min-w-0 flex-1 flex-col">
           <span className="truncate text-[12px]">
             {name || email}
@@ -40,7 +40,7 @@ export default function PersonRow({
 
   return (
     <>
-      <Avatar size={size} label={name || email} />
+      <PersonAvatar size={size} seed={name || email} />
       <span className="min-w-0 flex-1 truncate text-[12px]">
         {name || email}
         {suffix}

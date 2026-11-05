@@ -305,7 +305,7 @@ function Sidebar({ pathname, onNavigate, user, onLogout, open, onClose, isAdmin,
                       menuOpen ? 'bg-card-hover' : ''
                     }`}
                   >
-                    <AccountTile label={user?.name} size={30} presence surface="panel" />
+                    <AccountTile label={user?.name || user?.email} size={30} presence surface="panel" />
                   </button>
                 </Tooltip>
               ) : (
@@ -318,7 +318,7 @@ function Sidebar({ pathname, onNavigate, user, onLogout, open, onClose, isAdmin,
                     menuOpen ? 'bg-card-hover' : ''
                   }`}
                 >
-                  <AccountTile label={user?.name} size={30} presence surface="panel" />
+                  <AccountTile label={user?.name || user?.email} size={30} presence surface="panel" />
                   <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-ink">{user?.name || 'Account'}</span>
                   <MoreHorizontalIcon width={16} height={16} className="shrink-0 text-ink-faint" />
                 </button>

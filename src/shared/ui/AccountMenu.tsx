@@ -30,7 +30,7 @@ export default function AccountMenu({
       {({ close }: { close: () => void }) => (
         <div className="p-1.5">
           <div className="flex items-center gap-2.5 px-1.5 py-1">
-            <AccountTile label={user?.name} size={30} />
+            <AccountTile label={user?.name || user?.email} size={30} />
             <span className="min-w-0 flex-1">
               <span className="block truncate text-[12px] font-semibold text-ink">{user?.name || 'Account'}</span>
               <span className="block truncate text-[11px] text-ink-faint">{user?.email}</span>

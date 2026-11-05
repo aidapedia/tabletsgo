@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import Avatar from '@/shared/ui/Avatar'
+import PersonAvatar from '@/shared/ui/PersonAvatar'
 import Badge from '@/shared/ui/Badge'
 import IconButton from '@/shared/ui/buttons/IconButton'
 import ConfirmDialog from '@/shared/ui/feedback/ConfirmDialog'
@@ -374,7 +375,7 @@ type TableRow = AccessRow & { roleName: string }
 function RowFace({ row }: { row: TableRow }) {
   return (
     <>
-      <Avatar size="sm" label={row.name} />
+      {row.kind === 'group' ? <Avatar size="sm" label={row.name} /> : <PersonAvatar size="sm" seed={row.name} />}
       <span className="min-w-0 flex-1">
         <span className="block truncate text-[12px] font-medium text-ink">{row.name}</span>
         {row.email && <span className="block truncate text-[10px] text-ink-faint">{row.email}</span>}

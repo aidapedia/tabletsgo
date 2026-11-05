@@ -52,7 +52,7 @@ src/
 │   │   │                         #     useListView + ViewToggle (the per-list List / Grid switch,
 │   │   │                         #     remembered in localStorage; `view="grid"` makes DataTable draw
 │   │   │                         #     the rows as cards built from its columns, or `renderCard`'s own)
-│   │   └── (root)                #   Avatar, Badge, PersonRow, RowLabel, HelpTip (a "?" whose hover
+│   │   └── (root)                #   Avatar, PersonAvatar, Badge, PersonRow, RowLabel, HelpTip (a "?" whose hover
 │   │                             #     explains its neighbour — FormField's `help`), DragHandle (the grip a
 │   │                             #     reorderable list grabs by — pair with useDragReorder),
 │   │                             #     SaveQueryPanel, SqlEditor, CodeEditor, CommandReference (a command
