@@ -290,6 +290,3 @@ export async function getIdentityProviders() {
 export async function saveIdentityProvider(kind: string, body: { clientId?: string; clientSecret?: string; enabled?: boolean }) {
   return request<{ providers: AdminIdentityProvider[] }>(`/admin/identity-providers/${kind}`, { method: 'PUT', body })
 }
-export async function clearIdentityProvider(kind: string) {
-  return request<{ providers: AdminIdentityProvider[] }>(`/admin/identity-providers/${kind}`, { method: 'DELETE' })
-}

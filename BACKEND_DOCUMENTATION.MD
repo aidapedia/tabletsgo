@@ -1707,7 +1707,7 @@ One module — what Admin → Modules sends. Same rules and responses as the bat
   `notify` with it notifies their owners by email that their connections are
   locked — **one email per unique recipient address** (trimmed,
   case-insensitive), listing every connection that address owns. Sent through
-  the instance mail server (Administration → Email Server).
+  the instance mail server (Administration → Email).
 - **200:** `{ "modules": [...], "notified"?: { "owners": 2, "connections": 4, "failed": [] } }` —
   `notified` only when `force` + `notify` turned an engine off; it is
   `{ "error": "No mail server is configured — …" }` when the email couldn't be

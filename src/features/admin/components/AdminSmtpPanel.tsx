@@ -10,7 +10,7 @@ import { clearGlobalSmtp, getGlobalSmtp, testGlobalSmtp, updateGlobalSmtp } from
 import type { GlobalSmtpInfo } from '../api'
 
 /**
- * Admin → Email Server: the instance's mail server.
+ * Admin → Email: the instance's mail server.
  *
  * There is exactly one, and this is the only place it can be set — invites,
  * password resets and notifications all send through it, for every workspace.

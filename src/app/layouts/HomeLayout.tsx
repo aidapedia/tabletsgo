@@ -11,7 +11,7 @@ import AccountTile from '@/shared/ui/AccountTile'
 import AccountMenu from '@/shared/ui/AccountMenu'
 import { PageTrailProvider, usePageCrumbs } from '@/shared/ui/page/PageTrail'
 import IconButton from '@/shared/ui/buttons/IconButton'
-import { BellIcon, BuildingIcon, CloudIcon, DatabaseIcon, DiagramIcon, GridIcon, HomeIcon, KeyIcon, Logo, MailIcon, MenuIcon, MoreHorizontalIcon, PanelLeftIcon, SettingsIcon, ShieldIcon, TerminalIcon, TreeIcon, UsersIcon, WorkflowIcon } from '@/shared/ui/icons'
+import { BellIcon, BuildingIcon, CloudIcon, DatabaseIcon, DiagramIcon, GridIcon, HomeIcon, KeyIcon, Logo, MailIcon, MenuIcon, MoreHorizontalIcon, PanelLeftIcon, RefreshIcon, SettingsIcon, ShieldIcon, TerminalIcon, TreeIcon, UsersIcon, WorkflowIcon } from '@/shared/ui/icons'
 
 /**
  * Sidebar navigation model — a pinned row plus titled groups.
@@ -71,7 +71,8 @@ const NAV = {
 // An instance admin belongs to no workspace, so none of the sections above have
 // anything to show them — `/admin` is their home, so it takes the pinned row.
 // Below it the groups read as: who can get in and what they may reach, then how
-// the instance itself is set up, plus the same personal settings.
+// the instance itself is set up, plus the same personal settings. The instance's
+// group is `Settings`; the account's own is the `Setting` in the account menu.
 const ADMIN_NAV = {
   pinned: [{ label: 'Workspaces', Icon: BuildingIcon, path: '/admin', exact: true, also: '/admin/workspaces' }],
   groups: [
@@ -79,15 +80,16 @@ const ADMIN_NAV = {
       group: 'Access',
       items: [
         { label: 'Users', Icon: UsersIcon, path: '/admin/users' },
-        { label: 'Sign-in Methods', Icon: KeyIcon, path: '/admin/sign-in' },
         { label: 'Resource Tree', Icon: TreeIcon, path: '/resource-tree' },
       ],
     },
     {
-      group: 'Instance',
+      group: 'Settings',
       items: [
         { label: 'Modules', Icon: GridIcon, path: '/admin/modules' },
-        { label: 'Email Server', Icon: MailIcon, path: '/admin/email' },
+        { label: 'Authentication', Icon: KeyIcon, path: '/admin/sign-in' },
+        { label: 'Email', Icon: MailIcon, path: '/admin/email' },
+        { label: 'Updates', Icon: RefreshIcon, path: '/admin/updates' },
       ],
     },
     {
@@ -126,15 +128,13 @@ function PageTrail({ pathname, isAdmin }: { pathname: string; isAdmin: boolean }
   )
 }
 
-function Sidebar({ pathname, onNavigate, user, onLogout, open, onClose, isAdmin, collapsed, onToggleCollapse }: any) {
+function Sidebar({ pathname, onNavigate, user, onSettings, onLogout, open, onClose, isAdmin, collapsed, onToggleCollapse }: any) {
   const nav = isAdmin ? ADMIN_NAV : NAV
 
-  // The Account group lives in the footer, not the nav list: its one row is
-  // about *you*, so it belongs directly above the account block rather than at
-  // the bottom of a list of places to go. Its header goes with it — the tile
-  // underneath already says whose settings these are.
-  const accountGroup = nav.groups.find((g) => g.group === 'Account')
-  const listedGroups = nav.groups.filter((g) => g !== accountGroup)
+  // The Account group isn't listed: its one row is about *you*, so it opens from
+  // the account menu, next to sign-out. It stays in the model because the page
+  // trail names a section from it.
+  const listedGroups = nav.groups.filter((g) => g.group !== 'Account')
 
   // Collapsed, a row *is* a rail row — the same `RailItem` the console's
   // IconRail is built from, so the two rails share their size, tooltip and
@@ -281,18 +281,15 @@ function Sidebar({ pathname, onNavigate, user, onLogout, open, onClose, isAdmin,
           ))}
         </nav>
 
-        {/* Account: the settings row, then the person. Both states are the same
-            two things — collapsed just drops to icons and moves the name, email
-            and sign-out into the tile's menu, since none of them fit at 64px.
-            The tile carries the presence dot in both, the same one the console
+        {/* Account: the person, whose menu holds settings and sign-out. The
+            tile carries the presence dot in both states, the same one the console
             rail shows: you are looking at your own account, so "online" is the
             one thing it can always state, and it should not blink out of
             existence when you leave the console for the home shell. */}
         <div className={`flex flex-col gap-1 border-t border-edge py-3 ${collapsed ? 'px-2' : 'px-3'}`}>
-          {rows(accountGroup?.items ?? [])}
-
           <AccountMenu
             user={user}
+            onSettings={onSettings}
             onLogout={onLogout}
             width={collapsed ? 220 : 232}
             trigger={({ open: menuOpen, toggle }) =>
@@ -378,6 +375,10 @@ export default function HomeLayout() {
         pathname={location.pathname}
         onNavigate={go}
         user={user}
+        onSettings={() => {
+          setSidebarOpen(false)
+          navigate('/settings')
+        }}
         onLogout={logout}
         isAdmin={isAdmin}
         open={sidebarOpen}

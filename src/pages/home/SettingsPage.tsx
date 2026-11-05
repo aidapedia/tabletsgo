@@ -2,7 +2,6 @@ import { useParams } from 'react-router-dom'
 import { AppearanceSetting, DensitySetting, DataSetting } from '@/features/settings'
 import { useAuth, ProfileSetting, PasswordSetting, SignInMethods, TimeZoneSetting } from '@/features/auth'
 import { KeymapSetting } from '@/features/keymap'
-import { UpdatePanel } from '@/features/system-update'
 import { Narrow, SubHead, TabbedSection } from './ui'
 import useTabRoute from './useTabRoute'
 
@@ -12,8 +11,8 @@ import useTabRoute from './useTabRoute'
  * Both halves of the app share this page, but not every tab applies to both
  * audiences (see AUTH MODEL): an instance admin holds no workspace membership
  * and never opens a database console, so neither Data (direct execute) nor
- * Keymap (console shortcuts) has anything to act on; conversely
- * only an admin can apply an update, so a workspace user gets no Updates tab.
+ * Keymap (console shortcuts) has anything to act on. Updates aren't here at all:
+ * they're the instance's, not a person's (see `AdminUpdatesPage`).
  * Profile, Security and Preferences are identical for everyone — they act on the
  * caller's own account and browser, not on a role.
  */
@@ -88,20 +87,6 @@ export default function SettingsPage() {
             ),
           },
         ]),
-    ...(isSystemAdmin
-      ? [
-          {
-            id: 'updates',
-            label: 'Updates',
-            body: (
-              <Narrow>
-                <SubHead title="Updates" desc="Check for new Tabletsgo releases and update safely." />
-                <UpdatePanel />
-              </Narrow>
-            ),
-          },
-        ]
-      : []),
   ]
 
   const { active, onTab } = useTabRoute('/settings', tabs, sub)

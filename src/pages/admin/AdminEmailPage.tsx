@@ -12,7 +12,7 @@ import { Narrow, Section } from '@/pages/home/ui'
 export default function AdminEmailPage() {
   return (
     <Section
-      title="Email Server"
+      title="Email"
       desc="The mail server this instance sends from. Every workspace uses it for invites, password resets and notifications."
     >
       {/* The page spans the same container as every other section; only the

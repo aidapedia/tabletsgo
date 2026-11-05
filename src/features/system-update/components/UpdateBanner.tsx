@@ -10,7 +10,7 @@ import UpdateWizard from './UpdateWizard'
 // newer version ships (remembered per-version).
 //
 // Instance admins only — updating is an instance-wide call they alone can make,
-// which is also why Settings has no Updates tab for a workspace user.
+// which is also why Updates lives under /admin.
 export default function UpdateBanner() {
   const { user } = useAuth()
   const { info, dismissed, dismiss } = useUpdate()

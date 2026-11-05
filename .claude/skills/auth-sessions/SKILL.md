@@ -115,7 +115,7 @@ blocked account can't be probed, and a correct password doesn't bypass the block
 Registration is the `registration` module: it appears in the setup wizard and
 Admin → Modules like any other, but it is `offByDefault`, because an upgrade must
 not start accepting strangers. The apps live in `app_settings` under
-`sign_in_providers`, set up in Admin → Sign-in Methods. All of it is instance-wide: a
+`sign_in_providers`, set up in Admin → Authentication. All of it is instance-wide: a
 workspace has no sign-in settings, and joining one still takes an invite.
 
 | Module | Owns |
@@ -237,7 +237,7 @@ workspace**.
 
 | Layer | Where it lives | Who edits it |
 | --- | --- | --- |
-| Admin config | `app_settings` key `'smtp'` (`server/app-settings.js`) | an instance admin (`/api/admin/smtp`, Administration → Email Server) |
+| Admin config | `app_settings` key `'smtp'` (`server/app-settings.js`) | an instance admin (`/api/admin/smtp`, Administration → Email) |
 | Env | `SMTP_*` | whoever deploys the container |
 
 `smtpConfig()` in `server/mail.js` is the only resolver: the admin config if it

@@ -2,25 +2,27 @@ import type { ReactNode } from 'react'
 import Popover from '@/shared/ui/overlay/Popover'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
 import AccountTile from '@/shared/ui/AccountTile'
-import { LogoutIcon } from '@/shared/ui/icons'
+import { LogoutIcon, SettingsIcon } from '@/shared/ui/icons'
 
 /**
- * The "who am I / sign out" popover, shared by the two rails — the home
- * sidebar's foot and the console `IconRail`'s. The *contents* are what's shared
- * (the tile, name, email and sign-out); the trigger is not, because each rail
- * presents the account differently: a bare tile at 56px, a card with a kebab
- * when the sidebar is expanded, a tile with a presence dot in the console.
- * So `trigger` is passed straight through to `Popover`.
+ * The "who am I / settings / sign out" popover, shared by the two rails — the
+ * home sidebar's foot and the console `IconRail`'s. The *contents* are what's
+ * shared (the tile, name, email, settings and sign-out); the trigger is not,
+ * because each rail presents the account differently: a bare tile at 56px, a
+ * card with a kebab when the sidebar is expanded, a tile with a presence dot in
+ * the console. So `trigger` is passed straight through to `Popover`.
  *
  * Opens upward, since in both callers it sits at the bottom of its rail.
  */
 export default function AccountMenu({
   user,
+  onSettings,
   onLogout,
   width = 220,
   trigger,
 }: {
   user?: { name?: string; email?: string }
+  onSettings?: () => void
   onLogout?: () => void
   width?: number
   trigger: (state: { open: boolean; toggle: () => void }) => ReactNode
@@ -37,6 +39,15 @@ export default function AccountMenu({
             </span>
           </div>
           <div className="my-1 h-px bg-edge" />
+          <MenuItem
+            onClick={() => {
+              close()
+              onSettings?.()
+            }}
+          >
+            <SettingsIcon width={14} height={14} />
+            <span className="flex-1">Setting</span>
+          </MenuItem>
           <MenuItem
             danger
             onClick={() => {

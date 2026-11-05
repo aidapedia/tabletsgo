@@ -36,6 +36,7 @@ const AdminUsersPage = lazy(() => import('@/pages/admin/AdminUsersPage'))
 const AdminEmailPage = lazy(() => import('@/pages/admin/AdminEmailPage'))
 const AdminModulesPage = lazy(() => import('@/pages/admin/AdminModulesPage'))
 const AdminSignInPage = lazy(() => import('@/pages/admin/AdminSignInPage'))
+const AdminUpdatesPage = lazy(() => import('@/pages/admin/AdminUpdatesPage'))
 
 const routeFallback = <div role="status" className="p-8 text-center text-sm text-ink-dim">Loading…</div>
 
@@ -121,6 +122,7 @@ export function AppRoutes() {
         <Route path="/admin/email" element={<AdminEmailPage />} />
         <Route path="/admin/sign-in" element={<AdminSignInPage />} />
         <Route path="/admin/modules" element={<AdminModulesPage />} />
+        <Route path="/admin/updates" element={<AdminUpdatesPage />} />
       </Route>
       {/* Home shell — each sidebar section is its own page rendered into the layout's <Outlet/>. */}
       <Route
@@ -202,7 +204,7 @@ export function AppRoutes() {
           </RequireWorkspaceUser>
         }
       />
-      {/* Personal settings (theme, local data, updates) belong to the account,
+      {/* Personal settings (theme, local data) belong to the account,
           not to a workspace — so both halves of the app get them. */}
       <Route
         element={

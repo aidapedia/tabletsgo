@@ -20,6 +20,7 @@ export default function IconRail({
   extraPanels = [],
   onPanel,
   onHome,
+  onSettings,
   onLogout,
   // What the browser panel holds — tables for the SQL engines, keys for Redis.
   browserIcon: BrowserIcon = DatabaseIcon,
@@ -64,6 +65,7 @@ export default function IconRail({
         <RailItem icon={HomeIcon} label="Home" onClick={onHome} />
         <AccountMenu
           user={user}
+          onSettings={onSettings}
           onLogout={onLogout}
           trigger={({ open, toggle }) => (
             <Tooltip label={user?.name || 'Profile'} placement="right">

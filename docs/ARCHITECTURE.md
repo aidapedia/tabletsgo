@@ -401,7 +401,7 @@ src/
 │       │                         #   apply → verify). Compares running (version, sha) to the latest GitHub
 │       │                         #   Release; docker-socket-mounted ⇒ one-click self-update, else a manual
 │       │                         #   `docker compose pull` command. Admin-only apply.
-│       ├── components/           #   UpdateBanner (dismissible home-shell banner), UpdatePanel (Settings >
+│       ├── components/           #   UpdateBanner (dismissible home-shell banner), UpdatePanel (Admin → Settings >
 │       │                         #     Updates: version + changelog + re-check), UpdateWizard (guided flow)
 │       ├── stores/               #   UpdateContext (useUpdate: info + check + per-version dismiss)
 │       └── lib/                  #   api (/api/system/* client + version polling), types
@@ -414,7 +414,7 @@ src/
     │                             #   as home/): AdminWorkspacesPage (/admin), AdminWorkspaceDetailPage
     │                             #   (/admin/workspaces/:id/:tab), AdminUsersPage
     │                             #   (/admin/users) + AdminEmailPage (/admin/email — the instance-wide
-    │                             #   SMTP config) + AdminSignInPage (/admin/sign-in) + AdminModulesPage (/admin/modules) — no tabs, the sidebar switches. Only reachable
+    │                             #   SMTP config) + AdminSignInPage (/admin/sign-in) + AdminModulesPage (/admin/modules) + AdminUpdatesPage (/admin/updates) — no tabs, the sidebar switches. Only reachable
     │                             #   with the system role 'admin'; AppRoutes' RequireSystemAdmin /
     │                             #   RequireWorkspaceUser send each audience to the other's home
     ├── console/                  # WorkspacePage — the route /connection/:id. Thin: it reads the :id and
@@ -503,9 +503,8 @@ src/
         │                         #   node's owner / grants / your-access on the right. The selection is
         │                         #   in the URL, so a refresh keeps it and a link lands on it
         ├── WorkspaceSettingsPage # /workspace → General / Config / Member tabs
-        └── SettingsPage          # /settings → Account / Theme / Data / Keymap / Updates tabs (Account
-                                  #   renders features/auth's ProfileSetting + PasswordSetting; Updates
-                                  #   renders UpdatePanel)
+        └── SettingsPage          # /settings → Account / Theme / Data / Keymap tabs (Account
+                                  #   renders features/auth's ProfileSetting + PasswordSetting)
 ```
 
 Note: `features/workspaces` (plural) is the org/tenant layer (workspaces, members,

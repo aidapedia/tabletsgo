@@ -123,7 +123,7 @@ Workspace access is permission‑based, not hardcoded: every route asks for a ca
 
 ## Email (SMTP)
 
-One mail server for the whole instance, configured by an admin under **Administration → Email Server** — no redeploy to change it. It sends invites, password resets and backup notifications for every workspace; workspace owners don't configure mail (they just see which server is in effect). The `SMTP_*` env vars remain the fallback underneath, so an env‑configured instance keeps working and the form pre‑fills from them. Test‑send from the same screen; the password is encrypted at rest and never sent back.
+One mail server for the whole instance, configured by an admin under **Administration → Email** — no redeploy to change it. It sends invites, password resets and backup notifications for every workspace; workspace owners don't configure mail (they just see which server is in effect). The `SMTP_*` env vars remain the fallback underneath, so an env‑configured instance keeps working and the form pre‑fills from them. Test‑send from the same screen; the password is encrypted at rest and never sent back.
 
 ## Auth & security
 
