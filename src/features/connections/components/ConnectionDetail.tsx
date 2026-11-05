@@ -114,7 +114,7 @@ function DetailRow({ label, value }: { label: string; value?: string }) {
 // Full-page connection detail: Data Connection / Access / Backup tabs, each laid
 // out as a main column + a context sidebar. The tab is controlled by the page
 // (it lives in the URL as `/connections/:id/:tab`), so a tab is linkable.
-export default function ConnectionDetail({ conn, onBack, onOpen, onEdit, onDelete, onExport, onRefresh, connecting, tab = 'data', onTab }: any) {
+export default function ConnectionDetail({ conn, onOpen, onEdit, onDelete, onExport, onRefresh, connecting, tab = 'data', onTab }: any) {
   const toast = useToast()
   const { connections } = useConnections()
   const { isEnabled } = useModules()
@@ -171,7 +171,7 @@ export default function ConnectionDetail({ conn, onBack, onOpen, onEdit, onDelet
   return (
     <div className="w-full">
       <PageHeader
-        crumbs={[{ label: 'Connections', onClick: onBack }, { label: conn.name }]}
+        crumbs={[{ label: conn.name }]}
         media={<DbLogo type={conn.type} className="h-12 w-12 rounded-[12px]" />}
         title={conn.name}
         meta={<StatusBadge status={status} />}

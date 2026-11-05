@@ -75,7 +75,7 @@ export default function AdminWorkspaceDetail({
   return (
     <div className="w-full">
       <PageHeader
-        crumbs={[{ label: 'Workspaces', onClick: onBack }, { label: workspace.name }]}
+        crumbs={[{ label: workspace.name }]}
         media={
           <span className="flex h-12 w-12 items-center justify-center rounded-card bg-green/15 text-[19px] font-bold text-green-bright">
             {workspace.name[0]?.toUpperCase()}

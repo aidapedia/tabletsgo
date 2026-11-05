@@ -3,11 +3,13 @@ import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/features/auth'
 import { WorkspaceSwitcher } from '@/features/workspaces'
 import { UpdateBanner } from '@/features/system-update'
+import Breadcrumb from '@/shared/ui/navigation/Breadcrumb'
 import NavItem from '@/shared/ui/navigation/NavItem'
 import RailItem, { RailDivider } from '@/shared/ui/navigation/RailItem'
 import Tooltip from '@/shared/ui/overlay/Tooltip'
 import AccountTile from '@/shared/ui/AccountTile'
 import AccountMenu from '@/shared/ui/AccountMenu'
+import { PageTrailProvider, usePageCrumbs } from '@/shared/ui/page/PageTrail'
 import IconButton from '@/shared/ui/buttons/IconButton'
 import { BellIcon, BuildingIcon, CloudIcon, DatabaseIcon, DiagramIcon, GridIcon, HomeIcon, KeyIcon, Logo, MailIcon, MenuIcon, MoreHorizontalIcon, PanelLeftIcon, SettingsIcon, ShieldIcon, TerminalIcon, TreeIcon, UsersIcon, WorkflowIcon } from '@/shared/ui/icons'
 
@@ -99,6 +101,30 @@ const ADMIN_NAV = {
 // it, because the other admin sections live there too.
 const isActive = (pathname: string, { path, exact, also }: { path: string; exact?: boolean; also?: string }) =>
   (exact ? pathname === path : pathname === path || pathname.startsWith(`${path}/`)) || (!!also && pathname.startsWith(`${also}/`))
+
+// The trail's root. A workspace user's is the pinned Home row; an admin's pinned
+// row is one section among several, and `Workspaces / Users` would file Users
+// under it, so the admin area gets a root of its own.
+const ADMIN_ROOT = { label: 'Administration', path: '/admin' }
+
+// Root → section come from the address, so every page has them without asking;
+// anything deeper is the page's to name (see `PageTrail`).
+function PageTrail({ pathname, isAdmin }: { pathname: string; isAdmin: boolean }) {
+  const navigate = useNavigate()
+  const crumbs = usePageCrumbs()
+  const nav = isAdmin ? ADMIN_NAV : NAV
+  const root = isAdmin ? ADMIN_ROOT : nav.pinned[0]
+  const section = [...nav.pinned, ...nav.groups.flatMap((g) => g.items)].find((item) => isActive(pathname, item))
+  const places = section && section !== root ? [root, section] : [root]
+
+  return (
+    <Breadcrumb
+      items={[...places.map(({ label, path }) => ({ label, onClick: () => navigate(path) })), ...crumbs]}
+      size="sm"
+      className="mb-3"
+    />
+  )
+}
 
 function Sidebar({ pathname, onNavigate, user, onLogout, open, onClose, isAdmin, collapsed, onToggleCollapse }: any) {
   const nav = isAdmin ? ADMIN_NAV : NAV
@@ -377,7 +403,10 @@ export default function HomeLayout() {
         <main className="min-h-0 flex-1 overflow-y-auto px-8 py-10 max-[600px]:px-4 max-[600px]:py-7">
           <div className="mx-auto w-full max-w-[1280px]">
             <UpdateBanner />
-            <Outlet />
+            <PageTrailProvider>
+              <PageTrail pathname={location.pathname} isAdmin={isAdmin} />
+              <Outlet />
+            </PageTrailProvider>
           </div>
         </main>
       </div>

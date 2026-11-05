@@ -33,8 +33,9 @@ src/
 │   │   ├── form/                 #   Form/FormField/Label, Input/Textarea, PasswordInput, Select, Checkbox,
 │   │   │                         #     CheckboxRow, SearchInput, Toggle, NumberStepper, Segmented
 │   │   ├── navigation/           #   NavItem, Tab, MenuItem, Breadcrumb, RailItem
-│   │   ├── page/                 #   the page shell every full-page view shares: PageHeader (back link +
-│   │   │                         #     media/title/meta + actions), PageTabs (the tab bar AND the active
+│   │   ├── page/                 #   the page shell every full-page view shares: PageTrail (how a page adds
+│   │   │                         #     to the trail HomeLayout draws), PageHeader (media/title/meta +
+│   │   │                         #     actions), PageTabs (the tab bar AND the active
 │   │   │                         #     tab's body, so spacing can't drift), Narrow (a capped content
 │   │   │                         #     column — pages never cap themselves, HomeLayout owns the width)
 │   │   ├── overlay/              #   Popover, Tooltip, ContextMenu

@@ -62,7 +62,6 @@ export default function ConnectionFormPage() {
       tab={tab || 'general'}
       onTab={(next) => navigate(`/connections/${id}/edit/${next}`, { replace: true })}
       onClose={backTo}
-      onList={() => navigate('/connections')}
       onSave={handleSave}
     />
   )
