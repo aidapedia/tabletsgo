@@ -6,7 +6,7 @@ description: The engine-agnostic database layer in server/db/ — the driver con
 # The DB layer
 
 `server/db/index.js` defines one vocabulary; `sqlite.js` / `postgres.js` /
-`redis.js` each adapt a single engine to it. **Adding an engine is one driver
+`mysql.js` / `redis.js` each adapt a single engine to it. **Adding an engine is one driver
 file plus one entry in `DRIVERS`** — no caller changes.
 
 **No route branches on `conn.type`.** The db layer answers for every engine. If
@@ -228,6 +228,34 @@ Redis deliberately **reuses the same field names** as PostgreSQL
 branch; only `tls` (`'' | 'require' | 'insecure'`) is its own, standing in for
 `sslmode`. Follow this when adding an engine: reuse an existing field name unless
 the concept genuinely has no counterpart.
+
+## MySQL — a SQL engine that spells things its own way
+
+`server/db/mysql.js`. Everything the UI or the server *writes* for a database is
+quoted through the engine: `db.quoteFor(conn)` / `db.literalFor(conn)` on the
+server, `quoteIdent` / `quoteString` from `src/shared/lib/sqlDialect.ts` in the
+frontend (the schema designer's MySQL-only statements live in
+`features/schema-designer/lib/ddl.ts`).
+
+- **`"x"` is a string, and a backslash escapes.** Never build SQL with a literal
+  `"` or with `''` doubling alone — the first is a wrong name, the second an
+  injection (`\'` closes the string). Don't "fix" either with `ANSI_QUOTES` /
+  `NO_BACKSLASH_ESCAPES`: that changes what people's own queries and every
+  mysqldump script mean.
+- **A pooled connection carries session state.** `USE`, `SET`, `BEGIN`, `LOCK`
+  and temporary tables run on a connection that is destroyed afterwards, never
+  returned to the pool — a stray `USE` would aim the next request elsewhere.
+- **No schemas.** A MySQL schema is a database; `namespaces` answers `schemas: []`
+  and the console's schema picker hides.
+- **A column-level `REFERENCES` is parsed and silently ignored.** Foreign keys are
+  table-level lines or their own `ALTER … ADD CONSTRAINT`. A column is changed
+  with `MODIFY COLUMN`, which replaces the whole definition — `getColumns`'s
+  `extra` (AUTO_INCREMENT, ON UPDATE, COMMENT) is what keeps it intact.
+- **DDL commits implicitly**, so a script's transaction covers its data only.
+- **Backups** use `mysqldump`/`mysql`. The image ships Debian's MariaDB build of
+  them, so TLS flags go through `--loose-` (each build ignores the other's).
+- Tests: `MYSQL_TEST_URL=mysql://root:pw@127.0.0.1:3306/scratch npm test` runs
+  `tests/mysql-driver.test.js` against a real server (it owns that database).
 
 ## Adding a new engine — checklist
 

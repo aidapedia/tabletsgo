@@ -410,8 +410,8 @@ tags:
 
       | Module | Setting | Default | Notes |
       | --- | --- | --- | --- |
-      | postgresql, sqlite | `tableRowLimit` | `50000` (1–1,000,000) | The most rows opening a table fetches — enforced by `GET /table/:table`. |
-      | postgresql, sqlite, redis, kafka | `queryTimeoutSec` | `30` (1–3600) | How long the console waits before giving up. Client-side: the browser stops waiting; a statement already running may still finish. |
+      | postgresql, mysql, sqlite | `tableRowLimit` | `50000` (1–1,000,000) | The most rows opening a table fetches — enforced by `GET /table/:table`. |
+      | postgresql, mysql, sqlite, redis, kafka | `queryTimeoutSec` | `30` (1–3600) | How long the console waits before giving up. Client-side: the browser stops waiting; a statement already running may still finish. |
       | kafka | `readMaxMessages` / `readMaxBytes` / `readTimeoutMs` | `500` / 16 MiB / `8000` ms | Server-side caps on one read. These replaced the `KAFKA_READ_*` env vars, which are no longer read. |
 
       These replaced the per-browser "Table row limit" and "Query timeout" in
@@ -688,7 +688,7 @@ tags:
       </details>
   - name: Schema & data browsing
     description: |-
-      > All routes below accept optional `?database=` and `?schema=` query params > (PostgreSQL). SQLite ignores them.
+      > All routes below accept optional `?database=` and `?schema=` query params > (PostgreSQL). MySQL reads only `database` (its schemas are databases); SQLite ignores both.
 
       <details><summary>More about schema & data browsing</summary>
 
@@ -3916,6 +3916,8 @@ paths:
           (SQLite) `{ "type": "sqlite", "filepath": "./demo.db" }`
 
           (PostgreSQL) `{ "type": "postgresql", "host": "...", "port": 5432, "username": "...", "password": "...", "database": "...", "sslmode": "disable" }`
+
+          (MySQL) `{ "type": "mysql", "host": "...", "port": 3306, "username": "...", "password": "...", "database": "...", "sslmode": "require" }`
 
           (Redis) `{ "type": "redis", "host": "...", "port": 6379, "username": "...", "password": "...", "database": "0", "tls": "require" }` — or `{ "type": "redis", "uri": "redis://user:pass@host:6379/0" }`
         content:
@@ -7874,7 +7876,8 @@ paths:
       summary: Restore a backup version
       description: |-
         Download a past backup artifact and overwrite a connection's live data in
-        place (sqlite: atomic file replace; postgresql: `pg_restore --clean --if-exists`).
+        place (sqlite: atomic file replace; postgresql: `pg_restore --clean --if-exists`;
+        mysql: the dump replayed with `mysql`, which drops and recreates each table it holds).
         Defaults to overwriting the source connection (`:id`); pass
         `targetConnectionId` to restore into any **other** connection instead, as long
         as it's in the same workspace and the same database type. If the matched

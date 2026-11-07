@@ -6,8 +6,8 @@
  * `{ ok: false }`. The split follows the rule the rest of the db layer follows:
  * transport failures are engine-agnostic (a refused TCP connection is refused
  * identically for every engine) and are classified here, while the parts only
- * an engine can explain — a Postgres SQLSTATE, a Redis error reply, a SQLite
- * file error — come from that driver's optional `explainError(error, conn)`.
+ * an engine can explain — a Postgres SQLSTATE, a MySQL error code, a Redis error
+ * reply, a SQLite file error — come from that driver's optional `explainError(error, conn)`.
  * A driver never builds the whole answer; it adds only what this can't know.
  */
 
@@ -90,7 +90,7 @@ export function classifyTransport(error, conn = {}) {
     return {
       reason: 'tls',
       cause: `The TLS handshake with ${target} failed.`,
-      hint: 'Verify the certificate, or relax verification (PostgreSQL: sslmode=require; Redis: TLS "insecure") if the server uses a self-signed certificate.',
+      hint: 'Verify the certificate, or relax verification (PostgreSQL, MySQL: sslmode=require; Redis: TLS "insecure") if the server uses a self-signed certificate.',
     }
   }
   if (code === 'EACCES' || code === 'EPERM') {

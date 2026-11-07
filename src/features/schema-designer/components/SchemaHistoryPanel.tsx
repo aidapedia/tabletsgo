@@ -15,7 +15,7 @@ import MigrationInspector, { canRollbackTo, fmtTime, rollbackTitle } from './Mig
 // The dialect the read-only SQL panes highlight in. Same three-line map the
 // console and DashboardView keep — it is the driver registry's engine id spelt
 // the way CodeMirror's SQL grammar names it, not a label anyone reads.
-const DIALECT = { postgresql: 'PostgreSQL', sqlite: 'SQLite', redis: 'Redis' }
+const DIALECT = { postgresql: 'PostgreSQL', mysql: 'MySQL', sqlite: 'SQLite', redis: 'Redis' }
 
 type Migration = {
   id: string

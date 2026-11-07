@@ -364,67 +364,20 @@ export const LogoutIcon = (props) => (
   </svg>
 )
 
-// Brand logos for connection types (stylized, self-contained tiles).
-export const PostgresLogo = (props) => (
-  <svg viewBox="0 0 48 48" fill="none" {...props}>
-    <rect width="48" height="48" rx="11" fill="#31648C" />
-    <g fill="#fff">
-      <ellipse cx="17" cy="18.5" rx="5" ry="6" />
-      <ellipse cx="31" cy="18.5" rx="5" ry="6" />
-      <circle cx="24" cy="22" r="9" />
-      <path d="M24 30c0 4-1.4 6.6-4.4 8.3-1 .6-2.1-.7-1.4-1.6C20 34 21 32.2 21 29.6z" />
-    </g>
-    <circle cx="21" cy="21" r="1.5" fill="#31648C" />
-    <circle cx="27" cy="21" r="1.5" fill="#31648C" />
-  </svg>
-)
+// The engines' real marks (public/logos/<type>.svg), each on a white tile because
+// several (Kafka's, MariaDB's, SQLite's) are dark and would vanish on the page. An
+// <img>, not inline SVG, so a list of connections doesn't repeat kilobytes of paths.
+const DB_LOGOS = new Set(['postgresql', 'mysql', 'mariadb', 'mongodb', 'sqlite', 'redis', 'kafka'])
 
-export const SqliteLogo = (props) => (
-  <svg viewBox="0 0 48 48" fill="none" {...props}>
-    <rect width="48" height="48" rx="11" fill="#0B5A82" />
-    <path
-      d="M33 11c-10 1.5-18 9-19 19.4-.1 1.7.3 3.3 1.1 4.7l2.4-2.6C18 24.5 23.5 18 33 15.2z"
-      fill="#fff"
-    />
-    <path d="M30.5 13.5c-6.2 3.2-10.5 8.4-12.4 14.6" stroke="#0B5A82" strokeWidth="1.3" fill="none" />
-    <path d="M15.5 35.5 12 39" stroke="#fff" strokeWidth="2.4" strokeLinecap="round" />
-  </svg>
-)
-
-export const RedisLogo = (props) => (
-  <svg viewBox="0 0 48 48" fill="none" {...props}>
-    <rect width="48" height="48" rx="11" fill="#C6302B" />
-    <g fill="#fff">
-      <path d="M24 10.5 38 16l-14 5.5L10 16z" />
-      <path d="m10 21.5 14 5.5 14-5.5V25l-14 5.5L10 25z" opacity=".75" />
-      <path d="m10 30 14 5.5L38 30v3.5L24 39l-14-5.5z" opacity=".5" />
-    </g>
-  </svg>
-)
-
-// A generic event-log mark (brokers joined in a cluster), not the Apache logo.
-export const KafkaLogo = (props) => (
-  <svg viewBox="0 0 48 48" fill="none" {...props}>
-    <rect width="48" height="48" rx="11" fill="#1F1F1F" />
-    <g stroke="#fff" strokeWidth="2.2" strokeLinecap="round">
-      <path d="M24 15v5.5M24 27.5V33M27.3 22.2l5.4-3.2M27.3 25.8l5.4 3.2" />
-    </g>
-    <g stroke="#fff" strokeWidth="2.2" fill="none">
-      <circle cx="24" cy="11.5" r="3.5" />
-      <circle cx="24" cy="24" r="4.2" />
-      <circle cx="24" cy="36.5" r="3.5" />
-      <circle cx="35.5" cy="17.5" r="3" />
-      <circle cx="35.5" cy="30.5" r="3" />
-    </g>
-  </svg>
-)
-
-export function DbLogo({ type, ...props }) {
-  if (type === 'postgresql') return <PostgresLogo {...props} />
-  if (type === 'sqlite') return <SqliteLogo {...props} />
-  if (type === 'redis') return <RedisLogo {...props} />
-  if (type === 'kafka') return <KafkaLogo {...props} />
-  return <DatabaseIcon {...props} />
+export function DbLogo({ type, className = '', ...props }) {
+  if (!DB_LOGOS.has(type)) return <DatabaseIcon className={className} {...props} />
+  return (
+    <span className={`inline-flex items-center justify-center rounded-[22%] bg-white ${className}`} {...props}>
+      {/* Sized against the tile, not padded: percentage padding is measured
+          against the containing block, so in a table cell it swallows the mark. */}
+      <img src={`${import.meta.env.BASE_URL}logos/${type}.svg`} alt="" className="block h-[76%] w-[76%] object-contain" />
+    </span>
+  )
 }
 
 // Stream icons — a topic row (a log of lines) and producing a message.

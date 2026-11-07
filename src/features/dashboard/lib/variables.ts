@@ -2,6 +2,7 @@
 // options, and substitute `{{name}}` placeholders into widget SQL.
 
 import { runQuery } from '@/shared/api/database'
+import { quoteString, type SqlDialect } from '@/shared/lib/sqlDialect'
 import type { DashboardVariable, VariableValues } from '../types'
 import { firstRows, type QueryResult } from './queryData'
 
@@ -52,11 +53,10 @@ export function isVariableSet(value: string | string[] | undefined): boolean {
   return value !== undefined && value !== ''
 }
 
-// Render one selected value as a SQL literal: bare for numbers, single-quoted
-// (with '' escaping) otherwise. Matches the dialect-agnostic literal rules used
-// across the roadmap dialects (SQLite/PostgreSQL/…).
-function sqlLiteral(v: string): string {
-  return /^-?\d+(\.\d+)?$/.test(v.trim()) ? v.trim() : `'${v.replace(/'/g, "''")}'`
+// Render one selected value as a SQL literal: bare for numbers, a quoted string
+// in the engine's own escaping otherwise.
+function sqlLiteral(v: string, dialect?: SqlDialect): string {
+  return /^-?\d+(\.\d+)?$/.test(v.trim()) ? v.trim() : quoteString(v, dialect)
 }
 
 /**
@@ -65,11 +65,11 @@ function sqlLiteral(v: string): string {
  * array becomes a comma-separated SQL list of literals for use inside `IN (...)` —
  * e.g. `WHERE status IN ({{status}})` → `IN ('active','pending')`.
  */
-export function substituteVariables(sql: string, values: VariableValues): string {
+export function substituteVariables(sql: string, values: VariableValues, dialect?: SqlDialect): string {
   return sql.replace(/\{\{\s*([\w-]+)\s*\}\}/g, (match, name) => {
     if (!(name in values)) return match
     const v = values[name]
-    return Array.isArray(v) ? v.map(sqlLiteral).join(',') : v
+    return Array.isArray(v) ? v.map((x) => sqlLiteral(x, dialect)).join(',') : v
   })
 }
 

@@ -1,3 +1,4 @@
+import { supportsBackup } from '@/shared/config/databaseTypes'
 import { useEffect, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { useConnections } from '../stores/ConnectionsContext'
@@ -20,6 +21,7 @@ import { FormField } from '@/shared/ui/form/Form'
 const DB_TYPES = [
   { id: 'sqlite', label: 'SQLite', desc: 'A database file on this server', defaultPort: '' },
   { id: 'postgresql', label: 'PostgreSQL', desc: 'Relational, over the network', defaultPort: '5432' },
+  { id: 'mysql', label: 'MySQL', desc: 'Relational, over the network', defaultPort: '3306' },
   { id: 'redis', label: 'Redis', desc: 'Key-value, over the network', defaultPort: '6379' },
   { id: 'kafka', label: 'Kafka', desc: 'Event streaming, over the network', defaultPort: '9092' },
 ]
@@ -79,6 +81,8 @@ const CLIENT_CERT_FORMATS = [
   { value: 'pkcs12', label: 'PKCS#12 file (.p12 / .pfx)' },
 ]
 const SSL_MODES = ['disable', 'allow', 'prefer', 'require', 'verify-full']
+// The driver either encrypts or doesn't: MySQL has no negotiating middle here.
+const MYSQL_SSL_MODES = ['disable', 'require', 'verify-full']
 // Redis's equivalent of sslmode — plain TCP, TLS, or TLS without cert checks.
 const TLS_MODES = [
   { value: '', label: 'Disabled (plain TCP)' },
@@ -112,6 +116,10 @@ const blankPostgres = {
   folder: '',
   tags: [],
 }
+
+// MySQL's record is Postgres's: same fields, same `sslmode`, so again nothing
+// downstream needs to know.
+const blankMysql = { ...blankPostgres, type: 'mysql', port: '3306', username: 'root' }
 
 // Redis reuses the same field names as Postgres — host/port/username/password —
 // so nothing downstream (encryption, export/import, the detail view) needs a
@@ -177,7 +185,7 @@ const blankKafka = {
 }
 
 const blankFor = (type) =>
-  type === 'postgresql' ? blankPostgres : type === 'redis' ? blankRedis : type === 'kafka' ? blankKafka : blankSqlite
+  type === 'postgresql' ? blankPostgres : type === 'mysql' ? blankMysql : type === 'redis' ? blankRedis : type === 'kafka' ? blankKafka : blankSqlite
 
 // The bootstrap list as typed (commas, spaces or newlines; an optional
 // kafka:// prefix) → "host:port,host:port".
@@ -194,13 +202,21 @@ function normalizeBrokers(text) {
 // a grid (see `.form-field` in index.css).
 const fieldRow = 'mb-4 grid grid-cols-[2fr_1fr] gap-3.5 max-[720px]:grid-cols-1'
 
-// Parse a postgres:// or redis:// URI into structured fields. Returns null if it
+// The URI scheme each network engine's form accepts, and its default port.
+const URI_SCHEMES = {
+  postgresql: { protocol: /^postgres(ql)?:$/, port: '5432' },
+  mysql: { protocol: /^mysql2?:$/, port: '3306' },
+  redis: { protocol: /^rediss?:$/, port: '6379' },
+}
+
+// Parse a postgres://, mysql:// or redis:// URI into structured fields. Returns null if it
 // doesn't parse (or isn't the URI scheme for `type`).
 function parseUri(uri, type) {
   try {
     const u = new URL(uri)
-    const isRedis = /^rediss?:$/.test(u.protocol)
-    if (type === 'redis' ? !isRedis : !/^postgres(ql)?:$/.test(u.protocol)) return null
+    const scheme = URI_SCHEMES[type]
+    if (!scheme?.protocol.test(u.protocol)) return null
+    const isRedis = type === 'redis'
     const q = u.searchParams
     const extra: any = {}
     if (q.get('name')) extra.name = q.get('name')
@@ -217,7 +233,7 @@ function parseUri(uri, type) {
     }
     return {
       host: u.hostname || '',
-      port: u.port || (isRedis ? '6379' : '5432'),
+      port: u.port || scheme.port,
       username: decodeURIComponent(u.username || ''),
       password: decodeURIComponent(u.password || ''),
       ...extra,
@@ -306,6 +322,7 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
   const isSqlite = form.type === 'sqlite'
   const isRedis = form.type === 'redis'
   const isKafka = form.type === 'kafka'
+  const isMysql = form.type === 'mysql'
   const mechanism = isKafka && (form.auth || 'password') === 'password' ? form.saslMechanism || 'scram-sha-512' : null
   const login = SASL_LOGIN[mechanism] || null
   const viaSsh = !isSqlite && via === 'ssh'
@@ -320,7 +337,7 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
   // Only the dump-based engines can be backed up; Redis has no SQL export. And
   // only while the Backup module is on.
   const { isEnabled } = useModules()
-  const backupSupported = isEdit && isEnabled('backup') && (form.type === 'sqlite' || form.type === 'postgresql')
+  const backupSupported = isEdit && isEnabled('backup') && supportsBackup(form.type)
   const tabs = [
     { id: 'general', label: 'General' },
     ...(backupSupported ? [{ id: 'backup', label: 'Backup' }] : []),
@@ -628,7 +645,7 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
                   <Input
                     className="font-mono"
                     type="text"
-                    placeholder={isRedis ? 'redis://user:password@host:6379/0' : 'postgresql://user:password@host:5432/database'}
+                    placeholder={isRedis ? 'redis://user:password@host:6379/0' : isMysql ? 'mysql://user:password@host:3306/database' : 'postgresql://user:password@host:5432/database'}
                     value={form.uri || ''}
                     onChange={onUriChange}
                   />
@@ -659,7 +676,7 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
                     />
                   </FormField>
                   <FormField label="Port">
-                    <Input type="text" placeholder={isRedis ? '6379' : '5432'} value={form.port} onChange={set('port')} required />
+                    <Input type="text" placeholder={isRedis ? '6379' : isMysql ? '3306' : '5432'} value={form.port} onChange={set('port')} required />
                   </FormField>
                 </div>
 
@@ -746,7 +763,7 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
                 >
                   <Input
                     type="text"
-                    placeholder={login ? login.placeholder : isRedis ? 'default' : isKafka ? 'svc-tabletsgo' : 'postgres'}
+                    placeholder={login ? login.placeholder : isRedis ? 'default' : isKafka ? 'svc-tabletsgo' : isMysql ? 'root' : 'postgres'}
                     value={form.username}
                     onChange={set('username')}
                   />
@@ -849,7 +866,7 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
                   className={controlClass}
                   value={form.sslmode || 'disable'}
                   onChange={(v) => setVal('sslmode', v)}
-                  options={SSL_MODES.map((m) => ({ value: m, label: m }))}
+                  options={(isMysql ? MYSQL_SSL_MODES : SSL_MODES).map((m) => ({ value: m, label: m }))}
                 />
               </FormField>
             )}

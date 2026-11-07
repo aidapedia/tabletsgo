@@ -34,6 +34,7 @@ const dbFor = (conn) => openDb(conn.filepath)
 export const sqliteDriver = {
   type: 'sqlite',
   label: 'SQLite',
+  dumpExtension: 'sqlite',
   dataTypes: ['INTEGER', 'TEXT', 'REAL', 'BLOB', 'NUMERIC'],
 
   // ---- Lifecycle ----

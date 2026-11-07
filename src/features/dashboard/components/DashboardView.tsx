@@ -32,7 +32,7 @@ import WidgetCard from './WidgetCard'
 import WidgetEditor from './WidgetEditor'
 import DashboardSettings from './DashboardSettings'
 
-const DIALECT = { postgresql: 'PostgreSQL', sqlite: 'SQLite', redis: 'Redis' }
+const DIALECT = { postgresql: 'PostgreSQL', mysql: 'MySQL', sqlite: 'SQLite', redis: 'Redis' }
 
 const newWidget = (config: DashboardConfig, cell?: { x: number; y: number }): Widget => ({
   id: `w${Date.now()}`,

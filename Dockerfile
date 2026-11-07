@@ -8,13 +8,15 @@ FROM node:20-bookworm-slim
 # postgresql-client pins to PG 15, and pg_dump refuses to dump a *newer* server
 # ("aborting because of server version mismatch"), so install the current major
 # (18) from the official PostgreSQL apt repo — it dumps every older server too.
+# mysqldump/mysql back the MySQL backup/restore; Debian's default-mysql-client is
+# the MariaDB build of those tools, which also speaks to MySQL servers.
 RUN apt-get update \
   && apt-get install -y --no-install-recommends python3 make g++ curl ca-certificates gnupg openssl \
   && install -d /usr/share/postgresql-common/pgdg \
   && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
   && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" > /etc/apt/sources.list.d/pgdg.list \
   && apt-get update \
-  && apt-get install -y --no-install-recommends postgresql-client-18 libpq-dev \
+  && apt-get install -y --no-install-recommends postgresql-client-18 libpq-dev default-mysql-client \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

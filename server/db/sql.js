@@ -7,7 +7,7 @@
  */
 
 // Hidden field carrying each row's physical row id (SQLite rowid / Postgres
-// ctid) on tables that have no primary key. It rides along in the row objects
+// ctid; MySQL has none to carry) on tables that have no primary key. It rides along in the row objects
 // but never in the `columns` list, so it stays out of the grid, exports and
 // INSERTs — the console uses it to target the exact row it displayed. Matching
 // every column instead is fragile (a JSON/float/timestamp value that doesn't
@@ -15,6 +15,9 @@
 // where it rewrites all of them at once.
 export const ROW_ID_COLUMN = '__tg_rowid'
 
+// Standard SQL's identifier quoting. An engine that spells it differently exposes
+// its own `quoteIdent` — reach it through `db.quoteFor(conn)` when the statement
+// is bound for a connection.
 export const quoteIdent = (name) => `"${String(name).replace(/"/g, '""')}"`
 
 // Strip -- and /* */ comments, respecting string literals.
@@ -110,7 +113,7 @@ export function extractQueryColumns(sql) {
     scope = w >= 0 ? sql.slice(w) : ''
   }
   const where = []
-  const compRe = /(?:"([^"]+)"|\b([a-z_][\w]*))\s*(?:=|<>|!=|<=|>=|<|>|\s+(?:not\s+)?(?:in|like|between|is)\b)/gi
+  const compRe = /(?:["`]([^"`]+)["`]|\b([a-z_][\w]*))\s*(?:=|<>|!=|<=|>=|<|>|\s+(?:not\s+)?(?:in|like|between|is)\b)/gi
   let m
   while ((m = compRe.exec(scope))) {
     const name = (m[1] || m[2] || '').split('.').pop()
@@ -125,7 +128,7 @@ export function extractQueryColumns(sql) {
       const col = part
         .replace(/\b(asc|desc|nulls\s+(first|last))\b/gi, '')
         .trim()
-        .replace(/^"|"$/g, '')
+        .replace(/["`]/g, '')
         .split('.')
         .pop()
       if (col && /^[\w]+$/.test(col)) orderBy.push(col)
@@ -134,10 +137,10 @@ export function extractQueryColumns(sql) {
   return { where: [...new Set(where)], orderBy: [...new Set(orderBy)] }
 }
 
-export function buildIndexDdl(table, columns, schema) {
+export function buildIndexDdl(table, columns, schema, quote = quoteIdent) {
   const base = `idx_${table}_${columns.join('_')}`.toLowerCase().replace(/[^a-z0-9_]/g, '_').slice(0, 60)
-  const target = schema && schema !== 'public' ? `${quoteIdent(schema)}.${quoteIdent(table)}` : quoteIdent(table)
-  return `CREATE INDEX ${quoteIdent(base)} ON ${target} (${columns.map(quoteIdent).join(', ')});`
+  const target = schema && schema !== 'public' ? `${quote(schema)}.${quote(table)}` : quote(table)
+  return `CREATE INDEX ${quote(base)} ON ${target} (${columns.map(quote).join(', ')});`
 }
 
 // True when an existing index already leads with the suggestion's first
@@ -148,11 +151,11 @@ export function hasCoveringIndex(existing, columns) {
 }
 
 // Filter suggestion candidates down to real columns and dedupe.
-export function makeIndexSuggestion(table, candidates, realColumns, existingIndexes, reason, schema) {
+export function makeIndexSuggestion(table, candidates, realColumns, existingIndexes, reason, schema, quote = quoteIdent) {
   const real = new Set(realColumns.map((c) => c.name.toLowerCase()))
   const cols = candidates.filter((c) => real.has(c.toLowerCase()))
   if (!cols.length || hasCoveringIndex(existingIndexes, cols)) return null
-  return { table, columns: cols, reason, ddl: buildIndexDdl(table, cols, schema) }
+  return { table, columns: cols, reason, ddl: buildIndexDdl(table, cols, schema, quote) }
 }
 
 // Query-level suggestions shared by both dialects.
@@ -222,10 +225,11 @@ export function buildCreateTableSql(table, columns, { serial = {} } = {}) {
 }
 
 // Multi-row INSERTs for `insertRows`, sized so no statement passes `maxParams`
-// bind parameters. `placeholder(n)` spells the n-th (1-based) parameter.
-export function insertBatches(target, columns, rows, { placeholder = () => '?', maxParams = 999, maxRows = 500 } = {}) {
+// bind parameters. `placeholder(n)` spells the n-th (1-based) parameter, `quote`
+// the engine's identifiers.
+export function insertBatches(target, columns, rows, { placeholder = () => '?', maxParams = 999, maxRows = 500, quote = quoteIdent } = {}) {
   const per = Math.max(1, Math.min(maxRows, Math.floor(maxParams / Math.max(1, columns.length))))
-  const colList = columns.map(quoteIdent).join(', ')
+  const colList = columns.map(quote).join(', ')
   const batches = []
   for (let i = 0; i < rows.length; i += per) {
     const chunk = rows.slice(i, i + per)

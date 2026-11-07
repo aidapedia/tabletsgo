@@ -56,6 +56,8 @@ import {
 } from '@/features/schema-designer/lib/design'
 import { resolveRollbacks } from '@/features/schema-designer/lib/rollback'
 import { TableFolderEditPanel } from '@/features/table-folders'
+import { quoteIdent, sqlDialectOf } from '@/shared/lib/sqlDialect'
+import { fkAddSql, fkDropSql } from '../lib/ddl'
 import { columnTypeSql, FK_ACTIONS, fkEligible, normFkAction, parseColumnDefs, useColumnTypes } from '@/features/schema-designer/components/columnFields'
 import { useShortcut } from '@/features/keymap'
 import { ChevronRight, DownloadIcon, EditIcon, FocusIcon, FolderIcon, NoteIcon, PlayIcon, PlusIcon, SaveIcon, TagIcon, TrashIcon, UploadIcon, WandIcon } from '@/shared/ui/icons'
@@ -354,7 +356,7 @@ const nodeTypes = { table: TableNode, folderGroup: FolderGroupNode, note: NoteNo
 // ---- Parse staged change SQL into pending tables / columns ----
 // A staged CREATE TABLE — the source of truth for a not-yet-committed table,
 // both to draw it and to reopen it in the create-table form for editing.
-const CREATE_TABLE_RE = /^\s*CREATE TABLE\s+"([^"]+)"\s*\(([\s\S]*)\)\s*;?\s*$/i
+const CREATE_TABLE_RE = /^\s*CREATE TABLE\s+["`]([^"`]+)["`]\s*\(([\s\S]*)\)\s*;?\s*$/i
 // A staged CREATE INDEX, so reopening a staged table can hand its indexes back
 // to the form that wrote them.
 const CREATE_INDEX_RE = /^\s*CREATE\s+(?:UNIQUE\s+)?INDEX\s/i
@@ -383,7 +385,7 @@ function parsePendingForeignKeys(items) {
   for (const it of items || []) {
     const sql = it.sql || ''
     let m = sql.match(
-      /^\s*ALTER TABLE\s+"([^"]+)"\s+ADD CONSTRAINT\s+"([^"]+)"\s+FOREIGN KEY\s*\("([^"]+)"\)\s+REFERENCES\s+"([^"]+)"\s*\("([^"]+)"\)(?:\s+ON DELETE\s+(\w+(?:\s+\w+)?))?(?:\s+ON UPDATE\s+(\w+(?:\s+\w+)?))?/i
+      /^\s*ALTER TABLE\s+["`]([^"`]+)["`]\s+ADD CONSTRAINT\s+["`]([^"`]+)["`]\s+FOREIGN KEY\s*\(["`]([^"`]+)["`]\)\s+REFERENCES\s+["`]([^"`]+)["`]\s*\(["`]([^"`]+)["`]\)(?:\s+ON DELETE\s+(\w+(?:\s+\w+)?))?(?:\s+ON UPDATE\s+(\w+(?:\s+\w+)?))?/i
     )
     if (m) {
       added.push({
@@ -398,7 +400,7 @@ function parsePendingForeignKeys(items) {
       })
       continue
     }
-    m = sql.match(/^\s*ALTER TABLE\s+"([^"]+)"\s+DROP CONSTRAINT\s+"([^"]+)"/i)
+    m = sql.match(/^\s*ALTER TABLE\s+["`]([^"`]+)["`]\s+DROP (?:CONSTRAINT|FOREIGN KEY)\s+["`]([^"`]+)["`]/i)
     if (m) dropped.set(m[2], it.id)
   }
   return { added, dropped }
@@ -417,24 +419,30 @@ function parsePending(changes) {
       newTables[m[1]] = parseColumnDefs(m[2])
       continue
     }
-    m = sql.match(/^\s*DROP TABLE\s+(?:IF EXISTS\s+)?"([^"]+)"\s*;?\s*$/i)
+    m = sql.match(/^\s*DROP TABLE\s+(?:IF EXISTS\s+)?["`]([^"`]+)["`]\s*;?\s*$/i)
     if (m) {
       droppedTables.add(m[1])
       continue
     }
-    m = sql.match(/^\s*ALTER TABLE\s+"([^"]+)"\s+DROP COLUMN\s+"([^"]+)"\s*;?\s*$/i)
+    m = sql.match(/^\s*ALTER TABLE\s+["`]([^"`]+)["`]\s+DROP COLUMN\s+["`]([^"`]+)["`]\s*;?\s*$/i)
     if (m) {
       ;(droppedCols[m[1]] ||= new Set()).add(m[2])
       continue
     }
-    m = sql.match(/^\s*ALTER TABLE\s+"([^"]+)"\s+ALTER COLUMN\s+"([^"]+)"\s+TYPE\s+([^;]+?)\s*;?\s*$/i)
+    m = sql.match(/^\s*ALTER TABLE\s+["`]([^"`]+)["`]\s+ALTER COLUMN\s+["`]([^"`]+)["`]\s+TYPE\s+([^;]+?)\s*;?\s*$/i)
+    if (m) {
+      ;(retypedCols[m[1]] ||= {})[m[2]] = m[3]
+      continue
+    }
+    // MySQL says the same thing as the whole column, so stop at the first attribute.
+    m = sql.match(/^\s*ALTER TABLE\s+["`]([^"`]+)["`]\s+MODIFY COLUMN\s+["`]([^"`]+)["`]\s+([^;]+?)\s*(?:\b(?:NOT NULL|NULL|DEFAULT|AUTO_INCREMENT|ON UPDATE|COMMENT)\b.*)?;?\s*$/i)
     if (m) {
       ;(retypedCols[m[1]] ||= {})[m[2]] = m[3]
       continue
     }
     // Capture the type up to the first modifier / trailing `;` so it doesn't
     // carry the statement terminator (which broke FK type-matching + display).
-    m = sql.match(/^\s*ALTER TABLE\s+"([^"]+)"\s+ADD COLUMN\s+"([^"]+)"\s+([^;]+?)\s*(?:\b(?:NOT NULL|PRIMARY KEY|DEFAULT|REFERENCES)\b.*)?;?\s*$/i)
+    m = sql.match(/^\s*ALTER TABLE\s+["`]([^"`]+)["`]\s+ADD COLUMN\s+["`]([^"`]+)["`]\s+([^;]+?)\s*(?:\b(?:NOT NULL|PRIMARY KEY|DEFAULT|REFERENCES)\b.*)?;?\s*$/i)
     if (m) (newCols[m[1]] ||= {})[m[2]] = m[3]
   }
   return { newTables, newCols, droppedTables, droppedCols, retypedCols }
@@ -727,7 +735,8 @@ function pathWithJumps(points, verticals) {
 // never settle, because it loses every node's measured size on each pass. It
 // only bites a host that omits the prop.
 export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUpdateFolder, onDeleteFolder, onSetFolder, pending = NO_PENDING, onPendingChange, onStageItems, onSaveDraft, onUpdateDraft, draftId, layout, releaseTarget = null, releaseHint = '', onRelease, onSyncSchema, releasing = false, layoutRef }: any) {
-  const dialect = conn.type === 'postgresql' ? 'postgresql' : 'sqlite'
+  const dialect = sqlDialectOf(conn.type)
+  const q = (name) => quoteIdent(name, dialect)
   // Submit hands the staged DDL to a Changes queue, so it exists exactly when
   // the host has one — `onStageItems`. The console does; the standalone editor
   // page does not, whether or not there is a database behind the draft (a
@@ -777,7 +786,7 @@ export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUp
   const [creating, setCreating] = useState(false) // create-table panel open
   const [editingDraft, setEditingDraft] = useState(null) // staged new table being re-edited { table, columns }
   const [naming, setNaming] = useState(false) // "save as draft" name prompt open
-  const canEditFk = dialect === 'postgresql' // drag-to-connect FK editing (SQLite can't alter FKs)
+  const canEditFk = dialect !== 'sqlite' // drag-to-connect FK editing (SQLite can't alter FKs)
 
   // ---- The design: what the diagram looks like, beside what it *is* ----
   // The DDL says which tables exist; this says where they sit, what is written
@@ -910,7 +919,7 @@ export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUp
   // statements; an existing table stages a DROP TABLE for the next commit.
   const deleteTable = (table, isPending) => {
     if (isPending) onPendingChange?.(pending.filter((p) => p.table !== table))
-    else addPending([`DROP TABLE "${table}";`], table, 'delete')
+    else addPending([`DROP TABLE ${q(table)};`], table, 'delete')
   }
 
   // The still-local staged CREATE TABLE for `table`. Only items in `pending`
@@ -966,16 +975,12 @@ export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUp
   // Reconstruct a committed FK's ADD CONSTRAINT statement (optionally with
   // different actions) — used both as a drop's rollback and to re-add the
   // constraint when editing its ON DELETE / ON UPDATE actions.
-  const fkAddSql = (fk, onDelete = fk.onDelete, onUpdate = fk.onUpdate) => {
-    let s = `ALTER TABLE "${fk.table}" ADD CONSTRAINT "${fk.constraint}" FOREIGN KEY ("${fk.column}") REFERENCES "${fk.refTable}"("${fk.refColumn}")`
-    if (onDelete && onDelete !== 'NO ACTION') s += ` ON DELETE ${onDelete}`
-    if (onUpdate && onUpdate !== 'NO ACTION') s += ` ON UPDATE ${onUpdate}`
-    return s + ';'
-  }
+  const addFkSql = (fk, onDelete = fk.onDelete, onUpdate = fk.onUpdate) => fkAddSql({ ...fk, onDelete, onUpdate }, dialect)
+  const dropFkSql = (fk) => fkDropSql(fk.table, fk.constraint, dialect)
 
   // Stage dropping a committed FK constraint; rollback re-adds it unchanged.
   const deleteFk = (fk) => {
-    addPending([`ALTER TABLE "${fk.table}" DROP CONSTRAINT "${fk.constraint}";`], fk.table, 'fk-drop', fkAddSql(fk))
+    addPending([dropFkSql(fk)], fk.table, 'fk-drop', addFkSql(fk))
     setEdgePopup(null)
     setSelectedEdge(null)
     setFkEdit(null)
@@ -988,8 +993,8 @@ export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUp
   const saveFkActions = (fk) => {
     addPending(
       [
-        { sql: `ALTER TABLE "${fk.table}" DROP CONSTRAINT "${fk.constraint}";`, rollbackSql: fkAddSql(fk) },
-        { sql: fkAddSql(fk, fkEdit.onDelete, fkEdit.onUpdate), rollbackSql: `ALTER TABLE "${fk.table}" DROP CONSTRAINT "${fk.constraint}";` },
+        { sql: dropFkSql(fk), rollbackSql: addFkSql(fk) },
+        { sql: addFkSql(fk, fkEdit.onDelete, fkEdit.onUpdate), rollbackSql: dropFkSql(fk) },
       ],
       fk.table,
       'fk-edit'
@@ -1746,10 +1751,8 @@ export default function SchemaEditor({ conn, changes, folders = NO_FOLDERS, onUp
     if (!fkConfirm) return
     const { fkTable, fkCol, pkTable, pkCol, onDelete, onUpdate } = fkConfirm
     const constraint = fkConfirm.name.trim() || `${fkTable}_${fkCol}_fkey`
-    let sql = `ALTER TABLE "${fkTable}" ADD CONSTRAINT "${constraint}" FOREIGN KEY ("${fkCol}") REFERENCES "${pkTable}"("${pkCol}")`
-    if (onDelete) sql += ` ON DELETE ${onDelete}`
-    if (onUpdate) sql += ` ON UPDATE ${onUpdate}`
-    addPending([sql + ';'], fkTable, 'fk-add', `ALTER TABLE "${fkTable}" DROP CONSTRAINT "${constraint}";`)
+    const fk = { table: fkTable, constraint, column: fkCol, refTable: pkTable, refColumn: pkCol }
+    addPending([addFkSql(fk, onDelete, onUpdate)], fkTable, 'fk-add', dropFkSql(fk))
     setFkConfirm(null)
   }
 

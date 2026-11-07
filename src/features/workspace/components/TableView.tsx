@@ -6,6 +6,7 @@ import { useShortcut } from '@/features/keymap'
 import DataGrid, { cellText } from '@/shared/ui/table/DataGrid'
 import { FilterPanel, SortPanel, ColumnsPanel, makeFilter, matchFilter, sortRows, cycleSortRules } from '@/shared/ui/table/GridRules'
 import RowEditorPanel from '@/features/workspace/components/RowEditorPanel'
+import { quoteIdent, sqlDialectOf } from '@/shared/lib/sqlDialect'
 import { EXPORT_FORMATS, downloadRows, sqlValue, toCsv, toJson } from '@/features/workspace/lib/exportRows'
 import Button from '@/shared/ui/buttons/Button'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
@@ -106,6 +107,9 @@ export default function TableView({ conn, table, onChange, onOpenReference, filt
   // round-trip (JSON, floats, timestamps) and hits *every* duplicate when the
   // table has identical rows.
   const identCols = pkCols.length ? pkCols : columns
+  const dialect = sqlDialectOf(conn.type)
+  const q = (name) => quoteIdent(name, dialect)
+  const lit = (v) => sqlValue(v, dialect)
   const rowIdRef = conn.type === 'postgresql' ? 'ctid' : 'rowid'
   const hasRowId = !pkCols.length && rows.length > 0 && rows[0][ROW_ID_COLUMN] != null
   const selectable = columns.length > 0
@@ -113,8 +117,12 @@ export default function TableView({ conn, table, onChange, onOpenReference, filt
     hasRowId ? String(row[ROW_ID_COLUMN]) : identCols.map((c) => String(row[c])).join('¦')
   const rowWhere = (row) =>
     hasRowId
-      ? `${rowIdRef} = ${sqlValue(row[ROW_ID_COLUMN])}`
-      : identCols.map((c) => (row[c] == null ? `"${c}" IS NULL` : `"${c}" = ${sqlValue(row[c])}`)).join(' AND ')
+      ? `${rowIdRef} = ${lit(row[ROW_ID_COLUMN])}`
+      : identCols.map((c) => (row[c] == null ? `${q(c)} IS NULL` : `${q(c)} = ${lit(row[c])}`)).join(' AND ')
+
+  // MySQL has no physical row id to carry, but it can cap a write: identical rows
+  // are interchangeable, so a capped match still changes only as many as were picked.
+  const rowLimit = (n) => (dialect === 'mysql' && !pkCols.length ? ` LIMIT ${n}` : '')
 
   const filtered = useMemo(() => rows.filter((r) => filters.every((f) => matchFilter(r, f))), [rows, filters])
 
@@ -139,7 +147,7 @@ export default function TableView({ conn, table, onChange, onOpenReference, filt
   const activeSortCount = sort.filter((s) => s.col && s.enabled !== false).length
 
   // Exports what the grid currently shows: visible columns, filtered + sorted rows.
-  const exportAs = (format) => downloadRows(format, { columns: visibleColumns, rows: sorted, table })
+  const exportAs = (format) => downloadRows(format, { columns: visibleColumns, rows: sorted, table, dialect })
 
   const toggleColumn = (c) =>
     setHidden((h) => (h.includes(c) ? h.filter((x) => x !== c) : [...h, c]))
@@ -166,8 +174,8 @@ export default function TableView({ conn, table, onChange, onOpenReference, filt
 
   const insertSql = (values) => {
     const cols = Object.keys(values)
-    return `INSERT INTO "${table}" (${cols.map((c) => `"${c}"`).join(', ')}) VALUES (${cols
-      .map((c) => sqlValue(values[c]))
+    return `INSERT INTO ${q(table)} (${cols.map(q).join(', ')}) VALUES (${cols
+      .map((c) => lit(values[c]))
       .join(', ')})`
   }
 
@@ -176,7 +184,7 @@ export default function TableView({ conn, table, onChange, onOpenReference, filt
   // context menu, so right-clicking a row never disturbs an unrelated bulk selection.
   const stageDelete = (targets, { clear = true } = {}) => {
     if (!targets.length) return
-    const sql = `DELETE FROM "${table}" WHERE ${targets.map((r) => `(${rowWhere(r)})`).join(' OR ')}`
+    const sql = `DELETE FROM ${q(table)} WHERE ${targets.map((r) => `(${rowWhere(r)})`).join(' OR ')}${rowLimit(targets.length)}`
     onChange?.({ kind: 'delete', label: `Delete ${targets.length} row(s)`, sql, table })
     stagedInfo(`Added delete to changes — commit to apply.`)
     if (clear) clearSelection()
@@ -204,15 +212,15 @@ export default function TableView({ conn, table, onChange, onOpenReference, filt
   // (always at least the right-clicked cell), so one code path covers both a
   // single cell and a dragged block: one UPDATE per row, every selected column.
   const setCellsAs = (sel, mode) => {
-    const expr = (col) => (mode === 'default' ? colDefaults[col] : mode === 'null' ? 'NULL' : sqlValue(''))
+    const expr = (col) => (mode === 'default' ? colDefaults[col] : mode === 'null' ? 'NULL' : lit(''))
     let staged = 0
     for (const row of sel.rows) {
-      const parts = sel.columns.filter((c) => expr(c) != null).map((c) => `"${c}" = ${expr(c)}`)
+      const parts = sel.columns.filter((c) => expr(c) != null).map((c) => `${q(c)} = ${expr(c)}`)
       if (!parts.length) continue
       onChange?.({
         kind: 'update',
         label: `Set ${sel.columns.join(', ')} to ${mode.toUpperCase()}`,
-        sql: `UPDATE "${table}" SET ${parts.join(', ')} WHERE ${rowWhere(row)}`,
+        sql: `UPDATE ${q(table)} SET ${parts.join(', ')} WHERE ${rowWhere(row)}${rowLimit(1)}`,
         table,
       })
       staged++
@@ -275,9 +283,9 @@ export default function TableView({ conn, table, onChange, onOpenReference, filt
     if (!entries.length) return
     for (const { where, values } of entries) {
       const setClause = Object.entries(values)
-        .map(([c, v]) => `"${c}" = ${v === '' ? 'NULL' : sqlValue(v)}`)
+        .map(([c, v]) => `${q(c)} = ${v === '' ? 'NULL' : lit(v)}`)
         .join(', ')
-      onChange?.({ kind: 'update', label: `Update row in ${table}`, sql: `UPDATE "${table}" SET ${setClause} WHERE ${where}`, table })
+      onChange?.({ kind: 'update', label: `Update row in ${table}`, sql: `UPDATE ${q(table)} SET ${setClause} WHERE ${where}${rowLimit(1)}`, table })
     }
     setEdits({})
     stagedInfo(`Added ${entries.length} update(s) to changes — commit to apply.`)
@@ -540,11 +548,11 @@ export default function TableView({ conn, table, onChange, onOpenReference, filt
           onClose={() => setInspecting(null)}
           onStage={(diff) => {
             if (!Object.keys(diff).length) return
-            const setClause = Object.entries(diff).map(([c, v]) => `"${c}" = ${sqlValue(v)}`).join(', ')
+            const setClause = Object.entries(diff).map(([c, v]) => `${q(c)} = ${lit(v)}`).join(', ')
             onChange?.({
               kind: 'update',
               label: `Update row in ${table}`,
-              sql: `UPDATE "${table}" SET ${setClause} WHERE ${rowWhere(inspecting)}`,
+              sql: `UPDATE ${q(table)} SET ${setClause} WHERE ${rowWhere(inspecting)}${rowLimit(1)}`,
               table,
             })
             stagedInfo('Added update to changes — commit to apply.')

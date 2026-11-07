@@ -52,6 +52,7 @@ const TABLE_ROW_LIMIT = {
 
 export const MODULES = [
   { id: 'postgresql', kind: 'engine', label: 'PostgreSQL', description: 'Relational, over the network.', settings: [TABLE_ROW_LIMIT, QUERY_TIMEOUT] },
+  { id: 'mysql', kind: 'engine', label: 'MySQL', description: 'Relational, over the network.', settings: [TABLE_ROW_LIMIT, QUERY_TIMEOUT] },
   { id: 'sqlite', kind: 'engine', label: 'SQLite', description: 'A database file on this server.', settings: [TABLE_ROW_LIMIT, QUERY_TIMEOUT] },
   { id: 'redis', kind: 'engine', label: 'Redis', description: 'Key-value, over the network.', settings: [QUERY_TIMEOUT] },
   {
@@ -97,7 +98,7 @@ export const MODULES = [
     id: 'backup',
     kind: 'feature',
     label: 'Backup',
-    description: 'Scheduled dumps of PostgreSQL and SQLite connections to S3-compatible or local storage, with restore.',
+    description: 'Scheduled dumps of PostgreSQL, MySQL and SQLite connections to S3-compatible or local storage, with restore.',
   },
   {
     id: 'registration',

@@ -98,7 +98,7 @@ export function connectionUrl(c) {
     return `${c.tls ? 'rediss' : 'redis'}://${auth}${c.host || ''}${c.port ? ':' + c.port : ''}${db}`
   }
   const ssl = c.sslmode && c.sslmode !== 'disable' ? `?sslmode=${c.sslmode}` : ''
-  return `postgresql://${auth}${c.host || ''}${c.port ? ':' + c.port : ''}${db}${ssl}`
+  return `${c.type === 'mysql' ? 'mysql' : 'postgresql'}://${auth}${c.host || ''}${c.port ? ':' + c.port : ''}${db}${ssl}`
 }
 
 function DetailRow({ label, value }: { label: string; value?: string }) {

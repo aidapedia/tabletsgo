@@ -1,3 +1,4 @@
+import { sqlDialectOf } from '@/shared/lib/sqlDialect'
 import { useEffect, useMemo, useState } from 'react'
 import Button from '@/shared/ui/buttons/Button'
 import TextButton from '@/shared/ui/buttons/TextButton'
@@ -204,7 +205,7 @@ export default function WidgetEditor({
     // Same rule as WidgetCard: don't run until every referenced {{variable}} is resolved.
     if (referencedVariables(draft.query).some((n) => !isVariableSet(variableValues[n]))) return
     let alive = true
-    runQuery(conn, substituteVariables(q, variableValues), { page: { limit: 1, offset: 0 } }).then((r: QueryResult) => {
+    runQuery(conn, substituteVariables(q, variableValues, sqlDialectOf(conn?.type)), { page: { limit: 1, offset: 0 } }).then((r: QueryResult) => {
       if (alive && r?.columns?.length) setFetched(r)
     })
     return () => {
@@ -241,7 +242,7 @@ export default function WidgetEditor({
   const runPreview = async () => {
     if (!draft.query?.trim()) return
     setPreviewing(true)
-    const r = (await runQuery(conn, substituteVariables(draft.query, variableValues))) as QueryResult
+    const r = (await runQuery(conn, substituteVariables(draft.query, variableValues, sqlDialectOf(conn?.type)))) as QueryResult
     setPreview(r)
     setPreviewing(false)
   }

@@ -19,7 +19,7 @@
  */
 
 import * as db from './db/index.js'
-import { quoteIdent, splitSqlStatements, stripSqlComments } from './db/sql.js'
+import { splitSqlStatements, stripSqlComments } from './db/sql.js'
 
 export const DATA_FORMAT = 'tabletsgo.data'
 export const DATA_FORMAT_VERSION = 1
@@ -130,6 +130,7 @@ async function* jsonChunks(conn, ctx, tables, { includeSchema, limit }) {
 
 async function* sqlChunks(conn, ctx, tables, { includeSchema, limit }) {
   const literal = db.literalFor(conn)
+  const quote = db.quoteFor(conn)
   yield `-- ${DATA_FORMAT} v${DATA_FORMAT_VERSION} · ${conn.type} · ${new Date().toISOString()}\n`
   if (includeSchema) {
     for (const table of tables) {
@@ -141,9 +142,9 @@ async function* sqlChunks(conn, ctx, tables, { includeSchema, limit }) {
     yield `\n-- Data: ${table}\n`
     for await (const { columns, rows } of tablePages(conn, ctx, table, limit)) {
       if (!rows.length) continue
-      const cols = columns.map(quoteIdent).join(', ')
+      const cols = columns.map(quote).join(', ')
       yield `${rows
-        .map((r) => `INSERT INTO ${quoteIdent(table)} (${cols}) VALUES (${columns.map((c) => literal(r[c])).join(', ')});`)
+        .map((r) => `INSERT INTO ${quote(table)} (${cols}) VALUES (${columns.map((c) => literal(r[c])).join(', ')});`)
         .join('\n')}\n`
     }
   }
@@ -272,10 +273,10 @@ function coerce(v, type) {
   return v
 }
 
-function inferredSchema(t, fromText) {
+function inferredSchema(t, fromText, quote) {
   const types = Object.fromEntries(t.columns.map((c) => [c, inferType(t.rows.map((r) => r[c]), fromText)]))
-  const cols = t.columns.map((c) => `${quoteIdent(c)} ${types[c]}`).join(',\n  ')
-  return { types, ddl: [`CREATE TABLE IF NOT EXISTS ${quoteIdent(t.table)} (\n  ${cols}\n);`] }
+  const cols = t.columns.map((c) => `${quote(c)} ${types[c]}`).join(',\n  ')
+  return { types, ddl: [`CREATE TABLE IF NOT EXISTS ${quote(t.table)} (\n  ${cols}\n);`] }
 }
 
 // ---- Parsing ------------------------------------------------------------------
@@ -348,7 +349,7 @@ async function parseImport(conn, ctx, { text, filename, format, table }) {
       const existing = known.includes(t.table) ? t.table : byLower.get(t.table.toLowerCase())
       if (existing) return { ...t, table: existing, exists: true }
       const own = t.ddl?.length && source === conn.type
-      return { ...t, exists: false, ...(own ? { ddl: t.ddl, types: null } : inferredSchema(t, fmt === 'csv')), schemaFrom: own ? 'file' : 'inferred' }
+      return { ...t, exists: false, ...(own ? { ddl: t.ddl, types: null } : inferredSchema(t, fmt === 'csv', db.quoteFor(conn))), schemaFrom: own ? 'file' : 'inferred' }
     }),
   }
 }

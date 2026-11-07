@@ -1,3 +1,4 @@
+import { quoteIdent, type SqlDialect } from '@/shared/lib/sqlDialect'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import Segmented from '@/shared/ui/form/Segmented'
 import SearchInput from '@/shared/ui/form/SearchInput'
@@ -28,6 +29,7 @@ import type { ConsoleTab } from '../hooks/useConsoleTabs'
 const centerState = 'flex h-full flex-col items-center justify-center gap-4 text-ink-faint'
 
 type Props = {
+  dialect: SqlDialect
   connectionId: string
   objects: any[]
   loading: boolean
@@ -53,6 +55,7 @@ type Props = {
  */
 export default function ObjectBrowser({
   connectionId,
+  dialect,
   objects,
   loading,
   onScreen,
@@ -187,7 +190,7 @@ export default function ObjectBrowser({
                     <MenuItem onClick={() => { onOpenTable(obj.name); close() }}>
                       <TableIcon width={14} height={14} /> Open in new tab
                     </MenuItem>
-                    <MenuItem onClick={() => { onOpenQuery(`SELECT * FROM "${obj.name}";`); close() }}>
+                    <MenuItem onClick={() => { onOpenQuery(`SELECT * FROM ${quoteIdent(obj.name, dialect)};`); close() }}>
                       <CodeIcon width={14} height={14} /> Open in SQL Editor
                     </MenuItem>
                     <MenuItem onClick={() => { onOpenSchema(obj.name); close() }}>

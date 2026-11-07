@@ -1,3 +1,4 @@
+import { sqlDialectOf } from '@/shared/lib/sqlDialect'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { runQuery } from '@/shared/api/database'
 import { runWorkflow } from '@/features/workflow'
@@ -47,8 +48,8 @@ export default function WidgetCard({
   )
 
   const baseSql = useMemo(
-    () => (widget.type === 'text' || !widget.query || missingVars.length > 0 ? '' : substituteVariables(widget.query, values)),
-    [widget.type, widget.query, values, missingVars.length]
+    () => (widget.type === 'text' || !widget.query || missingVars.length > 0 ? '' : substituteVariables(widget.query, values, sqlDialectOf(conn?.type))),
+    [widget.type, widget.query, values, missingVars.length, conn?.type]
   )
 
   // Server-side pagination for table widgets: ask /query for pageSize+1 rows —

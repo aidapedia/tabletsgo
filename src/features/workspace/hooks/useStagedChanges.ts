@@ -1,8 +1,10 @@
 import { useState } from 'react'
 import { recordSchemaMigration, runQuery } from '@/shared/api/database'
+import { quoteIdent, sqlDialectOf } from '@/shared/lib/sqlDialect'
 import {
   buildDropTableRollback,
   rollbackForAddColumn,
+  rollbackForAddConstraint,
   rollbackForCreateIndex,
   rollbackForCreateTable,
 } from '@/features/schema-designer/lib/rollback'
@@ -146,7 +148,7 @@ export default function useStagedChanges({
     addChange({
       kind: 'delete',
       label: `Empty table ${table}`,
-      sql: `DELETE FROM "${table}"`,
+      sql: `DELETE FROM ${quoteIdent(table, sqlDialectOf(nsConn?.type))}`,
       table,
       ddl: true,
       reversible: false,
@@ -162,7 +164,7 @@ export default function useStagedChanges({
     addChange({
       kind: 'delete',
       label: `Drop table ${table}`,
-      sql: `DROP TABLE "${table}"`,
+      sql: `DROP TABLE ${quoteIdent(table, sqlDialectOf(nsConn?.type))}`,
       table,
       ddl: true,
       reversible,
@@ -174,6 +176,7 @@ export default function useStagedChanges({
   // Stage the table editor's statements, each with the rollback SQL its mode
   // implies. Sidebar "Create table" stages straight into Changes too.
   const stageTableChanges = (statements: string[], tableName: string, mode: string) => {
+    const dialect = sqlDialectOf(nsConn?.type)
     statements.forEach((sql) => {
       // The same form also writes index DDL, which reverses on its own terms: a
       // CREATE is undone by a DROP, but rebuilding a *dropped* index needs the
@@ -181,10 +184,10 @@ export default function useStagedChanges({
       // early to do — so that one is staged as non-reversible.
       const isIndex = /^\s*(CREATE\s+(UNIQUE\s+)?|DROP\s+)INDEX\b/i.test(sql)
       const rollbackSql = isIndex
-        ? rollbackForCreateIndex(sql)
+        ? rollbackForCreateIndex(sql, dialect)
         : mode === 'edit'
-          ? rollbackForAddColumn(sql, tableName)
-          : rollbackForCreateTable(tableName)
+          ? rollbackForAddColumn(sql, tableName, dialect) || rollbackForAddConstraint(sql, tableName, dialect)
+          : rollbackForCreateTable(tableName, dialect)
       addChange({
         kind: mode === 'edit' ? 'update' : 'create',
         label: isIndex

@@ -5,7 +5,7 @@
  * This file is routes and wiring only. Everything a route needs lives in a
  * module under server/:
  *
- *   db/           the engine-agnostic database layer (sqlite | postgres | redis | kafka)
+ *   db/           the engine-agnostic database layer (sqlite | postgres | mysql | redis | kafka)
  *   meta.js       the app's own SQLite/PostgreSQL store; migrator/ evolves its schema
  *   auth.js       sessions, guards, workspace/connection access rules
  *   connections.js  connection records (credentials encrypted at rest)
@@ -2879,7 +2879,7 @@ app.get('/api/connections/:id/backup/runs/:runId/uploads/:destinationId/download
   try {
     const encrypted = wantConfig ? upload.configEncrypted : upload.encrypted
     const { filePath, cleanup } = await fetchArtifact(dest, objectKey, { encrypted })
-    const ext = wantConfig ? 'connection.json' : conn?.type === 'postgresql' ? 'dump' : 'sqlite'
+    const ext = wantConfig ? 'connection.json' : db.dumpExtensionFor(conn)
     const filename = `${sanitizeForKey(conn?.name)}-${new Date(run.started_at).toISOString().slice(0, 10)}.${ext}`
     res.download(filePath, filename, (err) => {
       cleanup()

@@ -6,6 +6,7 @@ import { useModules } from '@/features/modules'
 import { getDiagram, recordSchemaMigration, runQuery } from '@/shared/api/database'
 import { createSchemaDraft, deleteSchemaDraft, getWorkspaceSchema, updateSchemaDraft } from '../lib/api'
 import { buildCreateTableSql } from '../lib/rollback'
+import { sqlDialectOf } from '@/shared/lib/sqlDialect'
 import { emptyLayout, schemaSnapshot, withoutSchemaSnapshot, type SchemaLayout } from '../lib/design'
 import { readSchema, type SyncProgress } from '../lib/sync'
 import type { LinkCandidate } from '../components/LinkConnectionDialog'
@@ -421,7 +422,7 @@ export default function useSchemaDraftController({ connections, connectionsLoadi
     if (!current?.id || !draft?.connectionId || unlinking) return
     setUnlinking(true)
     try {
-      const carried = keepTables ? (liveTables || []).map((t: any) => buildCreateTableSql(t.name, t.columns || [])) : []
+      const carried = keepTables ? (liveTables || []).map((t: any) => buildCreateTableSql(t.name, t.columns || [], sqlDialectOf(draft.connectionType))) : []
       const sql = [...carried, ...pending.map((i) => i.sql)].join('\n')
       // The tables it drew are carried as DDL above (or deliberately not); the
       // snapshot itself must not travel — there is no database behind a

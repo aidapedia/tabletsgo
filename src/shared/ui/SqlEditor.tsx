@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import CodeMirror from '@uiw/react-codemirror'
-import { sql as sqlExtension, SQLite, PostgreSQL } from '@codemirror/lang-sql'
+import { sql as sqlExtension, MySQL, SQLite, PostgreSQL } from '@codemirror/lang-sql'
 import { EditorView, tooltips } from '@codemirror/view'
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language'
 import { Prec } from '@codemirror/state'
@@ -196,7 +196,7 @@ export default function SqlEditor({
     // Note: schema is intentionally NOT handed to lang-sql — our own source owns
     // tables/columns (correct icons + context), lang-sql owns keywords/types/fns.
     const lang = sqlExtension({
-      dialect: dialect === 'postgresql' ? PostgreSQL : SQLite,
+      dialect: dialect === 'postgresql' ? PostgreSQL : dialect === 'mysql' ? MySQL : SQLite,
       upperCaseKeywords: true,
     })
     const exts = [

@@ -1,3 +1,4 @@
+import type { SqlDialect } from '@/shared/lib/sqlDialect'
 import { useEffect, useMemo, useState } from 'react'
 import TextButton from '@/shared/ui/buttons/TextButton'
 import Checkbox from '@/shared/ui/form/Checkbox'
@@ -46,7 +47,7 @@ export function useIndexEditor({
   initial = null,
 }: {
   table: string
-  dialect: string
+  dialect: SqlDialect
   /** The table's current indexes. `null`/`undefined` means "not known here" — never "none". */
   live?: LiveIndex[] | null
   /** Indexes to start from — a staged CREATE INDEX being reopened, never a live one. */
@@ -82,7 +83,7 @@ export function useIndexEditor({
     for (const x of existing) {
       if (!canEditIndex(x.row)) continue
       if (x.drop) {
-        out.push(indexDropSql(x.row.name))
+        out.push(indexDropSql(x.row.name, table, dialect))
         continue
       }
       if (indexSignature(table, x.model, dialect) === x.base) continue
@@ -90,7 +91,7 @@ export function useIndexEditor({
       // dropping the index alone is never what "I emptied this field" means.
       const create = indexCreateSql(table, x.model, dialect)
       if (!create) continue
-      out.push(indexDropSql(x.row.name), create)
+      out.push(indexDropSql(x.row.name, table, dialect), create)
     }
     for (const idx of added) {
       const create = indexCreateSql(table, idx, dialect)
@@ -134,7 +135,7 @@ function IndexCard({
 }: {
   idx: IndexModel
   table: string
-  dialect: string
+  dialect: SqlDialect
   columns: string[]
   dropped?: boolean
   onChange: (patch: Partial<IndexModel>) => void
@@ -215,13 +216,15 @@ function IndexCard({
                 options={INDEX_METHODS}
               />
             )}
-            <Input
-              className="!w-auto min-w-0 flex-1"
-              placeholder="partial index — where…"
-              value={idx.where}
-              onChange={(e) => onChange({ where: e.target.value })}
-              aria-label="Partial index condition"
-            />
+            {dialect !== 'mysql' && (
+              <Input
+                className="!w-auto min-w-0 flex-1"
+                placeholder="partial index — where…"
+                value={idx.where}
+                onChange={(e) => onChange({ where: e.target.value })}
+                aria-label="Partial index condition"
+              />
+            )}
           </div>
 
           {picked.length === 0 && (
@@ -259,7 +262,7 @@ export default function IndexEditor({
 }: {
   editor: IndexEditorState
   table: string
-  dialect: string
+  dialect: SqlDialect
   columns: string[]
   loading?: boolean
 }) {
