@@ -12,7 +12,9 @@ import { PlusIcon, TrashIcon } from '@/shared/ui/icons'
 import { controlClass, Input } from '@/shared/ui/form/Input'
 import { Label } from '@/shared/ui/form/Form'
 import { splitStatements } from '@/shared/lib/schemaDraft'
-import { ColumnField, FK_ACTIONS, colDef, newColumn, normFkAction as normAction } from '@/features/schema-designer/components/columnFields'
+import { quoteIdent } from '@/shared/lib/sqlDialect'
+import { ColumnField, FK_ACTIONS, addColumnSql, newColumn, normFkAction as normAction } from '@/features/schema-designer/components/columnFields'
+import { fkAddSql, fkDropSql, modifyColumnSql } from '@/features/schema-designer/lib/ddl'
 import DragHandle from '@/shared/ui/DragHandle'
 import { useDragReorder } from '@/shared/hooks/useDragReorder'
 import { moveColumn } from '@/features/schema-designer/lib/design'
@@ -34,7 +36,8 @@ const modes = (indexCount) => [
 ]
 
 export default function TableEditPanel({ table, dialect, types, tableNames = [], schema = {}, foreignKeys = [], onStage, onReorderColumns, onClose }) {
-  const isPg = dialect === 'postgresql'
+  // SQLite can't change a column in place; the others differ only in how they say it.
+  const canAlter = dialect !== 'sqlite'
   const { show, close } = useSlideOver(onClose)
 
   // Foreign keys arrive separately from the diagram (keyed by column) so we can
@@ -49,6 +52,7 @@ export default function TableEditPanel({ table, dialect, types, tableNames = [],
         name: c.name,
         type: c.type,
         initialType: c.type,
+        extra: c.extra || '',
         pk: c.pk,
         notNull: !!c.notnull,
         initialNotNull: !!c.notnull,
@@ -78,7 +82,8 @@ export default function TableEditPanel({ table, dialect, types, tableNames = [],
 
   // ---- Column order ----
   // This table already exists, and no engine can move a column of one with
-  // ALTER (not Postgres, not SQLite) — so reordering here is the order the
+  // ALTER (not Postgres, not SQLite; MySQL can, but only by restating the column)
+  // — so reordering here is the order the
   // *diagram draws*, saved with the design like a table's position. That's what
   // `onReorderColumns` writes; it stages no SQL, which is why it can be the only
   // change a save carries.
@@ -104,48 +109,52 @@ export default function TableEditPanel({ table, dialect, types, tableNames = [],
 
   const buildStatements = () => {
     const t = table.name
+    const q = (name) => quoteIdent(name, dialect)
     const out = []
     for (const c of existing) {
       // A dropped column supersedes any rename/nullability/default edits on it.
       if (c.drop) {
-        out.push(`ALTER TABLE "${t}" DROP COLUMN "${c.originalName}";`)
+        out.push(`ALTER TABLE ${q(t)} DROP COLUMN ${q(c.originalName)};`)
         continue
       }
       const name = c.name.trim() || c.originalName
-      if (name !== c.originalName) out.push(`ALTER TABLE "${t}" RENAME COLUMN "${c.originalName}" TO "${name}";`)
-      // Type / nullability / default / FK changes are only safely alterable in PostgreSQL.
-      if (isPg) {
-        if (c.type && c.type !== c.initialType) {
-          out.push(`ALTER TABLE "${t}" ALTER COLUMN "${name}" TYPE ${c.type};`)
-        }
-        if (c.notNull !== c.initialNotNull) {
-          out.push(`ALTER TABLE "${t}" ALTER COLUMN "${name}" ${c.notNull ? 'SET NOT NULL' : 'DROP NOT NULL'};`)
-        }
+      if (name !== c.originalName) out.push(`ALTER TABLE ${q(t)} RENAME COLUMN ${q(c.originalName)} TO ${q(name)};`)
+      // Type / nullability / default / FK changes aren't safely alterable in SQLite.
+      if (canAlter) {
         const def = (c.default ?? '').trim()
-        if (def !== (c.initialDefault ?? '').trim()) {
-          out.push(
-            def
-              ? `ALTER TABLE "${t}" ALTER COLUMN "${name}" SET DEFAULT ${def};`
-              : `ALTER TABLE "${t}" ALTER COLUMN "${name}" DROP DEFAULT;`
-          )
+        const retyped = c.type && c.type !== c.initialType
+        const renulled = c.notNull !== c.initialNotNull
+        const redefaulted = def !== (c.initialDefault ?? '').trim()
+        if (dialect === 'mysql') {
+          if (retyped || renulled || redefaulted) {
+            out.push(modifyColumnSql(t, { name, type: c.type, notnull: c.notNull, default: def, extra: c.extra }, dialect))
+          }
+        } else {
+          if (retyped) out.push(`ALTER TABLE ${q(t)} ALTER COLUMN ${q(name)} TYPE ${c.type};`)
+          if (renulled) out.push(`ALTER TABLE ${q(t)} ALTER COLUMN ${q(name)} ${c.notNull ? 'SET NOT NULL' : 'DROP NOT NULL'};`)
+          if (redefaulted) {
+            out.push(
+              def
+                ? `ALTER TABLE ${q(t)} ALTER COLUMN ${q(name)} SET DEFAULT ${def};`
+                : `ALTER TABLE ${q(t)} ALTER COLUMN ${q(name)} DROP DEFAULT;`
+            )
+          }
         }
         // Foreign key add / modify / drop. Modifying = drop the old constraint,
-        // then add a new one (Postgres can't alter a FK's target/actions in place).
+        // then add a new one (no engine here can alter a FK's target/actions in place).
         const now = c.fkEnabled && c.fkTable && c.fkColumn ? { table: c.fkTable, column: c.fkColumn, onDelete: c.fkOnDelete, onUpdate: c.fkOnUpdate } : null
         if (JSON.stringify(c.initialFk) !== JSON.stringify(now)) {
-          if (c.fk?.constraint) out.push(`ALTER TABLE "${t}" DROP CONSTRAINT "${c.fk.constraint}";`)
+          if (c.fk?.constraint) out.push(fkDropSql(t, c.fk.constraint, dialect))
           if (now) {
-            let s = `ALTER TABLE "${t}" ADD CONSTRAINT "${t}_${name}_fkey" FOREIGN KEY ("${name}") REFERENCES "${now.table}"("${now.column}")`
-            if (now.onDelete) s += ` ON DELETE ${now.onDelete}`
-            if (now.onUpdate) s += ` ON UPDATE ${now.onUpdate}`
-            out.push(s + ';')
+            const fk = { table: t, constraint: `${t}_${name}_fkey`, column: name, refTable: now.table, refColumn: now.column, onDelete: now.onDelete, onUpdate: now.onUpdate }
+            out.push(fkAddSql(fk, dialect))
           }
         }
       }
     }
     for (const c of added) {
       if (!c.name.trim()) continue
-      out.push(`ALTER TABLE "${t}" ADD COLUMN ${colDef(c)};`)
+      out.push(...addColumnSql(t, c, dialect))
     }
     return out
   }
@@ -291,7 +300,7 @@ export default function TableEditPanel({ table, dialect, types, tableNames = [],
                     disabled={c.drop}
                     onChange={(e) => setEx(i, { name: e.target.value })}
                   />
-                  {isPg && !c.drop ? (
+                  {canAlter && !c.drop ? (
                     <Select
                       className={`${controlClass} !w-[128px] shrink-0`}
                       value={c.type}
@@ -300,9 +309,9 @@ export default function TableEditPanel({ table, dialect, types, tableNames = [],
                         ? types
                         : [c.type, ...types]
                       )
-                        // SERIAL/BIGSERIAL are pseudo-types for new columns — not
-                        // valid ALTER COLUMN TYPE targets, so hide them when editing.
-                        .filter((t) => !/^(SERIAL|BIGSERIAL|SMALLSERIAL)$/i.test(t))
+                        // SERIAL/BIGSERIAL and `… auto_increment` are pseudo-types for
+                        // new columns — not valid type targets, so hide them when editing.
+                        .filter((t) => !/^(SERIAL|BIGSERIAL|SMALLSERIAL)$|\bauto_increment$/i.test(t))
                         .map((t) => ({ value: t, label: t }))}
                     />
                   ) : (
@@ -331,19 +340,19 @@ export default function TableEditPanel({ table, dialect, types, tableNames = [],
                 ) : (
                   <>
                     <div className="mt-2 flex items-center gap-3">
-                      <div className={`flex items-center gap-1.5 text-[11px] ${isPg ? 'text-ink-dim' : 'text-ink-faint'}`}>
-                        <Checkbox checked={c.notNull} disabled={!isPg} onChange={(v) => setEx(i, { notNull: v })} ariaLabel="Not null" />
+                      <div className={`flex items-center gap-1.5 text-[11px] ${canAlter ? 'text-ink-dim' : 'text-ink-faint'}`}>
+                        <Checkbox checked={c.notNull} disabled={!canAlter} onChange={(v) => setEx(i, { notNull: v })} ariaLabel="Not null" />
                         Not null
                       </div>
                       <Input
                         className="!w-auto min-w-0 flex-1"
                         placeholder="default…"
                         value={c.default}
-                        disabled={!isPg}
+                        disabled={!canAlter}
                         onChange={(e) => setEx(i, { default: e.target.value })}
                       />
                     </div>
-                    {isPg ? (
+                    {canAlter ? (
                       <div className="mt-2 flex flex-col gap-2 px-0.5">
                         <div className="flex items-center gap-1.5 text-[11px] text-ink-dim">
                           <Checkbox
@@ -421,12 +430,12 @@ export default function TableEditPanel({ table, dialect, types, tableNames = [],
               alternative is a standing paragraph about a thing nobody asked. */}
           {orderChanged && (
             <p className="mt-2 text-[11px] text-ink-faint">
-              Column order is saved with the <span className="text-ink-dim">diagram</span>, not as SQL — no engine can move a
-              column of an existing table with <span className="text-ink-dim">ALTER</span>.
+              Column order is saved with the <span className="text-ink-dim">diagram</span>, not as SQL — it changes how this
+              table is drawn, not how the database stores it.
             </p>
           )}
 
-          {!isPg && (
+          {!canAlter && (
             <p className="mt-2 text-[11px] text-ink-faint">
               SQLite supports renaming, dropping, and adding columns. Changing a column’s type, nullability,
               default, or foreign keys isn’t supported by SQLite — recreate the table for those. Some columns

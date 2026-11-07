@@ -1,6 +1,8 @@
 import { getColumns, getIndexes } from '@/shared/api/database'
 import { draftToItems } from '@/shared/lib/schemaDraft'
-import { indexDropSql, indexNameIn, liveIndexSql } from '@/features/schema-designer/lib/indexes'
+import { fkDropSql, modifyColumnSql } from '@/features/schema-designer/lib/ddl'
+import { indexDropSql, indexNameIn, liveIndexSql, parseCreateIndex } from '@/features/schema-designer/lib/indexes'
+import { quoteIdent, sqlDialectOf, type SqlDialect } from '@/shared/lib/sqlDialect'
 
 // Best-effort rollback SQL for the DDL this feature can stage: CREATE TABLE,
 // ALTER TABLE ADD COLUMN, DROP TABLE, and CREATE / DROP INDEX. Row-level data changes (INSERT/
@@ -8,17 +10,17 @@ import { indexDropSql, indexNameIn, liveIndexSql } from '@/features/schema-desig
 // former isn't schema DDL, the latter isn't reconstructable without a data
 // snapshot, so it's marked non-reversible instead.
 
-export const rollbackForCreateTable = (table: string) => `DROP TABLE "${table}";`
+export const rollbackForCreateTable = (table: string, dialect: SqlDialect) => `DROP TABLE ${quoteIdent(table, dialect)};`
 
 // A created index is undone by dropping it — the one index statement whose
 // inverse is pure syntax, so the console's Changes queue can build it without
 // reading anything (see rollbackForDropIndex for the other direction).
-export function rollbackForCreateIndex(sql: string) {
+export function rollbackForCreateIndex(sql: string, dialect: SqlDialect) {
   // Deliberately narrow: `indexNameIn` reads a DROP INDEX too, and answering
   // that with another DROP would record a rollback that repeats the change.
   if (!/^\s*CREATE\s+(UNIQUE\s+)?INDEX/i.test(sql || '')) return null
-  const name = indexNameIn(sql)
-  return name ? indexDropSql(name) : null
+  const index = parseCreateIndex(sql)
+  return index ? indexDropSql(index.name, index.table, dialect) : null
 }
 
 // The inverse of a drop is the CREATE that would rebuild the index, which only
@@ -32,15 +34,24 @@ export async function rollbackForDropIndex(conn: any, sql: string, table: string
   const rows = await getIndexes(conn, table)
   const row = rows?.find((r: any) => r.name === name)
   if (!row) return null
-  return liveIndexSql(table, row, conn.type === 'postgresql' ? 'postgresql' : 'sqlite')
+  return liveIndexSql(table, row, sqlDialectOf(conn.type))
 }
 
 // colDef() (columnFields.tsx) always quotes the column name in
 // `ADD COLUMN "name" ...`, so a straight regex extraction is reliable.
-export function rollbackForAddColumn(sql: string, table: string) {
-  const match = sql.match(/ADD COLUMN\s+"([^"]+)"/i)
+export function rollbackForAddColumn(sql: string, table: string, dialect: SqlDialect) {
+  const match = sql.match(/ADD COLUMN\s+["`]([^"`]+)["`]/i)
   if (!match) return null
-  return `ALTER TABLE "${table}" DROP COLUMN "${match[1]}";`
+  return `ALTER TABLE ${quoteIdent(table, dialect)} DROP COLUMN ${quoteIdent(match[1], dialect)};`
+}
+
+// A foreign key is dropped by the engine's own statement; any other constraint
+// a hand-written ALTER added goes through the standard one.
+export function rollbackForAddConstraint(sql: string, table: string, dialect: SqlDialect) {
+  const match = sql.match(/ADD CONSTRAINT\s+["`]([^"`]+)["`]\s*(FOREIGN KEY)?/i)
+  if (!match) return null
+  if (match[2]) return fkDropSql(table, match[1], dialect)
+  return `ALTER TABLE ${quoteIdent(table, dialect)} DROP CONSTRAINT ${quoteIdent(match[1], dialect)};`
 }
 
 // A DROP COLUMN's inverse is an ADD COLUMN that re-adds it with its original
@@ -48,11 +59,12 @@ export function rollbackForAddColumn(sql: string, table: string) {
 // the column list before the drop runs. Returns null if the column can't be
 // found (already gone / table missing), so the caller marks it non-reversible.
 export async function rollbackForDropColumn(conn: any, sql: string, table: string) {
-  const match = sql.match(/DROP COLUMN\s+"([^"]+)"/i)
+  const match = sql.match(/DROP COLUMN\s+["`]([^"`]+)["`]/i)
   if (!match) return null
   const col = await liveColumn(conn, table, match[1])
   if (!col) return null
-  return `ALTER TABLE "${table}" ADD COLUMN ${columnDef(col)};`
+  const dialect = sqlDialectOf(conn.type)
+  return `ALTER TABLE ${quoteIdent(table, dialect)} ADD COLUMN ${columnDef(col, dialect)};`
 }
 
 // One column as the database currently has it — the only source for the
@@ -72,29 +84,38 @@ async function liveColumn(conn: any, table: string, name: string) {
 // definition is gone once it executes) has no automatic inverse — the FK editor
 // stages its own `rollbackSql` for that case, which takes priority over this.
 export async function rollbackForAlter(conn: any, sql: string, table: string) {
-  const rename = sql.match(/RENAME COLUMN\s+"([^"]+)"\s+TO\s+"([^"]+)"/i)
-  if (rename) return `ALTER TABLE "${table}" RENAME COLUMN "${rename[2]}" TO "${rename[1]}";`
-  const addConstraint = sql.match(/ADD CONSTRAINT\s+"([^"]+)"/i)
-  if (addConstraint) return `ALTER TABLE "${table}" DROP CONSTRAINT "${addConstraint[1]}";`
-  const notNull = sql.match(/ALTER COLUMN\s+"([^"]+)"\s+(SET|DROP)\s+NOT NULL/i)
+  const dialect = sqlDialectOf(conn?.type)
+  const t = quoteIdent(table, dialect)
+  const q = (name: string) => quoteIdent(name, dialect)
+  const rename = sql.match(/RENAME COLUMN\s+["`]([^"`]+)["`]\s+TO\s+["`]([^"`]+)["`]/i)
+  if (rename) return `ALTER TABLE ${t} RENAME COLUMN ${q(rename[2])} TO ${q(rename[1])};`
+  const addConstraint = rollbackForAddConstraint(sql, table, dialect)
+  if (addConstraint) return addConstraint
+  const notNull = sql.match(/ALTER COLUMN\s+["`]([^"`]+)["`]\s+(SET|DROP)\s+NOT NULL/i)
   if (notNull) {
-    return `ALTER TABLE "${table}" ALTER COLUMN "${notNull[1]}" ${/set/i.test(notNull[2]) ? 'DROP' : 'SET'} NOT NULL;`
+    return `ALTER TABLE ${t} ALTER COLUMN ${q(notNull[1])} ${/set/i.test(notNull[2]) ? 'DROP' : 'SET'} NOT NULL;`
   }
   if (/DROP COLUMN/i.test(sql)) return rollbackForDropColumn(conn, sql, table)
-  if (/ADD COLUMN/i.test(sql)) return rollbackForAddColumn(sql, table)
-  const typeChange = sql.match(/ALTER COLUMN\s+"([^"]+)"\s+TYPE\b/i)
+  if (/ADD COLUMN/i.test(sql)) return rollbackForAddColumn(sql, table, dialect)
+  // MySQL's MODIFY replaces the definition, so its inverse is the old one, whole.
+  const modified = sql.match(/MODIFY COLUMN\s+["`]([^"`]+)["`]/i)
+  if (modified) {
+    const col = await liveColumn(conn, table, modified[1])
+    return col?.type ? modifyColumnSql(table, col, dialect) : null
+  }
+  const typeChange = sql.match(/ALTER COLUMN\s+["`]([^"`]+)["`]\s+TYPE\b/i)
   if (typeChange) {
     const col = await liveColumn(conn, table, typeChange[1])
-    return col?.type ? `ALTER TABLE "${table}" ALTER COLUMN "${col.name}" TYPE ${col.type};` : null
+    return col?.type ? `ALTER TABLE ${t} ALTER COLUMN ${q(col.name)} TYPE ${col.type};` : null
   }
-  const defaultChange = sql.match(/ALTER COLUMN\s+"([^"]+)"\s+(?:SET|DROP)\s+DEFAULT/i)
+  const defaultChange = sql.match(/ALTER COLUMN\s+["`]([^"`]+)["`]\s+(?:SET|DROP)\s+DEFAULT/i)
   if (defaultChange) {
     const col = await liveColumn(conn, table, defaultChange[1])
     if (!col) return null
     const had = col.default != null && String(col.default).trim()
     return had
-      ? `ALTER TABLE "${table}" ALTER COLUMN "${col.name}" SET DEFAULT ${col.default};`
-      : `ALTER TABLE "${table}" ALTER COLUMN "${col.name}" DROP DEFAULT;`
+      ? `ALTER TABLE ${t} ALTER COLUMN ${q(col.name)} SET DEFAULT ${col.default};`
+      : `ALTER TABLE ${t} ALTER COLUMN ${q(col.name)} DROP DEFAULT;`
   }
   return null
 }
@@ -112,11 +133,12 @@ export async function rollbackForItem(conn: any, item: any): Promise<string | nu
   const sql = (item?.sql || '').trim()
   const table = item?.table
   if (!sql || !table) return null
+  const dialect = sqlDialectOf(conn?.type)
   try {
-    if (/^CREATE TABLE/i.test(sql)) return rollbackForCreateTable(table)
+    if (/^CREATE TABLE/i.test(sql)) return rollbackForCreateTable(table, dialect)
     if (/^DROP TABLE/i.test(sql)) return (await buildDropTableRollback(conn, table)).rollbackSql
     if (/^ALTER TABLE/i.test(sql)) return await rollbackForAlter(conn, sql, table)
-    if (/^CREATE\s+(UNIQUE\s+)?INDEX/i.test(sql)) return rollbackForCreateIndex(sql)
+    if (/^CREATE\s+(UNIQUE\s+)?INDEX/i.test(sql)) return rollbackForCreateIndex(sql, dialect)
     if (/^DROP\s+INDEX/i.test(sql)) return await rollbackForDropIndex(conn, sql, table)
     return null
   } catch {
@@ -135,14 +157,16 @@ export async function resolveRollbacks(conn: any, items: any[]) {
 // One column's definition string (same shape as getColumns()'s response),
 // mirroring columnFields.tsx's colDef() quoting. Shared by CREATE TABLE and
 // ADD COLUMN reconstruction.
-export function columnDef(c: any, inlinePk = true) {
+export function columnDef(c: any, dialect: SqlDialect, inlinePk = true) {
   const pkInline = c.pk && inlinePk
-  let d = `"${c.name}" ${c.type || 'TEXT'}`
+  let d = `${quoteIdent(c.name, dialect)} ${c.type || 'TEXT'}`
   if (pkInline) d += ' PRIMARY KEY'
   if (!pkInline && (c.notnull || c.pk)) d += ' NOT NULL'
   if (c.default != null && String(c.default).trim()) d += ` DEFAULT ${c.default}`
-  if (c.references?.table && c.references?.column) {
-    d += ` REFERENCES "${c.references.table}"("${c.references.column}")`
+  if (c.extra) d += ` ${c.extra}`
+  // MySQL accepts a column-level REFERENCES and then ignores it — see tableDefLines.
+  if (dialect !== 'mysql' && c.references?.table && c.references?.column) {
+    d += ` REFERENCES ${quoteIdent(c.references.table, dialect)}(${quoteIdent(c.references.column, dialect)})`
   }
   return d
 }
@@ -150,14 +174,22 @@ export function columnDef(c: any, inlinePk = true) {
 // Reconstruct a CREATE TABLE statement from a live column list. Two or more
 // primary-key columns become one table-level `PRIMARY KEY (...)` constraint —
 // multiple inline PRIMARY KEYs are invalid SQL.
-export function buildCreateTableSql(table: string, columns: any[]) {
+export function buildCreateTableSql(table: string, columns: any[], dialect: SqlDialect) {
+  const q = (name: string) => quoteIdent(name, dialect)
   const pks = columns.filter((c) => c.pk)
   const composite = pks.length > 1
-  const lines = columns.map((c) => columnDef(c, !composite))
+  const lines = columns.map((c) => columnDef(c, dialect, !composite))
   if (composite) {
-    lines.push(`PRIMARY KEY (${pks.map((c) => `"${c.name}"`).join(', ')})`)
+    lines.push(`PRIMARY KEY (${pks.map((c) => q(c.name)).join(', ')})`)
   }
-  return `CREATE TABLE "${table}" (\n  ${lines.join(',\n  ')}\n);`
+  if (dialect === 'mysql') {
+    for (const c of columns) {
+      if (c.references?.table && c.references?.column) {
+        lines.push(`FOREIGN KEY (${q(c.name)}) REFERENCES ${q(c.references.table)}(${q(c.references.column)})`)
+      }
+    }
+  }
+  return `CREATE TABLE ${q(table)} (\n  ${lines.join(',\n  ')}\n);`
 }
 
 // Best-effort forward (Up) / rollback (Down) SQL for a saved schema draft, for
@@ -189,5 +221,5 @@ export async function buildDraftMigration(conn: any, sql: string) {
 export async function buildDropTableRollback(conn, table: string) {
   const columns = conn?.id ? await getColumns(conn, table) : null
   if (!columns?.length) return { rollbackSql: null, reversible: false }
-  return { rollbackSql: buildCreateTableSql(table, columns), reversible: true }
+  return { rollbackSql: buildCreateTableSql(table, columns, sqlDialectOf(conn?.type)), reversible: true }
 }

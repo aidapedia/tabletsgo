@@ -52,8 +52,8 @@ export default function ConsoleSidebar({
               options={(namespaces.databases || []).map((d: string) => ({ value: d, label: d }))}
               placeholder="database"
             />
-            {/* Only SQL engines have schemas — Redis has just its numbered databases. */}
-            {kind === 'sql' && (
+            {/* Redis has just its numbered databases; to MySQL a schema is a database. */}
+            {namespaces.schemas?.length > 0 && (
               <>
                 <span className="text-[11px] text-ink-faint">/</span>
                 <Select

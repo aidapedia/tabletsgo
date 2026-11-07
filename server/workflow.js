@@ -15,7 +15,7 @@ import { db } from './meta.js'
 import { getConnection } from './connections.js'
 import { isModuleEnabled } from './module-registry.js'
 import { computeNextRun, jsonPreview, safeJson } from './util.js'
-import { exportDatabaseToFile, runQueryOrThrow } from './db/index.js'
+import { exportDatabaseToFile, literalFor, quoteFor, runQueryOrThrow } from './db/index.js'
 import { storeFile } from './storage.js'
 
 // A curated crypto surface exposed to the JS node's sandbox. We deliberately do
@@ -57,30 +57,30 @@ function runUserJs(code, input) {
 
 // Substitute {{input.path}} placeholders in a query node's SQL with values
 // from the node's input (e.g. a dashboard table row), rendered as SQL literals.
-// Dialect-agnostic on purpose: single-quoted strings with '' doubling, bare
-// numeric literals, and NULL are valid in every roadmap dialect. Non-scalar
-// values are an error, not silently stringified.
+// Bare numeric literals and NULL are valid in every roadmap dialect; a string
+// goes through the engine's own `literal`, because '' doubling alone is not safe
+// on all of them (a MySQL string can be left with a backslash). Non-scalar values
+// are an error, not silently stringified.
 //
 // An optional `:ident` modifier — `{{input.field:ident}}` — renders the value
-// as a quoted SQL *identifier* (double-quoted with "" doubling) instead of a
-// literal, for the few statements that take a bare name and can't be
-// parameterized (e.g. VACUUM/ANALYZE/REINDEX <table>). Double-quoted identifiers
-// are standard SQL, so this stays dialect-agnostic. The value must be a
-// non-empty string; NULL/number/boolean are rejected so an identifier slot can
-// never silently vanish or inject.
-export function substituteWorkflowInput(sql, input) {
+// as a quoted SQL *identifier* (the engine's `quote`) instead of a literal, for
+// the few statements that take a bare name and can't be parameterized (e.g.
+// VACUUM/ANALYZE/REINDEX <table>). The value must be a non-empty string;
+// NULL/number/boolean are rejected so an identifier slot can never silently
+// vanish or inject.
+export function substituteWorkflowInput(sql, input, { quote, literal }) {
   return sql.replace(/\{\{\s*input((?:\.[A-Za-z_][A-Za-z0-9_]*)+)\s*(?::\s*(ident))?\s*\}\}/g, (_, path, mod) => {
     let v = input
     for (const key of path.slice(1).split('.')) v = v?.[key]
     if (mod === 'ident') {
       if (typeof v !== 'string' || v === '')
         throw new Error(`{{input${path}:ident}} must be a non-empty string identifier (got ${v === null || v === undefined ? 'null' : typeof v})`)
-      return `"${v.replace(/"/g, '""')}"`
+      return quote(v)
     }
     if (v === null || v === undefined) return 'NULL'
     if (typeof v === 'number' && Number.isFinite(v)) return String(v)
     if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE'
-    if (typeof v === 'string') return `'${v.replace(/'/g, "''")}'`
+    if (typeof v === 'string') return literal(v)
     throw new Error(`{{input${path}}} is not a scalar value (got ${Array.isArray(v) ? 'array' : typeof v})`)
   })
 }
@@ -125,7 +125,7 @@ export async function runWorkflow(conn, graph, initialInput = null) {
         output = input // trigger node — pass the initial input straight through
       } else if (node.type === 'query') {
         if (!d.sql?.trim()) throw new Error('No query configured')
-        const r = await runNodeQuery(conn, substituteWorkflowInput(d.sql, input))
+        const r = await runNodeQuery(conn, substituteWorkflowInput(d.sql, input, { quote: quoteFor(conn), literal: literalFor(conn) }))
         output = r.type === 'rows' ? { columns: r.columns, rows: r.rows } : { message: r.message }
       } else if (node.type === 'http') {
         if (!d.url?.trim()) throw new Error('No URL configured')

@@ -88,7 +88,7 @@ top-level folder.
 
 ### Database-agnostic contracts
 
-Tabletsgo's roadmap covers SQLite, PostgreSQL, and eventually MySQL/MariaDB.
+Tabletsgo supports SQLite, PostgreSQL and MySQL, and its roadmap covers MariaDB.
 Any new API contract (request/response shape, connection field, etc.) must be
 written generically enough to work across database types — don't bake in
 assumptions specific to one dialect.

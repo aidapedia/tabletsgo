@@ -1,13 +1,15 @@
+import { quoteIdent, quoteString, type SqlDialect } from '@/shared/lib/sqlDialect'
+
 // Row export helpers shared by the grid toolbars. Each formatter takes the
 // visible columns + the rows already filtered/sorted by the caller, so what you
 // see in the grid is what lands in the file.
 
 // Quote a JS value for inline SQL (dev tool — table is trusted, values escaped).
-export const sqlValue = (v) => {
+export const sqlValue = (v, dialect?: SqlDialect) => {
   if (v === null || v === undefined) return 'NULL'
   if (typeof v === 'number') return String(v)
   if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE'
-  return `'${String(v).replace(/'/g, "''")}'`
+  return quoteString(v, dialect)
 }
 
 const csvCell = (v) => {
@@ -26,10 +28,10 @@ export const toJson = (columns, rows) =>
     2
   )
 
-export const toSql = (columns, rows, table) => {
-  const cols = columns.map((c) => `"${c}"`).join(', ')
+export const toSql = (columns, rows, table, dialect?: SqlDialect) => {
+  const cols = columns.map((c) => quoteIdent(c, dialect)).join(', ')
   return rows
-    .map((r) => `INSERT INTO "${table}" (${cols}) VALUES (${columns.map((c) => sqlValue(r[c])).join(', ')});`)
+    .map((r) => `INSERT INTO ${quoteIdent(table, dialect)} (${cols}) VALUES (${columns.map((c) => sqlValue(r[c], dialect)).join(', ')});`)
     .join('\n')
 }
 
@@ -40,10 +42,10 @@ export const EXPORT_FORMATS = [
 ]
 
 // Serialize + save. `table` names the file and the INSERT target for SQL.
-export function downloadRows(format, { columns, rows, table }) {
+export function downloadRows(format, { columns, rows, table, dialect }: any) {
   const spec = EXPORT_FORMATS.find((f) => f.id === format) || EXPORT_FORMATS[0]
   const text =
-    spec.id === 'json' ? toJson(columns, rows) : spec.id === 'sql' ? toSql(columns, rows, table) : toCsv(columns, rows)
+    spec.id === 'json' ? toJson(columns, rows) : spec.id === 'sql' ? toSql(columns, rows, table, dialect) : toCsv(columns, rows)
   const url = URL.createObjectURL(new Blob([text], { type: spec.mime }))
   const a = document.createElement('a')
   a.href = url

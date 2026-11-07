@@ -79,6 +79,7 @@ import TabContent from './TabContent'
 import TabContextMenu from './TabContextMenu'
 import { makeFilter } from './TableView'
 import { DIALECT } from '../lib/dialect'
+import { sqlDialectOf } from '@/shared/lib/sqlDialect'
 import { buildConsoleCommands } from '../lib/consoleCommands'
 import useConnectionBrowser from '../hooks/useConnectionBrowser'
 import useConsoleTabs from '../hooks/useConsoleTabs'
@@ -555,6 +556,7 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
     ) : shownPanel === 'browser' ? (
       <ObjectBrowser
         connectionId={id}
+        dialect={sqlDialectOf(conn.type)}
         objects={objects}
         loading={loading}
         onScreen={tabs.onScreen}

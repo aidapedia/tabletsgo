@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { format } from 'sql-formatter'
+import { sqlDialectOf } from '@/shared/lib/sqlDialect'
 import { getSchema, runQuery } from '@/shared/api/database'
 import DataGrid from '@/shared/ui/table/DataGrid'
 import Button from '@/shared/ui/buttons/Button'
@@ -159,7 +160,7 @@ export default function QueryEditor({ conn, dialect, initialSql, tabKey, persist
     try {
       setSql(
         format(sql, {
-          language: conn.type === 'postgresql' ? 'postgresql' : 'sqlite',
+          language: sqlDialectOf(conn.type),
           keywordCase: 'upper',
           tabWidth: 2,
         })

@@ -121,7 +121,7 @@ server/
 ├── ssh.js               # SSH keys + gateways (bastions); host key pinning      → skill db-engine
 ├── cloudflare-access.js # SSH over Cloudflare Access (WebSocket + service token) → skill db-engine
 ├── storage.js           # storage destinations (S3 + local disk) and object ops
-├── db/                  # ★ the engine-agnostic database layer (sqlite|postgres|redis|kafka) → skill db-engine
+├── db/                  # ★ the engine-agnostic database layer (sqlite|postgres|mysql|redis|kafka) → skill db-engine
 ├── workflow.js          # the node-graph executor + scheduler
 ├── connection-transfer.js  # the portable connection bundle          → skill connection-transfer
 ├── data-transfer.js     # table rows out/in as CSV/JSON/SQL (console Export / Import tab) → skill db-engine

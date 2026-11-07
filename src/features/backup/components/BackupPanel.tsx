@@ -1,3 +1,4 @@
+import { supportsBackup } from '@/shared/config/databaseTypes'
 import { useEffect, useMemo, useState } from 'react'
 import type { ComponentType } from 'react'
 import Button from '@/shared/ui/buttons/Button'
@@ -70,7 +71,7 @@ export default function BackupPanel({
   const [running, setRunning] = useState(false)
   const [dateFilter, setDateFilter] = useState<string | null>(null)
 
-  const supported = connectionType === 'sqlite' || connectionType === 'postgresql'
+  const supported = supportsBackup(connectionType)
 
   useEffect(() => {
     if (!supported) {
@@ -142,7 +143,7 @@ export default function BackupPanel({
   if (!supported) {
     return (
       <div className="rounded-card border border-dashed border-edge-strong py-16 text-center text-[13px] text-ink-dim">
-        Backups aren't supported for this connection type yet — only SQLite and PostgreSQL are.
+        Backups aren't supported for this connection type yet — only SQLite, PostgreSQL and MySQL are.
       </div>
     )
   }

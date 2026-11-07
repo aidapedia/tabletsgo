@@ -6,6 +6,8 @@ import TextButton from '@/shared/ui/buttons/TextButton'
 import { TrashIcon } from '@/shared/ui/icons'
 import { controlClass, Input } from '@/shared/ui/form/Input'
 import { getTypes } from '@/shared/api/database'
+import { IDENT, quoteIdent, sqlDialectOf, unquoteIdent, type SqlDialect } from '@/shared/lib/sqlDialect'
+import { fkAddSql, fkReferenceSql } from '../lib/ddl'
 
 // Fallback type lists per dialect, used until the backend `/types` list loads.
 // Postgres uses the database's own vocabulary so existing and new columns share
@@ -16,6 +18,10 @@ export const TYPES = {
     'serial', 'bigserial', 'smallint', 'integer', 'bigint', 'numeric', 'real', 'double precision',
     'boolean', 'text', 'character varying', 'character', 'date', 'time without time zone',
     'timestamp without time zone', 'timestamp with time zone', 'json', 'jsonb', 'uuid',
+  ],
+  mysql: [
+    'int auto_increment', 'bigint auto_increment', 'tinyint', 'smallint', 'int', 'bigint', 'decimal(10,2)', 'float', 'double',
+    'boolean', 'char', 'varchar', 'text', 'mediumtext', 'longtext', 'date', 'time', 'datetime', 'timestamp', 'json', 'blob',
   ],
 }
 
@@ -51,8 +57,7 @@ export const newColumn = (type) => ({
 // Column types for a connection, fetched from the backend with the static
 // per-dialect list as an immediate fallback while the request is in flight.
 export function useColumnTypes(conn) {
-  const dialect = conn?.type === 'postgresql' ? 'postgresql' : 'sqlite'
-  const [types, setTypes] = useState(TYPES[dialect])
+  const [types, setTypes] = useState(TYPES[sqlDialectOf(conn?.type)])
   useEffect(() => {
     let alive = true
     getTypes(conn).then((list) => {
@@ -80,7 +85,7 @@ export function normalizeFkType(type) {
   const t = (type || '')
     .toLowerCase()
     .replace(/\(.*\)/, '')
-    .replace(/\s+(not\s+null|primary\s+key|default|references)\b.*$/, '')
+    .replace(/\s+(not\s+null|primary\s+key|default|references|auto_increment)\b.*$/, '')
     .replace(/;.*$/, '')
     .trim()
   const map = {
@@ -110,32 +115,47 @@ export function fkEligible(srcTable, srcCol, tgtTable, tgtCol) {
 export const columnTypeSql = (c) =>
   isVarchar(c.type) ? `${c.type}(${(c.varcharLen || '255').toString().trim() || '255'})` : c.type
 
+const hasFk = (c) => !!(c.fk && c.fkTable && c.fkColumn)
+
 // Full column definition for CREATE TABLE / ALTER TABLE ADD COLUMN. Pass
 // `inlinePk: false` when the primary key is emitted as a table-level constraint
 // (a composite key) — the column then carries NOT NULL instead of PRIMARY KEY.
-export const colDef = (c, { inlinePk = true } = {}) => {
+export const colDef = (c, { inlinePk = true, dialect }: { inlinePk?: boolean; dialect: SqlDialect }) => {
   const pkInline = c.pk && inlinePk
-  let d = `"${c.name.trim()}" ${columnTypeSql(c)}`
+  let d = `${quoteIdent(c.name.trim(), dialect)} ${columnTypeSql(c)}`
   if (pkInline) d += ' PRIMARY KEY'
   if (!pkInline && (c.notNull || c.pk)) d += ' NOT NULL'
   if ((c.default ?? '').toString().trim()) d += ` DEFAULT ${c.default.toString().trim()}`
-  if (c.fk && c.fkTable && c.fkColumn) {
-    d += ` REFERENCES "${c.fkTable}"("${c.fkColumn}")`
-    if (c.fkOnDelete) d += ` ON DELETE ${c.fkOnDelete}`
-    if (c.fkOnUpdate) d += ` ON UPDATE ${c.fkOnUpdate}`
-  }
+  // MySQL parses a column-level REFERENCES and then ignores it, without a word:
+  // the column would exist and the constraint wouldn't. Its foreign keys are
+  // written as a table-level line (tableDefLines) or their own ALTER (addColumnSql).
+  if (hasFk(c) && dialect !== 'mysql') d += ` ${fkReferenceSql(c.fkTable, c.fkColumn, c.fkOnDelete, c.fkOnUpdate, dialect)}`
   return d
+}
+
+// The statements that add one column to an existing table.
+export function addColumnSql(table, c, dialect: SqlDialect) {
+  const add = `ALTER TABLE ${quoteIdent(table, dialect)} ADD COLUMN ${colDef(c, { dialect })};`
+  if (!hasFk(c) || dialect !== 'mysql') return [add]
+  const column = c.name.trim()
+  const fk = { table, constraint: `${table}_${column}_fkey`, column, refTable: c.fkTable, refColumn: c.fkColumn, onDelete: c.fkOnDelete, onUpdate: c.fkOnUpdate }
+  return [add, fkAddSql(fk, dialect)]
 }
 
 // The inner lines of a CREATE TABLE: one per column, plus a trailing table-level
 // `PRIMARY KEY (...)` when two or more columns are primary keys. A single PK
 // stays inline on its column; multiple inline PRIMARY KEYs are invalid SQL.
-export const tableDefLines = (columns) => {
+export const tableDefLines = (columns, dialect: SqlDialect) => {
   const pks = columns.filter((c) => c.pk)
   const composite = pks.length > 1
-  const lines = columns.map((c) => colDef(c, { inlinePk: !composite }))
+  const lines = columns.map((c) => colDef(c, { inlinePk: !composite, dialect }))
   if (composite) {
-    lines.push(`PRIMARY KEY (${pks.map((c) => `"${c.name.trim()}"`).join(', ')})`)
+    lines.push(`PRIMARY KEY (${pks.map((c) => quoteIdent(c.name.trim(), dialect)).join(', ')})`)
+  }
+  if (dialect === 'mysql') {
+    for (const c of columns.filter(hasFk)) {
+      lines.push(`FOREIGN KEY (${quoteIdent(c.name.trim(), dialect)}) ${fkReferenceSql(c.fkTable, c.fkColumn, c.fkOnDelete, c.fkOnUpdate, dialect)}`)
+    }
   }
   return lines
 }
@@ -154,7 +174,7 @@ export function splitTopLevel(body) {
       // the string only if the next character reopens it — which the next
       // iteration handles by starting a fresh string.
       if (ch === quote) quote = null
-    } else if (ch === "'" || ch === '"') quote = ch
+    } else if (ch === "'" || ch === '"' || ch === '`') quote = ch
     else if (ch === '(') depth++
     else if (ch === ')') depth--
     else if (ch === ',' && depth === 0) {
@@ -169,29 +189,31 @@ export function splitTopLevel(body) {
 }
 
 const FK_ACTION_RE = 'CASCADE|SET NULL|SET DEFAULT|RESTRICT|NO ACTION'
+const FK_REFERENCE_RE = `REFERENCES\\s+${IDENT}\\s*\\(\\s*${IDENT}\\s*\\)(?:\\s+ON DELETE\\s+(${FK_ACTION_RE}))?(?:\\s+ON UPDATE\\s+(${FK_ACTION_RE}))?`
+
+// Put a parsed REFERENCES clause (groups: table, column, on delete, on update,
+// from `at`) onto its column.
+function applyFk(col, m, at) {
+  col.fk = true
+  col.fkTable = m[at]
+  col.fkColumn = m[at + 1]
+  col.fkOnDelete = normFkAction((m[at + 2] || '').toUpperCase())
+  col.fkOnUpdate = normFkAction((m[at + 3] || '').toUpperCase())
+}
 
 // Inverse of `colDef`: turn one column definition back into the shared column
 // model. Clauses are peeled off right-to-left in the order `colDef` writes
 // them; whatever is left over is the type, which may be several words
 // (`double precision`) and carry a length (`character varying(255)`).
 function parseColumnDef(part) {
-  const m = (part || '').trim().match(/^"([^"]+)"\s+([\s\S]+)$/)
+  const m = (part || '').trim().match(new RegExp(`^${IDENT}\\s+([\\s\\S]+)$`))
   if (!m) return null
   const col = { ...newColumn('TEXT'), name: m[1] }
   let rest = m[2].trim()
 
-  const fk = rest.match(
-    new RegExp(
-      `\\s*REFERENCES\\s+"([^"]+)"\\s*\\(\\s*"([^"]+)"\\s*\\)(?:\\s+ON DELETE\\s+(${FK_ACTION_RE}))?(?:\\s+ON UPDATE\\s+(${FK_ACTION_RE}))?\\s*$`,
-      'i'
-    )
-  )
+  const fk = rest.match(new RegExp(`\\s*${FK_REFERENCE_RE}\\s*$`, 'i'))
   if (fk) {
-    col.fk = true
-    col.fkTable = fk[1]
-    col.fkColumn = fk[2]
-    col.fkOnDelete = normFkAction((fk[3] || '').toUpperCase())
-    col.fkOnUpdate = normFkAction((fk[4] || '').toUpperCase())
+    applyFk(col, fk, 1)
     rest = rest.slice(0, fk.index).trim()
   }
   const def = rest.match(/\s*DEFAULT\s+([\s\S]+)$/i)
@@ -218,8 +240,9 @@ function parseColumnDef(part) {
 
 // Parse a CREATE TABLE body into editable columns, so a staged (uncommitted)
 // CREATE TABLE can be reopened in the create-table form. A table-level
-// `PRIMARY KEY (a, b)` (a composite key) is applied back onto its columns;
-// other table-level constraints don't match a column definition and are dropped.
+// `PRIMARY KEY (a, b)` (a composite key) and a MySQL `FOREIGN KEY (a) REFERENCES …`
+// are applied back onto their columns; other table-level constraints don't match
+// a column definition and are dropped.
 export const parseColumnDefs = (body) => {
   const parts = splitTopLevel(body)
   const pkNames = new Set()
@@ -227,13 +250,19 @@ export const parseColumnDefs = (body) => {
     const m = part.trim().match(/^PRIMARY KEY\s*\(([^)]*)\)\s*$/i)
     if (m) {
       for (const n of m[1].split(',')) {
-        const name = n.trim().replace(/^"|"$/g, '')
+        const name = unquoteIdent(n)
         if (name) pkNames.add(name)
       }
     }
   }
   const cols = parts.map(parseColumnDef).filter(Boolean)
   if (pkNames.size) for (const c of cols) if (pkNames.has(c.name)) c.pk = true
+  const fkLine = new RegExp(`^FOREIGN KEY\\s*\\(\\s*${IDENT}\\s*\\)\\s*${FK_REFERENCE_RE}\\s*$`, 'i')
+  for (const part of parts) {
+    const m = part.trim().match(fkLine)
+    const col = m && cols.find((c) => c.name === m[1])
+    if (col) applyFk(col, m, 2)
+  }
   return cols
 }
 

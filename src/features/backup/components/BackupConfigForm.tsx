@@ -1,3 +1,4 @@
+import { supportsBackup } from '@/shared/config/databaseTypes'
 import { useEffect, useState } from 'react'
 import Button from '@/shared/ui/buttons/Button'
 import Select from '@/shared/ui/form/Select'
@@ -108,7 +109,7 @@ export default function BackupConfigForm({
     }
   }, [connectionId, workspaceId])
 
-  const supported = connectionType === 'sqlite' || connectionType === 'postgresql'
+  const supported = supportsBackup(connectionType)
   const patch = (p: Partial<ConfigState>) => setConfig((c) => ({ ...c, ...p }))
   const toggleDest = (id: string) => patch({ destinationIds: toggleId(config.destinationIds, id) })
 
@@ -133,7 +134,7 @@ export default function BackupConfigForm({
   if (!supported) {
     return (
       <div className="rounded-card border border-dashed border-edge-strong py-16 text-center text-[13px] text-ink-dim">
-        Backups aren't supported for this connection type yet — only SQLite and PostgreSQL are.
+        Backups aren't supported for this connection type yet — only SQLite, PostgreSQL and MySQL are.
       </div>
     )
   }

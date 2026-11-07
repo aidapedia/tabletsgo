@@ -95,10 +95,10 @@ test('an engine with connections isn’t turned off without force, and the refus
 
 test('the last database can’t be turned off', async () => {
   await assert.rejects(
-    updateModules({ postgresql: { enabled: false }, sqlite: { enabled: false }, redis: { enabled: false }, kafka: { enabled: false } }),
+    updateModules({ postgresql: { enabled: false }, mysql: { enabled: false }, sqlite: { enabled: false }, redis: { enabled: false }, kafka: { enabled: false } }),
     /at least one database/
   )
-  assert.ok(['postgresql', 'sqlite', 'redis', 'kafka'].every(isModuleEnabled))
+  assert.ok(['postgresql', 'mysql', 'sqlite', 'redis', 'kafka'].every(isModuleEnabled))
 })
 
 test('a feature turns off without a connection check', async () => {

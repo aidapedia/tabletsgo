@@ -3,7 +3,7 @@
  *
  * Everything above this module (routes, workflows, dashboards, backups) speaks
  * one engine-agnostic vocabulary; everything below it — server/db/sqlite.js,
- * postgres.js, redis.js — adapts a single engine to that vocabulary. The rule
+ * postgres.js, mysql.js, redis.js — adapts a single engine to that vocabulary. The rule
  * from CLAUDE.md holds here: **adapt at the edges, never fork the contract**.
  * Adding an engine means adding one driver file and one entry in DRIVERS; no
  * caller should ever need a new `conn.type` branch.
@@ -39,9 +39,12 @@
  *   getTableData(conn, ctx, { table, limit, offset })  → { columns, rows, error? }
  *                                 (a stable order, so `offset` pages through a whole table)
  *   getColumns(conn, ctx, table)  → [{ name, type, notnull, pk, default, autoIncrement, references }]
+ *                                 (`default` is SQL, ready for DDL; `extra`, optional, is what a
+ *                                  full redefinition of the column has to restate — MySQL)
  *   getIndexes(conn, ctx, table)  → [{ name, algorithm, unique, columns, condition,
- *                                     primary, constraint, … }]  (`constraint`: made by a
- *                                     PK/UNIQUE constraint, so not droppable on its own)
+ *                                     primary, constraint, locked?, … }]  (`constraint`: made by a
+ *                                     PK/UNIQUE constraint, so not droppable on its own; `locked`:
+ *                                     why the schema editor can't write this index back)
  *   getSchemaMap(conn, ctx)       → { table: [column, …] } for editor autocomplete
  *   getDiagram(conn, ctx, opts?)  → { tables: [{ name, columns, indexes }], foreignKeys }
  *                                 (opts.tables narrows the read to those tables, so a
@@ -55,6 +58,8 @@
  *   sqlLiteral(value)             a value as an inline literal (optional property;
  *                                 ./sql.js's default when the engine spells nothing
  *                                 differently)
+ *   quoteIdent(name)              a name as a quoted identifier (optional property,
+ *                                 same default)
  *   runQuery(conn, ctx, sql)      → { type:'rows', columns, rows } | { type:'message', message } | { error }
  *   pageSql(sql, { limit, offset }) → the statement narrowed to one page (optional
  *                                 property; without it, runQuery slices the rows)
@@ -63,6 +68,8 @@
  *   analyze(conn, ctx, { sql, cls })           → { dialect, summary, plan, rawPlan, …Suggestions }
  *   dump(conn, destPath)          write a restorable dump of the whole database
  *   restore(conn, dumpPath)       overwrite the live database with one
+ *   dumpExtension                 what a dump is called when downloaded (optional
+ *                                 property, 'dump' by default)
  *
  * ### The stream capability (log-shaped engines: Kafka today)
  *
@@ -173,15 +180,17 @@ import { isModuleEnabled, moduleOffMessage } from '../module-registry.js'
 import { SessionLimitError, setReleaseHandler, touchConnectionSession } from '../sessions/index.js'
 import { diagnose, targetOf } from './diagnose.js'
 import { closeAllTunnels, closeTunnel, reach, withTunnel } from './tunnel.js'
-import { sqlLiteral } from './sql.js'
+import { quoteIdent, sqlLiteral } from './sql.js'
 import { sqliteDriver } from './sqlite.js'
 import { postgresDriver } from './postgres.js'
+import { mysqlDriver } from './mysql.js'
 import { redisDriver } from './redis.js'
 import { kafkaDriver } from './kafka.js'
 
 export const drivers = {
   sqlite: sqliteDriver,
   postgresql: postgresDriver,
+  mysql: mysqlDriver,
   redis: redisDriver,
   kafka: kafkaDriver,
 }
@@ -448,6 +457,8 @@ export const tableDdl = gatedOptional('tableDdl', [])
 
 // How this engine writes a value as an inline literal (SQL export).
 export const literalFor = (conn) => drivers[conn?.type]?.sqlLiteral || sqlLiteral
+// And how it quotes a name, for a statement written here rather than in a driver.
+export const quoteFor = (conn) => drivers[conn?.type]?.quoteIdent || quoteIdent
 export const analyze = gatedRequired('analyze')
 
 // Execute one statement (or, on a command-driven engine, one command buffer)
@@ -524,6 +535,9 @@ export async function exportDatabaseToFile(conn) {
   await driver.dump(await dial(conn), filePath)
   return { filePath, sizeBytes: fs.statSync(filePath).size, dialect: conn.type }
 }
+
+// What a dump of this connection is called once it leaves the server.
+export const dumpExtensionFor = (conn) => drivers[conn?.type]?.dumpExtension || 'dump'
 
 // Overwrites a connection's live data with the dump file at `dumpPath`. Shared
 // by every restore path (backup run, storage browse, file upload) — the caller

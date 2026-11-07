@@ -13,7 +13,8 @@ import { moveColumn } from '@/features/schema-designer/lib/design'
 import { PlusIcon } from '@/shared/ui/icons'
 import { Input } from '@/shared/ui/form/Input'
 import { FormField, Label } from '@/shared/ui/form/Form'
-import { ColumnField, colDef, tableDefLines, newColumn, useColumnTypes } from '@/features/schema-designer/components/columnFields'
+import { quoteIdent, sqlDialectOf } from '@/shared/lib/sqlDialect'
+import { ColumnField, addColumnSql, tableDefLines, newColumn, useColumnTypes } from '@/features/schema-designer/components/columnFields'
 import IndexEditor, { useIndexEditor } from '@/features/schema-designer/components/indexFields'
 import { parseCreateIndex } from '@/features/schema-designer/lib/indexes'
 
@@ -32,8 +33,8 @@ const views = (indexCount) => [
   { value: 'sql', label: 'SQL' },
 ]
 
-const createTableSql = (tableName, cols) =>
-  `CREATE TABLE "${tableName}" (\n  ${tableDefLines(cols).join(',\n  ')}\n);`
+const createTableSql = (tableName, cols, dialect) =>
+  `CREATE TABLE ${quoteIdent(tableName, dialect)} (\n  ${tableDefLines(cols, dialect).join(',\n  ')}\n);`
 
 // Whitespace-insensitive comparison — enough to tell "the form could have
 // written this" from "someone wrote this by hand".
@@ -43,7 +44,7 @@ const norm = (sql) => (sql || '').replace(/\s+/g, ' ').trim()
 // right name on the diagram. First statement that names one wins.
 const tableNameIn = (statements) => {
   for (const sql of statements) {
-    const m = sql.match(/^\s*(?:CREATE TABLE|ALTER TABLE|DROP TABLE)\s+(?:IF (?:NOT )?EXISTS\s+)?"([^"]+)"/i)
+    const m = sql.match(/^\s*(?:CREATE TABLE|ALTER TABLE|DROP TABLE)\s+(?:IF (?:NOT )?EXISTS\s+)?["`]([^"`]+)["`]/i)
     if (m) return m[1]
   }
   return ''
@@ -62,9 +63,9 @@ const tableNameIn = (statements) => {
  * form builds, editable by hand) — see `view`.
  */
 export default function CreateTablePanel({ conn, initialTable, draftColumns, draftIndexSql = [], draftSql, onClose, onStage }: any) {
-  const dialect = conn.type === 'postgresql' ? 'postgresql' : 'sqlite'
+  const dialect = sqlDialectOf(conn.type)
   const types = useColumnTypes(conn)
-  const defaultType = dialect === 'postgresql' ? 'serial' : 'INTEGER'
+  const defaultType = { postgresql: 'serial', mysql: 'int auto_increment', sqlite: 'INTEGER' }[dialect]
   const isDraft = !!draftColumns
   const isEdit = !!initialTable && !isDraft
 
@@ -133,12 +134,12 @@ export default function CreateTablePanel({ conn, initialTable, draftColumns, dra
     if (isEdit) {
       return newColumns
         .filter((c) => c.name.trim())
-        .map((c) => `ALTER TABLE "${initialTable}" ADD COLUMN ${colDef(c)};`)
+        .flatMap((c) => addColumnSql(initialTable, c, dialect))
     }
     const named = columns.filter((c) => c.name.trim())
     if (!name.trim() || named.length === 0) return []
-    return [createTableSql(name.trim(), named)]
-  }, [columns, newColumns, name, isEdit, initialTable])
+    return [createTableSql(name.trim(), named, dialect)]
+  }, [columns, newColumns, name, isEdit, initialTable, dialect])
 
   // ---- Indexes ----
   // The table this form is about, as the index DDL names it — the typed name
@@ -172,7 +173,7 @@ export default function CreateTablePanel({ conn, initialTable, draftColumns, dra
   // hand edit or an imported design, and `draftColumns` is a lossy parse of it
   // — showing the form would quietly drop whatever the parser didn't
   // understand the moment it was saved.
-  const handWritten = isDraft && !!draftSql && norm(draftSql) !== norm(createTableSql(initialTable, draftColumns))
+  const handWritten = isDraft && !!draftSql && norm(draftSql) !== norm(createTableSql(initialTable, draftColumns, dialect))
   // A hand-written draft opens on the whole batch it was staged as — the
   // CREATE TABLE *and* the indexes beside it — because that batch is what
   // submitting from here replaces.
