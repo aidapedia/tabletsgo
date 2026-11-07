@@ -237,6 +237,6 @@ the concept genuinely has no counterpart.
 4. Add the type to the frontend `DB_CATALOG`/`TYPE_LABEL` in
    `features/connections/components/DbTypePickerModal`.
 5. Reuse existing credential field names where the concept maps.
-6. Document new endpoints in `BACKEND_DOCUMENTATION.MD` and update `README.md`'s
+6. Document new endpoints in `server/openapi.yaml` and update `README.md`'s
    database-compatibility section.
 7. Verify no caller needed changing — if one did, the abstraction leaked.

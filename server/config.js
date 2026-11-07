@@ -14,7 +14,12 @@ import { fileURLToPath } from 'url'
 export const ROOT_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..')
 
 export const PORT = process.env.PORT || 3000
+// The address people reach this instance at. Needed behind a reverse proxy: it
+// goes into emailed links and the Google/GitHub callback URL, which otherwise
+// come from the request.
+export const PUBLIC_URL = (process.env.PUBLIC_URL || '').trim().replace(/\/+$/, '')
 export const DIST_DIR = path.join(ROOT_DIR, 'dist')
+export const OPENAPI_PATH = path.join(ROOT_DIR, 'server', 'openapi.yaml')
 
 // Connection credentials (host/port/username/password/…) are encrypted at rest
 // with this key. Required — refuse to boot rather than silently store secrets

@@ -252,6 +252,10 @@ export const deleteWorkspaceCascade = async (workspaceId) =>
       await deleteConnectionMetadata(id)
     }
     await db().storage_destinations.deleteMany({ where: { workspace_id: workspaceId } })
+    // SSH hosts and keys hang off the workspace too, and a key row holds a sealed
+    // private key — nothing else would ever remove it.
+    await db().ssh_gateways.deleteMany({ where: { workspace_id: workspaceId } })
+    await db().ssh_keys.deleteMany({ where: { workspace_id: workspaceId } })
     // Standalone schema drafts hang off the workspace, not a connection, so the
     // per-connection loop above never reaches them.
     await db().schema_drafts.deleteMany({ where: { workspace_id: workspaceId } })

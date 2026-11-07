@@ -35,6 +35,7 @@
     "@uiw/react-codemirror": "^4.25.10",
     "avsc": "^5.7.9",
     "better-sqlite3": "^9.2.2",
+    "boring-avatars": "^2.0.4",
     "cors": "^2.8.5",
     "express": "^4.18.2",
     "html-to-image": "^1.11.13",
@@ -53,7 +54,9 @@
     "sql-formatter": "^15.8.2",
     "sql.js": "^1.14.1",
     "ssh2": "^1.17.0",
-    "ws": "^8.22.0"
+    "swagger-ui-express": "^5.0.1",
+    "ws": "^8.22.0",
+    "yaml": "^2.9.1"
   },
   "optionalDependencies": {
     "pg-native": "^3.9.1"

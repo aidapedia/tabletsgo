@@ -68,7 +68,6 @@ export default function ConnectionDetailPage() {
         conn={conn}
         tab={active}
         onTab={onTab}
-        onBack={() => navigate('/connections')}
         onOpen={() => connect(conn)}
         connecting={connectingId === conn.id}
         onEdit={(c, formTab) => navigate(`/connections/${c.id}/edit${formTab ? `/${formTab}` : ''}`)}

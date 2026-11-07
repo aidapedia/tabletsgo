@@ -48,6 +48,11 @@ SMTP/admin-seed fallbacks are the exception, read where they're used).
   deployments keep working. Invites always return a copyable link even without
   SMTP. See the `auth-sessions` skill.
 
+### Public address
+- `PUBLIC_URL` — **optional**. The address people reach the instance at. `baseUrl`
+  prefers it over the request, for emailed links and the Google/GitHub callback
+  URL. Set it behind a reverse proxy.
+
 ### Frontend
 - `VITE_API_URL` — frontend API base, **baked at build time** via Dockerfile `ARG`
   (not runtime). Default `/api`.

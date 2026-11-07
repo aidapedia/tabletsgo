@@ -32,6 +32,7 @@
  */
 
 import { randomUUID } from 'crypto'
+import { PUBLIC_URL } from './config.js'
 import { createAuthSession, destroyAuthSession, readAuthSession } from './sessions/index.js'
 import { db, transaction } from './meta.js'
 import { OWNER_PERMISSION } from './permissions.js'
@@ -55,7 +56,7 @@ export const bearerToken = (req) => {
   return h.startsWith('Bearer ') ? h.slice(7) : null
 }
 
-const USER_FIELDS = { id: true, username: true, name: true, role: true, status: true }
+const USER_FIELDS = { id: true, username: true, name: true, role: true, status: true, timezone: true }
 
 export const userRow = async (id) => (id ? await db().users.findUnique({ where: { id }, select: USER_FIELDS }) : null)
 
@@ -85,7 +86,7 @@ export async function sessionMiddleware(req, _res, next) {
 export const authUser = (req) => req.authUser || null
 
 // Public shape returned to the client (never the password hash).
-export const publicUser = (u) => (u ? { id: u.id, email: u.username, name: u.name, role: u.role } : null)
+export const publicUser = (u) => (u ? { id: u.id, email: u.username, name: u.name, role: u.role, timezone: u.timezone || null } : null)
 
 // Require an authenticated caller; sends 401 and returns null otherwise.
 export const requireAuth = (req, res) => {
@@ -300,4 +301,6 @@ export const userCanAccessConnection = async (conn, userId) => {
 }
 
 // Absolute base URL of the frontend, for building invite links.
-export const baseUrl = (req) => req.headers.origin || `${req.protocol}://${req.get('host')}`
+// `PUBLIC_URL` when set; the request can't be trusted to name the instance behind
+// a proxy, and on a public route it is whatever the sender says.
+export const baseUrl = (req) => PUBLIC_URL || req.headers.origin || `${req.protocol}://${req.get('host')}`

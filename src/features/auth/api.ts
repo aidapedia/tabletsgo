@@ -30,7 +30,7 @@ export async function acceptInvite(token: string, payload: { name: string; passw
 export async function getMe() {
   return request<{ user: any }>('/auth/me')
 }
-export async function updateProfile(payload: { name: string }) {
+export async function updateProfile(payload: { name?: string; timezone?: string | null }) {
   return request<{ user: any }>('/auth/profile', { method: 'PATCH', body: payload })
 }
 // Resolves to a fresh { user, token }: changing the password invalidates every
@@ -49,4 +49,44 @@ export async function getReset(token: string) {
 }
 export async function resetPassword(token: string, password: string) {
   return request(`/auth/reset/${encodeURIComponent(token)}`, { method: 'POST', body: { password } })
+}
+
+// ---- Registration and Google/GitHub sign-in ----
+
+export type SignInProviderKind = 'google' | 'github'
+export type SignInProvider = { kind: SignInProviderKind; label: string }
+export type SignInOptions = {
+  providers: SignInProvider[]
+  // `email` is false without a mail server: the emailed link is what proves the
+  // address, so sign-up then only works through a provider.
+  registration: { open: boolean; email: boolean }
+}
+export type LinkedIdentity = { id: string; provider: SignInProviderKind; email: string | null; createdAt: number; lastUsedAt: number | null }
+
+// What the sign-in pages offer. Degrades to a plain password form.
+export async function getSignInOptions() {
+  return safeRequest<SignInOptions>('/auth/providers', { providers: [], registration: { open: false, email: false } })
+}
+
+// Always resolves the same way whether or not the address has an account.
+export async function register(payload: { email: string; name?: string }) {
+  return request<{ ok: true }>('/auth/register', { method: 'POST', body: payload })
+}
+
+// `invite` accepts that invite by signing in. Resolves to where to send the browser.
+export async function startSignIn(kind: SignInProviderKind, invite?: string) {
+  return request<{ url: string }>(`/auth/oauth/${kind}/start`, { method: 'POST', body: { invite } })
+}
+export async function exchangeSignIn(code: string) {
+  return request<{ user: any; token: string }>('/auth/oauth/exchange', { method: 'POST', body: { code } })
+}
+
+export async function getIdentities() {
+  return request<{ identities: LinkedIdentity[]; hasPassword: boolean; providers: SignInProvider[] }>('/auth/identities')
+}
+export async function startLink(kind: SignInProviderKind) {
+  return request<{ url: string }>(`/auth/identities/${kind}/link`, { method: 'POST' })
+}
+export async function unlinkIdentity(id: string) {
+  return request(`/auth/identities/${encodeURIComponent(id)}`, { method: 'DELETE' })
 }

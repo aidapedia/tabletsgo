@@ -15,6 +15,7 @@
  *   backup/       backup schedule, runner and restore
  *   connection-transfer.js  the portable connection export/import bundle
  *   system-update.js        release checking + Docker self-update
+ *   openapi.js    the API description behind Swagger UI at /api/docs
  *
  * A route should read as: authorize → validate → call one of those → respond.
  * No route branches on `conn.type`; the db layer answers for every engine.
@@ -31,6 +32,7 @@ import { randomUUID, timingSafeEqual } from 'crypto'
 import { pipeline } from 'stream/promises'
 import { Readable, Transform } from 'stream'
 import cron from 'node-cron'
+import swaggerUi from 'swagger-ui-express'
 
 import {
   APP_NAME,
@@ -47,7 +49,7 @@ import {
 } from './server/config.js'
 import { backupMeta, checkMetaIntegrity, closeMeta, db as meta, transaction } from './server/meta.js'
 import { sha256 } from './server/crypto.js'
-import { describeError, filterAsync, safeJson, sanitizeForKey } from './server/util.js'
+import { describeError, filterAsync, isTimeZone, safeJson, sanitizeForKey } from './server/util.js'
 import {
   authUser,
   baseUrl,
@@ -88,6 +90,13 @@ import {
   setMemberRole as setWorkspaceMemberRole,
 } from './server/workspaces.js'
 import {
+  workspaceActivity,
+  workspaceConnections,
+  workspaceMembersDetail,
+  workspaceOverview,
+  workspaceResources,
+} from './server/workspace-insights.js'
+import {
   NODE_TYPES,
   PERMISSIONS,
   PERMISSION_KEYS,
@@ -116,8 +125,10 @@ import {
   createUser,
   deleteUser,
   getUser,
+  hasPassword,
   issueInviteToken,
   listUsers,
+  registerByEmail,
   setSystemRole,
   updateUser,
   userSummaries,
@@ -129,8 +140,10 @@ import {
   endAllConnectionSessions,
   endConnectionSession,
   listConnectionSessions,
+  putOneTime,
   resolveMaxSessions,
   sweepConnectionSessions,
+  takeOneTime,
   closeSessionStore,
   cache as sessionCache,
 } from './server/sessions/index.js'
@@ -139,6 +152,7 @@ import {
   envSmtp,
   publicSmtpConfig,
   sendInviteEmail,
+  sendRegistrationEmail,
   sendResetEmail,
   sendTestEmail,
   smtpConfig,
@@ -147,6 +161,10 @@ import { clearGlobalSmtp, publicGlobalSmtp, saveGlobalSmtp } from './server/app-
 import { assertModuleEnabled, isModuleEnabled, moduleOffMessage, optionalModuleSetting } from './server/module-registry.js'
 import { adminModules, loadModules, publicModules, updateModules } from './server/module-settings.js'
 import { notifyModuleOwners } from './server/module-notices.js'
+import { IdentityError, linkIdentity, listIdentities } from './server/identity/identities.js'
+import { adminProviders, clearProvider, enabledProviders, saveProvider } from './server/identity/providers.js'
+import { fetchProfile, flowCookie, readFlowCookie, startFlow, takeFlow } from './server/identity/oauth.js'
+import { acceptInvite as acceptInviteWith, signIn as signInWith, unlink as unlinkIdentity } from './server/identity/accounts.js'
 import {
   bumpSchemaVersion,
   deleteConnectionMetadata,
@@ -269,6 +287,7 @@ import {
   manualUpdateCommand,
   updateApplyMethod,
 } from './server/system-update.js'
+import { openApiSpec, swaggerUiOptions } from './server/openapi.js'
 
 const app = express()
 
@@ -355,7 +374,7 @@ app.post('/api/auth/login', async (req, res) => {
   const row = username
     ? await meta().users.findUnique({
         where: { username: String(username) },
-        select: { id: true, username: true, name: true, role: true, status: true, password_hash: true, ...LOCK_FIELDS },
+        select: { id: true, username: true, name: true, role: true, status: true, password_hash: true, timezone: true, ...LOCK_FIELDS },
       })
     : null
   if (row) {
@@ -393,13 +412,18 @@ app.get('/api/auth/me', async (req, res) => {
   res.json({ user: publicUser(user) })
 })
 
-// Rename yourself. Name is the only self-editable profile field.
+// Your name and time zone are the self-editable profile fields; send either.
+// `timezone: null` goes back to whatever zone the browser is in.
 app.patch('/api/auth/profile', async (req, res) => {
   const user = requireAuth(req, res)
   if (!user) return
-  const name = (req.body?.name ?? '').trim()
-  if (!name) return res.status(400).json({ error: 'A name is required.' })
-  await updateUser(user.id, { name })
+  const { name, timezone } = req.body || {}
+  if (name === undefined && timezone === undefined) return res.status(400).json({ error: 'Nothing to update.' })
+  if (name !== undefined && !String(name).trim()) return res.status(400).json({ error: 'A name is required.' })
+  if (timezone !== undefined && timezone !== null && !isTimeZone(timezone)) {
+    return res.status(400).json({ error: 'Unknown time zone.' })
+  }
+  await updateUser(user.id, { name: name === undefined ? undefined : String(name).trim(), timezone })
   res.json({ user: publicUser(await userRow(user.id)) })
 })
 
@@ -538,7 +562,7 @@ app.get('/api/invite/:token', async (req, res) => {
     return res.status(404).json({ error: 'This invite is invalid or has expired.' })
   }
   const ws = await getWorkspaceRow(u.invite_workspace)
-  res.json({ email: u.username, workspaceName: ws?.name || 'a workspace' })
+  res.json({ email: u.username, workspaceName: ws?.name || null })
 })
 
 // Accept an invite — set name + password, activate the account, log in.
@@ -567,13 +591,131 @@ app.post('/api/invite/:token/accept', async (req, res) => {
   res.json({ user: publicUser(user), token: await createSession(u.id, sessionContext(req)) })
 })
 
+// ---- Registration ----------------------------------------------------------
+
+// What the sign-in pages offer, before anyone is signed in. Email sign-up needs
+// a mail server because the link it sends is the proof of the address.
+app.get('/api/auth/providers', async (_req, res) => {
+  const open = isModuleEnabled('registration')
+  res.json({
+    providers: await enabledProviders(),
+    registration: { open, email: open && !!(await smtpConfig()) },
+  })
+})
+
+// Ask for an account: the emailed link finishes it, on the invite page. Always
+// the same answer, so this can't be used to find out who has an account.
+app.post('/api/auth/register', async (req, res) => {
+  try {
+    assertModuleEnabled('registration')
+  } catch (error) {
+    return fail(res, error)
+  }
+  const email = (req.body?.email || '').trim().toLowerCase()
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: 'Enter a valid email address.' })
+  const cfg = await smtpConfig()
+  if (!cfg) return res.status(503).json({ error: 'Signing up by email needs a mail server, and this instance has none.' })
+  const token = await registerByEmail({ email, name: req.body?.name?.trim() })
+  if (token) {
+    try {
+      await sendRegistrationEmail(cfg, { to: email, link: `${baseUrl(req)}/invite/${token}` })
+    } catch (e) {
+      console.error('Registration email failed:', e.message)
+    }
+  }
+  res.json({ ok: true })
+})
+
+// ---- Google and GitHub sign-in ---------------------------------------------
+const SIGN_IN_CODE_TTL_MS = 60 * 1000
+
+// One round trip with three purposes. Each starts with a POST that returns the
+// provider's URL, because a session token can't ride on a plain navigation: it
+// lives in localStorage, not a cookie.
+
+const startFlowFor = async (req, res, purpose) => {
+  try {
+    const { url, binding } = await startFlow(req.params.kind, purpose, `${baseUrl(req)}/api/auth/oauth/callback`)
+    res.setHeader('Set-Cookie', flowCookie(binding, { secure: baseUrl(req).startsWith('https:') }))
+    res.json({ url })
+  } catch (error) {
+    fail(res, error)
+  }
+}
+
+// Sign in, or with `invite` accept that invite.
+app.post('/api/auth/oauth/:kind/start', async (req, res) => {
+  const inviteToken = typeof req.body?.invite === 'string' ? req.body.invite : null
+  await startFlowFor(req, res, inviteToken ? { intent: 'invite', inviteToken } : { intent: 'login' })
+})
+
+// The provider sends the browser back here, for every purpose. No session
+// token ever goes into a URL: a sign-in ends with a one-time code the page trades
+// for one, the same { user, token } as /api/auth/login.
+app.get('/api/auth/oauth/callback', async (req, res) => {
+  const flow = await takeFlow(String(req.query.state ?? ''), readFlowCookie(req))
+  res.setHeader('Set-Cookie', flowCookie('', { secure: baseUrl(req).startsWith('https:') }))
+  const page =
+    flow?.intent === 'link' ? '/settings/account' : flow?.intent === 'invite' ? `/invite/${encodeURIComponent(flow.inviteToken)}` : '/login'
+  const back = (query) => res.redirect(`${baseUrl(req)}${page}?${query}`)
+
+  if (!flow) return back('error=expired')
+  if (req.query.error || !req.query.code) return back('error=cancelled')
+  try {
+    const profile = await fetchProfile(flow, String(req.query.code))
+    if (flow.intent === 'link') {
+      await linkIdentity(flow.userId, flow.kind, profile)
+      return back(`linked=${flow.kind}`)
+    }
+    const userId = flow.intent === 'invite' ? await acceptInviteWith(flow.inviteToken, flow.kind, profile) : await signInWith(flow.kind, profile)
+    const code = randomUUID()
+    await putOneTime(code, { userId }, SIGN_IN_CODE_TTL_MS)
+    res.redirect(`${baseUrl(req)}/login/complete?code=${code}`)
+  } catch (error) {
+    if (error instanceof IdentityError) return back(`error=${error.code}`)
+    console.error('Sign-in failed:', error.message)
+    back('error=failed')
+  }
+})
+
+app.post('/api/auth/oauth/exchange', async (req, res) => {
+  const ticket = await takeOneTime(String(req.body?.code ?? ''))
+  const user = ticket ? await userRow(ticket.userId) : null
+  if (!user) return res.status(404).json({ error: 'This sign-in has expired. Please try again.' })
+  res.json({ user: publicUser(user), token: await createSession(user.id, sessionContext(req)) })
+})
+
+// The caller's own linked accounts — Settings → Security.
+app.get('/api/auth/identities', async (req, res) => {
+  const user = requireAuth(req, res)
+  if (!user) return
+  res.json({ identities: await listIdentities(user.id), hasPassword: await hasPassword(user.id), providers: await enabledProviders() })
+})
+
+app.post('/api/auth/identities/:kind/link', async (req, res) => {
+  const user = requireAuth(req, res)
+  if (!user) return
+  await startFlowFor(req, res, { intent: 'link', userId: user.id })
+})
+
+app.delete('/api/auth/identities/:id', async (req, res) => {
+  const user = requireAuth(req, res)
+  if (!user) return
+  try {
+    await unlinkIdentity(user.id, req.params.id)
+    res.json({ ok: true })
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
 // ============================================================================
 // Instance administration (system admins only)
 //
-// The admin area is deliberately narrow: workspaces and accounts, nothing
-// inside them. An admin holds no workspace membership, so every route below
-// this section's guard already denies them — that's the separation, not an
-// oversight. See CLAUDE.md "AUTH MODEL".
+// The admin area is deliberately narrow: workspaces and accounts, and metadata
+// about what a workspace holds, never a way in. An admin holds no workspace
+// membership, so every route below this section's guard already denies them —
+// that's the separation, not an oversight. See CLAUDE.md "AUTH MODEL".
 // ============================================================================
 
 app.use('/api/admin', (req, res, next) => {
@@ -644,7 +786,30 @@ app.delete('/api/admin/workspaces/:id', async (req, res) => {
 // without joining it.
 app.get('/api/admin/workspaces/:id/members', async (req, res) => {
   if (!(await getWorkspaceRow(req.params.id))) return res.status(404).json({ error: 'Workspace not found' })
-  res.json(await listWorkspaceMembers(req.params.id))
+  res.json(await workspaceMembersDetail(req.params.id))
+})
+
+// The workspace detail page: metadata about what a workspace holds, for an admin
+// who can't enter it. server/workspace-insights.js is what keeps this to metadata.
+app.get('/api/admin/workspaces/:id/overview', async (req, res) => {
+  const overview = await workspaceOverview(req.params.id)
+  if (!overview) return res.status(404).json({ error: 'Workspace not found' })
+  res.json(overview)
+})
+
+app.get('/api/admin/workspaces/:id/connections', async (req, res) => {
+  if (!(await getWorkspaceRow(req.params.id))) return res.status(404).json({ error: 'Workspace not found' })
+  res.json(await workspaceConnections(req.params.id))
+})
+
+app.get('/api/admin/workspaces/:id/resources', async (req, res) => {
+  if (!(await getWorkspaceRow(req.params.id))) return res.status(404).json({ error: 'Workspace not found' })
+  res.json(await workspaceResources(req.params.id))
+})
+
+app.get('/api/admin/workspaces/:id/activity', async (req, res) => {
+  if (!(await getWorkspaceRow(req.params.id))) return res.status(404).json({ error: 'Workspace not found' })
+  res.json(await workspaceActivity(req.params.id))
 })
 
 // Grant or revoke ownership. This is the admin's lever over a workspace they
@@ -801,6 +966,31 @@ app.delete('/api/admin/users/:id', async (req, res) => {
   await destroyAuthSessionsForUser(req.params.id)
   await deleteUser(req.params.id)
   res.json({ ok: true })
+})
+
+// ---- Sign-in providers ----
+//
+// The Google and GitHub apps. Secrets are write-only, like the SMTP password.
+
+app.get('/api/admin/identity-providers', async (req, res) => {
+  res.json({ providers: await adminProviders(), callbackUrl: `${baseUrl(req)}/api/auth/oauth/callback` })
+})
+
+app.put('/api/admin/identity-providers/:kind', async (req, res) => {
+  try {
+    res.json({ providers: await saveProvider(req.params.kind, req.body) })
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+// Removes the app only. Linked accounts stay linked (server/identity/providers.js).
+app.delete('/api/admin/identity-providers/:kind', async (req, res) => {
+  try {
+    res.json({ providers: await clearProvider(req.params.kind) })
+  } catch (error) {
+    fail(res, error)
+  }
 })
 
 // ---- Email (SMTP) ----
@@ -3969,6 +4159,11 @@ app.post('/api/system/update/apply', async (req, res) => {
 app.get('/api/health', async (req, res) => {
   res.json({ status: bootReady ? 'ok' : 'starting', ready: bootReady, version: APP_VERSION, sha: GIT_SHA })
 })
+
+// The API reference. Public on purpose: it describes the open-source app, not
+// this instance, and says nothing /api/health doesn't about what is running.
+app.get('/api/openapi.json', (_req, res) => res.json(openApiSpec()))
+app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(null, swaggerUiOptions))
 
 // ============================================================================
 // Static frontend, fallbacks and startup

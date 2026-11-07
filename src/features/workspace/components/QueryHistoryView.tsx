@@ -16,13 +16,13 @@ import {
   TrashIcon,
 } from '@/shared/ui/icons'
 import LoadingState from '@/shared/ui/feedback/LoadingState'
+import { formatDateTime } from '@/shared/lib/datetime'
 
 const COLUMNS = ['Status', 'Query', 'Table', 'Latency', 'Executed at', 'Executor', 'Error']
 
 const fmtTime = (ts) => {
   if (!ts) return '—'
-  const d = new Date(ts)
-  return d.toLocaleString(undefined, {
+  return formatDateTime(ts, {
     year: 'numeric',
     month: 'short',
     day: '2-digit',

@@ -27,7 +27,7 @@ type Step = 'admin' | 'modules' | 'configure'
 //                       (signed in as that admin, through Admin → Modules' API)
 //   - has accounts    → prove control of one of them and promote it; its
 //                       connections already decide which databases are in use,
-//                       so it skips the module steps (everything stays on)
+//                       so it skips the module steps (the defaults stand)
 export default function SetupPage({ hasUsers = false, onComplete }: Props) {
   const { authenticate } = useAuth()
   const { refresh } = useModules()
@@ -60,7 +60,7 @@ export default function SetupPage({ hasUsers = false, onComplete }: Props) {
       authenticate(user, token)
       if (hasUsers) return finish('/')
       const list = await getAdminModules().catch(() => null)
-      // Couldn't read them: the admin is made and everything is on — the same
+      // Couldn't read them: the admin is made and the defaults stand — the same
       // as skipping, and Admin → Modules is where to change it.
       if (!list) return finish('/admin')
       setModules(list)
@@ -184,7 +184,7 @@ export default function SetupPage({ hasUsers = false, onComplete }: Props) {
             <div className="mt-7 flex flex-wrap items-center gap-2">
               <span className="text-[11px] text-ink-faint">{enginesPicked ? '' : 'Pick at least one database to continue.'}</span>
               <Button variant="subtle" size="lg" className="ml-auto" disabled={loading} onClick={() => finish('/admin')}>
-                Skip — keep everything on
+                Skip — keep the defaults
               </Button>
               <Button
                 variant="primary"

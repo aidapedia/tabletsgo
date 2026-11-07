@@ -18,10 +18,13 @@ import { LOCK_FIELDS, clearFailures, lockStatus } from './login-guard.js'
 import { isOwnerRole, membershipsOf, removeAllMemberships } from './workspaces.js'
 import { clearMembershipsFor, clearOwnedNodesEverywhere, revokePrincipalEverywhere } from './resource-tree.js'
 import { getRole } from './permissions.js'
+import { deleteIdentitiesOf, listIdentities } from './identity/identities.js'
 
 export const SYSTEM_ROLES = ['admin', 'user']
 
 export const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000
+
+const REGISTER_RESEND_MS = 60 * 1000
 
 // Never leaks password_hash or a live token. `blocked` and friends come from
 // the brute-force guard (server/login-guard.js) — an account blocked by failed
@@ -35,9 +38,12 @@ const toPublic = async (u) => ({
   status: u.status || 'active',
   ...lockStatus(u),
   workspaces: await workspacesOf(u.id),
+  // How this account can sign in, for the admin's detail view.
+  hasPassword: !!u.password_hash,
+  identities: await listIdentities(u.id),
 })
 
-const PUBLIC_FIELDS = { id: true, username: true, name: true, role: true, status: true, ...LOCK_FIELDS }
+const PUBLIC_FIELDS = { id: true, username: true, name: true, role: true, status: true, password_hash: true, ...LOCK_FIELDS }
 
 // Where this user stands in each workspace — what makes the admin user list
 // actionable ("who owns what") without a second round trip.
@@ -115,8 +121,52 @@ export const verifyPassword = async (id, password) => {
   return row.password_hash === sha256(password)
 }
 
-export const updateUser = async (id, { name, password }) => {
+// An account from a Google or GitHub sign-in has no password until it sets one.
+export const hasPassword = async (id) =>
+  !!(await db().users.findUnique({ where: { id }, select: { password_hash: true } }))?.password_hash
+
+/**
+ * Anyone may ask for an account by email, and an email address is what an
+ * invite later trusts: inviting an existing account adds it to the workspace
+ * directly. So nothing is usable until the mailbox answers — the account is
+ * created pending, exactly as an invited one is, and the password is chosen from
+ * the emailed link. Taking one here would let a stranger set the password of an
+ * address that isn't theirs.
+ *
+ * Returns the token to email, or null when there is nothing to send: the address
+ * already has an account, or was mailed in the last minute.
+ */
+export const registerByEmail = async ({ email, name }) => {
+  const row = await db().users.findUnique({
+    where: { username: email },
+    select: { id: true, status: true, invite_workspace: true, token_expires: true },
+  })
+  if (!row) return (await createUser({ email, name })).inviteToken
+  if (row.status !== 'pending') return null
+  if (row.token_expires && row.token_expires - INVITE_TTL_MS > Date.now() - REGISTER_RESEND_MS) return null
+  return issueInviteToken(row.id, row.invite_workspace)
+}
+
+// What accepting an invite does, for the sign-ins that prove the person some
+// other way than choosing a password.
+export const activateUser = async (id, { name } = {}) => {
+  const row = await db().users.findUnique({ where: { id }, select: { username: true, name: true } })
+  const unnamed = !row.name || row.name === row.username
+  await db().users.update({
+    where: { id },
+    data: {
+      status: 'active',
+      name: unnamed ? name || row.username : row.name,
+      invite_token: null,
+      invite_workspace: null,
+      token_expires: null,
+    },
+  })
+}
+
+export const updateUser = async (id, { name, password, timezone }) => {
   if (name !== undefined) await db().users.updateMany({ where: { id }, data: { name } })
+  if (timezone !== undefined) await db().users.updateMany({ where: { id }, data: { timezone } })
   if (password) {
     await db().users.updateMany({ where: { id }, data: { password_hash: sha256(password), status: 'active' } })
     // A new password hands the account back to its owner — the failed-attempt
@@ -163,6 +213,7 @@ export const deleteUser = async (id) => {
     await clearOwnedNodesEverywhere(id)
     await revokePrincipalEverywhere('user', id)
     await clearMembershipsFor(id)
+    await deleteIdentitiesOf(id)
     await db().users.deleteMany({ where: { id } })
   })
 }

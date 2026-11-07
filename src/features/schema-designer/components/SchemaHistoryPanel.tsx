@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { listSchemaMigrations, rollbackSchema } from '@/shared/api/database'
-import Avatar from '@/shared/ui/Avatar'
+import PersonAvatar from '@/shared/ui/PersonAvatar'
 import Badge from '@/shared/ui/Badge'
 import Button from '@/shared/ui/buttons/Button'
 import ConfirmDialog from '@/shared/ui/feedback/ConfirmDialog'
@@ -203,7 +203,7 @@ export default function SchemaHistoryPanel({
         ) : (
           <span className="flex min-w-0 items-center gap-2">
             {row.migration.executorName ? (
-              <Avatar label={row.migration.executorName} size="sm" />
+              <PersonAvatar seed={row.migration.executorName} size="sm" />
             ) : (
               <span className="h-6 w-6 shrink-0 rounded-full bg-elevated" />
             )}

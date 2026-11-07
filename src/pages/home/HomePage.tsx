@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAuth } from '@/features/auth'
 import { useConnections } from '@/features/connections'
 import { useWorkspaces, listMembers } from '@/features/workspaces'
+import EmptyState from '@/shared/ui/feedback/EmptyState'
 import { DatabaseIcon, UsersIcon } from '@/shared/ui/icons'
 import { PageHeader } from './ui'
 
@@ -31,7 +32,7 @@ function StatCard({ Icon, label, value, hint, onClick }: any) {
 export default function HomePage() {
   const { user } = useAuth()
   const navigate = useNavigate()
-  const { current } = useWorkspaces()
+  const { current, loading: loadingWorkspaces } = useWorkspaces()
   const { connections, loading } = useConnections()
   const [memberCount, setMemberCount] = useState<number | null>(null)
 
@@ -44,6 +45,19 @@ export default function HomePage() {
       alive = false
     }
   }, [current?.id])
+
+  // Someone who registered belongs nowhere until an owner adds them, and only an
+  // owner or an instance admin can do that.
+  if (!current && !loadingWorkspaces) {
+    return (
+      <div className="w-full">
+        <PageHeader title={`Welcome, ${user?.name || 'there'}`} desc="You're not in a workspace yet." />
+        <EmptyState bordered className="mt-6 py-16">
+          Ask a workspace owner to add {user?.email}, then refresh this page.
+        </EmptyState>
+      </div>
+    )
+  }
 
   return (
     <div className="w-full">

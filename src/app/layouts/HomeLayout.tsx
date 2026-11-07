@@ -3,13 +3,15 @@ import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '@/features/auth'
 import { WorkspaceSwitcher } from '@/features/workspaces'
 import { UpdateBanner } from '@/features/system-update'
+import Breadcrumb from '@/shared/ui/navigation/Breadcrumb'
 import NavItem from '@/shared/ui/navigation/NavItem'
 import RailItem, { RailDivider } from '@/shared/ui/navigation/RailItem'
 import Tooltip from '@/shared/ui/overlay/Tooltip'
 import AccountTile from '@/shared/ui/AccountTile'
 import AccountMenu from '@/shared/ui/AccountMenu'
+import { PageTrailProvider, usePageCrumbs } from '@/shared/ui/page/PageTrail'
 import IconButton from '@/shared/ui/buttons/IconButton'
-import { BellIcon, BuildingIcon, CloudIcon, DatabaseIcon, DiagramIcon, GridIcon, HomeIcon, KeyIcon, Logo, MailIcon, MenuIcon, MoreHorizontalIcon, PanelLeftIcon, SettingsIcon, ShieldIcon, TerminalIcon, TreeIcon, UsersIcon, WorkflowIcon } from '@/shared/ui/icons'
+import { BellIcon, BuildingIcon, CloudIcon, DatabaseIcon, DiagramIcon, GridIcon, HomeIcon, KeyIcon, Logo, MailIcon, MenuIcon, MoreHorizontalIcon, PanelLeftIcon, RefreshIcon, SettingsIcon, ShieldIcon, TerminalIcon, TreeIcon, UsersIcon, WorkflowIcon } from '@/shared/ui/icons'
 
 /**
  * Sidebar navigation model — a pinned row plus titled groups.
@@ -67,19 +69,27 @@ const NAV = {
 }
 
 // An instance admin belongs to no workspace, so none of the sections above have
-// anything to show them — `/admin` is their home, so it takes the pinned row,
-// and the instance-wide sections (accounts, the one mail server, the node
-// hierarchy) group under it, plus the same personal settings.
+// anything to show them — `/admin` is their home, so it takes the pinned row.
+// Below it the groups read as: who can get in and what they may reach, then how
+// the instance itself is set up, plus the same personal settings. The instance's
+// group is `Settings`; the account's own is the `Setting` in the account menu.
 const ADMIN_NAV = {
-  pinned: [{ label: 'Workspaces', Icon: BuildingIcon, path: '/admin', exact: true }],
+  pinned: [{ label: 'Workspaces', Icon: BuildingIcon, path: '/admin', exact: true, also: '/admin/workspaces' }],
   groups: [
     {
-      group: 'Administration',
+      group: 'Access',
       items: [
         { label: 'Users', Icon: UsersIcon, path: '/admin/users' },
-        { label: 'Email', Icon: MailIcon, path: '/admin/email' },
-        { label: 'Modules', Icon: GridIcon, path: '/admin/modules' },
         { label: 'Resource Tree', Icon: TreeIcon, path: '/resource-tree' },
+      ],
+    },
+    {
+      group: 'Settings',
+      items: [
+        { label: 'Modules', Icon: GridIcon, path: '/admin/modules' },
+        { label: 'Authentication', Icon: KeyIcon, path: '/admin/sign-in' },
+        { label: 'Email', Icon: MailIcon, path: '/admin/email' },
+        { label: 'Updates', Icon: RefreshIcon, path: '/admin/updates' },
       ],
     },
     {
@@ -89,18 +99,42 @@ const ADMIN_NAV = {
   ],
 }
 
-const isActive = (pathname: string, path: string, exact?: boolean) =>
-  exact ? pathname === path : pathname === path || pathname.startsWith(`${path}/`)
+// `also` is a second address the row owns: `/admin` can't own everything under
+// it, because the other admin sections live there too.
+const isActive = (pathname: string, { path, exact, also }: { path: string; exact?: boolean; also?: string }) =>
+  (exact ? pathname === path : pathname === path || pathname.startsWith(`${path}/`)) || (!!also && pathname.startsWith(`${also}/`))
 
-function Sidebar({ pathname, onNavigate, user, onLogout, open, onClose, isAdmin, collapsed, onToggleCollapse }: any) {
+// The trail's root. A workspace user's is the pinned Home row; an admin's pinned
+// row is one section among several, and `Workspaces / Users` would file Users
+// under it, so the admin area gets a root of its own.
+const ADMIN_ROOT = { label: 'Administration', path: '/admin' }
+
+// Root → section come from the address, so every page has them without asking;
+// anything deeper is the page's to name (see `PageTrail`).
+function PageTrail({ pathname, isAdmin }: { pathname: string; isAdmin: boolean }) {
+  const navigate = useNavigate()
+  const crumbs = usePageCrumbs()
+  const nav = isAdmin ? ADMIN_NAV : NAV
+  const root = isAdmin ? ADMIN_ROOT : nav.pinned[0]
+  const section = [...nav.pinned, ...nav.groups.flatMap((g) => g.items)].find((item) => isActive(pathname, item))
+  const places = section && section !== root ? [root, section] : [root]
+
+  return (
+    <Breadcrumb
+      items={[...places.map(({ label, path }) => ({ label, onClick: () => navigate(path) })), ...crumbs]}
+      size="sm"
+      className="mb-3"
+    />
+  )
+}
+
+function Sidebar({ pathname, onNavigate, user, onSettings, onLogout, open, onClose, isAdmin, collapsed, onToggleCollapse }: any) {
   const nav = isAdmin ? ADMIN_NAV : NAV
 
-  // The Account group lives in the footer, not the nav list: its one row is
-  // about *you*, so it belongs directly above the account block rather than at
-  // the bottom of a list of places to go. Its header goes with it — the tile
-  // underneath already says whose settings these are.
-  const accountGroup = nav.groups.find((g) => g.group === 'Account')
-  const listedGroups = nav.groups.filter((g) => g !== accountGroup)
+  // The Account group isn't listed: its one row is about *you*, so it opens from
+  // the account menu, next to sign-out. It stays in the model because the page
+  // trail names a section from it.
+  const listedGroups = nav.groups.filter((g) => g.group !== 'Account')
 
   // Collapsed, a row *is* a rail row — the same `RailItem` the console's
   // IconRail is built from, so the two rails share their size, tooltip and
@@ -114,14 +148,14 @@ function Sidebar({ pathname, onNavigate, user, onLogout, open, onClose, isAdmin,
             icon={item.Icon}
             label={item.label}
             href={item.path}
-            active={isActive(pathname, item.path, item.exact)}
+            active={isActive(pathname, item)}
             onClick={(e: MouseEvent) => onNavigate(e, item.path)}
           />
         ) : (
           <NavItem
             key={item.path}
             href={item.path}
-            active={isActive(pathname, item.path, item.exact)}
+            active={isActive(pathname, item)}
             icon={item.Icon}
             onClick={(e: MouseEvent) => onNavigate(e, item.path)}
           >
@@ -247,18 +281,15 @@ function Sidebar({ pathname, onNavigate, user, onLogout, open, onClose, isAdmin,
           ))}
         </nav>
 
-        {/* Account: the settings row, then the person. Both states are the same
-            two things — collapsed just drops to icons and moves the name, email
-            and sign-out into the tile's menu, since none of them fit at 64px.
-            The tile carries the presence dot in both, the same one the console
+        {/* Account: the person, whose menu holds settings and sign-out. The
+            tile carries the presence dot in both states, the same one the console
             rail shows: you are looking at your own account, so "online" is the
             one thing it can always state, and it should not blink out of
             existence when you leave the console for the home shell. */}
         <div className={`flex flex-col gap-1 border-t border-edge py-3 ${collapsed ? 'px-2' : 'px-3'}`}>
-          {rows(accountGroup?.items ?? [])}
-
           <AccountMenu
             user={user}
+            onSettings={onSettings}
             onLogout={onLogout}
             width={collapsed ? 220 : 232}
             trigger={({ open: menuOpen, toggle }) =>
@@ -271,7 +302,7 @@ function Sidebar({ pathname, onNavigate, user, onLogout, open, onClose, isAdmin,
                       menuOpen ? 'bg-card-hover' : ''
                     }`}
                   >
-                    <AccountTile label={user?.name} size={30} presence surface="panel" />
+                    <AccountTile label={user?.name || user?.email} size={30} presence surface="panel" />
                   </button>
                 </Tooltip>
               ) : (
@@ -284,7 +315,7 @@ function Sidebar({ pathname, onNavigate, user, onLogout, open, onClose, isAdmin,
                     menuOpen ? 'bg-card-hover' : ''
                   }`}
                 >
-                  <AccountTile label={user?.name} size={30} presence surface="panel" />
+                  <AccountTile label={user?.name || user?.email} size={30} presence surface="panel" />
                   <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-ink">{user?.name || 'Account'}</span>
                   <MoreHorizontalIcon width={16} height={16} className="shrink-0 text-ink-faint" />
                 </button>
@@ -344,6 +375,10 @@ export default function HomeLayout() {
         pathname={location.pathname}
         onNavigate={go}
         user={user}
+        onSettings={() => {
+          setSidebarOpen(false)
+          navigate('/settings')
+        }}
         onLogout={logout}
         isAdmin={isAdmin}
         open={sidebarOpen}
@@ -369,7 +404,10 @@ export default function HomeLayout() {
         <main className="min-h-0 flex-1 overflow-y-auto px-8 py-10 max-[600px]:px-4 max-[600px]:py-7">
           <div className="mx-auto w-full max-w-[1280px]">
             <UpdateBanner />
-            <Outlet />
+            <PageTrailProvider>
+              <PageTrail pathname={location.pathname} isAdmin={isAdmin} />
+              <Outlet />
+            </PageTrailProvider>
           </div>
         </main>
       </div>

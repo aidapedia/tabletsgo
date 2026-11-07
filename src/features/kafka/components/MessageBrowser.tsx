@@ -14,6 +14,7 @@ import { CodeIcon, CopyIcon, DownloadIcon, EyeIcon, FilterIcon, PlayIcon, SendIc
 import { readMessages, type MessagePage, type MessageRow } from '../lib/api'
 import { highlight } from '@/shared/ui/highlight'
 import { bytes, prettyJson, shortTime } from '../lib/format'
+import { displayTimeZone, formatDateTime, timeZoneOffset, zonedInputToDate } from '@/shared/lib/datetime'
 
 const FROM_OPTIONS = [
   { value: 'latest', label: 'Newest' },
@@ -77,7 +78,7 @@ export default function MessageBrowser({
 
   const position = () => {
     if (from === 'offset') return `offset:${parseInt(offset) || 0}`
-    if (from === 'time') return time ? `ts:${new Date(time).toISOString()}` : 'latest'
+    if (from === 'time') return time ? `ts:${zonedInputToDate(time).toISOString()}` : 'latest'
     return from
   }
 
@@ -208,7 +209,7 @@ export default function MessageBrowser({
         )}
         {from === 'time' && (
           <label className="w-[190px]">
-            <span className={label}>Time</span>
+            <span className={label}>Time ({timeZoneOffset(displayTimeZone())})</span>
             <Input type="datetime-local" step="1" value={time} onChange={(e) => setTime(e.target.value)} />
           </label>
         )}
@@ -457,7 +458,7 @@ function MessageDetail({
 
       <Section title="Metadata">
         {[
-          ['Timestamp', new Date(m.timestamp).toISOString().replace('T', ' ').replace('Z', ' UTC')],
+          ['Timestamp', formatDateTime(m.timestamp, { dateStyle: 'medium', timeStyle: 'long' })],
           ['Partition', String(m.partition)],
           ['Offset', m.offset.toLocaleString()],
           ['Size', bytes(m.size)],

@@ -95,9 +95,10 @@ assumptions specific to one dialect.
 
 ### Adding a backend endpoint
 
-Every new server endpoint must be documented in
-[`BACKEND_DOCUMENTATION.MD`](BACKEND_DOCUMENTATION.MD) with its request,
-response, and a sample URL, following the existing entries' format.
+Every new server endpoint must be described in
+[`server/openapi.yaml`](server/openapi.yaml) with its request, response, and
+sample values, following the existing entries' format. It is served as Swagger
+UI at `/api/docs`, and `npm test` fails when it and `server.js` disagree.
 
 ---
 
@@ -121,7 +122,7 @@ Bump the version as part of the same PR that makes the change.
 2. Make your change, following the standards above.
 3. Run `npm run typecheck` and exercise the affected feature locally
    (`npm run dev:all` or `docker compose up -d`) before opening a PR.
-4. Update `CLAUDE.md` / `BACKEND_DOCUMENTATION.MD` if your change affects
+4. Update `CLAUDE.md` / `server/openapi.yaml` if your change affects
    project structure or the API contract.
 5. Open a PR against `v0.x.x` with a clear description of the *why*, not just
    the *what*.

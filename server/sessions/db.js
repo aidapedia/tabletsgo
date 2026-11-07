@@ -28,8 +28,9 @@ export function dbStore() {
 
   // `user_id` is a real column rather than a field inside the JSON blob so
   // "sign this user out everywhere" is an indexed delete instead of a scan of
-  // every session on the instance.
-  const userIdOf = (value) => (value && typeof value === 'object' ? value.userId || null : null)
+  // every session on the instance. The column is required, so a record that
+  // belongs to nobody yet (a sign-in on its way to a provider) stores ''.
+  const userIdOf = (value) => (value && typeof value === 'object' ? value.userId || '' : '')
 
   const parse = (row) => {
     if (!row) return null

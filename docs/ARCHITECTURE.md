@@ -33,8 +33,9 @@ src/
 │   │   ├── form/                 #   Form/FormField/Label, Input/Textarea, PasswordInput, Select, Checkbox,
 │   │   │                         #     CheckboxRow, SearchInput, Toggle, NumberStepper, Segmented
 │   │   ├── navigation/           #   NavItem, Tab, MenuItem, Breadcrumb, RailItem
-│   │   ├── page/                 #   the page shell every full-page view shares: PageHeader (back link +
-│   │   │                         #     media/title/meta + actions), PageTabs (the tab bar AND the active
+│   │   ├── page/                 #   the page shell every full-page view shares: PageTrail (how a page adds
+│   │   │                         #     to the trail HomeLayout draws), PageHeader (media/title/meta +
+│   │   │                         #     actions), PageTabs (the tab bar AND the active
 │   │   │                         #     tab's body, so spacing can't drift), Narrow (a capped content
 │   │   │                         #     column — pages never cap themselves, HomeLayout owns the width)
 │   │   ├── overlay/              #   Popover, Tooltip, ContextMenu
@@ -51,7 +52,7 @@ src/
 │   │   │                         #     useListView + ViewToggle (the per-list List / Grid switch,
 │   │   │                         #     remembered in localStorage; `view="grid"` makes DataTable draw
 │   │   │                         #     the rows as cards built from its columns, or `renderCard`'s own)
-│   │   └── (root)                #   Avatar, Badge, PersonRow, RowLabel, HelpTip (a "?" whose hover
+│   │   └── (root)                #   Avatar, PersonAvatar, Badge, PersonRow, RowLabel, HelpTip (a "?" whose hover
 │   │                             #     explains its neighbour — FormField's `help`), DragHandle (the grip a
 │   │                             #     reorderable list grabs by — pair with useDragReorder),
 │   │                             #     SaveQueryPanel, SqlEditor, CodeEditor, CommandReference (a command
@@ -67,7 +68,7 @@ src/
 │   │                             #   measure on drop, play the delta with transforms). Native HTML5
 │   │                             #   drag, so keep it out of a React Flow canvas, whose own d3-drag
 │   │                             #   suppresses native drag events)
-│   ├── lib/                      # helpers: recents, schemaDraft, toggleId, version (meetsVersion)
+│   ├── lib/                      # helpers: datetime (every time the app shows, in the account's zone), recents, schemaDraft, toggleId, version (meetsVersion)
 │   ├── api/                      # backend client: request.ts (fetch wrapper) + database.ts
 │   ├── config/                   # runtime API_URL and shared database type catalog/labels
 │   └── types/                    # ambient/shared TS types (globals.d.ts)
@@ -77,11 +78,18 @@ src/
 │   │                             #   `user.role` is the SYSTEM role ('admin' | 'user') — see the
 │   │                             #   `auth-sessions` skill.
 │   │                             #   components/ProfileSetting + PasswordSetting: the caller's own
-│   │                             #     account (rename / change password), rendered by Setting > Account.
+│   │                             #     account (rename / change password), rendered by Setting > Profile and Security.
+│   │                             #   components/TimeZoneSetting: the account's display zone, on Setting > Preferences.
+│   │                             #   components/SignInMethods (link/unlink Google or GitHub, Security tab) and
+│   │                             #     ProviderButtons ("Continue with …", on login, register and invite);
+│   │                             #     lib/signInErrors turns the callback's ?error= code into a sentence.
 │   │                             #     Email and system role stay read-only — an admin changes those
 │   ├── admin/                    # the instance-admin area (system role 'admin' only): AdminWorkspacesPanel
-│   │                             #   (every workspace + who owns it; create/rename/delete, grant ownership)
+│   │                             #   (every workspace + who owns it; a row opens the detail page)
+│   │                             #   workspace-detail/ (AdminWorkspaceDetail + one file per tab: Overview, Members,
+│   │                             #     Connections, Resources, Activity, Settings; metadata only, nothing opens a database)
 │   │                             #   AdminUsersPanel (accounts, system role, invites, password reset)
+│   │                             #   AdminSignInPanel (the Google and GitHub apps people sign in through)
 │   │                             #   and AdminSmtpPanel + SmtpForm (the instance's one mail server —
 │   │                             #     the only place SMTP is configurable; see `auth-sessions` skill).
 │   │                             #   Reaches nothing inside a workspace — an admin has no membership
@@ -393,18 +401,20 @@ src/
 │       │                         #   apply → verify). Compares running (version, sha) to the latest GitHub
 │       │                         #   Release; docker-socket-mounted ⇒ one-click self-update, else a manual
 │       │                         #   `docker compose pull` command. Admin-only apply.
-│       ├── components/           #   UpdateBanner (dismissible home-shell banner), UpdatePanel (Settings >
+│       ├── components/           #   UpdateBanner (dismissible home-shell banner), UpdatePanel (Admin → Settings >
 │       │                         #     Updates: version + changelog + re-check), UpdateWizard (guided flow)
 │       ├── stores/               #   UpdateContext (useUpdate: info + check + per-version dismiss)
 │       └── lib/                  #   api (/api/system/* client + version polling), types
 │
 └── pages/                        # route-level composition (thin — just assemble features), grouped by area
     ├── auth/                     # unauthenticated flows: LoginPage, SetupPage, AcceptInvitePage,
-    │                             #   ForgotPasswordPage, ResetPasswordPage
+    │                             #   ForgotPasswordPage, ResetPasswordPage, RegisterPage,
+    │                             #   LoginCompletePage (where a Google/GitHub sign-in lands) + AuthCard
     ├── admin/                    # the instance-admin area, one file per sidebar section (same rule
-    │                             #   as home/): AdminWorkspacesPage (/admin), AdminUsersPage
+    │                             #   as home/): AdminWorkspacesPage (/admin), AdminWorkspaceDetailPage
+    │                             #   (/admin/workspaces/:id/:tab), AdminUsersPage
     │                             #   (/admin/users) + AdminEmailPage (/admin/email — the instance-wide
-    │                             #   SMTP config) + AdminModulesPage (/admin/modules) — no tabs, the sidebar switches. Only reachable
+    │                             #   SMTP config) + AdminSignInPage (/admin/sign-in) + AdminModulesPage (/admin/modules) + AdminUpdatesPage (/admin/updates) — no tabs, the sidebar switches. Only reachable
     │                             #   with the system role 'admin'; AppRoutes' RequireSystemAdmin /
     │                             #   RequireWorkspaceUser send each audience to the other's home
     ├── console/                  # WorkspacePage — the route /connection/:id. Thin: it reads the :id and
@@ -493,9 +503,8 @@ src/
         │                         #   node's owner / grants / your-access on the right. The selection is
         │                         #   in the URL, so a refresh keeps it and a link lands on it
         ├── WorkspaceSettingsPage # /workspace → General / Config / Member tabs
-        └── SettingsPage          # /settings → Account / Theme / Data / Keymap / Updates tabs (Account
-                                  #   renders features/auth's ProfileSetting + PasswordSetting; Updates
-                                  #   renders UpdatePanel)
+        └── SettingsPage          # /settings → Account / Theme / Data / Keymap tabs (Account
+                                  #   renders features/auth's ProfileSetting + PasswordSetting)
 ```
 
 Note: `features/workspaces` (plural) is the org/tenant layer (workspaces, members,
@@ -576,13 +585,20 @@ server/
 ├── workspaces.js         # workspaces + their roster on the workspace node: the admin listing, ownership
 │                         #   changes, and the one delete cascade both delete routes share.
 │                         #   "Owner" = holds `workspace.manage`, never a role-name comparison
+├── workspace-insights.js # read-only: what an instance admin sees about a workspace. Names every column, so secrets, query text and logs are never loaded
 ├── users.js              # the instance user directory (`users`): system roles, invites,
 │                         #   promote/demote (promoting to admin strips every membership)
+├── identity/             # Google and GitHub sign-in
+│   ├── identities.js     #   owns `user_identities`: who a provider account belongs to, keyed on
+│   │                     #     the provider's user id. Leaf on meta.js, because users.js imports it
+│   ├── providers.js      #   the apps: `app_settings` key 'sign_in_providers', secret sealed like SMTP's
+│   ├── oauth.js          #   the round trip: start, callback state, code → profile. Knows no accounts
+│   └── accounts.js       #   what a confirmed profile means: sign in, link, accept an invite, register
 ├── login-guard.js        # sign-in brute-force protection: counts consecutive failures on
 │                         #   the account and blocks it past the threshold. An instance admin
 │                         #   only ever gets a self-expiring cooldown — see the `auth-sessions` skill
 ├── module-registry.js    # leaf (imports nothing): the module catalog — engines (postgresql,
-│                         #   sqlite, redis, kafka) and features (backup) — plus an in-memory copy of
+│                         #   sqlite, redis, kafka) and features (backup, registration) — plus an in-memory copy of
 │                         #   the admin's on/off choices and settings. isModuleEnabled / moduleSetting
 │                         #   are sync reads: the db layer's driverFor refuses a turned-off engine,
 │                         #   the Kafka driver reads its read caps here; every engine has its own query
@@ -596,8 +612,9 @@ server/
 ├── module-notices.js     # notifies the owners of an engine's connections by email — one per unique
 │                         #   address — that a forced turn-off locked them
 ├── app-settings.js       # instance-wide settings (`app_settings`, key → JSON): the admin-owned
-│                         #   counterpart of workspaces.settings. Today one key, 'smtp' — the global
-│                         #   mail server, its password sealed under its own scrypt namespace
+│                         #   counterpart of workspaces.settings. Keys: 'smtp' (the global mail server,
+│                         #   its password sealed under its own scrypt namespace), 'modules',
+│                         #   'sign_in_providers'
 ├── sessions/             # ★ the session store — logins + open-connection sessions
 │   ├── index.js          #   the registry: auth tokens, connection sessions, the limit, the sweeper
 │   ├── db.js             #   durable backend: the meta DB's `sessions` table — the source of
@@ -657,5 +674,7 @@ server/
 │   ├── runner.js         #   export → store, retries, run history, failure notification
 │   ├── history.js        #   backup run calendar, listing and upload status
 │   └── restore.js        #   fetch artifact → decrypt → hand to the driver
-└── system-update.js      # GitHub release checking (cached) + Docker-socket self-update
+├── system-update.js      # GitHub release checking (cached) + Docker-socket self-update
+├── openapi.yaml          # the API reference: every route (tests/openapi.test.js keeps it honest)
+└── openapi.js            # loads it, stamps the running version; Swagger UI options for /api/docs
 ```

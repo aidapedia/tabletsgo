@@ -25,6 +25,91 @@ export type AdminWorkspaceMember = {
   status: 'active' | 'pending'
   systemRole?: SystemRole
   createdAt?: number
+  // The brute-force guard's block, how they can sign in, and how many of this
+  // workspace's groups they're on.
+  blocked?: boolean
+  signIn?: ('password' | 'google' | 'github')[]
+  groupCount?: number
+}
+
+export type AdminWorkspaceOverview = {
+  workspace: {
+    id: string
+    name: string
+    createdAt?: number
+    lastActivityAt: number | null
+    maxSessionsPerConnection: number
+    backupFailureAlerts: boolean
+  }
+  owners: { userId: string; name: string; email: string }[]
+  counts: {
+    members: number
+    pendingMembers: number
+    connections: number
+    lockedConnections: number
+    groups: number
+    dashboards: number
+    workflows: number
+    scheduledWorkflows: number
+    savedQueries: number
+    schemaDrafts: number
+    storageDestinations: number
+    sshHosts: number
+    sshKeys: number
+  }
+  queries: { days: { day: string; total: number; failed: number }[]; total: number; failed: number }
+  backups: { runs: number; succeeded: number }
+  engines: { type: string; count: number; locked: boolean }[]
+  environments: { environment: string; count: number }[]
+  attention: {
+    lockedConnections: string[]
+    failingBackups: { connectionId: string; name: string; consecutiveFailures: number; lastSuccessAt: number | null }[]
+  }
+}
+
+export type AdminWorkspaceConnection = {
+  id: string
+  name: string
+  type: string
+  environment: string | null
+  state: 'active' | 'locked'
+  ownerName: string | null
+  // Members who can actually open it, resolved person by person.
+  canOpen: number
+  backup: { frequency: 'hourly' | 'daily'; hourOfDay: number; consecutiveFailures: number } | null
+  createdAt?: number
+}
+
+export type AdminWorkspaceResources = {
+  totals: {
+    dashboards: { total: number; connections: number }
+    workflows: { total: number; connections: number }
+    savedQueries: { total: number; connections: number }
+    scheduledWorkflows: number
+    schemaDrafts: number
+  }
+  groups: { id: string; name: string; people: number; connections: number }[]
+  storage: { id: string; name: string; bucket: string; region: string | null; schedules: number }[]
+  sshHosts: { id: string; name: string; host: string; port: number; transport: 'tcp' | 'cloudflare'; hostKeyPinned: boolean }[]
+  sshKeys: { id: string; name: string; algorithm: string | null; fingerprint: string | null }[]
+}
+
+export type AdminWorkspaceRun = {
+  id: string
+  kind: 'backup' | 'workflow'
+  name: string | null
+  connectionId: string
+  connectionName: string | null
+  trigger: string
+  status: string
+  startedAt: number
+  finishedAt: number | null
+}
+
+export type AdminWorkspaceActivity = {
+  busiestConnections: { id: string; name: string; queries: number }[]
+  activeMembers: { id: string; name: string; queries: number }[]
+  runs: AdminWorkspaceRun[]
 }
 
 export type AdminWorkspace = {
@@ -54,6 +139,8 @@ export type AdminUser = {
   blockedAt: number | null
   blockedUntil: number | null
   failedAttempts: number
+  hasPassword: boolean
+  identities: { id: string; provider: 'google' | 'github'; email: string | null; createdAt: number; lastUsedAt: number | null }[]
   // `roleName` is the role's display name and `isOwner` whether it carries
   // workspace.manage — both resolved server-side, since a role slug means
   // whatever an admin has defined it to mean.
@@ -81,6 +168,23 @@ export async function renameWorkspaceAs(id: string, name: string) {
 
 export async function deleteWorkspaceAs(id: string) {
   return request<{ ok: true; connectionsDeleted: number }>(`/admin/workspaces/${id}`, { method: 'DELETE' })
+}
+
+// `null` when the workspace doesn't exist, which the detail page says out loud.
+export async function getWorkspaceOverview(id: string) {
+  return safeRequest<AdminWorkspaceOverview | null>(`/admin/workspaces/${id}/overview`, null)
+}
+
+export async function listWorkspaceConnectionsAs(id: string) {
+  return safeRequest<AdminWorkspaceConnection[]>(`/admin/workspaces/${id}/connections`, [])
+}
+
+export async function getWorkspaceResources(id: string) {
+  return safeRequest<AdminWorkspaceResources | null>(`/admin/workspaces/${id}/resources`, null)
+}
+
+export async function getWorkspaceActivity(id: string) {
+  return safeRequest<AdminWorkspaceActivity | null>(`/admin/workspaces/${id}/activity`, null)
 }
 
 export async function listWorkspaceMembersAs(id: string) {
@@ -167,4 +271,22 @@ export async function clearGlobalSmtp() {
 
 export async function testGlobalSmtp(body: { to?: string; smtp?: any }) {
   return request<{ ok: true }>('/admin/smtp/test', { method: 'POST', body })
+}
+
+// ---- Sign-in providers ----
+
+export type AdminIdentityProvider = {
+  kind: 'google' | 'github'
+  label: string
+  clientId: string
+  hasSecret: boolean
+  enabled: boolean
+  linked: number
+}
+
+export async function getIdentityProviders() {
+  return request<{ providers: AdminIdentityProvider[]; callbackUrl: string }>('/admin/identity-providers')
+}
+export async function saveIdentityProvider(kind: string, body: { clientId?: string; clientSecret?: string; enabled?: boolean }) {
+  return request<{ providers: AdminIdentityProvider[] }>(`/admin/identity-providers/${kind}`, { method: 'PUT', body })
 }

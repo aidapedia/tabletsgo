@@ -10,6 +10,7 @@ import BackupVersionList from './BackupVersionList'
 import RestorePanel from './RestorePanel'
 import Toggle from '@/shared/ui/form/Toggle'
 import LoadingState from '@/shared/ui/feedback/LoadingState'
+import { formatDateTime, formatTime } from '@/shared/lib/datetime'
 
 // ---- small formatting helpers ----
 const FREQ_LABEL = (s: BackupSchedule) =>
@@ -26,7 +27,7 @@ function relTime(ts?: number) {
   return `${d} day${d === 1 ? '' : 's'} ago`
 }
 
-// Next fire time for the schedule, in the viewer's locale (server fires on UTC
+// Next fire time for the schedule, in the viewer's zone (server fires on UTC
 // hour boundaries — see the backup scheduler).
 function nextRunLabel(s: BackupSchedule | null) {
   if (!s || !s.enabled) return 'Paused'
@@ -34,11 +35,11 @@ function nextRunLabel(s: BackupSchedule | null) {
   next.setUTCMinutes(0, 0, 0)
   if (s.frequency === 'hourly') {
     next.setUTCHours(next.getUTCHours() + 1)
-    return next.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    return formatTime(next, { hour: '2-digit', minute: '2-digit' })
   }
   next.setUTCHours(s.hourOfDay)
   if (next <= new Date()) next.setUTCDate(next.getUTCDate() + 1)
-  return next.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+  return formatDateTime(next, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
 
 // Backup tab: a read-only viewer. All configuration (create/edit the schedule)

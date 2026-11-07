@@ -30,7 +30,10 @@ Browse data, write queries, design schemas, automate workflows and back up to S3
 - **Data export / import** — CSV, JSON or SQL, with a dry‑run preview.
 - **SSH tunnels** — reach private databases through a bastion (plain SSH, Railway, Cloudflare Access).
 - **Teams** — workspaces, groups, email invites and permission‑based roles on a resource tree.
-- **Modules** — the instance admin chooses which databases (PostgreSQL, SQLite, Redis, Kafka) and features (Backups) the instance offers, in the setup wizard and later under **Administration → Modules**, and sets their instance-wide settings — each database's query timeout and table row limit, Kafka's read caps. Workspaces only see what's on. Turning off a database that connections still use locks those connections instead of deleting them, and notifies their owners by email.
+- **Workspace administration** — the instance admin gets a detail page for every workspace: what needs attention, members and roles, connections, resources and recent activity. It shows metadata only, so admins still can't open a connection or read its credentials or queries.
+- **Time zones** — each person picks a time zone in **Setting → Preferences**, and times across the app show in it. Values stored in your databases are shown exactly as stored.
+- **Sign-in** — sign in with Google or GitHub alongside a password. The instance admin sets up the apps under **Administration → Authentication**; each person links their accounts in **Setting → Security**. Open registration is an optional module, off by default.
+- **Modules** — the instance admin chooses which databases (PostgreSQL, SQLite, Redis, Kafka) and features (Backups, Registration) the instance offers, in the setup wizard and later under **Administration → Modules**, and sets their instance-wide settings — each database's query timeout and table row limit, Kafka's read caps. Workspaces only see what's on. Turning off a database that connections still use locks those connections instead of deleting them, and notifies their owners by email.
 - **Secure by default** — credentials encrypted at rest (AES‑256‑GCM), brute‑force login protection.
 - **In‑app updates**, split view, configurable keymap, light/dark theme.
 
@@ -94,6 +97,7 @@ Set these in `.env`. Everything else is optional.
 | `PORT` | Host port (default `3000`). |
 | `META_DB_TYPE` / `META_DATABASE_URL` | Metadata store: `sqlite` (default) or `postgresql` + its URL. |
 | `SMTP_*` | Fallback mail server for invites and resets (admins can set one in the UI). |
+| `PUBLIC_URL` | The address people reach this instance at, e.g. `https://db.acme.com`. Set it behind a reverse proxy: emailed links and the Google/GitHub callback URL use it. |
 
 Full list: [docs/CONFIGURATION.md](docs/CONFIGURATION.md) and [`.env.example`](.env.example).
 
@@ -105,7 +109,7 @@ npm run dev:all     # Vite frontend + API server (runs migrations first)
 npm test
 ```
 
-Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · API: [BACKEND_DOCUMENTATION.MD](BACKEND_DOCUMENTATION.MD) · Contributing: [CONTRIBUTING.md](CONTRIBUTING.md)
+Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · API: Swagger UI at `/api/docs` on any running instance ([server/openapi.yaml](server/openapi.yaml)) · Contributing: [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ## Donation
 

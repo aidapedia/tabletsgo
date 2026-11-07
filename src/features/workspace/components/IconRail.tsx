@@ -20,6 +20,7 @@ export default function IconRail({
   extraPanels = [],
   onPanel,
   onHome,
+  onSettings,
   onLogout,
   // What the browser panel holds — tables for the SQL engines, keys for Redis.
   browserIcon: BrowserIcon = DatabaseIcon,
@@ -64,6 +65,7 @@ export default function IconRail({
         <RailItem icon={HomeIcon} label="Home" onClick={onHome} />
         <AccountMenu
           user={user}
+          onSettings={onSettings}
           onLogout={onLogout}
           trigger={({ open, toggle }) => (
             <Tooltip label={user?.name || 'Profile'} placement="right">
@@ -76,7 +78,7 @@ export default function IconRail({
               >
                 {/* The rail sits on `bg`, so that is the surface the dot's
                     ring is punched out of. */}
-                <AccountTile label={user?.name} size={30} presence surface="bg" />
+                <AccountTile label={user?.name || user?.email} size={30} presence surface="bg" />
               </button>
             </Tooltip>
           )}

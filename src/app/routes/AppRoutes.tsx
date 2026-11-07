@@ -8,6 +8,8 @@ import { useAuth, getSetupStatus } from '@/features/auth'
 const LoginPage = lazy(() => import('@/pages/auth/LoginPage'))
 const SetupPage = lazy(() => import('@/pages/auth/SetupPage'))
 const AcceptInvitePage = lazy(() => import('@/pages/auth/AcceptInvitePage'))
+const RegisterPage = lazy(() => import('@/pages/auth/RegisterPage'))
+const LoginCompletePage = lazy(() => import('@/pages/auth/LoginCompletePage'))
 const ForgotPasswordPage = lazy(() => import('@/pages/auth/ForgotPasswordPage'))
 const ResetPasswordPage = lazy(() => import('@/pages/auth/ResetPasswordPage'))
 const HomeLayout = lazy(() => import('@/app/layouts/HomeLayout'))
@@ -29,9 +31,12 @@ const SchemasPage = lazy(() => import('@/pages/home/SchemasPage'))
 const SchemaDraftPage = lazy(() => import('@/pages/home/SchemaDraftPage'))
 const WorkspacePage = lazy(() => import('@/pages/console/WorkspacePage'))
 const AdminWorkspacesPage = lazy(() => import('@/pages/admin/AdminWorkspacesPage'))
+const AdminWorkspaceDetailPage = lazy(() => import('@/pages/admin/AdminWorkspaceDetailPage'))
 const AdminUsersPage = lazy(() => import('@/pages/admin/AdminUsersPage'))
 const AdminEmailPage = lazy(() => import('@/pages/admin/AdminEmailPage'))
 const AdminModulesPage = lazy(() => import('@/pages/admin/AdminModulesPage'))
+const AdminSignInPage = lazy(() => import('@/pages/admin/AdminSignInPage'))
+const AdminUpdatesPage = lazy(() => import('@/pages/admin/AdminUpdatesPage'))
 
 const routeFallback = <div role="status" className="p-8 text-center text-sm text-ink-dim">Loading…</div>
 
@@ -97,6 +102,8 @@ export function AppRoutes() {
         element={setup.needsSetup ? <SetupPage hasUsers onComplete={setupDone} /> : <Navigate to="/" replace />}
       />
       <Route path="/invite/:token" element={<AcceptInvitePage />} />
+      <Route path="/register" element={user ? <Navigate to="/" replace /> : <RegisterPage />} />
+      <Route path="/login/complete" element={<LoginCompletePage />} />
       <Route path="/forgot" element={user ? <Navigate to="/" replace /> : <ForgotPasswordPage />} />
       <Route path="/reset/:token" element={<ResetPasswordPage />} />
       <Route path="/login" element={user ? <Navigate to="/" replace /> : <LoginPage adminless={setup.needsSetup} />} />
@@ -109,9 +116,13 @@ export function AppRoutes() {
         }
       >
         <Route path="/admin" element={<AdminWorkspacesPage />} />
+        <Route path="/admin/workspaces/:id" element={<AdminWorkspaceDetailPage />} />
+        <Route path="/admin/workspaces/:id/:tab" element={<AdminWorkspaceDetailPage />} />
         <Route path="/admin/users" element={<AdminUsersPage />} />
         <Route path="/admin/email" element={<AdminEmailPage />} />
+        <Route path="/admin/sign-in" element={<AdminSignInPage />} />
         <Route path="/admin/modules" element={<AdminModulesPage />} />
+        <Route path="/admin/updates" element={<AdminUpdatesPage />} />
       </Route>
       {/* Home shell — each sidebar section is its own page rendered into the layout's <Outlet/>. */}
       <Route
@@ -193,7 +204,7 @@ export function AppRoutes() {
           </RequireWorkspaceUser>
         }
       />
-      {/* Personal settings (theme, local data, updates) belong to the account,
+      {/* Personal settings (theme, local data) belong to the account,
           not to a workspace — so both halves of the app get them. */}
       <Route
         element={

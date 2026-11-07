@@ -14,6 +14,7 @@ import ViewToggle from '@/shared/ui/table/ViewToggle'
 import { CopyIcon, EditIcon, KeyIcon, PlusIcon, TrashIcon } from '@/shared/ui/icons'
 import { deleteSshKey, listSshKeys } from '../lib/api'
 import type { SshKey } from '../types'
+import { formatDate } from '@/shared/lib/datetime'
 import SshKeyModal from './SshKeyModal'
 
 export type SshListHandle = { openCreate: () => void }
@@ -91,7 +92,7 @@ const SshKeyList = forwardRef<SshListHandle, { workspaceId: string; canManage?: 
         sortValue: (k) => k.createdAt || 0,
         width: 140,
         className: 'max-[900px]:hidden',
-        render: (k) => <span className="text-ink-dim">{k.createdAt ? new Date(k.createdAt).toLocaleDateString() : '—'}</span>,
+        render: (k) => <span className="text-ink-dim">{k.createdAt ? formatDate(k.createdAt) : '—'}</span>,
       },
       {
         key: 'actions',

@@ -657,6 +657,7 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
           extraPanels={servicePanels}
           onPanel={selectPanel}
           onHome={() => navigate('/')}
+          onSettings={() => navigate('/settings')}
           onLogout={logout}
           browserIcon={kind === 'keyspace' ? KeyIcon : kind === 'stream' ? TopicIcon : undefined}
           browserLabel={kind === 'keyspace' ? 'Keyspace' : kind === 'stream' ? 'Topics' : undefined}

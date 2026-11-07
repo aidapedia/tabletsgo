@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import Avatar from '@/shared/ui/Avatar'
+import PersonAvatar from '@/shared/ui/PersonAvatar'
 import Badge from '@/shared/ui/Badge'
 import SearchInput from '@/shared/ui/form/SearchInput'
 import EmptyState from '@/shared/ui/feedback/EmptyState'
@@ -21,16 +21,17 @@ import {
 import { TYPE_LABEL } from '@/shared/config/databaseTypes'
 import { relativeTime } from '@/shared/lib/recents'
 import { deleteWorkspaceSchema, listWorkspaceSchemas } from '../lib/api'
+import { formatDate } from '@/shared/lib/datetime'
 import type { WorkspaceSchemaDraft } from '../types'
 
-// The person who started a draft: the initial bubble the rest of the app uses,
+// The person who started a draft: the face the rest of the app uses,
 // their name, and the date. An id with no name behind it (deleted account, or a
 // draft older than the audit trail) is drawn as unknown rather than as an empty
 // cell, so a blank never reads as "nobody started this".
 function AuthorCell({ name, when }: { name: string | null; when: string }) {
   return (
     <span className="flex min-w-0 items-center gap-2">
-      {name ? <Avatar label={name} size="sm" /> : <span className="h-6 w-6 shrink-0 rounded-full bg-elevated" />}
+      {name ? <PersonAvatar seed={name} size="sm" /> : <span className="h-6 w-6 shrink-0 rounded-full bg-elevated" />}
       <span className="min-w-0">
         <span className={`block truncate text-[11px] ${name ? 'text-ink-dim' : 'text-ink-faint italic'}`}>
           {name || 'Unknown'}
@@ -225,7 +226,7 @@ export default function WorkspaceSchemaList({
       width: 170,
       className: 'max-[900px]:hidden',
       sortValue: (row) => row.createdByName || '',
-      render: (row) => <AuthorCell name={row.createdByName} when={new Date(row.createdAt).toLocaleDateString()} />,
+      render: (row) => <AuthorCell name={row.createdByName} when={formatDate(row.createdAt)} />,
     },
     {
       key: 'statementCount',

@@ -9,8 +9,10 @@ import LoadingState from '@/shared/ui/feedback/LoadingState'
 import Button from '@/shared/ui/buttons/Button'
 import Badge from '@/shared/ui/Badge'
 import Tooltip from '@/shared/ui/overlay/Tooltip'
-import { ChevronLeft, LinkIcon, SyncIcon, UnlinkIcon } from '@/shared/ui/icons'
+import Breadcrumb from '@/shared/ui/navigation/Breadcrumb'
+import { LinkIcon, SyncIcon, UnlinkIcon } from '@/shared/ui/icons'
 import useSchemaDraftController from '../hooks/useSchemaDraftController'
+import { formatDate, formatDateTime } from '@/shared/lib/datetime'
 
 // Keep the canvas out of the route chunk until a draft is opened.
 const SchemaEditor = lazy(() => import('./SchemaEditor'))
@@ -24,7 +26,7 @@ function syncedAgo(at: number, now: number) {
   if (mins < 60) return `${mins}m ago`
   const hours = Math.floor(mins / 60)
   if (hours < 24) return `${hours}h ago`
-  return new Date(at).toLocaleDateString()
+  return formatDate(at)
 }
 
 export default function SchemaDraftView({ connections, connectionsLoading, patchLocalConnection }: {
@@ -54,11 +56,19 @@ export default function SchemaDraftView({ connections, connectionsLoading, patch
       {/* One header strip, the console's height and gutters — the canvas gets
           everything below it. */}
       <div className="flex shrink-0 items-center gap-3 border-b border-edge bg-panel px-3 py-2">
-        <Button variant="ghost" size="sm" icon={ChevronLeft} onClick={() => navigate('/schemas')}>
-          Schema Editor
-        </Button>
         <div className="min-w-0 flex-1">
-          <h1 className="truncate text-[13px] font-bold tracking-[-0.3px]">{draft.name}</h1>
+          {/* This page is outside HomeLayout, so it draws the shell's trail
+              itself; the last crumb doubles as the title, to keep the strip at
+              the console's height. */}
+          <h1 className="sr-only">{draft.name}</h1>
+          <Breadcrumb
+            size="sm"
+            items={[
+              { label: 'Home', onClick: () => navigate('/') },
+              { label: 'Schema Editor', onClick: () => navigate('/schemas') },
+              { label: <span className="text-[13px] font-bold tracking-[-0.3px] text-ink">{draft.name}</span> },
+            ]}
+          />
           <p className="flex items-center gap-1.5 text-[11px] text-ink-faint">
             {draft.connectionId ? (
               <>
@@ -92,9 +102,9 @@ export default function SchemaDraftView({ connections, connectionsLoading, patch
             <Tooltip
               placement="bottom"
               multiline
-              label={`Created by ${draft.createdByName || 'an account that no longer exists'} on ${new Date(
+              label={`Created by ${draft.createdByName || 'an account that no longer exists'} on ${formatDateTime(
                 draft.createdAt
-              ).toLocaleString()}\nLast saved ${new Date(draft.ts).toLocaleString()}`}
+              )}\nLast saved ${formatDateTime(draft.ts)}`}
             >
               <span className="cursor-default">
                 · updated by {draft.updatedByName || 'someone unknown'} {relativeTime(draft.ts)}

@@ -1,6 +1,6 @@
-import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { useAuth } from '@/features/auth'
+import { useEffect, useState } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
+import { getSignInOptions, OrDivider, ProviderButtons, signInErrorMessage, useAuth, type SignInOptions } from '@/features/auth'
 import { Logo, TableIcon, CodeIcon, ShieldIcon, CheckIcon } from '@/shared/ui/icons'
 import Button from '@/shared/ui/buttons/Button'
 import TextButton from '@/shared/ui/buttons/TextButton'
@@ -23,8 +23,15 @@ export default function Login({ adminless = false }: { adminless?: boolean }) {
   const navigate = useNavigate()
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
-  const [error, setError] = useState('')
+  const [params] = useSearchParams()
+  // A refused Google or GitHub sign-in comes back here with a code in the URL.
+  const [error, setError] = useState(() => signInErrorMessage(params.get('error')))
   const [loading, setLoading] = useState(false)
+  const [options, setOptions] = useState<SignInOptions | null>(null)
+
+  useEffect(() => {
+    getSignInOptions().then(setOptions)
+  }, [])
 
   const handleSubmit = async (e) => {
     e.preventDefault()
@@ -108,6 +115,13 @@ export default function Login({ adminless = false }: { adminless?: boolean }) {
             </div>
           )}
 
+          {!!options?.providers.length && (
+            <>
+              <ProviderButtons providers={options.providers} onError={setError} />
+              <OrDivider label="or with email" />
+            </>
+          )}
+
           <FormField label="Email" htmlFor="username">
             <Input
               id="username"
@@ -138,6 +152,12 @@ export default function Login({ adminless = false }: { adminless?: boolean }) {
           <TextButton block className="mt-4 !text-[11px]" onClick={() => navigate('/forgot')}>
             Forgot password?
           </TextButton>
+
+          {options?.registration.open && (
+            <TextButton block className="mt-2 !text-[11px]" onClick={() => navigate('/register')}>
+              New here? Create an account
+            </TextButton>
+          )}
         </Form>
       </div>
     </div>

@@ -127,7 +127,7 @@ One mail server for the whole instance, configured by an admin under **Administr
 
 ## Auth & security
 
-First‑run setup wizard (creates the instance admin; workspaces come after), token‑based auth, two‑tier roles, and membership‑guarded connection routes. Logins are stored in the metadata DB and read through an in‑process cache, so a restart doesn't sign anyone out. Everyone manages their own account under **Setting → Account**: rename yourself and change your password (the current one is required; a change signs you out on every other device). Your email is your sign‑in identity, so only an admin can change it.
+First‑run setup wizard (creates the instance admin; workspaces come after), token‑based auth, two‑tier roles, and membership‑guarded connection routes. Logins are stored in the metadata DB and read through an in‑process cache, so a restart doesn't sign anyone out. Everyone manages their own account under **Setting → Profile** and **Security**: rename yourself and change your password (the current one is required; a change signs you out on every other device). Your email is your sign‑in identity, so only an admin can change it.
 
 ## In‑app updates
 

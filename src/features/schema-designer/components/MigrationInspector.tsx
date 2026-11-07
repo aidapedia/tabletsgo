@@ -5,11 +5,11 @@ import SqlEditor from '@/shared/ui/SqlEditor'
 import { useSlideOver } from '@/shared/hooks/useSlideOver'
 import { useToast } from '@/shared/ui/feedback/Toast'
 import { CopyIcon } from '@/shared/ui/icons'
+import { formatDateTime } from '@/shared/lib/datetime'
 
 export const fmtTime = (ts) => {
   if (!ts) return '—'
-  const d = new Date(ts)
-  return d.toLocaleString(undefined, {
+  return formatDateTime(ts, {
     year: 'numeric',
     month: 'short',
     day: '2-digit',

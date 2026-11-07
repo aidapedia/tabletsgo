@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
-import { useAuth, getInvite, acceptInvite } from '@/features/auth'
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
+import { useAuth, getInvite, acceptInvite, getSignInOptions, OrDivider, ProviderButtons, signInErrorMessage, type SignInOptions } from '@/features/auth'
 import { Logo } from '@/shared/ui/icons'
 import Button from '@/shared/ui/buttons/Button'
 import { Input } from '@/shared/ui/form/Input'
@@ -8,22 +8,26 @@ import PasswordInput from '@/shared/ui/form/PasswordInput'
 import { Form, FormField } from '@/shared/ui/form/Form'
 import LoadingState from '@/shared/ui/feedback/LoadingState'
 
-// Invite acceptance: the invited email sets their name + password, then is
-// logged in and dropped onto the homepage (their new workspace).
+// Invite acceptance: the invited email sets their name + password, or signs in
+// with Google or GitHub, then is logged in and dropped onto the homepage (their
+// new workspace). A registration link lands here too, with no workspace to name.
 export default function AcceptInvitePage() {
   const { token } = useParams()
   const navigate = useNavigate()
   const { authenticate } = useAuth()
-  const [invite, setInvite] = useState<{ email: string; workspaceName: string } | null>(null)
+  const [params] = useSearchParams()
+  const [invite, setInvite] = useState<{ email: string; workspaceName: string | null } | null>(null)
   const [invalid, setInvalid] = useState(false)
   const [form, setForm] = useState({ name: '', password: '' })
-  const [error, setError] = useState('')
+  const [error, setError] = useState(() => signInErrorMessage(params.get('error')))
   const [loading, setLoading] = useState(false)
+  const [options, setOptions] = useState<SignInOptions | null>(null)
 
   useEffect(() => {
     getInvite(token)
       .then(setInvite)
       .catch(() => setInvalid(true))
+    getSignInOptions().then(setOptions)
   }, [token])
 
   const handleSubmit = async (e) => {
@@ -68,13 +72,20 @@ export default function AcceptInvitePage() {
 
   return shell(
     <Form onSubmit={handleSubmit}>
-      <h2 className="text-[20px] font-bold">Join {invite.workspaceName}</h2>
+      <h2 className="text-[20px] font-bold">{invite.workspaceName ? `Join ${invite.workspaceName}` : 'Finish your account'}</h2>
       <p className="mt-1.5 mb-6 text-[12px] text-ink-dim">
-        You were invited as <span className="text-ink">{invite.email}</span>. Set a password to finish.
+        {invite.workspaceName ? 'You were invited as' : 'Your account is'} <span className="text-ink">{invite.email}</span>. Set a password to finish.
       </p>
 
       {error && (
         <div className="mb-[18px] rounded-soft border border-red/25 bg-red/10 px-3.5 py-2.5 text-[11px] text-[#ff9b9b]">{error}</div>
+      )}
+
+      {!!options?.providers.length && (
+        <>
+          <ProviderButtons providers={options.providers} invite={token} onError={setError} />
+          <OrDivider label="or set a password" />
+        </>
       )}
 
       <FormField label="Your name">
@@ -85,7 +96,7 @@ export default function AcceptInvitePage() {
       </FormField>
 
       <Button type="submit" variant="primary" size="lg" className="w-full" disabled={loading}>
-        {loading ? 'Joining…' : 'Join workspace'}
+        {loading ? 'Joining…' : invite.workspaceName ? 'Join workspace' : 'Create account'}
       </Button>
     </Form>
   )

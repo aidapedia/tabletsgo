@@ -285,9 +285,8 @@ function OptionCard({
 // refuses a change.
 //
 // `onClose` is where cancelling lands (the record being edited, or the list for
-// a new one); `onList` is the list itself, which the breadcrumb needs as its
-// root even when it isn't where cancelling goes.
-export default function ConnectionForm({ initial, initialType, tab = 'general', onTab, onClose, onList, onSave }) {
+// a new one).
+export default function ConnectionForm({ initial, initialType, tab = 'general', onTab, onClose, onSave }) {
   const { testConnection } = useConnections()
   const toast = useToast()
   const isEdit = !!initial
@@ -922,7 +921,6 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
     <div className="w-full">
       <PageHeader
         crumbs={[
-          { label: 'Connections', onClick: onList || onClose },
           // Editing sits under the connection it edits; a new one has no record
           // to sit under yet, so the trail is one level shorter.
           ...(isEdit ? [{ label: initial.name, onClick: onClose }] : []),

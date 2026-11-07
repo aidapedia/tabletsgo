@@ -10,6 +10,7 @@ import { useToast } from '@/shared/ui/feedback/Toast'
 import { CloudIcon, ShieldIcon, UploadIcon } from '@/shared/ui/icons'
 import { listStorages, listStorageObjects, restoreFromStorageObject, restoreFromUpload } from '@/features/backup/lib/api'
 import type { StorageDestination, StorageObject } from '@/features/backup/lib/types'
+import { formatDateTime } from '@/shared/lib/datetime'
 
 const fmtBytes = (n?: number) => {
   if (!n) return '—'
@@ -216,7 +217,7 @@ function StorageBrowserModal({
                   </span>
                   <span className="shrink-0 text-[11px] text-ink-faint">
                     {fmtBytes(obj.sizeBytes)}
-                    {obj.lastModified ? ` · ${new Date(obj.lastModified).toLocaleString()}` : ''}
+                    {obj.lastModified ? ` · ${formatDateTime(obj.lastModified)}` : ''}
                   </span>
                 </button>
               ))}

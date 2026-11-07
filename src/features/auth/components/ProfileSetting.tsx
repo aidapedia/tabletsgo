@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import Avatar from '@/shared/ui/Avatar'
+import PersonAvatar from '@/shared/ui/PersonAvatar'
 import Button from '@/shared/ui/buttons/Button'
 import { useToast } from '@/shared/ui/feedback/Toast'
 import { FormField } from '@/shared/ui/form/Form'
@@ -47,7 +47,7 @@ export default function ProfileSetting() {
   return (
     <form onSubmit={save} className="max-w-[420px]">
       <div className="mb-5 flex items-center gap-3">
-        <Avatar label={user.name || user.email} size="md" className="!h-11 !w-11 !text-[15px]" />
+        <PersonAvatar seed={user.name || user.email} className="!h-11 !w-11" />
         <div className="min-w-0">
           <div className="truncate text-[13px] font-semibold">{user.name}</div>
           <div className="truncate text-[11px] text-ink-dim">
