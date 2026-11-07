@@ -15,6 +15,7 @@
  *   backup/       backup schedule, runner and restore
  *   connection-transfer.js  the portable connection export/import bundle
  *   system-update.js        release checking + Docker self-update
+ *   openapi.js    the API description behind Swagger UI at /api/docs
  *
  * A route should read as: authorize → validate → call one of those → respond.
  * No route branches on `conn.type`; the db layer answers for every engine.
@@ -31,6 +32,7 @@ import { randomUUID, timingSafeEqual } from 'crypto'
 import { pipeline } from 'stream/promises'
 import { Readable, Transform } from 'stream'
 import cron from 'node-cron'
+import swaggerUi from 'swagger-ui-express'
 
 import {
   APP_NAME,
@@ -285,6 +287,7 @@ import {
   manualUpdateCommand,
   updateApplyMethod,
 } from './server/system-update.js'
+import { openApiSpec, swaggerUiOptions } from './server/openapi.js'
 
 const app = express()
 
@@ -4156,6 +4159,11 @@ app.post('/api/system/update/apply', async (req, res) => {
 app.get('/api/health', async (req, res) => {
   res.json({ status: bootReady ? 'ok' : 'starting', ready: bootReady, version: APP_VERSION, sha: GIT_SHA })
 })
+
+// The API reference. Public on purpose: it describes the open-source app, not
+// this instance, and says nothing /api/health doesn't about what is running.
+app.get('/api/openapi.json', (_req, res) => res.json(openApiSpec()))
+app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(null, swaggerUiOptions))
 
 // ============================================================================
 // Static frontend, fallbacks and startup

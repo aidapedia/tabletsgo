@@ -109,7 +109,7 @@ npm run dev:all     # Vite frontend + API server (runs migrations first)
 npm test
 ```
 
-Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · API: [BACKEND_DOCUMENTATION.MD](BACKEND_DOCUMENTATION.MD) · Contributing: [CONTRIBUTING.md](CONTRIBUTING.md)
+Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · API: Swagger UI at `/api/docs` on any running instance ([server/openapi.yaml](server/openapi.yaml)) · Contributing: [CONTRIBUTING.md](CONTRIBUTING.md)
 
 ## Donation
 

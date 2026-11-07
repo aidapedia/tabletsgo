@@ -19,6 +19,7 @@ export const PORT = process.env.PORT || 3000
 // come from the request.
 export const PUBLIC_URL = (process.env.PUBLIC_URL || '').trim().replace(/\/+$/, '')
 export const DIST_DIR = path.join(ROOT_DIR, 'dist')
+export const OPENAPI_PATH = path.join(ROOT_DIR, 'server', 'openapi.yaml')
 
 // Connection credentials (host/port/username/password/…) are encrypted at rest
 // with this key. Required — refuse to boot rather than silently store secrets

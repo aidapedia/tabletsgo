@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // PostToolUse hook: when an edit to server.js adds/changes an express route,
 // remind the agent of the CLAUDE.md "EXTRA ACTION" rule (document it in
-// BACKEND_DOCUMENTATION.MD). Stays silent for every other edit.
+// server/openapi.yaml). Stays silent for every other edit.
 //
 // Reads the hook payload as JSON on stdin; prints a hook JSON result on stdout.
 
@@ -27,8 +27,8 @@ process.stdin.on('end', () => {
             hookEventName: 'PostToolUse',
             additionalContext:
               'This edit touched express route definitions. Per CLAUDE.md > EXTRA ACTION: ' +
-              'if you added or changed an endpoint, document its request/response shape and a ' +
-              'sample URL in BACKEND_DOCUMENTATION.MD, and update README.md if the feature set changed.',
+              'if you added or changed an endpoint, document its request/response shape and ' +
+              'sample values in server/openapi.yaml, and update README.md if the feature set changed.',
           },
         }),
       );

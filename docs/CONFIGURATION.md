@@ -2,8 +2,20 @@
 
 All configuration is via environment variables (see [`.env.example`](../.env.example)):
 
-| Variable | Required | Description |
-|
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `PORT`    | `3000`             | HTTP listen port.                        |
+| `META_DB` | `./data/app.db`    | SQLite file storing app metadata when `META_DB_TYPE=sqlite`. |
+| `META_DB_TYPE` | `sqlite` | App metadata engine: `sqlite` or `postgresql`. |
+| `META_DATABASE_URL` | | PostgreSQL URL required when `META_DB_TYPE=postgresql`. |
+| `ENCRYPTION_KEY` | *(required)* | AES-256-GCM key encrypting connection credentials at rest — server refuses to start without it. Also derives (with a distinct salt) the key used for storage-destination credentials. |
+| `WORKFLOW_SCHEDULER_ENABLED` | `true` | Set to `false` to disable the minutely cron tick that fires workflows with an active hourly/daily schedule (including backups). Useful for local dev/CI. |
+| `LOGIN_MAX_ATTEMPTS` | `5` | Consecutive failed sign-ins that block an account. `0` disables blocking. |
+| `LOGIN_ATTEMPT_WINDOW_MS` | `900000` (15 min) | How close together those failures must be — an older failure restarts the counter. |
+| `LOGIN_LOCKOUT_MS` | `0` | How long a block lasts. `0` = until an instance admin unblocks the account. |
+| `LOGIN_ADMIN_COOLDOWN_MS` | `900000` (15 min) | An instance admin is never blocked indefinitely — they get this cooldown instead. `0` leaves admin sign-ins unthrottled. |
+
+**System requirement:** PostgreSQL backup/restore shells out to `pg_dump`/`pg_restore`, so the `postgresql-client` package must be installed on the host/image running `server.js` (already added to the provided `Dockerfile`).
 
 ## PostgreSQL for app metadata
 

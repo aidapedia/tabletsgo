@@ -1,4 +1,4 @@
-// Shapes returned by the /api/system/* endpoints (see BACKEND_DOCUMENTATION.MD).
+// Shapes returned by the /api/system/* endpoints (see server/openapi.yaml).
 
 export type AppIdentity = { name?: string; version: string; sha: string }
 

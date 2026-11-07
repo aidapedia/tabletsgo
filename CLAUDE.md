@@ -126,7 +126,9 @@ server/
 ├── connection-transfer.js  # the portable connection bundle          → skill connection-transfer
 ├── data-transfer.js     # table rows out/in as CSV/JSON/SQL (console Export / Import tab) → skill db-engine
 ├── backup/              # schedule.js / runner.js / restore.js
-└── system-update.js     # GitHub release checking + Docker-socket self-update
+├── system-update.js     # GitHub release checking + Docker-socket self-update
+├── openapi.yaml         # the API reference: every route, served as Swagger UI at /api/docs
+└── openapi.js           # loads it; its Swagger UI options
 ```
 
 ## CONVENTIONS
@@ -152,7 +154,7 @@ server/
 - Dependencies point one way: `module-registry` is a leaf (imports nothing) the db layer reads; `config → crypto → meta-connection → meta → sessions → permissions-catalog → permissions → resource-tree → {auth, workspaces, app-settings, connections, folders, storage, module-settings} → ssh → mail → db → workflow/backup/transfer → server.js`; `migrator/` sits beside them on `config → crypto → meta-connection → permissions-catalog` and never imports `meta.js` (its handle would lock the SQLite file Prisma needs). `resource-tree` owns `node_members` and exports `groupIdsFor`, which `auth.js` imports — never the other way round, because `auth.js` depends on it. No cycles — `sessions` never imports `db`; the db layer hands it a release callback instead (`setReleaseHandler`), which is what lets the sweeper close idle handles. Also `backup/schedule.js` is split out from the runner precisely so `connection-transfer.js` can read a schedule without importing the pipeline.
 
 ## EXTRA ACTION
-- Every time you add endpoint on server, create a structure of request response and sample url on BACKEND_DOCUMENTATION.MD
+- Every time you add endpoint on server, describe its request, response and sample values in `server/openapi.yaml` — it is served as Swagger UI at `/api/docs`, and `tests/openapi.test.js` fails when it and `server.js` disagree
 - Update README.MD if you have any changes about features, instalation etc.
 
 ## graphify

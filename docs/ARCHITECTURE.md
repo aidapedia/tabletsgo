@@ -674,5 +674,7 @@ server/
 │   ├── runner.js         #   export → store, retries, run history, failure notification
 │   ├── history.js        #   backup run calendar, listing and upload status
 │   └── restore.js        #   fetch artifact → decrypt → hand to the driver
-└── system-update.js      # GitHub release checking (cached) + Docker-socket self-update
+├── system-update.js      # GitHub release checking (cached) + Docker-socket self-update
+├── openapi.yaml          # the API reference: every route (tests/openapi.test.js keeps it honest)
+└── openapi.js            # loads it, stamps the running version; Swagger UI options for /api/docs
 ```
