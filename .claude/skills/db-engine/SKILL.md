@@ -149,7 +149,7 @@ widgets work against Redis with no Redis-aware code in them.
   option and pins the connection to one database, silently breaking the console's
   db picker. The pool key uses the resolved db so a client is never handed back for
   a database it isn't on.
-- **Frontend:** `src/features/redis` swaps two console pieces on
+- **Frontend:** `console/src/features/redis` swaps two console pieces on
   `conn.type === 'redis'` — `RedisKeyTree` for the tables sidebar and
   `RedisConsole` for the query tab (plus a `redisKey` tab kind). The schema
   designer, table folders, create-table and query analysis are hidden rather than
@@ -208,7 +208,7 @@ without them answers 400 naming its type. Prefer this over a `/redis/*`-style
   (`listSchemas`, `listConnectors`, `runStreamSql`, …); a connection without the
   service answers 400. A ksqlDB query is bounded like `readMessages` — never hold a
   push query open behind a request.
-- **Frontend:** `src/features/kafka`, swapped in on console kind `stream`
+- **Frontend:** `console/src/features/kafka`, swapped in on console kind `stream`
   (`consoleKindOf` in `shared/config/databaseTypes`) — branch on the kind, not on
   `conn.type`.
 
@@ -233,7 +233,7 @@ the concept genuinely has no counterpart.
 
 `server/db/mysql.js`. Everything the UI or the server *writes* for a database is
 quoted through the engine: `db.quoteFor(conn)` / `db.literalFor(conn)` on the
-server, `quoteIdent` / `quoteString` from `src/shared/lib/sqlDialect.ts` in the
+server, `quoteIdent` / `quoteString` from `console/src/shared/lib/sqlDialect.ts` in the
 frontend (the schema designer's MySQL-only statements live in
 `features/schema-designer/lib/ddl.ts`).
 

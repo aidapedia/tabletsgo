@@ -21,8 +21,10 @@ RUN apt-get update \
 
 WORKDIR /app
 
-# Install dependencies (dev deps are needed to run the Vite build).
+# Install dependencies for both workspaces — the server (root) and the console
+# (console/, the React app); dev deps are needed to run the Vite build.
 COPY package*.json ./
+COPY console/package.json console/
 RUN npm ci
 
 # Frontend API base URL — baked into the static build (Vite inlines VITE_* at
@@ -31,7 +33,7 @@ RUN npm ci
 ARG VITE_API_URL=/api
 ENV VITE_API_URL=${VITE_API_URL}
 
-# Build the frontend.
+# Build the console into console/dist, which the server serves.
 COPY . .
 RUN npm run build
 # The metadata store's query clients (one per engine; META_DB_TYPE picks one at

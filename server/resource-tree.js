@@ -937,3 +937,71 @@ export const moveResourceNode = async (type, resourceId, newParentId) => {
   const node = await nodeFor(type, resourceId)
   return node ? moveNode(node.id, newParentId) : { error: 'Node not found.' }
 }
+
+/**
+ * File a dashboard or workflow under the node of the connection it belongs to.
+ *
+ * Called by the module that owns the row, in the same transaction as the insert.
+ * The owner is the person who made it, so "every node has an owner" holds from
+ * the moment it exists. A connection with no node yet (an import mid-flight) is
+ * skipped; `backfillResourceNodes` files it once the connection's node exists.
+ */
+export const createConnectionChildNode = async (type, resourceId, connectionId, { name, ownerId = null } = {}) => {
+  const parent = await nodeFor('connection', connectionId)
+  if (!parent) return { error: 'The connection has no node yet.' }
+  return createResourceNode(type, resourceId, { parentId: parent.id, name, ownerId })
+}
+
+/**
+ * Give every mirrored resource that is missing a node one, and return how many
+ * were made.
+ *
+ * Until now nothing created a node for a new dashboard or workflow. Only legacy
+ * step v14 backfilled the ones that already existed, so everything made after it
+ * was invisible in the tree, even to the workspace's owners. This repairs that
+ * on every boot, and the connection import calls it scoped to the new connection.
+ *
+ * Insert-if-missing, so it is safe to run any number of times. Connections go
+ * first because a dashboard or workflow is filed under its connection's node. A
+ * backfilled dashboard or workflow is owned by its connection's owner: the row
+ * never recorded who made it, and the connection owner is who answers for it.
+ */
+export const backfillResourceNodes = async ({ connectionId = null } = {}) => {
+  let created = 0
+  const fill = async (type, rows, placeOf) => {
+    if (!rows.length) return
+    const have = new Set(
+      (await db().resource_nodes.findMany({ where: { type, resource_id: { in: rows.map((r) => r.id) } }, select: { resource_id: true } })).map(
+        (r) => r.resource_id
+      )
+    )
+    for (const row of rows) {
+      if (have.has(row.id)) continue
+      const place = await placeOf(row)
+      if (!place) continue
+      if ((await createResourceNode(type, row.id, { name: row.name, ...place })).node) created++
+    }
+  }
+
+  const connections = await db().connections.findMany({
+    where: connectionId ? { id: connectionId } : { workspace_id: { not: null } },
+    select: { id: true, name: true, workspace_id: true, owner_id: true },
+  })
+  await fill('connection', connections, async (c) => (c.workspace_id ? { workspaceId: c.workspace_id, ownerId: c.owner_id || null } : null))
+
+  if (!connectionId) {
+    const storages = await db().storage_destinations.findMany({ select: { id: true, name: true, workspace_id: true } })
+    await fill('storage', storages, async (s) => ({ workspaceId: s.workspace_id }))
+  }
+
+  const ownerOf = new Map(connections.map((c) => [c.id, c.owner_id || null]))
+  const underConnection = async (row) => {
+    const parent = await nodeFor('connection', row.connection_id)
+    return parent && { parentId: parent.id, ownerId: ownerOf.get(row.connection_id) ?? parent.ownerId ?? null }
+  }
+  const scope = connectionId ? { connection_id: connectionId } : {}
+  const pick = { id: true, name: true, connection_id: true }
+  await fill('dashboard', await db().dashboards.findMany({ where: scope, select: pick }), underConnection)
+  await fill('workflow', await db().workflows.findMany({ where: scope, select: pick }), underConnection)
+  return created
+}

@@ -50,15 +50,16 @@ jobs:
             echo "::error::Tag v${VERSION} already exists"; exit 1
           fi
 
-      - name: Bump package.json + README badge
+      - name: Bump package.json (root + console) + README badge
         env:
           VERSION: ${{ steps.norm.outputs.version }}
         run: |
           # package.json "version" (npm pkg set edits in place, no git tag).
           npm pkg set "version=${VERSION}"
+          npm pkg set "version=${VERSION}" -w console
           # README badge: version-<X>-<6-hex-color> — keep the color, swap version.
           sed -i -E "s|badge/version-[^-]*-([0-9A-Fa-f]{6})|badge/version-${VERSION}-\1|" README.md
-          if git diff --quiet -- package.json README.md; then
+          if git diff --quiet -- package.json console/package.json README.md; then
             echo "::error::Nothing to bump — files already show v${VERSION}"; exit 1
           fi
 
@@ -70,7 +71,7 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "$BR"
-          git add package.json README.md
+          git add package.json console/package.json README.md
           git commit -m "release: v${VERSION}"
           git push -f origin "$BR"
 

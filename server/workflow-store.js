@@ -2,7 +2,8 @@
  * and scheduling live in workflow.js; both use the same workflow rows. */
 
 import { randomUUID } from 'crypto'
-import { db } from './meta.js'
+import { db, transaction } from './meta.js'
+import { createConnectionChildNode, deleteResourceNode, renameResourceNode } from './resource-tree.js'
 import { safeJson } from './util.js'
 import { nextRunForGraph } from './workflow.js'
 
@@ -25,7 +26,9 @@ export async function listConnectionWorkflows(connectionId) {
     }))
 }
 
-export async function createWorkflow(connectionId, body = {}) {
+// `ownerId` is who made it. Their name goes on the workflow's node in the
+// resource tree, which is created with the row so the tree never lags it.
+export async function createWorkflow(connectionId, body = {}, { ownerId = null } = {}) {
   if (typeof body.name !== 'string' || !body.name.trim()) throw invalid('A workflow name is required')
   const entry = {
     id: randomUUID(),
@@ -34,8 +37,11 @@ export async function createWorkflow(connectionId, body = {}) {
     folderId: body.folderId || null,
     ts: Date.now(),
   }
-  await db().workflows.create({
-    data: { id: entry.id, connection_id: connectionId, name: entry.name, graph: JSON.stringify(entry.graph), folder_id: entry.folderId, ts: entry.ts },
+  await transaction(async () => {
+    await db().workflows.create({
+      data: { id: entry.id, connection_id: connectionId, name: entry.name, graph: JSON.stringify(entry.graph), folder_id: entry.folderId, ts: entry.ts },
+    })
+    await createConnectionChildNode('workflow', entry.id, connectionId, { name: entry.name, ownerId })
   })
   return { ...entry, protected: false, scheduleEnabled: false }
 }
@@ -81,7 +87,9 @@ export async function updateWorkflow(connectionId, workflowId, body = {}) {
     const enabled = body.scheduleEnabled != null ? !!body.scheduleEnabled : !!existing.schedule_enabled
     data.next_run_at = nextRunForGraph(graph, enabled)
   }
-  return (await db().workflows.updateMany({ where: { id: workflowId, connection_id: connectionId }, data })).count > 0
+  const updated = (await db().workflows.updateMany({ where: { id: workflowId, connection_id: connectionId }, data })).count > 0
+  if (updated && data.name) await renameResourceNode('workflow', workflowId, data.name)
+  return updated
 }
 
 export async function deleteWorkflow(connectionId, workflowId) {
@@ -89,6 +97,7 @@ export async function deleteWorkflow(connectionId, workflowId) {
   if (!row) return 'missing'
   if (row.protected) return 'protected'
   await db().workflows.deleteMany({ where: { id: workflowId, connection_id: connectionId } })
+  await deleteResourceNode('workflow', workflowId)
   return 'deleted'
 }
 

@@ -2150,10 +2150,11 @@ paths:
     put:
       tags:
         - Resource tree
-      summary: Hand a node over (owner only)
+      summary: Hand a node over (owners only)
       description: |-
-        Hand a node over. Ownership cascades, so only the **current owner** (or an
-        instance admin) may call this.
+        Hand a node over. Ownership cascades, so only the **current owner** of the node
+        (or of an ancestor), anyone holding `workspace.manage` at the node — every owner
+        of the workspace it sits in — or an instance admin may call this.
 
         `400` if the new owner is not a member of the node's workspace, or is an instance
         admin being made owner of anything below the application root.

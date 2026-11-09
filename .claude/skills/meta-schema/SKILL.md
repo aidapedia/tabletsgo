@@ -151,7 +151,7 @@ Every connection has a `schemaVersion` starting at 1.
 
 DDL staged from the schema designer / create-table panel / drop-table / empty-table
 actions is tagged `ddl: true` with a computed `rollbackSql` (see
-`src/features/schema-designer/lib/rollback.ts`) **when staged**.
+`console/src/features/schema-designer/lib/rollback.ts`) **when staged**.
 
 After `commitChanges` in `WorkspacePage.tsx` successfully executes a batch
 containing DDL, it calls `POST /api/connections/:id/schema/migrations` **once**,

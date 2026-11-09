@@ -1,0 +1,102 @@
+import { createContext, Fragment, useContext, useEffect, useState } from 'react'
+import { request, TOKEN_KEY } from '@/shared/api/request'
+import { setDisplayTimeZone } from '@/shared/lib/datetime'
+import { toast } from 'sonner'
+
+const AuthContext = createContext(null)
+
+const STORAGE_KEY = 'dbm.auth'
+
+// Persist the authenticated user + session token. The token lives under
+// TOKEN_KEY so the shared request wrapper can attach it to every call.
+const persist = (user, token) => {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(user))
+  localStorage.setItem(TOKEN_KEY, token)
+}
+const clear = () => {
+  localStorage.removeItem(STORAGE_KEY)
+  localStorage.removeItem(TOKEN_KEY)
+}
+
+export function AuthProvider({ children }) {
+  const [user, setUser] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem(STORAGE_KEY)) || null
+    } catch {
+      return null
+    }
+  })
+  const [zoneEpoch, setZoneEpoch] = useState(0)
+
+  // During render on purpose: an effect would run after the children have
+  // already formatted their times in the previous zone.
+  setDisplayTimeZone(user?.timezone)
+
+  // Raised by the request wrapper when a call comes back 401 with a token
+  // attached — the session has expired or been revoked server-side. Sign out
+  // locally so RequireAuth redirects to /login.
+  useEffect(() => {
+    const onUnauthorized = () => {
+      clear()
+      setUser(null)
+      toast?.info('Your session has expired. Please log in again.')
+    }
+    window.addEventListener('auth:unauthorized', onUnauthorized)
+    return () => window.removeEventListener('auth:unauthorized', onUnauthorized)
+  }, [toast])
+
+  // The account is cached, so a zone chosen on another device only arrives here.
+  // Those times are already on screen by then, hence the remount.
+  useEffect(() => {
+    if (!user) return
+    request<{ user: any }>('/auth/me')
+      .then(({ user: fresh }) => {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(fresh))
+        setUser(fresh)
+        if ((fresh.timezone ?? null) !== (user.timezone ?? null)) setZoneEpoch((n) => n + 1)
+      })
+      .catch(() => {})
+  }, [user?.id])
+
+  const login = async (email, password) => {
+    const { user: u, token } = await request('/auth/login', { method: 'POST', body: { username: email, password } })
+    persist(u, token)
+    setUser(u)
+    return u
+  }
+
+  // Called after setup / accept-invite, which return the same { user, token }.
+  const authenticate = (u, token) => {
+    persist(u, token)
+    setUser(u)
+    return u
+  }
+
+  // Refresh the cached account after the user edits it themselves (rename,
+  // password change). A password change rotates the token, so pass the new one;
+  // without it the existing session token is kept.
+  const updateAccount = (u, token) => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(u))
+    if (token) localStorage.setItem(TOKEN_KEY, token)
+    setUser(u)
+    return u
+  }
+
+  const logout = async () => {
+    try {
+      await request('/auth/logout', { method: 'POST' })
+    } catch {
+      /* ignore — clear locally regardless */
+    }
+    clear()
+    setUser(null)
+  }
+
+  return (
+    <AuthContext.Provider value={{ user, login, authenticate, updateAccount, logout }}>
+      <Fragment key={zoneEpoch}>{children}</Fragment>
+    </AuthContext.Provider>
+  )
+}
+
+export const useAuth = () => useContext(AuthContext)

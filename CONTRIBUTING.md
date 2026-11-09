@@ -57,10 +57,11 @@ for verifying a change end-to-end the way it'll actually ship.
 
 ## Project structure
 
-Tabletsgo is a feature-sliced React + TypeScript app. Before adding files,
+Tabletsgo's frontend is a feature-sliced React + TypeScript app on shadcn/ui,
+in its own workspace package under `console/` (the server stays at the root). Before adding files,
 read the **PROJECT STRUCTURE** section in [`CLAUDE.md`](CLAUDE.md) — it's the
 source of truth for where things live (`app/`, `shared/`, `features/*`,
-`pages/*`) and the conventions each layer follows (barrel exports, import
+`features/*/XPage.tsx`) and the conventions each layer follows (barrel exports, import
 direction, shared UI components to reuse instead of re-styling inline).
 
 Keep that map in `CLAUDE.md` in sync whenever you add, remove, or rename a
@@ -82,8 +83,8 @@ top-level folder.
 - All backend calls from the frontend go through `shared/api/request.ts`
   (`request()` for mutations, `safeRequest()` for reads that should degrade
   quietly) — never call `fetch` directly.
-- Reuse `shared/ui` components (`Button`, `Input`, `Avatar`, `Badge`,
-  `ConfirmDialog`, etc.) instead of re-styling inline. Full conventions are in
+- Reuse `shared/ui` — the shadcn/ui primitives (`Button`, `Input`, `Badge`,
+  `Dialog`, …) and the composites built on them (`ConfirmDialog`, `Avatar`, …) instead of re-styling inline. Full conventions are in
   `CLAUDE.md`.
 
 ### Database-agnostic contracts

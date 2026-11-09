@@ -6,14 +6,22 @@ you need to know what a specific component or module does before touching it;
 
 Keep this in sync whenever you add, remove, or rename a folder.
 
-## Frontend (`src/`)
+## Frontend (`console/`)
 
-Feature-sliced React + TypeScript. Imports use the `@/` alias (→ `src/`). Each
+The console is its own npm workspace — `console/package.json`, `vite.config.js`,
+`tsconfig.json`, `components.json` (shadcn/ui) — beside the server at the repo root,
+the way hayat keeps its `console/` beside its Go backend. The root `package.json`
+lists it under `workspaces`, so one `npm ci` installs both, and `npm run dev` /
+`build` / `typecheck` at the root run the console's. The server serves its build
+from `console/dist` (`DIST_DIR`).
+
+Feature-sliced React 19 + TypeScript on shadcn/ui (radix-nova style, Tailwind v4).
+Imports use the `@/` alias (→ `console/src/`). Each
 feature exposes a public API through its `index.ts` barrel; reach into another
 feature via that barrel, not its internal files.
 
 ```
-src/
+console/src/
 ├── app/                          # app wiring (no business logic)
 │   ├── main.tsx                  # entry: mounts <AppProviders><App/>
 │   ├── App.tsx                   # renders <AppRoutes/>
@@ -28,22 +36,44 @@ src/
 │   └── routes/                   # AppRoutes (route table + RequireAuth guard)
 │
 ├── shared/                       # reusable, feature-agnostic code
-│   ├── ui/                       # presentational components, grouped by kind:
-│   │   ├── buttons/              #   Button, IconButton, TextButton
-│   │   ├── form/                 #   Form/FormField/Label, Input/Textarea, PasswordInput, Select, Checkbox,
-│   │   │                         #     CheckboxRow, SearchInput, Toggle, NumberStepper, Segmented
-│   │   ├── navigation/           #   NavItem, Tab, MenuItem, Breadcrumb, RailItem
+│   ├── ui/                       # presentational components:
+│   │   ├── *.tsx (kebab-case)    #   shadcn/ui primitives (`components.json` → here): button, badge, input,
+│   │   │                         #     textarea, label, select, checkbox, switch, toggle(-group), radio-group,
+│   │   │                         #     dialog, alert-dialog, sheet, popover, dropdown-menu, context-menu,
+│   │   │                         #     tooltip, command, table, tabs, breadcrumb, pagination, progress,
+│   │   │                         #     scroll-area, collapsible, card, alert, separator, skeleton, sonner.
+│   │   │                         #     Tuned to tabletsgo's density and palette, otherwise stock: add more
+│   │   │                         #     with the shadcn CLI and keep its output. Their svg sizing rule only
+│   │   │                         #     touches lucide icons (`svg.lucide`), so the app's own icons keep
+│   │   │                         #     their drawn sizes; every portal goes through `portalContainer()` so
+│   │   │                         #     overlays still paint over a fullscreened element
+│   │   ├── confirm-dialog.tsx    #   ConfirmDialog — AlertDialog for "are you sure"; `typeToConfirm` adds
+│   │   │                         #     the type-the-name friction for what can't be undone
+│   │   ├── form/                 #   composites on those primitives: FormField (shadcn Label + control +
+│   │   │                         #     hint/error), OptionSelect (an `options`-array select: shadcn Select,
+│   │   │                         #     or Popover + Command when `searchable`; `variant="ghost"` for a bare
+│   │   │                         #     switcher), Segmented (ToggleGroup), PasswordInput, SearchInput,
+│   │   │                         #     CheckboxRow, NumberStepper, DatePicker/TimePicker/DateTimeField,
+│   │   │                         #     SettingRow
+│   │   ├── navigation/           #   NavItem, Tab, MenuItem (a row in a menu panel), Breadcrumb (shadcn
+│   │   │                         #     breadcrumb from a `Crumb[]`), RailItem
 │   │   ├── page/                 #   the page shell every full-page view shares: PageTrail (how a page adds
 │   │   │                         #     to the trail HomeLayout draws), PageHeader (media/title/meta +
 │   │   │                         #     actions), PageTabs (the tab bar AND the active
 │   │   │                         #     tab's body, so spacing can't drift), Narrow (a capped content
-│   │   │                         #     column — pages never cap themselves, HomeLayout owns the width)
-│   │   ├── overlay/              #   Popover, Tooltip, ContextMenu
-│   │   ├── feedback/             #   Toast, ConfirmDialog, TypeToConfirmDialog, LoadingState, EmptyState, Wizard
+│   │   │                         #     column — pages never cap themselves, HomeLayout owns the width),
+│   │   │                         #     Section (a plain header-plus-content page), TabbedSection, SubHead,
+│   │   │                         #     ComingSoon
+│   │   ├── overlay/              #   composites on shadcn overlays whose callers need more than the
+│   │   │                         #     primitive: Popover (render-prop trigger/`close` over shadcn
+│   │   │                         #     Popover), ContextMenu + ContextMenuSub (a DropdownMenu at a cursor
+│   │   │                         #     point), SlideOverPanel (Sheet, driven by useSlideOver), CommandPalette
+│   │   │                         #     (CommandDialog), rowMenu (right-click a row → its kebab menu)
+│   │   ├── feedback/             #   LoadingState, EmptyState, ProgressBar (shadcn Progress), Wizard (Dialog)
 │   │   ├── table/                #   DataGrid (editable console grid shared with Redis), GridRules
 │   │   │                         #   (a DataGrid's client-side Filter/Sort/Columns popovers + matchFilter/
 │   │   │                         #     sortRows/cycleSortRules — table tab, histories, Kafka ACLs), DataTable
-│   │   │                         #   (the shared list-as-table: sortable columns, row click,
+│   │   │                         #   (the shared list-as-table on shadcn Table: sortable columns, row click,
 │   │   │                         #     pagination footer), Pagination, useDataTable (client-side
 │   │   │                         #     sort/paging state — spread its result into DataTable; pass the
 │   │   │                         #     props yourself for server-side paging), RowActions/RowAction/RowMenu
@@ -52,7 +82,7 @@ src/
 │   │   │                         #     useListView + ViewToggle (the per-list List / Grid switch,
 │   │   │                         #     remembered in localStorage; `view="grid"` makes DataTable draw
 │   │   │                         #     the rows as cards built from its columns, or `renderCard`'s own)
-│   │   └── (root)                #   Avatar, PersonAvatar, Badge, PersonRow, RowLabel, HelpTip (a "?" whose hover
+│   │   └── (root, PascalCase)    #   app composites: Avatar, PersonAvatar, PersonRow, RefreshButton, RowLabel, HelpTip (a "?" whose hover
 │   │                             #     explains its neighbour — FormField's `help`), DragHandle (the grip a
 │   │                             #     reorderable list grabs by — pair with useDragReorder),
 │   │                             #     SaveQueryPanel, SqlEditor, CodeEditor, CommandReference (a command
@@ -406,106 +436,27 @@ src/
 │       ├── stores/               #   UpdateContext (useUpdate: info + check + per-version dismiss)
 │       └── lib/                  #   api (/api/system/* client + version polling), types
 │
-└── pages/                        # route-level composition (thin — just assemble features), grouped by area
-    ├── auth/                     # unauthenticated flows: LoginPage, SetupPage, AcceptInvitePage,
-    │                             #   ForgotPasswordPage, ResetPasswordPage, RegisterPage,
-    │                             #   LoginCompletePage (where a Google/GitHub sign-in lands) + AuthCard
-    ├── admin/                    # the instance-admin area, one file per sidebar section (same rule
-    │                             #   as home/): AdminWorkspacesPage (/admin), AdminWorkspaceDetailPage
-    │                             #   (/admin/workspaces/:id/:tab), AdminUsersPage
-    │                             #   (/admin/users) + AdminEmailPage (/admin/email — the instance-wide
-    │                             #   SMTP config) + AdminSignInPage (/admin/sign-in) + AdminModulesPage (/admin/modules) + AdminUpdatesPage (/admin/updates) — no tabs, the sidebar switches. Only reachable
-    │                             #   with the system role 'admin'; AppRoutes' RequireSystemAdmin /
-    │                             #   RequireWorkspaceUser send each audience to the other's home
-    ├── console/                  # WorkspacePage — the route /connection/:id. Thin: it reads the :id and
-    │                             #   renders <DatabaseConsole/>, which owns the shell (see
-    │                             #   features/workspace/components). Routed outside HomeLayout because the
-    │                             #   console brings its own rail, sidebar and status bar
-    └── home/                     # the authenticated home shell's pages — one file per sidebar section
-        │                         #   (the shell itself is app/layouts/HomeLayout)
-        ├── ui                    #   page composition: Section, TabbedSection, SubHead, ComingSoon, plus
-        │                         #   re-exports of shared/ui/page's PageHeader / PageTabs / Narrow
-        ├── useTabRoute           #   binds a tab bar to a path segment; the bare section path redirects
-        │                         #   to the first tab so every tab has a pasteable address
-        ├── HomePage (/)          #   the landing page: connection + member counts
-        ├── DashboardsPage        #   /dashboards → every dashboard in the workspace, across its
-        │                         #   connections (features/dashboard's WorkspaceDashboardList); a row
-        │                         #   navigates to /connection/:id?dashboard=<id>, opened as a console tab
-        ├── ConnectionsPage       #   /connections — filter bar (search / env / folder / type / status)
-        │                         #   over the connection list, rendered with shared/ui/table's DataTable
-        │                         #   (sortable columns, 10/page, row click → detail)
-        ├── ConnectionDetailPage  #   /connections/:id/:tab — one connection (features/connections'
-        │                         #   ConnectionDetail); the tab lives in the URL, and the tab *list*
-        │                         #   depends on the engine (detailTabs(conn?.type)) — an unresolved
-        │                         #   connection gets the full one so a cold /connections/:id/schema
-        │                         #   isn't bounced before the type that would justify it has arrived
-        ├── ConnectionFormPage    #   /connections/new (engine in ?type=) and /connections/:id/edit/:tab —
-        │                         #   both modes of features/connections' ConnectionForm
-        ├── StoragePage           # /storage → S3 storage destinations (StorageList), top-level sidebar item
-        ├── SshHostsPage          # /ssh/hosts → sidebar Infrastructure → SSH Host (SshGatewayList; "gateway" in code/API)
-        ├── SshKeysPage           # /ssh/keys → sidebar Infrastructure → SSH Key (SshKeyList); /ssh redirects
-        │                         #   to /ssh/hosts
-        ├── WorkflowsPage         # /workflows → every workflow in the workspace, across its connections
-        │                         #   (features/workflow's WorkspaceWorkflowList); a row navigates to
-        │                         #   /connection/:id?workflow=<id>, which the console opens as a tab
-        ├── SchemasPage           # /schemas → every schema draft in the workspace: the ones designed
-        │                         #   against a connection and the from-scratch ones (schema-designer's
-        │                         #   WorkspaceSchemaList). "New schema" (NewSchemaDialog) creates either
-        │                         #   kind here — on a connection it is createSaved(kind:'schema') with
-        │                         #   empty SQL, from scratch a workspace draft row. Every row opens at
-        │                         #   /schemas/:id; the console's rail Schema icon goes to that connection's
-        │                         #   own editor address instead (see SchemaDraftPage below). The page also
-        │                         #   routes the two row actions that leave the list: unlink ⟶
-        │                         #   /schemas/:id?unlink=1 (the editor opens with the dialog up, because
-        │                         #   the move carries the canvas's tables out), schema version history ⟶
-        │                         #   /connections/:id/schema (the target connection's own history tab)
-        ├── SchemaDraftPage       # thin route wrapper for schema-designer's controller hook and view;
-        │                         # /schemas/:id hosts either kind of draft,
-        │                         #   and /schemas/connection/:connectionId → "the editor for this
-        │                         #   connection", which is what the console's rail Schema icon opens: it
-        │                         #   reads that connection's saved queries and redirects (replace) to the
-        │                         #   newest kind='schema' one, or — with none — synthesizes an id-less
-        │                         #   draft so the canvas draws the live tables and Save creates the first
-        │                         #   draft (a falsy `draftId` is what makes SchemaEditor's Save mean that).
-        │                         #   The static `connection` segment outranks `:id`, so the two coexist.
-        │                         #   Full-screen: routed *outside* HomeLayout (own header strip + h-screen),
-        │                         #   so the diagram gets the whole viewport the way the console does.
-        │                         #   Loads it via GET /api/workspaces/:id/schemas/:draftId, which resolves
-        │                         #   both tables and enforces connection access; a connection-linked draft
-        │                         #   draws that live database and saves back to its saved query, a
-        │                         #   from-scratch one starts empty and saves to its draft row. It also owns
-        │                         #   the connection's table folders (the diagram's regions): fetchTableFolders
-        │                         #   on the linked connection, edit/delete from the region menu, and
-        │                         #   TableFolderPickerPanel behind the node menu's "Move to folder…".
-        │                         #   Submit is hidden either way — there is no Changes queue
-        │                         #   here — but **Release** runs the staged DDL against the draft's own
-        │                         #   connection after a confirmation listing every statement (ReleaseDialog).
-        │                         #   Statements that ran leave the draft, the arrangement stays, and what ran
-        │                         #   is recorded as one migration on that connection, so it rolls back from
-        │                         #   its schema history. A from-scratch draft has no database: Release is
-        │                         #   disabled, and "Link to connection" (LinkConnectionDialog) *moves* the
-        │                         #   design onto a connection of the same engine — createSaved(kind:'schema')
-        │                         #   then deleteSchemaDraft, so its id changes and the page follows it —
-        │                         #   after which it releases like any other. "Unlink" (UnlinkConnectionDialog)
-        │                         #   moves it back the other way (createSchemaDraft then deleteSaved), and
-        │                         #   offers to carry the tables it draws out as CREATE TABLE statements
-        │                         #   (buildCreateTableSql over the draft's snapshot, falling back to
-        │                         #   getDiagram) — without that the canvas would keep only what is staged.
-        │                         #   Both directions strip the snapshot (withoutSchemaSnapshot): it
-        │                         #   describes one database and must not follow the design to another.
-        │                         #   Neither direction touches a database. **Sync schema** (header, beside
-        │                         #   Unlink, linked designs only) is the one thing that re-reads it:
-        │                         #   getDiagram(strict) → schemaSnapshot → the same row write, which is
-        │                         #   how the canvas gets a schema at all. A release re-reads and stores
-        │                         #   it too, having just changed it.
-        │                         #   Export is the other way the DDL leaves
-        ├── ResourceTreePage      # /resource-tree/:nodeId? → the hierarchy on the left, the selected
-        │                         #   node's owner / grants / your-access on the right. The selection is
-        │                         #   in the URL, so a refresh keeps it and a link lands on it
-        ├── WorkspaceSettingsPage # /workspace → General / Config / Member tabs
-        └── SettingsPage          # /settings → Account / Theme / Data / Keymap tabs (Account
-                                  #   renders features/auth's ProfileSetting + PasswordSetting)
+└── (no pages/)                   # like hayat, a page lives in the feature that owns it (features/x/XPage.tsx)
+                                  #   and stays composition: it reads the address and renders the feature's
+                                  #   components. AppRoutes lazy-loads each one; see the table below.
 ```
+Where each route's page lives:
+
+| Route | Page |
+| --- | --- |
+| `/login`, `/setup`, `/register`, `/forgot`, `/reset/:token`, `/invite/:token`, `/login/complete` | `features/auth/*Page.tsx` (+ `components/AuthCard`) |
+| `/`, `/members`, `/notifications(/:sub)`, `/workspace(/:sub)` | `features/workspaces/` HomePage, MembersPage, NotificationsPage, WorkspaceSettingsPage |
+| `/connections`, `/connections/:id/:tab`, `/connections/new`, `…/edit/:tab` | `features/connections/` ConnectionsPage, ConnectionDetailPage, ConnectionFormPage |
+| `/connection/:id` (the console, outside HomeLayout) | `features/workspace/WorkspacePage.tsx` → DatabaseConsole |
+| `/dashboards` · `/workflows` · `/storage` | `features/dashboard/DashboardsPage` · `features/workflow/WorkflowsPage` · `features/backup/StoragePage` |
+| `/schemas`, `/schemas/:id`, `/schemas/connection/:connectionId` (editor, outside HomeLayout) | `features/schema-designer/` SchemasPage, SchemaDraftPage |
+| `/ssh/hosts`, `/ssh/keys` | `features/ssh/` SshHostsPage, SshKeysPage |
+| `/resource-tree(/:nodeId)` | `features/resource-tree/ResourceTreePage` |
+| `/settings(/:sub)` (the person's own account) | `features/settings/SettingsPage` |
+| `/admin…` | `features/admin/` AdminWorkspacesPage, AdminWorkspaceDetailPage, AdminUsersPage, AdminEmailPage, AdminSignInPage; `features/modules/AdminModulesPage`; `features/system-update/AdminUpdatesPage` |
+
+Tab bars bind to their address with `shared/hooks/useTabRoute`.
+
 
 Note: `features/workspaces` (plural) is the org/tenant layer (workspaces, members,
 invites); `features/workspace` (singular) is the per-connection DB console. Don't
@@ -517,7 +468,7 @@ Out of scope so far: `schema-designer/SchemaEditor.tsx` (~2500),
 moving route handlers into `server/routes/*.js` express routers).
 
 The console was the other one. It is now `workspace/components/DatabaseConsole.tsx`
-(~600 lines of wiring) over `workspace/hooks/*`; `pages/console/WorkspacePage.tsx`
+(~600 lines of wiring) over `workspace/hooks/*`; `features/workspace/WorkspacePage.tsx`
 is a dozen lines. Same shape to copy for SchemaEditor: pull the state engines out
 as hooks, the regions out as components, and leave the top file saying only how
 they talk to each other.

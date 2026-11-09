@@ -12,3 +12,5 @@ demo.db-*
 .DS_Store
 scratchpad
 server/generated
+console/node_modules
+console/dist
