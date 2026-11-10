@@ -1,11 +1,13 @@
 name: Release
 
 # Step 1 of the release: bump the version and push a release/* branch, then print
-# a ready-to-open PR link in the run summary. Branch protection on v0.x.x means we
-# can't push the bump directly, and this org blocks GITHUB_TOKEN from opening PRs,
-# so you click the link to open the PR yourself. Merging it triggers
-# release-publish.yml, which tags the merged commit and builds the image — so the
-# tag and the version-synced files are the SAME commit.
+# a ready-to-open PR link in the run summary. The PR targets the release line for
+# the version's MAJOR: 0.16.5 → v0.x.x, 1.2.0 → v1.x.x, and so on. The first
+# release of a new major creates its line from the default branch. Branch
+# protection on the release lines means we can't push the bump directly, and this
+# org blocks GITHUB_TOKEN from opening PRs, so you click the link to open the PR
+# yourself. Merging it triggers release-publish.yml, which tags the merged commit
+# and builds the image — so the tag and the version-synced files are the SAME commit.
 #
 # Trigger from the Actions tab (Run workflow) or:
 #   gh workflow run release.yml -f version=0.16.5
@@ -41,6 +43,22 @@ jobs:
           echo "$V" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
             || { echo "::error::Invalid semver: '$V' (expected X.Y.Z)"; exit 1; }
           echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "base=v${V%%.*}.x.x" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the major's release line
+        env:
+          BASE: ${{ steps.norm.outputs.base }}
+          DEFAULT: ${{ github.event.repository.default_branch }}
+        run: |
+          if git ls-remote --heads --exit-code origin "refs/heads/${BASE}" >/dev/null 2>&1; then
+            git fetch origin "${BASE}"
+            git checkout -B "${BASE}" "origin/${BASE}"
+          else
+            # First release of this major: start its line from the default branch.
+            echo "Release line ${BASE} does not exist; creating it from ${DEFAULT}."
+            git checkout -B "${BASE}" "origin/${DEFAULT}"
+            git push origin "${BASE}"
+          fi
 
       - name: Refuse if already released
         env:
@@ -82,7 +100,7 @@ jobs:
           # secret is missing/empty we degrade to a prefilled compare link.
           GH_TOKEN: ${{ secrets.RELEASE_PAT }}
           VERSION: ${{ steps.norm.outputs.version }}
-          BASE: ${{ github.event.repository.default_branch }}
+          BASE: ${{ steps.norm.outputs.base }}
         run: |
           BR="release/v${VERSION}"
           PR_URL="${{ github.server_url }}/${{ github.repository }}/compare/${BASE}...${BR}?expand=1"

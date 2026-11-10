@@ -1,13 +1,14 @@
 name: Release publish
 
 # Step 2 of the release: fires when a release/* PR (opened by release.yml) is
-# MERGED into v0.x.x. It tags the merged commit — which already carries the
-# version-synced package.json + README — and builds/publishes the image from it,
-# guaranteeing the tag and the synced files are the exact same commit.
+# MERGED into its major's release line (v0.x.x, v1.x.x, …). It tags the merged
+# commit — which already carries the version-synced package.json + README — and
+# builds/publishes the image from it, guaranteeing the tag and the synced files
+# are the exact same commit.
 on:
   pull_request:
     types: [closed]
-    branches: [v0.x.x]
+    branches: ['v*.x.x']
 
 jobs:
   tag:
@@ -26,11 +27,15 @@ jobs:
         id: info
         env:
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
           MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
         run: |
           V="${HEAD_REF#release/v}"
           echo "$V" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
             || { echo "::error::Bad release branch name: $HEAD_REF"; exit 1; }
+          # A release only lands on its own major's line: 1.2.0 → v1.x.x.
+          [ "$BASE_REF" = "v${V%%.*}.x.x" ] \
+            || { echo "::error::v$V belongs on v${V%%.*}.x.x, not $BASE_REF"; exit 1; }
           echo "version=$V" >> "$GITHUB_OUTPUT"
           echo "sha=$MERGE_SHA" >> "$GITHUB_OUTPUT"
 
