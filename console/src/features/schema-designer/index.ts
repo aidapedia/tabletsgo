@@ -14,6 +14,8 @@ export { default as NewSchemaDialog } from './components/NewSchemaDialog'
 export { default as SchemaHistoryPanel } from './components/SchemaHistoryPanel'
 export { default as MigrationInspector, fmtTime, rollbackTitle } from './components/MigrationInspector'
 export type { SchemaDraft, SchemaDraftDetail, SchemaEngine, WorkspaceSchemaDraft } from './types'
+// The same list, as data — the home page summarises it without rendering it.
+export { listWorkspaceSchemas } from './lib/api'
 // The design document (layout + notes + groups) is the schema editor's other
 // half — the hosts that save a draft need its type, and the design file format
 // is public API for anyone importing one.

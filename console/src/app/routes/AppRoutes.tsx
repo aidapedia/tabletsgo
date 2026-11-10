@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { useAuth, getSetupStatus } from '@/features/auth'
+import { PageLoading } from '@/shared/ui/feedback/LoadingState'
 
 // Each address loads its page only when visited. The console and schema editor
 // have large editor dependencies; importing every page here made them part of
@@ -38,7 +39,7 @@ const AdminModulesPage = lazy(() => import('@/features/modules/AdminModulesPage'
 const AdminSignInPage = lazy(() => import('@/features/admin/AdminSignInPage'))
 const AdminUpdatesPage = lazy(() => import('@/features/system-update/AdminUpdatesPage'))
 
-const routeFallback = <div role="status" className="p-8 text-center text-sm text-muted-foreground">Loading…</div>
+const routeFallback = <PageLoading screen />
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { user } = useAuth()

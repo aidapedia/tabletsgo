@@ -136,6 +136,10 @@ console/src/
 │   │                             #     itself is instance-level, see `auth-sessions` skill),
 │   │                             #   WorkspaceGeneral (rename + the default "max sessions per
 │   │                             #     connection" every connection inherits);
+│   │                             #   HomePage (the `/` landing) built from components/home/
+│   │                             #     (StatTile, HomePanel, ConnectionsPanel, AutomationPanel,
+│   │                             #     ActivityPanel, GettingStarted) + hooks/useHomeOverview
+│   │                             #     (one parallel read of the workspace-wide lists);
 │   │                             #   api (workspaces/members CRUD)
 │   ├── connections/              # stores/ConnectionsContext (scoped to current workspace); components:
 │   │                             #   ConnectionForm, ConnectionDetail (Data/Access/Schema history/Backup

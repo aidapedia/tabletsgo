@@ -1,57 +1,49 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '@/features/auth'
-import { useConnections } from '@/features/connections'
-import { useWorkspaces, listMembers } from '@/features/workspaces'
+import { DbTypePickerModal, useConnections } from '@/features/connections'
+import { useWorkspaces } from './stores/WorkspaceContext'
+import { can } from './api'
+import { Button } from '@/shared/ui/button'
 import EmptyState from '@/shared/ui/feedback/EmptyState'
-import { DatabaseIcon, UsersIcon } from '@/shared/ui/icons'
+import { DatabaseIcon, GridIcon, PlusIcon, UsersIcon, WorkflowIcon } from '@/shared/ui/icons'
+import { formatTime } from '@/shared/lib/datetime'
 import PageHeader from '@/shared/ui/page/PageHeader'
+import { useHomeOverview } from './hooks/useHomeOverview'
+import StatTile from './components/home/StatTile'
+import ConnectionsPanel from './components/home/ConnectionsPanel'
+import AutomationPanel from './components/home/AutomationPanel'
+import ActivityPanel from './components/home/ActivityPanel'
+import GettingStarted from './components/home/GettingStarted'
 
-// A single stat tile.
-function StatCard({ Icon, label, value, hint, onClick }: any) {
-  const Tag = onClick ? 'button' : 'div'
-  return (
-    <Tag
-      onClick={onClick}
-      className={`flex flex-col rounded-xl border border-border bg-card p-5 text-left ${
-        onClick ? 'transition-all hover:-translate-y-px hover:border-input hover:bg-accent' : ''
-      }`}
-    >
-      <div className="flex items-center gap-2 text-[11px] font-medium text-muted-foreground">
-        <Icon width={15} height={15} /> {label}
-      </div>
-      <div className="mt-2 text-[28px] font-bold tabular-nums leading-none">{value}</div>
-      {hint && <div className="mt-2 text-[11px] text-faint">{hint}</div>}
-    </Tag>
-  )
+// In the zone the person's account is set to, like every other time the app shows.
+function greeting() {
+  const hour = Number(formatTime(Date.now(), { hour: '2-digit', hourCycle: 'h23' }))
+  return hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening'
 }
 
-// Home — the default landing, workspace stats at a glance. Not to be confused
-// with the Dashboard section (DashboardsPage), which lists the query dashboards
-// built on this workspace's connections.
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
+
+// Home — the default landing: what this workspace holds, what needs a look, and
+// the shortest way into a console. Not to be confused with the Dashboard
+// section (DashboardsPage), which lists the query dashboards built on its
+// connections.
 export default function HomePage() {
   const { user } = useAuth()
   const navigate = useNavigate()
   const { current, loading: loadingWorkspaces } = useWorkspaces()
-  const { connections, loading } = useConnections()
-  const [memberCount, setMemberCount] = useState<number | null>(null)
+  const { connections, loading: loadingConnections } = useConnections()
+  const { workflows, dashboards, schemas, memberCount, loading } = useHomeOverview(current?.id)
+  const [picker, setPicker] = useState(false)
 
-  useEffect(() => {
-    if (!current) return
-    let alive = true
-    setMemberCount(null)
-    listMembers(current.id).then((m) => alive && setMemberCount(Array.isArray(m) ? m.length : 0))
-    return () => {
-      alive = false
-    }
-  }, [current?.id])
+  const firstName = (user?.name || '').split(' ')[0] || 'there'
 
   // Someone who registered belongs nowhere until an owner adds them, and only an
   // owner or an instance admin can do that.
   if (!current && !loadingWorkspaces) {
     return (
       <div className="w-full">
-        <PageHeader title={`Welcome, ${user?.name || 'there'}`} desc="You're not in a workspace yet." />
+        <PageHeader title={`Welcome, ${firstName}`} desc="You're not in a workspace yet." />
         <EmptyState bordered className="mt-6 py-16">
           Ask a workspace owner to add {user?.email}, then refresh this page.
         </EmptyState>
@@ -59,29 +51,129 @@ export default function HomePage() {
     )
   }
 
+  const canCreate = can(current, 'connections.create')
+  const canInvite = can(current, 'members.manage')
+  const production = connections.filter((c: any) => c.environment === 'production').length
+  const engines = new Set(connections.map((c: any) => c.type)).size
+  const failing = workflows.filter((w) => w.lastRun?.status === 'failed').length
+  const scheduled = workflows.filter((w) => w.scheduleEnabled).length
+  const widgets = dashboards.reduce((sum, d) => sum + d.widgetCount, 0)
+  const dash = (v: number | null, busy: boolean) => (busy || v === null ? '—' : v)
+  const isEmpty =
+    !loading && !loadingConnections && connections.length + workflows.length + dashboards.length + schemas.length === 0
+
+  const newConnection = canCreate ? () => setPicker(true) : undefined
+
   return (
-    <div className="w-full">
+    <div className="flex w-full flex-col gap-6">
       <PageHeader
-        title={`Welcome back, ${user?.name || 'there'}`}
-        desc={`Here's an overview of ${current?.name || 'your workspace'}.`}
+        title={`${greeting()}, ${firstName}`}
+        desc={`Here's what's happening in ${current?.name || 'your workspace'}.`}
+        action={
+          <>
+            {canInvite && (
+              <Button variant="outline" size="lg" onClick={() => navigate('/members')}>
+                <UsersIcon width={14} height={14} /> Invite
+              </Button>
+            )}
+            {newConnection && (
+              <Button size="lg" onClick={newConnection}>
+                <PlusIcon width={14} height={14} /> New connection
+              </Button>
+            )}
+          </>
+        }
       />
 
-      <div className="mt-6 grid grid-cols-4 gap-4 max-[1000px]:grid-cols-2 max-[560px]:grid-cols-1">
-        <StatCard
+      {current && !loading && !loadingConnections && (
+        <GettingStarted
+          workspaceId={current.id}
+          steps={[
+            {
+              label: 'Add a connection',
+              hint: 'Point tabletsgo at a database you want to work with.',
+              done: connections.length > 0,
+              action: newConnection && { label: 'Add connection', run: newConnection },
+            },
+            {
+              label: 'Invite a teammate',
+              hint: 'Share connections and dashboards with the people you work with.',
+              done: (memberCount ?? 0) > 1,
+              action: canInvite ? { label: 'Invite', run: () => navigate('/members') } : undefined,
+            },
+            {
+              label: 'Build a dashboard',
+              hint: 'Turn a query into charts — open a connection and add one from its rail.',
+              done: dashboards.length > 0,
+            },
+            {
+              label: 'Automate a task',
+              hint: 'Schedule a workflow to run queries and send the results on.',
+              done: workflows.length > 0,
+            },
+          ]}
+        />
+      )}
+
+      <div className="grid grid-cols-4 gap-3 max-[1000px]:grid-cols-2 max-[560px]:grid-cols-1">
+        <StatTile
           Icon={DatabaseIcon}
           label="Connections"
-          value={loading ? '—' : connections.length}
-          hint="Databases in this workspace"
+          value={dash(connections.length, loadingConnections)}
+          hint={
+            connections.length === 0
+              ? 'No databases yet'
+              : production > 0
+                ? `${production} in production · ${plural(engines, 'engine')}`
+                : plural(engines, 'engine')
+          }
           onClick={() => navigate('/connections')}
         />
-        <StatCard
+        <StatTile
+          Icon={WorkflowIcon}
+          label="Workflows"
+          value={dash(workflows.length, loading)}
+          hint={failing > 0 ? `${failing} failing` : `${scheduled} scheduled`}
+          tone={failing > 0 ? 'alert' : 'default'}
+          onClick={() => navigate('/workflows')}
+        />
+        <StatTile
+          Icon={GridIcon}
+          label="Dashboards"
+          value={dash(dashboards.length, loading)}
+          hint={plural(widgets, 'widget')}
+          onClick={() => navigate('/dashboards')}
+        />
+        <StatTile
           Icon={UsersIcon}
           label="Members"
-          value={memberCount ?? '—'}
-          hint="People with access"
+          value={dash(memberCount, loading)}
+          hint="People in this workspace"
           onClick={() => navigate('/members')}
         />
       </div>
+
+      {/* A brand-new workspace has nothing to list: three "nothing yet" boxes
+          under the checklist would only repeat it. */}
+      {!isEmpty && (
+        <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,360px)] items-start gap-4 max-[1000px]:grid-cols-1">
+          <div className="flex min-w-0 flex-col gap-4">
+            <ConnectionsPanel connections={connections} loading={loadingConnections} />
+            <ActivityPanel workflows={workflows} dashboards={dashboards} schemas={schemas} loading={loading} />
+          </div>
+          <AutomationPanel workflows={workflows} loading={loading} />
+        </div>
+      )}
+
+      {picker && (
+        <DbTypePickerModal
+          onClose={() => setPicker(false)}
+          onPick={(typeId: string) => {
+            setPicker(false)
+            navigate(`/connections/new?type=${typeId}`)
+          }}
+        />
+      )}
     </div>
   )
 }

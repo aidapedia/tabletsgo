@@ -1,6 +1,6 @@
 import { Suspense, useEffect, useState, type MouseEvent } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
-import LoadingState from '@/shared/ui/feedback/LoadingState'
+import { PageLoading } from '@/shared/ui/feedback/LoadingState'
 import { useAuth } from '@/features/auth'
 import { WorkspaceSwitcher } from '@/features/workspaces'
 import { UpdateBanner } from '@/features/system-update'
@@ -420,7 +420,7 @@ export default function HomeLayout() {
               <PageTrail pathname={location.pathname} isAdmin={isAdmin} />
               {/* Its own boundary: a page still downloading waits here, in the
                   container, while the sidebar and the trail stay on screen. */}
-              <Suspense fallback={<LoadingState className="py-10 text-center" />}>
+              <Suspense fallback={<PageLoading />}>
                 <Outlet />
               </Suspense>
             </PageTrailProvider>
