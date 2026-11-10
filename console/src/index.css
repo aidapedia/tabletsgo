@@ -1,0 +1,279 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+/* ThemeContext puts `.dark` or `.light` on <html>; shadcn's `dark:` tweaks key on it. */
+@custom-variant dark (&:is(.dark *));
+
+/* ---------- shadcn/ui tokens → utilities ----------
+   The standard shadcn set, plus the four inks tabletsgo needs that shadcn has
+   no name for: --faint (the third ink: group headers, meta, placeholders),
+   --primary-bright (text/marks on a primary-tinted background), --success (the
+   live "connected" signal) and --warning. */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-bright: var(--primary-bright);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-faint: var(--faint);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-heading: var(--font-sans);
+}
+
+/* ---------- Palette (logo: #0D0D0D / #6FCF6A / #143618) ----------
+   Dark is the default and needs no class. The primary derives from --brand,
+   which ThemeContext sets inline on <html> from the person's accent, so any
+   accent works on either background. --brand-tint is what the "bright" shade
+   blends toward: white on dark, black on light. */
+:root {
+  --brand: #6fcf6a;
+  --brand-tint: #ffffff;
+
+  --background: #080808;
+  --foreground: #f4f4f5;
+  --card: #101010;
+  --card-foreground: #f4f4f5;
+  --popover: #131313;
+  --popover-foreground: #f4f4f5;
+  --primary: var(--brand);
+  --primary-foreground: #ffffff;
+  --primary-bright: color-mix(in oklab, var(--brand) 72%, var(--brand-tint));
+  --secondary: #131313;
+  --secondary-foreground: #f4f4f5;
+  --muted: #131313;
+  --muted-foreground: #a1a1aa;
+  --faint: #6b6b72;
+  --accent: #1b1b1b;
+  --accent-foreground: #f4f4f5;
+  --destructive: #ef4444;
+  /* Deliberately not --brand: "connected" has to read as green whatever accent
+     was picked (an orange dot next to "Connected" reads as a warning). */
+  --success: #22c55e;
+  --warning: #d6a73a;
+  --border: #222222;
+  --input: #333333;
+  --ring: var(--brand);
+  --chart-1: var(--brand);
+  --chart-2: #22c55e;
+  --chart-3: #d6a73a;
+  --chart-4: #60a5fa;
+  --chart-5: #a1a1aa;
+  --radius: 0.625rem;
+  --sidebar: #0c0c0c;
+  --sidebar-foreground: #f4f4f5;
+  --sidebar-primary: var(--brand);
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #1b1b1b;
+  --sidebar-accent-foreground: #f4f4f5;
+  --sidebar-border: #222222;
+  --sidebar-ring: var(--brand);
+  color-scheme: dark;
+}
+
+/* The light base overrides only neutral surfaces and inks; the accent is
+   independent. --brand-tint flips to black so "bright" darkens on white. */
+html.light {
+  --brand-tint: #000000;
+
+  --background: #ffffff;
+  --foreground: #16181c;
+  --card: #ffffff;
+  --card-foreground: #16181c;
+  --popover: #ffffff;
+  --popover-foreground: #16181c;
+  --secondary: #eef0ee;
+  --secondary-foreground: #16181c;
+  --muted: #eef0ee;
+  --muted-foreground: #555b63;
+  --faint: #939aa1;
+  --accent: #f0f2f0;
+  --accent-foreground: #16181c;
+  --destructive: #e03131;
+  --success: #16a34a;
+  --warning: #b8860b;
+  --border: #e3e6e3;
+  --input: #cdd1cd;
+  --chart-2: #16a34a;
+  --chart-3: #b8860b;
+  --chart-4: #2563eb;
+  --chart-5: #555b63;
+  --sidebar: #f6f7f6;
+  --sidebar-foreground: #16181c;
+  --sidebar-accent: #eceeec;
+  --sidebar-accent-foreground: #16181c;
+  --sidebar-border: #e3e6e3;
+  color-scheme: light;
+}
+
+/* ---------- Base ---------- */
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  html {
+    @apply font-sans;
+  }
+
+  /* Density scale: the root font-size is the single knob every rem-based
+     utility (text, padding, gap, width) scales off, so shrinking it makes the
+     whole UI denser and smaller-texted at once. Toggled via a class on <html>
+     by ThemeContext; default (no class) is the 16px browser baseline. */
+  html.density-compact {
+    font-size: 14px;
+  }
+  html.density-condensed {
+    font-size: 13px;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  ::selection {
+    background: color-mix(in oklab, var(--primary) 22%, transparent);
+  }
+
+  /* Scrollbar */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 6px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--input);
+  }
+}
+
+/* ---------- React Flow (schema editor) theming ---------- */
+.react-flow__minimap {
+  background-color: var(--sidebar) !important;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.react-flow__controls {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.react-flow__controls-button {
+  background: var(--muted);
+  border-bottom: 1px solid var(--border);
+  color: var(--foreground);
+}
+.react-flow__controls-button:hover {
+  background: var(--accent);
+}
+.react-flow__controls-button svg {
+  fill: var(--muted-foreground);
+}
+
+/* ---------- react-grid-layout (dashboard widget grid) theming ---------- */
+/* Drop preview: hidden. RGL still tracks the placeholder internally for
+   positioning, but we suppress its visual (default red fill) entirely — the
+   live drag outline is feedback enough. (Its selector has equal specificity and
+   loads after ours, so we out-specify it here.) */
+.widget-grid .react-grid-item.react-grid-placeholder {
+  background: transparent;
+  border: none;
+  opacity: 0;
+}
+/* Lift + outline the tile being dragged/resized. RGL merges .react-grid-item
+   onto the same element as .widget-grid-item, so outline the item itself. */
+.widget-grid .react-grid-item.react-draggable-dragging,
+.widget-grid .react-grid-item.resizing {
+  z-index: 20;
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+  border-radius: var(--radius-xl);
+}
+/* SE resize handle: themed chevron, revealed on hover (matches the old design). */
+.widget-grid .react-grid-item > .react-resizable-handle {
+  opacity: 0;
+  background-image: none;
+  transition: opacity 0.15s ease;
+}
+.widget-grid .react-grid-item:hover > .react-resizable-handle {
+  opacity: 1;
+}
+.widget-grid .react-grid-item > .react-resizable-handle::after {
+  border-right-color: var(--faint);
+  border-bottom-color: var(--faint);
+}
+
+/* ---------- Login hero grid backdrop (not expressible as utilities) ---------- */
+@utility login-grid {
+  background-image:
+    linear-gradient(color-mix(in oklab, var(--primary) 4%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in oklab, var(--primary) 4%, transparent) 1px, transparent 1px);
+  background-size: 64px 64px;
+  mask-image: radial-gradient(circle at 50% 45%, black, transparent 70%);
+}
+
+/* ---------- Form field spacing ---------- */
+/* FormField carries its own `mb-4` so adding a field to a form never means also
+   remembering its margin. In a *row* (a flex row or a grid) that margin is dead
+   space under the row — the container's gap already spaces those — so drop it
+   there. `:where()` keeps the specificity at `.form-field`, and the rule is
+   unlayered so it still beats the utility; a caller who wants the margin back
+   in a row asks for it with `!mb-4`. `flex-col` is excluded: a column of fields
+   stacks like a form and wants the gap. */
+:where(.flex:not(.flex-col), .grid) > .form-field {
+  margin-bottom: 0;
+}

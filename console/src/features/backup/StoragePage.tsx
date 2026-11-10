@@ -1,0 +1,33 @@
+import { useRef } from 'react'
+import { useWorkspaces, can } from '@/features/workspaces'
+import { StorageList, type StorageListHandle } from '@/features/backup'
+import { PlusIcon } from '@/shared/ui/icons'
+import { Section } from '@/shared/ui/page/Section'
+import LoadingState from '@/shared/ui/feedback/LoadingState'
+import { Button } from '@/shared/ui/button'
+
+// S3 Storage — workspace-scoped storage destinations connections back up to.
+export default function StoragePage() {
+  const { current } = useWorkspaces()
+  // A destination holds write credentials for somewhere the workspace's data
+  // lands, so managing one is its own permission.
+  const canManage = can(current, 'storage.manage')
+  const listRef = useRef<StorageListHandle>(null)
+
+  return (
+    <Section
+      title="S3 Storage"
+      desc="S3-compatible storage destinations (AWS S3, MinIO, R2, B2, …) that connections can back up to."
+      action={
+        canManage && (
+          <Button variant="default" size="lg" onClick={() => listRef.current?.openCreate()}>
+            <PlusIcon width={15} height={15} />
+            New destination
+          </Button>
+        )
+      }
+    >
+      {current ? <StorageList ref={listRef} workspaceId={current.id} canManage={canManage} /> : <LoadingState className="" />}
+    </Section>
+  )
+}

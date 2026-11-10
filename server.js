@@ -111,7 +111,7 @@ import {
   roleUsageCounts,
   updateRole,
 } from './server/permissions.js'
-import { CUSTOM_NODE_TYPES } from './server/permissions-catalog.js'
+import { CUSTOM_NODE_TYPES, OWNER_PERMISSION } from './server/permissions-catalog.js'
 import {
   LOCK_FIELDS,
   clearFailures,
@@ -258,6 +258,7 @@ import {
 import {
   addGrant,
   addNodeMember,
+  backfillResourceNodes,
   chainOf,
   childrenOf,
   createGroupNode,
@@ -321,6 +322,13 @@ let bootReady = false
 await loadPolicy()
 // Same for the instance's modules: the db layer asks on every dispatch.
 await loadModules()
+// Every mirrored resource gets a node, including the dashboards and workflows
+// made while nothing created theirs. Without a node a resource is invisible in
+// the tree, even to the workspace's owners.
+{
+  const filed = await backfillResourceNodes()
+  if (filed) console.log(`🌳 Filed ${filed} resource(s) missing from the resource tree`)
+}
 bootReady = true
 
 // The database/schema a request is aimed at. Every db layer call takes one, and
@@ -1470,15 +1478,24 @@ app.put('/api/resource-tree/:id/move', async (req, res) => {
 })
 
 // Hand a node over. Ownership cascades, so this is the strongest thing the tree
-// can do — only the current owner (who resolves to every permission here) or an
-// instance admin can.
+// can do — only the current owner (who resolves to every permission here), an
+// owner of the workspace it sits in, or an instance admin can.
+//
+// "Owner of the workspace" means holding `workspace.manage` at this node, the
+// same test as the last-owner rule. Such a person already holds every
+// permission across the workspace, so this hands out nothing they couldn't
+// already give. Without it only the workspace's *first* owner (the one whose id
+// is on the workspace node) could re-own anything, and a co-owner could not.
+// The application root is out of their reach because a workspace grant never
+// travels upward.
 app.put('/api/resource-tree/:id/owner', async (req, res) => {
   const user = requireAuth(req, res)
   if (!user) return
   const node = await getNode(req.params.id)
   if (!node) return res.status(404).json({ error: 'Node not found' })
-  const ownsIt = await ownsNode(node, user.id)
-  if (!isSystemAdmin(user) && !ownsIt) return res.status(403).json({ error: 'Only the owner can hand this over.' })
+  const mayHandOver =
+    isSystemAdmin(user) || (await ownsNode(node, user.id)) || (await permissionsAtNode(node, user.id)).has(OWNER_PERMISSION)
+  if (!mayHandOver) return res.status(403).json({ error: 'Only an owner can hand this over.' })
 
   const ownerId = req.body?.ownerId || null
   if (ownerId) {
@@ -1827,6 +1844,9 @@ app.post('/api/connections/import', async (req, res) => {
     assertModuleEnabled(document?.connection?.type)
     const imported = await importConnectionDoc(document, { workspaceId, ownerId: user.id, name, settings })
     await createResourceNode('connection', imported.id, { name: imported.name, ownerId: user.id, workspaceId })
+    // The bundle's dashboards and workflows were written before the connection
+    // had a node to file them under, so file them now.
+    await backfillResourceNodes({ connectionId: imported.id })
     res.json(imported)
   } catch (error) {
     fail(res, error)
@@ -1852,7 +1872,7 @@ app.post('/api/storages', async (req, res) => {
   if (!user) return
   if (!body.name?.trim() || !body.bucket?.trim()) return res.status(400).json({ error: 'A name and bucket are required' })
   const dest = await createStorage(body.workspaceId, body)
-  await createResourceNode('storage', dest.id, { name: dest.name, workspaceId: body.workspaceId })
+  await createResourceNode('storage', dest.id, { name: dest.name, ownerId: user.id, workspaceId: body.workspaceId })
   res.json(dest)
 })
 
@@ -2401,7 +2421,7 @@ app.get('/api/connections/:id/workflows', async (req, res) => {
 
 app.post('/api/connections/:id/workflows', async (req, res) => {
   try {
-    res.json(await createWorkflow(req.params.id, req.body))
+    res.json(await createWorkflow(req.params.id, req.body, { ownerId: authUser(req).id }))
   } catch (error) {
     fail(res, error)
   }
@@ -2737,7 +2757,7 @@ app.get('/api/connections/:id/dashboards', async (req, res) => {
 
 app.post('/api/connections/:id/dashboards', async (req, res) => {
   try {
-    res.json(await createDashboard(req.params.id, req.body))
+    res.json(await createDashboard(req.params.id, req.body, { ownerId: authUser(req).id }))
   } catch (error) {
     fail(res, error)
   }

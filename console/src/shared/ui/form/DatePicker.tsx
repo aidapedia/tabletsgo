@@ -1,0 +1,205 @@
+import { useEffect, useMemo, useState } from 'react'
+import Popover from '@/shared/ui/overlay/Popover'
+import { CalendarIcon, ChevronLeft, ChevronRight } from '@/shared/ui/icons'
+
+// App-styled date picker. `value`/`onChange` speak plain 'YYYY-MM-DD' strings
+// (empty string = no date), matching how the app stores date parts — so it can
+// drop in wherever a native <input type="date"> was used.
+
+const WEEKDAYS = ['S', 'M', 'T', 'W', 'T', 'F', 'S']
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December']
+const MONTHS_SHORT = MONTHS.map((m) => m.slice(0, 3))
+
+const pad = (n) => String(n).padStart(2, '0')
+export const toStr = (y, m, d) => `${y}-${pad(m + 1)}-${pad(d)}`
+export const todayStr = () => {
+  const t = new Date()
+  return toStr(t.getFullYear(), t.getMonth(), t.getDate())
+}
+
+// Parse 'YYYY-MM-DD' into {y,m,d} (m 0-based) without going through Date() to
+// avoid timezone shifts.
+function parse(value) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(value || '')
+  if (!m) return null
+  return { y: +m[1], m: +m[2] - 1, d: +m[3] }
+}
+
+const triggerClass =
+  'flex w-full items-center gap-2 px-3 py-2 bg-muted border border-border rounded-lg text-foreground text-[11px] outline-none transition-[border-color,box-shadow] duration-150 hover:border-input'
+
+const navBtn = 'rounded-lg p-1 text-muted-foreground hover:bg-accent hover:text-foreground'
+const cellBtn = 'flex items-center justify-center rounded-lg text-[12px] transition-colors'
+
+/**
+ * The calendar itself — month nav plus the day/month/year grids. Split out of
+ * DatePicker so other controls (e.g. DateTimeField) can host the same calendar
+ * next to their own inputs and footer actions.
+ */
+export function CalendarPanel({ value = '', onChange }) {
+  const sel = parse(value)
+  const today = new Date()
+  const [view, setView] = useState(() =>
+    sel ? { y: sel.y, m: sel.m } : { y: today.getFullYear(), m: today.getMonth() }
+  )
+  // Which zoom level the panel shows: pick a day, a month, or a year.
+  const [mode, setMode] = useState('days')
+
+  // Follow the value when it changes from outside — typing in a host's text
+  // field, or a Today/Now shortcut — so the grid shows the month in question.
+  useEffect(() => {
+    const p = parse(value)
+    if (p) setView({ y: p.y, m: p.m })
+  }, [value])
+
+  const grid = useMemo(() => {
+    const first = new Date(view.y, view.m, 1).getDay()
+    const days = new Date(view.y, view.m + 1, 0).getDate()
+    const cells = []
+    for (let i = 0; i < first; i++) cells.push(null)
+    for (let d = 1; d <= days; d++) cells.push(d)
+    return cells
+  }, [view])
+
+  // First year of the 12-year page the current view sits in.
+  const yearPage = view.y - (((view.y % 12) + 12) % 12)
+
+  const stepMonth = (delta) => {
+    const m = view.m + delta
+    setView({ y: view.y + Math.floor(m / 12), m: ((m % 12) + 12) % 12 })
+  }
+  const step = (delta) => {
+    if (mode === 'days') stepMonth(delta)
+    else if (mode === 'months') setView((v) => ({ ...v, y: v.y + delta }))
+    else setView((v) => ({ ...v, y: v.y + delta * 12 }))
+  }
+
+  const headerLabel =
+    mode === 'days' ? `${MONTHS[view.m]} ${view.y}` : mode === 'months' ? String(view.y) : `${yearPage}–${yearPage + 11}`
+
+  const isToday = (d) =>
+    d === today.getDate() && view.m === today.getMonth() && view.y === today.getFullYear()
+  const isSel = (d) => sel && d === sel.d && view.m === sel.m && view.y === sel.y
+
+  return (
+    <>
+      <div className="mb-2 flex items-center justify-between">
+            <button type="button" onClick={() => step(-1)} className={navBtn}>
+              <ChevronLeft />
+            </button>
+            <button
+              type="button"
+              onClick={() => setMode(mode === 'days' ? 'months' : mode === 'months' ? 'years' : 'days')}
+              className="rounded-lg px-2 py-1 text-[12px] font-medium text-foreground hover:bg-accent"
+            >
+              {headerLabel}
+            </button>
+            <button type="button" onClick={() => step(1)} className={navBtn}>
+              <ChevronRight />
+            </button>
+          </div>
+
+          {mode === 'days' && (
+            <div className="grid grid-cols-7 gap-y-1">
+              {WEEKDAYS.map((w, i) => (
+                <div key={i} className="flex h-7 items-center justify-center text-[10px] font-medium text-faint">
+                  {w}
+                </div>
+              ))}
+              {grid.map((d, i) =>
+                d === null ? (
+                  <div key={i} />
+                ) : (
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() => onChange?.(toStr(view.y, view.m, d))}
+                    className={`mx-auto h-8 w-8 ${cellBtn} ${
+                      isSel(d)
+                        ? 'bg-primary text-background font-semibold'
+                        : isToday(d)
+                        ? 'text-primary ring-1 ring-inset ring-primary/40 hover:bg-accent'
+                        : 'text-foreground hover:bg-accent'
+                    }`}
+                  >
+                    {d}
+                  </button>
+                )
+              )}
+            </div>
+          )}
+
+          {mode === 'months' && (
+            <div className="grid grid-cols-3 gap-1.5">
+              {MONTHS_SHORT.map((m, i) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => { setView((v) => ({ ...v, m: i })); setMode('days') }}
+                  className={`h-9 ${cellBtn} ${
+                    i === view.m ? 'bg-primary text-background font-semibold' : 'text-foreground hover:bg-accent'
+                  }`}
+                >
+                  {m}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {mode === 'years' && (
+            <div className="grid grid-cols-3 gap-1.5">
+              {Array.from({ length: 12 }, (_, i) => yearPage + i).map((y) => (
+                <button
+                  key={y}
+                  type="button"
+                  onClick={() => { setView((v) => ({ ...v, y })); setMode('months') }}
+                  className={`h-9 ${cellBtn} ${
+                    y === view.y ? 'bg-primary text-background font-semibold' : 'text-foreground hover:bg-accent'
+                  }`}
+                >
+                  {y}
+                </button>
+              ))}
+            </div>
+          )}
+
+    </>
+  )
+}
+
+export default function DatePicker({ value = '', onChange, autoFocus = false, className = '' }) {
+  const sel = parse(value)
+  const label = sel ? toStr(sel.y, sel.m, sel.d) : ''
+
+  return (
+    <Popover
+      width={264}
+      portal
+      trigger={({ toggle }) => (
+        <button type="button" autoFocus={autoFocus} onClick={toggle} className={`${triggerClass} ${className}`}>
+          <span className={label ? 'text-foreground' : 'text-faint'}>{label || 'Select date'}</span>
+          <CalendarIcon className="ml-auto text-faint" />
+        </button>
+      )}
+    >
+      {({ close }) => (
+        <div className="p-3">
+          <CalendarPanel value={value} onChange={(v) => { onChange?.(v); close() }} />
+          <div className="mt-2 flex items-center justify-between border-t border-border pt-2">
+            <button type="button" onClick={() => { onChange?.(''); close() }} className="text-[11px] text-faint hover:text-foreground">
+              Clear
+            </button>
+            <button
+              type="button"
+              onClick={() => { onChange?.(todayStr()); close() }}
+              className="text-[11px] text-primary hover:text-primary-bright"
+            >
+              Today
+            </button>
+          </div>
+        </div>
+      )}
+    </Popover>
+  )
+}

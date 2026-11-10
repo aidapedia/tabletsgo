@@ -15,7 +15,7 @@ const { updateUser } = await import('../server/users.js')
 const { isTimeZone } = await import('../server/util.js')
 
 // The frontend helper is TypeScript; strip it so these tests can run it as is.
-const source = fs.readFileSync(new URL('../src/shared/lib/datetime.ts', import.meta.url), 'utf8')
+const source = fs.readFileSync(new URL('../console/src/shared/lib/datetime.ts', import.meta.url), 'utf8')
 const datetime = await import(`data:text/javascript,${encodeURIComponent(stripTypeScriptTypes(source))}`)
 
 const atZone = (zone, fn) => {

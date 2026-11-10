@@ -18,7 +18,7 @@ export const PORT = process.env.PORT || 3000
 // goes into emailed links and the Google/GitHub callback URL, which otherwise
 // come from the request.
 export const PUBLIC_URL = (process.env.PUBLIC_URL || '').trim().replace(/\/+$/, '')
-export const DIST_DIR = path.join(ROOT_DIR, 'dist')
+export const DIST_DIR = path.join(ROOT_DIR, 'console', 'dist')
 export const OPENAPI_PATH = path.join(ROOT_DIR, 'server', 'openapi.yaml')
 
 // Connection credentials (host/port/username/password/…) are encrypted at rest
