@@ -107,6 +107,26 @@
   --sidebar-border: #222222;
   --sidebar-ring: var(--brand);
   color-scheme: dark;
+
+  /* Navigation — the home sidebar, the console's icon rail and side panels
+     (`.app-sidebar`). Each defaults to the token the sidebar used before it
+     could be themed, so nothing changes until a person picks sidebar colors;
+     ThemeContext sets them then. (--sidebar itself stays a lifted surface the
+     whole app uses, so recoloring navigation never recolors those panels.) */
+  --nav: var(--sidebar);
+  --nav-background: var(--background);
+  --nav-foreground: var(--foreground);
+  --nav-muted: var(--muted-foreground);
+  --nav-faint: var(--faint);
+  --nav-accent: var(--accent);
+  --nav-muted-bg: var(--muted);
+  --nav-border: var(--border);
+  --nav-input: var(--input);
+  --nav-primary: var(--primary);
+
+  /* The two layout sizes a person can change (Setting → Appearance). */
+  --app-sidebar-width: 16.5rem;
+  --app-content-width: 1280px;
 }
 
 /* The light base overrides only neutral surfaces and inks; the accent is
@@ -160,15 +180,26 @@ html.light {
     @apply font-sans;
   }
 
-  /* Density scale: the root font-size is the single knob every rem-based
-     utility (text, padding, gap, width) scales off, so shrinking it makes the
-     whole UI denser and smaller-texted at once. Toggled via a class on <html>
-     by ThemeContext; default (no class) is the 16px browser baseline. */
-  html.density-compact {
-    font-size: 14px;
-  }
-  html.density-condensed {
-    font-size: 13px;
+  /* Text size and density are a person's theme (ThemeContext): text size is
+     the root font-size every rem scales with, density Tailwind's --spacing
+     step. Both are inline on <html>; the defaults are 16px and 0.25rem. */
+
+  /* Navigation reads its own colors: inside it, the content tokens it draws
+     with answer with the --nav-* set. */
+  .app-sidebar {
+    --sidebar: var(--nav);
+    --background: var(--nav-background);
+    --card: var(--nav-background);
+    --foreground: var(--nav-foreground);
+    --card-foreground: var(--nav-foreground);
+    --accent-foreground: var(--nav-foreground);
+    --muted-foreground: var(--nav-muted);
+    --faint: var(--nav-faint);
+    --accent: var(--nav-accent);
+    --muted: var(--nav-muted-bg);
+    --border: var(--nav-border);
+    --input: var(--nav-input);
+    --primary: var(--nav-primary);
   }
 
   body {

@@ -191,17 +191,19 @@ function Sidebar({ pathname, onNavigate, user, onSettings, onLogout, open, onClo
           rails in the app read as the same object: 56px of rail, 40px targets,
           30px imagery, tooltips on the right.
 
-          The width is `rem + 1px`, and both halves matter. It has to be rem
-          because the interface-density setting scales the root font-size
-          (16/14/13px), so the rail's contents — `px-2`, `w-10` — shrink with
-          it; an absolute px width would keep the old box and strand all the
-          slack on the right. 3.5rem is exactly what's inside: 2 x px-2 gutter
-          plus a 2.5rem target. And the `+ 1px` is the `border-r`, which
+          The width is `14 spacing steps + 1px`, and both halves matter. It
+          has to be in spacing steps because the person's text size and
+          density (their theme) scale the root font-size and Tailwind's
+          --spacing, so the rail's contents — `px-2`, `w-10` — shrink with
+          them; an absolute px width would keep the old box and strand all the
+          slack on the right. 14 steps (3.5rem by default) is exactly what's
+          inside: 2 x px-2 gutter plus a 10-step target. The open width is the
+          person's (--app-sidebar-width). And the `+ 1px` is the `border-r`, which
           border-box counts *inside* the width and which does not scale — omit
           it and the two gutters differ by that pixel at every density. */}
       <aside
-        className={`z-40 flex h-screen shrink-0 flex-col border-r border-border bg-sidebar transition-[width] duration-200 ease-out max-[820px]:fixed max-[820px]:left-0 max-[820px]:top-0 max-[820px]:transition-transform ${
-          collapsed ? 'w-[calc(3.5rem_+_1px)]' : 'w-[calc(16.5rem_+_1px)]'
+        className={`app-sidebar z-40 flex h-screen shrink-0 flex-col border-r border-border bg-sidebar transition-[width] duration-200 ease-out max-[820px]:fixed max-[820px]:left-0 max-[820px]:top-0 max-[820px]:transition-transform ${
+          collapsed ? 'w-[calc(var(--spacing)*14_+_1px)]' : 'w-[calc(var(--app-sidebar-width)_+_1px)]'
         } ${open ? 'max-[820px]:translate-x-0' : 'max-[820px]:-translate-x-full'}`}
       >
         {/* Brand — and, on desktop, the rail toggle. Collapsed, the logo *is*
@@ -411,7 +413,7 @@ export default function HomeLayout() {
 
       <div className="flex min-w-0 flex-1 flex-col">
         {/* Mobile top bar */}
-        <div className="flex items-center gap-3 border-b border-border bg-sidebar px-4 py-3 min-[821px]:hidden">
+        <div className="app-sidebar flex items-center gap-3 border-b border-border bg-sidebar px-4 py-3 min-[821px]:hidden">
           <Button variant="ghost" size="icon" onClick={() => setSidebarOpen(true)} aria-label="Open menu">
             <MenuIcon />
           </Button>
@@ -424,7 +426,7 @@ export default function HomeLayout() {
             so nothing sets its own (use `<Narrow>` for content that needs to be
             narrower than the page). */}
         <main className="min-h-0 flex-1 overflow-y-auto px-8 py-10 max-[600px]:px-4 max-[600px]:py-7">
-          <div className="mx-auto w-full max-w-[1280px]">
+          <div className="mx-auto w-full max-w-(--app-content-width)">
             <UpdateBanner />
             <PageTrailProvider>
               <PageTrail pathname={location.pathname} isAdmin={isAdmin} />

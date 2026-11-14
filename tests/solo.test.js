@@ -30,7 +30,15 @@ const tablesOf = (db) => new Set(db.prepare("SELECT name FROM sqlite_master WHER
 
 // The production wiring (server.js), against the migrated test store.
 await solo.loadSolo()
-hayat.useHayatBackend(soloBackend({ state: solo.current, permissions: HAYAT_KEYS, verifyToken: solo.verifyAccess, renameWorkspace: solo.renameWorkspace }))
+hayat.useHayatBackend(
+  soloBackend({
+    state: solo.current,
+    permissions: HAYAT_KEYS,
+    verifyToken: solo.verifyAccess,
+    renameWorkspace: solo.renameWorkspace,
+    saveAppearance: solo.saveAppearance,
+  }),
+)
 
 // ---- Boot ---------------------------------------------------------------------------
 
@@ -121,6 +129,27 @@ test('an account change shows up on the next request, not after a cache TTL', as
   assert.equal(u.name, 'Dev Two')
   assert.equal(u.timezone, 'Asia/Jakarta')
   await assert.rejects(solo.updateAccount({ email: 'nope' }), { status: 400 })
+})
+
+test('the owner’s theme is edited here, by Hayat’s rules, and read back fresh', async () => {
+  assert.equal(hayat.appearanceEditable(), true)
+  assert.equal(await hayat.getAppearance(owner.id), null, 'nothing chosen yet')
+
+  const saved = await hayat.setAppearance(owner.id, { preset: 'custom', mode: 'dark', accent: '#7AA2FF', radius: 0, sidebarMatchContent: true, extra: 'dropped' })
+  assert.deepEqual(saved, { preset: 'custom', mode: 'dark', accent: '#7aa2ff', radius: 0, sidebarMatchContent: true })
+  assert.deepEqual(await hayat.getAppearance(owner.id), saved)
+  assert.deepEqual(solo.current().owner.appearance, saved, 'kept in the solo setting, beside the owner')
+  assert.equal(await hayat.getAppearance('stranger'), null)
+
+  for (const bad of [{ accent: 'green' }, { mode: 'sepia' }, { textSize: 30 }, { sidebarWidth: 199 }, { preset: 'Mine!' }, ['#fff']]) {
+    await assert.rejects(hayat.setAppearance(owner.id, bad), { status: 400 }, JSON.stringify(bad))
+  }
+  assert.deepEqual(await hayat.getAppearance(owner.id), saved, 'a refused save changes nothing')
+
+  // Nothing set goes back to the defaults, and leaves no key behind.
+  assert.equal(await hayat.setAppearance(owner.id, {}), null)
+  assert.equal(await hayat.getAppearance(owner.id), null)
+  assert.equal('appearance' in solo.current().owner, false)
 })
 
 test('a password change ends every other session and hands this one new tokens', async () => {
@@ -280,4 +309,16 @@ test('the solo bundle: a v1.0 hash Hayat can read arrives active, a scrypt one p
   assert.deepEqual(b.rootGrants, [{ userId: 'ada', role: 'tabletsgo.admin' }])
   assert.deepEqual(b.tenants[0].grants.map((g) => g.role), ['hayat.tenant-admin', 'tabletsgo.owner'])
   assert.deepEqual(b.tenants[0].resources.map((r) => r.externalId).sort(), ['c1', 'c2'])
+  assert.equal('appearance' in b.users[0], false, 'no theme chosen, none sent')
+})
+
+test('the solo bundle carries the owner’s theme to Hayat', () => {
+  const db = legacyDb()
+  addUser(db, 'ada', 'ada@x.io')
+  identity.captureSoloOwner(db, quiet, { soloOwner: '' })
+  const setting = identity.readSetting(db, 'solo')
+  const look = { preset: 'midnight', mode: 'dark', accent: '#7aa2ff', textSize: 14 }
+  db.prepare("UPDATE app_settings SET value = ? WHERE key = 'solo'").run(JSON.stringify({ ...setting, owner: { ...setting.owner, appearance: look } }))
+  const tables = tablesOf(db)
+  assert.deepEqual(exportSoloBundle(db, (t) => tables.has(t)).users[0].appearance, look)
 })

@@ -284,6 +284,8 @@ export function exportSoloBundle(db, hasTable) {
     status: legacy ? 'active' : 'pending',
     zoneinfo: o.timezone || '',
     admin: true,
+    // Their theme moves with them: Hayat checks it by the same rules.
+    ...(o.appearance ? { appearance: o.appearance } : {}),
   })
   bundle.rootGrants.push({ userId: o.id, role: roleSlug('admin') })
 

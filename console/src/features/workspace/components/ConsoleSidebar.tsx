@@ -33,7 +33,7 @@ export default function ConsoleSidebar({
 }) {
   return (
     <div className={`shrink-0 overflow-hidden transition-[width] duration-200 ease-out ${visible ? 'w-[280px]' : 'w-0'}`}>
-      <aside className="flex h-full min-h-0 w-[280px] flex-col border-r border-border bg-sidebar">
+      <aside className="app-sidebar flex h-full min-h-0 w-[280px] flex-col border-r border-border bg-sidebar">
         {kind === 'stream' && clusterId && (
           <div className="flex min-w-0 items-center gap-1 px-4 pt-3 text-[11px]">
             <span className="shrink-0 text-faint">cluster</span>

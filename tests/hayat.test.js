@@ -15,6 +15,7 @@ const { MIGRATIONS } = await import('../server/migrator/legacy/sqlite.js')
 const { addBundleAdmin, emptyBundle, exportHayatBundle } = await import('../server/migrator/hayat-export.js')
 const { contractManifest, hayatKey, shortKeys } = await import('../server/permissions-catalog.js')
 const hayat = await import('../server/hayat/index.js')
+const { HayatError } = hayat
 const auth = await import('../server/auth.js')
 const { db: meta } = await import('../server/meta.js')
 const { deleteWorkspaceCascade, getWorkspaceMember, listWorkspaceMembers, syncWorkspaceRows } = await import('../server/workspaces.js')
@@ -158,6 +159,9 @@ function fakeHayat() {
           return { members: (state.rosters[body.tenantId] || []).map(([id, isOwner]) => ({ user: state.users[id], isOwner })) }
         case 'DirectoryService.ListTenantGrants':
           return { grants: state.grants[body.tenantId] || [] }
+        case 'DirectoryService.GetUserAppearance':
+          if (state.oldHayat) throw new HayatError('unimplemented', 'unknown method')
+          return state.appearances?.[body.userId] ? { appearance: state.appearances[body.userId] } : {}
         case 'AuthzService.PermissionsAt':
           return { permissions: state.perms[key(body.userId, body.resource)] || [], tenantId: 'ws1', rev: '1' }
         case 'TreeService.UpsertResource':
@@ -326,4 +330,25 @@ test('members carry their workspace roles, and one member their whole access lis
     { kind: 'connection', id: 'c1', name: 'promo-db', via: 'group', role: 'tabletsgo.connection-manager', roleName: 'Connection manager', inherit: true, groupName: 'Promo' },
   ])
   assert.equal(await getWorkspaceMember('ws1', 'stranger'), null)
+})
+
+test('a theme is Hayat’s: read fresh on every ask, never saved from here', async () => {
+  const { state, backend } = fakeHayat()
+  hayat.useHayatBackend(backend)
+  assert.equal(hayat.appearanceEditable(), false)
+  assert.equal(await hayat.getAppearance('mo'), null, 'never chosen')
+
+  state.appearances = { olive: { preset: 'slate-rail', mode: 'light', accent: '#2563eb' } }
+  assert.deepEqual(await hayat.getAppearance('olive'), state.appearances.olive)
+  // Changed in Hayat's console: the next ask sees it — no cached copy to outlive it.
+  state.appearances.olive = { mode: 'dark' }
+  const before = state.calls
+  assert.deepEqual(await hayat.getAppearance('olive'), { mode: 'dark' })
+  assert.equal(state.calls, before + 1)
+
+  await assert.rejects(hayat.setAppearance('olive', { mode: 'light' }), { status: 400, code: 'failed_precondition' })
+
+  // A Hayat from before themes: everyone gets the defaults instead of an error.
+  state.oldHayat = true
+  assert.equal(await hayat.getAppearance('olive'), null)
 })

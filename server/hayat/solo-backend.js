@@ -28,8 +28,9 @@ import { HayatError } from './connect.js'
  * @param {string[]} o.permissions   every qualified key (permissions-catalog)
  * @param {(token: string) => Promise<object>} o.verifyToken   → JWT claims
  * @param {(name: string) => Promise<void>} o.renameWorkspace
+ * @param {(appearance: object|null) => Promise<object|null>} o.saveAppearance   the owner's theme → what was stored
  */
-export function soloBackend({ state, permissions, verifyToken, renameWorkspace }) {
+export function soloBackend({ state, permissions, verifyToken, renameWorkspace, saveAppearance }) {
   const owner = () => state()?.owner || null
   const workspace = () => state()?.workspace || { id: '', name: '' }
   const isOwner = (id) => !!owner() && String(id) === owner().id
@@ -63,6 +64,14 @@ export function soloBackend({ state, permissions, verifyToken, renameWorkspace }
     'DirectoryService.UpdateTenant': async ({ name }) => {
       await renameWorkspace(name)
       return { tenant: tenant(), ...written() }
+    },
+    // The owner's theme. Hayat's service API only reads it (it is edited in
+    // Hayat's console); here the owner edits it in tabletsgo, so solo answers
+    // the write too, the way it answers UpdateTenant.
+    'DirectoryService.GetUserAppearance': ({ userId }) => ({ appearance: isOwner(userId) ? owner().appearance || null : null }),
+    'DirectoryService.SetUserAppearance': async ({ userId, appearance }) => {
+      if (!isOwner(userId)) throw new HayatError('not_found', 'No such user', 404)
+      return { appearance: await saveAppearance(appearance) }
     },
     'AuthzService.PermissionsAt': ({ userId }) => ({ permissions: isOwner(userId) ? permissions : [], tenantId: workspace().id }),
     'AuthzService.LookupSubjects': ({ permission }) => ({

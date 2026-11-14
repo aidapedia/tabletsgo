@@ -226,7 +226,13 @@ let bootReady = false
 if (isSolo()) {
   await solo.loadSolo()
   hayat.useHayatBackend(
-    soloBackend({ state: solo.current, permissions: HAYAT_KEYS, verifyToken: solo.verifyAccess, renameWorkspace: solo.renameWorkspace })
+    soloBackend({
+      state: solo.current,
+      permissions: HAYAT_KEYS,
+      verifyToken: solo.verifyAccess,
+      renameWorkspace: solo.renameWorkspace,
+      saveAppearance: solo.saveAppearance,
+    })
   )
 } else if (!HAYAT_CONFIGURED) {
   // Without Hayat nobody could sign in: refuse to start rather than serve a
@@ -285,6 +291,37 @@ app.get('/api/auth/me', async (req, res) => {
   const user = requireAuth(req, res)
   if (!user) return
   res.json({ user: publicUser(user), accountUrl: hayat.consoleLink('/account') })
+})
+
+// ---- The caller's theme ----
+//
+// One per account, the same in every app they sign in to (Hayat's, in enterprise
+// mode). Asked on every page load and never cached, so a change in Hayat's console
+// shows on the next one. `editable` says whether it's changed here (solo) or in
+// Hayat (`editUrl`); a save in enterprise mode is refused by server/hayat.
+
+app.get('/api/me/appearance', async (req, res) => {
+  const user = requireAuth(req, res)
+  if (!user) return
+  try {
+    res.json({
+      appearance: await hayat.getAppearance(user.id),
+      editable: hayat.appearanceEditable(),
+      editUrl: hayat.consoleLink('/account/appearance'),
+    })
+  } catch (error) {
+    fail(res, error, 502)
+  }
+})
+
+app.put('/api/me/appearance', async (req, res) => {
+  const user = requireAuth(req, res)
+  if (!user) return
+  try {
+    res.json({ appearance: await hayat.setAppearance(user.id, req.body?.appearance ?? null) })
+  } catch (error) {
+    fail(res, error, 400)
+  }
 })
 
 // ---- Solo mode: one owner, signed in by password ----

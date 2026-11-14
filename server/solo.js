@@ -6,7 +6,7 @@
  * "INVARIANTS"). Solo keeps exactly one owner; a second person means enterprise
  * mode, where Hayat owns identity. The value:
  *
- *   { owner: { id, email, name, timezone, passwordHash } | null,
+ *   { owner: { id, email, name, timezone, passwordHash, appearance? } | null,
  *     workspace: { id, name },
  *     tokenEpoch }
  *
@@ -28,6 +28,7 @@
 import { randomInt, randomUUID, timingSafeEqual } from 'crypto'
 import { SignJWT, jwtVerify } from 'jose'
 import { getSetting, setSetting } from './app-settings.js'
+import { normalizeAppearance } from './appearance.js'
 import { SOLO_SESSION_KEY, hashPassword, verifyPassword } from './crypto.js'
 import { isSolo } from './mode.js'
 import * as hayat from './hayat/index.js'
@@ -252,6 +253,18 @@ export async function changePassword({ current: currentPassword, next } = {}, ip
   const passwordHash = await hashPassword(validPassword(next))
   await save({ ...state, owner: { ...state.owner, passwordHash }, tokenEpoch: (state.tokenEpoch || 0) + 1 })
   return issueTokens()
+}
+
+/**
+ * The owner's theme (server/hayat/solo-backend.js → SetUserAppearance), checked
+ * by Hayat's rules so it moves to Hayat unchanged. Null goes back to the defaults.
+ */
+export async function saveAppearance(appearance) {
+  assertSolo()
+  const value = normalizeAppearance(appearance)
+  const { appearance: _old, ...owner } = state.owner
+  await save({ ...state, owner: value ? { ...owner, appearance: value } : owner })
+  return value
 }
 
 /** The one workspace's name (server/hayat/solo-backend.js → UpdateTenant). */

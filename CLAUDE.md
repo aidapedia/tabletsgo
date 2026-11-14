@@ -28,6 +28,7 @@ working in that area — it has the reasoning and the full rules.
 - **Membership gates data** — `isMember()` (the tenant's roster in Hayat) decides who sees a workspace's resources; what they may do is a permission. An instance admin (`instance.manage` at Hayat's root) holds no data access through that role. → skill `auth-sessions`
 - **A connection or storage destination is mirrored into Hayat's tree by the route that creates, renames, re-owns or deletes it** — never on its own, and the row and the mirror change together (create: mirror or roll back; delete: mirror first). Dashboards and workflows are not mirrored. → skill `auth-sessions`
 - **Never cache a Hayat answer outside `server/hayat/`** — its caches are emptied by Hayat's Watch stream and by our own writes (read-your-writes); a copy kept elsewhere would outlive a revoked grant. → skill `auth-sessions`
+- **A person's theme is the account's** — one for every app they sign in to: Hayat's in enterprise (edited in Hayat's console), the solo owner's `owner.appearance` in solo (edited at Setting → Appearance, checked by `server/appearance.js` with Hayat's rules). Read through `hayat.getAppearance` — fresh on every page load, never cached; `GET /api/me/appearance` says whether it's editable here, never which mode. The console keeps only a first-paint hint. `console/src/shared/lib/appearance.ts` and `features/settings/components/AppearanceEditor.tsx` are kept identical with Hayat's console copies — change both. → skill `auth-sessions`
 - **People, rosters and grants are managed in Hayat's console**, never through a tabletsgo route — tabletsgo's pages read them and link there (`consoleLink`, null in solo). The workspace's name is the tenant's: `PUT /api/workspaces/:id` sends `name` through `hayat.renameTenant`, which refuses in enterprise and renames solo's one workspace. The console gates people pages on `useIdentity().people`, never on the mode's name. → skill `auth-sessions`
 - **Meta migrations are append-only and additive-only** — Prisma Migrate owns them (`prisma/<engine>/migrations`, one history per engine, edited together); never edit a shipped migration or the frozen legacy steps (they read the frozen `server/migrator/legacy/catalog.js`), never `DROP`/rename, never add `NOT NULL` without a default. The one sanctioned exception is `20261110000000_hayat_owns_identity`, which the migrator precedes by writing the Hayat import bundle. → skill `meta-schema`
 - **The app migrates on boot, before anything opens the meta DB** — `import './server/migrator/boot.js'` stays the *first* import of `server.js`. On SQLite Prisma Migrate can't work on a file another connection holds, and `server/meta.js` opens its client the moment it is evaluated; never migrate from anywhere that runs after it. → skill `meta-schema`
@@ -76,7 +77,7 @@ console/src/
 | `ssh` | workspace SSH keys (generate/import, copy public key) + the gateways connections tunnel through |
 | `templates` | built-in read-only catalog bundling workflows + dashboards (browse + apply) |
 | `system-update` | version check against GitHub Releases + guided update wizard |
-| `settings`, `keymap` | SettingsContext; KeymapContext (`useKeymap`/`useShortcut`) + its setting UI |
+| `settings`, `keymap` | SettingsContext; Setting → Appearance (the account's theme: the editor in solo, what's in use + a link to Hayat in enterprise); KeymapContext (`useKeymap`/`useShortcut`) + its setting UI |
 
 > `features/workspaces` (plural) is the org/tenant layer; `features/workspace`
 > (singular) is the per-connection DB console. **Don't conflate them.**
@@ -105,7 +106,8 @@ server/
 ├── migrator/            # ★ the migrator, run on boot (boot.js): Prisma Migrate + frozen legacy v1–v22; hayat-export.js writes the Hayat import bundle; identity.js resolves and records the mode → skill meta-schema
 ├── mode.js              # leaf: 'solo' | 'enterprise', as boot resolved it — only server.js's wiring reads it
 ├── hayat/               # ★ Hayat's service API: connect.js (Connect over fetch, Watch, token verify), index.js (people, tenants, cached decisions, mirrors), solo-backend.js (the same answers in-process, solo mode) → skill auth-sessions
-├── solo.js              # solo's one owner (`app_settings` key `solo`): setup code, password, tokens, account → skill auth-sessions
+├── solo.js              # solo's one owner (`app_settings` key `solo`): setup code, password, tokens, account, theme → skill auth-sessions
+├── appearance.js        # leaf: a person's theme, checked by Hayat's rules (solo stores it; Hayat checks its own)
 ├── auth.js              # the guards + sessionMiddleware, over Hayat          → skill auth-sessions
 ├── permissions-catalog.js  # leaf: permission keys ↔ Hayat keys, tabletsgo's Hayat contract → skill auth-sessions
 ├── sessions/            # connection sessions (in-process cache)              → skill auth-sessions

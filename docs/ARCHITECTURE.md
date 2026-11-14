@@ -25,7 +25,8 @@ console/src/
 ├── app/                          # app wiring (no business logic)
 │   ├── main.tsx                  # entry: mounts <AppProviders><App/>
 │   ├── App.tsx                   # renders <AppRoutes/>
-│   ├── providers/                # ThemeContext + AppProviders (composes every provider)
+│   ├── providers/                # ThemeContext (the account's theme → CSS custom properties; GET /api/me/appearance)
+│   │                             #   + AppProviders (composes every provider)
 │   ├── layouts/                  # route shells rendered around an <Outlet/>: HomeLayout (the
 │   │                             #   authenticated shell — grouped sidebar nav, rows are real <a> so
 │   │                             #   they can be opened in a new tab, wrapping THE content container:
@@ -100,7 +101,8 @@ console/src/
 │   │                             #   measure on drop, play the delta with transforms). Native HTML5
 │   │                             #   drag, so keep it out of a React Flow canvas, whose own d3-drag
 │   │                             #   suppresses native drag events)
-│   ├── lib/                      # helpers: datetime (every time the app shows, in the account's zone), recents, schemaDraft, toggleId, version (meetsVersion)
+│   ├── lib/                      # helpers: datetime (every time the app shows, in the account's zone), recents, schemaDraft, toggleId, version (meetsVersion),
+│   │                             #   appearance (a person's theme: presets, validation, color math, design tokens — kept identical with Hayat's console)
 │   ├── api/                      # backend client: request.ts (fetch wrapper) + database.ts
 │   ├── config/                   # runtime API_URL and shared database type catalog/labels
 │   └── types/                    # ambient/shared TS types (globals.d.ts)
@@ -160,7 +162,8 @@ console/src/
 │   │                             #   access get/set, export/import client + file read/download helpers).
 │   │                             #   ConnectionDetail shows the live session count against the
 │   │                             #     workspace/instance limit — a connection sets no cap of its own
-│   ├── settings/                 # stores/SettingsContext
+│   ├── settings/                 # stores/SettingsContext; components/AppearanceSetting (the editor in solo,
+│   │                             #   what's in use + Hayat link in enterprise) + AppearanceEditor (kept identical with Hayat's)
 │   ├── redis/                    # everything Redis-shaped in the console. Redis has no tables and
 │   │   │                         #   no SQL, so it replaces two pieces of the console rather than
 │   │   │                         #   extending them: the browser sidebar and the query tab.
@@ -509,7 +512,9 @@ server/
 ├── mode.js               # leaf: 'solo' | 'enterprise', as boot resolved it. No route reads it
 ├── solo.js               # solo's one owner (`app_settings` key `solo`, never a table): setup code,
 │                         #   scrypt password, HS256 access/refresh tokens + tokenEpoch, account,
-│                         #   the workspace's name. Answers 404 in enterprise mode
+│                         #   the workspace's name, the owner's theme. Answers 404 in enterprise mode
+├── appearance.js         # leaf: a person's theme as tabletsgo accepts it — Hayat's rules, so a solo
+│                         #   owner's theme moves to Hayat unchanged
 ├── auth.js               # the guards over Hayat — requireAuth, requireSystemAdmin (tabletsgo
 │                         #   admin role at Hayat's root), requirePermission/requireMember. The
 │                         #   token is verified once per request in `sessionMiddleware`, so

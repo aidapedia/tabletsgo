@@ -584,6 +584,128 @@ paths:
                 accountUrl: https://hayat.example.com/account
         "401":
           $ref: "#/components/responses/Unauthorized"
+  /api/me/appearance:
+    get:
+      tags:
+        - Signing in (Hayat)
+      summary: The caller's theme
+      description: |-
+        One theme per account, the same in every app the person signs in to: colors (an accent, the content area, the sidebar, status), sizes and type. Every field is optional — an empty one means "tabletsgo's own default" — and `appearance` is `null` when they never chose anything. The shape is the proto3 JSON of Hayat's `Appearance`.
+
+        In enterprise mode it is Hayat's (`DirectoryService.GetUserAppearance`), edited in Hayat's console: `editable` is `false` and `editUrl` points there (`null` without `HAYAT_CONSOLE_URL`). A solo instance keeps its owner's, so `editable` is `true`. Asked fresh on every page load and never cached, so a change shows on the next one.
+      responses:
+        "200":
+          description: "`{ appearance, editable, editUrl }`"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  appearance:
+                    oneOf:
+                      - $ref: "#/components/schemas/Appearance"
+                      - type: "null"
+                  editable:
+                    type: boolean
+                    description: The theme is changed here (`PUT`), not in Hayat
+                  editUrl:
+                    type:
+                      - string
+                      - "null"
+                    description: Where to change it in enterprise mode
+              examples:
+                enterprise:
+                  value:
+                    appearance:
+                      preset: slate-rail
+                      mode: light
+                      accent: "#2563eb"
+                      sidebarBackground: "#0f172a"
+                      sidebarText: "#e2e8f0"
+                      sidebarActive: "#1e293b"
+                      sidebarBorder: "#0f172a"
+                      textSize: 15
+                      density: compact
+                    editable: false
+                    editUrl: https://hayat.example.com/account/appearance
+                solo, never chosen:
+                  value:
+                    appearance: null
+                    editable: true
+                    editUrl: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "502":
+          description: Hayat couldn't be asked.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    put:
+      tags:
+        - Signing in (Hayat)
+      summary: Change the caller's theme (solo)
+      description: Saves the owner's theme on a solo instance and answers with what was stored. `null` (or a theme that sets nothing) goes back to the defaults. Colors are lower-cased; a field no app could draw is refused with `400`, by the same rules Hayat applies, so the theme moves to Hayat unchanged if the instance joins a team. In enterprise mode the theme is Hayat's and this answers `400` — change it in Hayat's console (`editUrl`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                appearance:
+                  oneOf:
+                    - $ref: "#/components/schemas/Appearance"
+                    - type: "null"
+            example:
+              appearance:
+                preset: custom
+                mode: dark
+                accent: "#7AA2FF"
+                sidebarMatchContent: true
+                font: inter
+                textSize: 14
+                radius: 6
+                sidebarWidth: 232
+                contentWidth: full
+      responses:
+        "200":
+          description: "`{ appearance }` — what was stored"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  appearance:
+                    oneOf:
+                      - $ref: "#/components/schemas/Appearance"
+                      - type: "null"
+              example:
+                appearance:
+                  preset: custom
+                  mode: dark
+                  accent: "#7aa2ff"
+                  sidebarMatchContent: true
+                  font: inter
+                  textSize: 14
+                  radius: 6
+                  sidebarWidth: 232
+                  contentWidth: full
+        "400":
+          description: A field no app could draw, or enterprise mode (the theme is changed in Hayat).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                bad color:
+                  value:
+                    error: "The accent color must look like #1d6a54."
+                enterprise:
+                  value:
+                    error: Change your theme in Hayat — it’s your account’s, shared by every app.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
   /api/auth/solo/setup:
     post:
       tags:
@@ -10986,6 +11108,32 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
   schemas:
+    Appearance:
+      type: object
+      description: A person's theme. Every field is optional; an empty one means the app's own default. Colors are `#rrggbb`.
+      properties:
+        preset: { type: string, pattern: "^[a-z0-9-]{1,40}$", description: "The preset it started from (`tg-dark`, `hayat-light`, …) or `custom`" }
+        mode: { type: string, enum: [system, light, dark], description: The neutral palette behind the colors left empty }
+        accent: { type: string, pattern: "^#[0-9a-fA-F]{6}$" }
+        background: { type: string, pattern: "^#[0-9a-fA-F]{6}$" }
+        surface: { type: string, pattern: "^#[0-9a-fA-F]{6}$" }
+        text: { type: string, pattern: "^#[0-9a-fA-F]{6}$" }
+        muted: { type: string, pattern: "^#[0-9a-fA-F]{6}$" }
+        border: { type: string, pattern: "^#[0-9a-fA-F]{6}$" }
+        sidebarMatchContent: { type: boolean, description: The sidebar follows the content colors; its own four are ignored }
+        sidebarBackground: { type: string, pattern: "^#[0-9a-fA-F]{6}$" }
+        sidebarText: { type: string, pattern: "^#[0-9a-fA-F]{6}$" }
+        sidebarActive: { type: string, pattern: "^#[0-9a-fA-F]{6}$" }
+        sidebarBorder: { type: string, pattern: "^#[0-9a-fA-F]{6}$" }
+        success: { type: string, pattern: "^#[0-9a-fA-F]{6}$" }
+        warning: { type: string, pattern: "^#[0-9a-fA-F]{6}$" }
+        destructive: { type: string, pattern: "^#[0-9a-fA-F]{6}$" }
+        font: { type: string, enum: [system, inter, plex] }
+        textSize: { type: integer, minimum: 12, maximum: 18, description: Root font size in pixels }
+        density: { type: string, enum: [comfortable, compact, condensed] }
+        radius: { type: integer, minimum: 0, maximum: 18, description: Corner radius in pixels }
+        sidebarWidth: { type: integer, minimum: 200, maximum: 320, description: Sidebar width in pixels }
+        contentWidth: { type: string, enum: [narrow, default, full] }
     SoloSetup:
       type: object
       required: [code, email, password]

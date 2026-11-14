@@ -34,7 +34,8 @@ Browse data, write queries, design schemas, automate workflows and back up to S3
 - **Sign-in** — solo: the owner's email and password, set at first run with a code from the server's log. Enterprise: single sign-on at Hayat (OpenID Connect, authorization code + PKCE), where accounts, passwords, sign-up and sign-in methods are managed and shared by every app that uses it.
 - **Modules** — the instance admin chooses which databases (PostgreSQL, MySQL, SQLite, Redis, Kafka) and features (Backups) the instance offers under **Administration → Modules**, and sets their instance-wide settings — each database's query timeout and table row limit, Kafka's read caps. Workspaces only see what's on. Turning off a database that connections still use locks those connections instead of deleting them, and notifies their owners by email.
 - **Secure by default** — credentials encrypted at rest (AES‑256‑GCM); solo passwords hashed with scrypt and sessions ended at once on a password change; enterprise access tokens verified offline against Hayat's keys, every permission asked of Hayat.
-- **In‑app updates**, split view, configurable keymap, light/dark theme.
+- **Themes** — one per account, the same in every app you sign in to: presets, light/dark, every color (accent, content, sidebar, status), text size, density, corners, sidebar and content width, font, with a live preview and a readability check. Edited in Hayat's console (enterprise) or at Setting → Appearance (solo).
+- **In‑app updates**, split view, configurable keymap.
 
 Every feature in detail: **[docs/FEATURES.md](docs/FEATURES.md)**.
 
@@ -138,11 +139,17 @@ In enterprise mode tabletsgo keeps no accounts of its own. Hayat holds the peopl
 **Registering tabletsgo:**
 
 ```bash
-npm run hayat:bundle -- --out hayat-import.json --admin you@acme.com   # tabletsgo's contract + its first admin
-hayat import --file hayat-import.json --app-url https://db.acme.com --out hayat-result.json
+# tabletsgo's contract + its first admin, written from the published image (no clone needed)
+docker run --rm --env-file tabletsgo.env ghcr.io/aidapedia/tabletsgo:latest \
+  node scripts/hayat-bundle.js --out - --admin you@acme.com > hayat-import.json
+
+# hayat ships as an image: run `import` with the same settings as Hayat's other roles (here, its compose file)
+docker compose -f ~/hayat/deploy/compose/docker-compose.yml run --rm --no-deps \
+  --user "$(id -u):$(id -g)" -v "$PWD:/work" -w /work \
+  hayat-api import --file hayat-import.json --app-url https://db.acme.com --out hayat-result.json
 ```
 
-`hayat import` registers tabletsgo as a service in Hayat, approves its contract, registers the browser's sign-in client (`<app-url>/callback`) and prints `HAYAT_ISSUER`, `HAYAT_CLIENT_ID`, `HAYAT_CLIENT_SECRET` and `HAYAT_WEB_CLIENT_ID`. Set those and `HAYAT_API_URL` (Hayat's api role), and optionally `HAYAT_CONSOLE_URL`. `--admin` gives that person **Tabletsgo admin** at Hayat's root (and makes them Hayat's first instance admin if it has none); someone Hayat doesn't know yet finishes by signing up with that address. Then, in Hayat's console, create a workspace (tenant), add people, and grant **Workspace owner (tabletsgo)** to whoever runs it.
+From a clone, `npm run hayat:bundle -- --out hayat-import.json --admin you@acme.com` writes the same file. `hayat import` registers tabletsgo as a service in Hayat, approves its contract, registers the browser's sign-in client (`<app-url>/callback`) and prints `HAYAT_ISSUER`, `HAYAT_CLIENT_ID`, `HAYAT_CLIENT_SECRET` and `HAYAT_WEB_CLIENT_ID`. Set those and `HAYAT_API_URL` (Hayat's api role), and optionally `HAYAT_CONSOLE_URL`. `--admin` gives that person **Tabletsgo admin** at Hayat's root (and makes them Hayat's first instance admin if it has none); someone Hayat doesn't know yet finishes by signing up with that address. Then, in Hayat's console, create a workspace (tenant), add people, and grant **Workspace owner (tabletsgo)** to whoever runs it.
 
 If this server reaches Hayat's sign-in at a different address than browsers do — a private network, or Docker, where `localhost` is the container — set `HAYAT_AUTH_URL` to that address. Tokens still name `HAYAT_ISSUER`.
 

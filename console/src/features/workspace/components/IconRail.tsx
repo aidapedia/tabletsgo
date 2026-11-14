@@ -28,12 +28,13 @@ export default function IconRail({
 }) {
   const current = connections.find((c) => c.id === currentId)
 
-  // 3.5rem = the two px-2 gutters + a 2.5rem target, so the rail tracks the
-  // density setting's root font-size instead of stranding the slack on one
-  // side; + 1px is the border-r, which border-box counts inside the width and
-  // which doesn't scale. See the fuller note in HomeLayout's <aside>.
+  // 14 spacing steps = the two px-2 gutters + a 10-step target, so the rail
+  // tracks the person's text size and density instead of stranding the slack
+  // on one side; + 1px is the border-r, which border-box counts inside the
+  // width and which doesn't scale. See the fuller note in HomeLayout's <aside>.
+  // It is navigation, so it draws in the sidebar's colors (`app-sidebar`).
   return (
-    <div className="flex w-[calc(3.5rem_+_1px)] shrink-0 flex-col border-r border-border bg-background px-2 py-3">
+    <div className="app-sidebar flex w-[calc(var(--spacing)*14_+_1px)] shrink-0 flex-col border-r border-border bg-sidebar px-2 py-3">
       {/* Connection switcher — opens the searchable folder-tree modal */}
       <Tooltip>
         <TooltipTrigger asChild>

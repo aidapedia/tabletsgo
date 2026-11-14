@@ -49,6 +49,16 @@ routes, caches — can't tell the difference. **No route branches on the mode.**
   `/api/auth/solo/*` routes avoid branching.
 - **The workspace's name**: `hayat.renameTenant` refuses in enterprise (rename it in
   Hayat) and goes through the solo backend's `UpdateTenant` to `solo.renameWorkspace`.
+- **A person's theme** (their "appearance") is the account's, one for every app:
+  `hayat.getAppearance(userId)` asks `DirectoryService.GetUserAppearance` — fresh
+  every time, never cached (a Hayat without the RPC answers null: the defaults).
+  `hayat.setAppearance` refuses in enterprise (it's edited in Hayat's console at
+  `/account/appearance`) and goes through the solo backend's `SetUserAppearance` to
+  `solo.saveAppearance`, which checks it with `server/appearance.js` (Hayat's rules)
+  and keeps it as `owner.appearance`; `exportSoloBundle` carries it to Hayat.
+  Routes: `GET/PUT /api/me/appearance` (`editable` = `hayat.appearanceEditable()`).
+  The console applies it in `ThemeContext`; every field is optional (empty = the
+  app's own default), so Mode alone switches to each app's own palette.
 - **v1.0 → solo**: before the drop migration, `captureSoloOwner` keeps the one
   email account (or `SOLO_OWNER`'s; several and none named → refuse, nothing
   changed), folds every workspace's rows into the oldest, makes every connection

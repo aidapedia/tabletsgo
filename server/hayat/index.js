@@ -325,6 +325,39 @@ export async function renameTenant(tenantId, name) {
   wrote(res.tenantId, res.rev)
 }
 
+// ---- A person's theme --------------------------------------------------------------
+//
+// One per account, the same in every app they sign in to. Hayat stores it and its
+// console edits it; solo's backend keeps the owner's. Asked fresh every time and
+// never cached: the console asks once per page load, so a change in Hayat shows on
+// the next one.
+
+/** The person's theme (proto3 JSON of hayat.authz.v1.Appearance), or null when they never chose one. */
+export async function getAppearance(userId) {
+  try {
+    const res = await need().call('DirectoryService', 'GetUserAppearance', { userId: String(userId) })
+    return res.appearance || null
+  } catch (e) {
+    // A Hayat from before themes existed: everyone sees the defaults.
+    if (isNotFound(e) || e.code === 'unimplemented') return null
+    throw e
+  }
+}
+
+/** Whether the theme is edited in tabletsgo (solo) rather than in Hayat's console. */
+export const appearanceEditable = () => !!backend?.solo
+
+/**
+ * Store the person's theme. Hayat owns the account, so in enterprise mode this
+ * refuses and the theme is changed in Hayat's console; solo's backend keeps the
+ * owner's. → what was stored.
+ */
+export async function setAppearance(userId, appearance) {
+  if (!need().solo) throw new HayatError('failed_precondition', 'Change your theme in Hayat — it’s your account’s, shared by every app.', 400)
+  const res = await backend.call('DirectoryService', 'SetUserAppearance', { userId: String(userId), appearance })
+  return res.appearance || null
+}
+
 /** Remove a mirror. Already gone is fine. */
 export async function deleteResource(type, externalId) {
   try {

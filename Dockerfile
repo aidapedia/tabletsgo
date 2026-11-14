@@ -84,9 +84,10 @@ COPY prisma ./prisma
 COPY server ./server
 # The updater's one-shot migrate container runs this (`npm run migrate`),
 # hayat-bundle.js writes the bundle `hayat import` registers tabletsgo with (and
-# moves a solo instance to enterprise), and solo-reset-password.js is a solo
-# owner's way back in.
-COPY scripts/migrate.js scripts/hayat-bundle.js scripts/solo-reset-password.js ./scripts/
+# moves a solo instance to enterprise), hayat-remap.js points tabletsgo's rows at
+# accounts Hayat already had, and solo-reset-password.js is a solo owner's way
+# back in.
+COPY scripts/migrate.js scripts/hayat-bundle.js scripts/hayat-remap.js scripts/solo-reset-password.js ./scripts/
 
 # Image identity, baked in so the running app can report what it is and compare
 # itself against the latest published release (the in-app update checker). CI
