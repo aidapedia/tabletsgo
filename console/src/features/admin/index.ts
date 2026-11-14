@@ -1,25 +1,8 @@
 // Public API for the instance-administration feature — the `/admin/*` area,
-// reachable only by accounts whose system role is 'admin'. It manages
-// workspaces and accounts, and can describe what a workspace holds, but
-// deliberately opens nothing inside one; see CLAUDE.md "AUTH MODEL".
-export { default as AdminWorkspacesPanel } from './components/AdminWorkspacesPanel'
-export { default as AdminWorkspaceDetail, WORKSPACE_DETAIL_TABS } from './components/workspace-detail/AdminWorkspaceDetail'
-export { default as AdminUsersPanel } from './components/AdminUsersPanel'
-// The resource tree offers this on the application root — the one node a
-// workspace can be filed under — so the dialog lives on its own rather than
-// inside the admin panel that also uses it.
-export { default as CreateWorkspaceDialog } from './components/CreateWorkspaceDialog'
+// reachable by whoever holds tabletsgo's admin role at Hayat's root. Accounts,
+// workspaces, roles and sign-in methods are administered in Hayat; what is left
+// here is tabletsgo's own: the mail server (modules and updates live in their
+// own features).
 export { default as AdminSmtpPanel } from './components/AdminSmtpPanel'
-export { default as AdminSignInPanel } from './components/AdminSignInPanel'
-export type { AdminUser, AdminWorkspace, AdminWorkspaceMember, GlobalSmtp, GlobalSmtpInfo, SystemRole } from './api'
-export {
-  listAllWorkspaces,
-  createWorkspaceAs,
-  renameWorkspaceAs,
-  deleteWorkspaceAs,
-  listWorkspaceMembersAs,
-  setWorkspaceRoleAs,
-  removeWorkspaceMemberAs,
-} from './api'
-export { listUsers, createUser, updateUser, deleteUser, unblockUser } from './api'
+export type { GlobalSmtp, GlobalSmtpInfo } from './api'
 export { getGlobalSmtp, updateGlobalSmtp, clearGlobalSmtp, testGlobalSmtp } from './api'

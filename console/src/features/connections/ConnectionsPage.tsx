@@ -132,7 +132,7 @@ export default function ConnectionsPage() {
   const confirmDelete = () => {
     const conn = deleting
     setDeleting(null)
-    if (conn) removeConnection(conn.id)
+    if (conn) removeConnection(conn.id).catch((error) => toast.error(error.message || 'Could not delete the connection.'))
   }
 
   const copyUrl = (conn) => {

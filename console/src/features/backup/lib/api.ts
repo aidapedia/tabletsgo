@@ -98,7 +98,7 @@ export async function downloadBackupUpload(
   destinationId: string,
   artifact: 'dump' | 'config' = 'dump'
 ): Promise<void> {
-  const token = getToken()
+  const token = await getToken()
   const qs = artifact === 'config' ? '?artifact=config' : ''
   const res = await fetch(`${API_URL}/connections/${connectionId}/backup/runs/${runId}/uploads/${destinationId}/download${qs}`, {
     headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -146,7 +146,7 @@ export async function restoreFromStorageObject(
 // Streams a local backup file to the server as the raw request body —
 // request() JSON-encodes bodies, so this uses fetch directly (like download).
 export async function restoreFromUpload(connectionId: string, file: File, confirmName: string): Promise<void> {
-  const token = getToken()
+  const token = await getToken()
   const params = new URLSearchParams({ filename: file.name, confirmName })
   const res = await fetch(`${API_URL}/connections/${connectionId}/restore/upload?${params}`, {
     method: 'POST',

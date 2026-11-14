@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import DataGrid from '@/shared/ui/table/DataGrid'
+import PagedDataGrid from '@/shared/ui/table/PagedDataGrid'
 import Popover from '@/shared/ui/overlay/Popover'
 import { FilterPanel, SortPanel, matchFilter, sortRows, cycleSortRules } from '@/shared/ui/table/GridRules'
 import SlideOverPanel from '@/shared/ui/overlay/SlideOverPanel'
@@ -77,11 +77,13 @@ export default function AclsPanel({ conn }: { conn: any }) {
       next.has(k) ? next.delete(k) : next.add(k)
       return next
     })
-  const toggleAll = () =>
+  // The header box selects the page it sits over, like the table view's.
+  const toggleAll = (page: any[]) =>
     setSelected((s) => {
-      const all = shown.length > 0 && shown.every((a) => s.has(keyOf(a)))
+      const onPage = page.map((r) => r.acl)
+      const all = onPage.length > 0 && onPage.every((a) => s.has(keyOf(a)))
       const next = new Set(s)
-      for (const a of shown) all ? next.delete(keyOf(a)) : next.add(keyOf(a))
+      for (const a of onPage) all ? next.delete(keyOf(a)) : next.add(keyOf(a))
       return next
     })
 
@@ -173,7 +175,7 @@ export default function AclsPanel({ conn }: { conn: any }) {
       ) : !shown.length ? (
         <div className="p-[30px] text-center text-xs text-faint">{activeFilterCount ? 'No ACLs match.' : 'No ACLs on this cluster.'}</div>
       ) : (
-        <DataGrid
+        <PagedDataGrid
           columns={COLUMNS}
           rows={rows}
           columnWidths={COLUMN_WIDTHS}

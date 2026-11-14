@@ -1,15 +1,17 @@
 import { request, safeRequest } from '@/shared/api/request'
 
-// ---- Connection access (which groups/members may see a connection) ----
-// The group domain lives in `features/resource-tree` (a group is a node); this endpoint is
-// connection-scoped, so its client belongs here.
-export type ConnectionAccess = { groups: string[]; users: string[] }
+// ---- Connection access: who may open a connection ----
+// Read-only: opening one is the `connection.open` permission in Hayat, granted
+// in Hayat's console. `people` is Hayat's resolved answer (grants, group
+// rosters, ownership), each with the reason; `manageUrl` opens the node there.
+export type ConnectionAccess = {
+  people: { userId: string; name: string | null; email: string | null; reason: string | null }[]
+  parentNodeId: string | null
+  manageUrl: string | null
+}
 
 export async function getConnectionAccess(connectionId: string) {
-  return safeRequest<ConnectionAccess>(`/connections/${connectionId}/access`, { groups: [], users: [] })
-}
-export async function setConnectionAccess(connectionId: string, access: ConnectionAccess) {
-  return request<ConnectionAccess>(`/connections/${connectionId}/access`, { method: 'PUT', body: access })
+  return safeRequest<ConnectionAccess>(`/connections/${connectionId}/access`, { people: [], parentNodeId: null, manageUrl: null })
 }
 
 // Hand the connection to another member of the workspace. Its own permission

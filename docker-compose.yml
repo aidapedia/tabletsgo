@@ -29,7 +29,18 @@ services:
       # to start without it. Generate one with:
       #   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
       - ENCRYPTION_KEY=${ENCRYPTION_KEY:-}
-      # Optional SMTP for member-invite emails — the fallback under the mail
+      # Required — sign-in and authorization are Hayat's. `hayat import` prints
+      # these (README → Hayat). The server refuses to start without the first five.
+      - HAYAT_ISSUER=${HAYAT_ISSUER:-}
+      - HAYAT_API_URL=${HAYAT_API_URL:-}
+      - HAYAT_CLIENT_ID=${HAYAT_CLIENT_ID:-}
+      - HAYAT_CLIENT_SECRET=${HAYAT_CLIENT_SECRET:-}
+      - HAYAT_WEB_CLIENT_ID=${HAYAT_WEB_CLIENT_ID:-}
+      - HAYAT_CONSOLE_URL=${HAYAT_CONSOLE_URL:-}
+      # Optional — Hayat's auth role as this container reaches it, when that isn't
+      # HAYAT_ISSUER (inside Docker, `localhost` is the container itself).
+      - HAYAT_AUTH_URL=${HAYAT_AUTH_URL:-}
+      # Optional SMTP for tabletsgo's own notices — the fallback under the mail
       # server an admin configures in Administration > Email (that one wins).
       - SMTP_HOST=${SMTP_HOST:-}
       - SMTP_PORT=${SMTP_PORT:-}
@@ -38,31 +49,19 @@ services:
       - SMTP_FROM=${SMTP_FROM:-}
       - SMTP_SECURE=${SMTP_SECURE:-}
       # The address people reach this instance at. Set it behind a reverse proxy:
-      # emailed links and the Google/GitHub callback URL use it.
+      # emailed links use it.
       - PUBLIC_URL=${PUBLIC_URL:-}
       # How long (ms) the pre-flight connection handshake waits before it reports
       # a timeout. Raise only for databases behind a slow tunnel/VPN.
       - HANDSHAKE_TIMEOUT_MS=${HANDSHAKE_TIMEOUT_MS:-}
-      # Sessions need no infrastructure: logins live in the metadata DB above
-      # (so they survive a restart) and open-connection sessions are held by the
-      # process that owns the handle.
-      # Optional session tuning: login lifetime, idle timeout before an open
-      # database handle is released, and the instance-wide cap on concurrent
-      # sessions per connection (0 = unlimited; workspace/connection override it).
-      - SESSION_TTL_MS=${SESSION_TTL_MS:-}
+      # Optional session tuning: idle timeout before an open database handle is
+      # released, and the instance-wide cap on concurrent sessions per connection
+      # (0 = unlimited; a workspace overrides it).
       - SESSION_IDLE_TTL_MS=${SESSION_IDLE_TTL_MS:-}
       - MAX_SESSIONS_PER_CONNECTION=${MAX_SESSIONS_PER_CONNECTION:-}
-      # Sign-in brute-force protection: how many consecutive failures block an
-      # account, the window they must fall in, and how long the block lasts
-      # (0 = until an instance admin lifts it in Administration > Users). An
-      # instance admin is never blocked indefinitely — they get the self-expiring
-      # cooldown instead, so the instance can't be locked out on purpose.
-      - LOGIN_MAX_ATTEMPTS=${LOGIN_MAX_ATTEMPTS:-}
-      - LOGIN_ATTEMPT_WINDOW_MS=${LOGIN_ATTEMPT_WINDOW_MS:-}
-      - LOGIN_LOCKOUT_MS=${LOGIN_LOCKOUT_MS:-}
-      - LOGIN_ADMIN_COOLDOWN_MS=${LOGIN_ADMIN_COOLDOWN_MS:-}
     volumes:
-      # Persist app metadata (users / connections / saved queries) across
+      # Persist app metadata (connections / saved queries) — and the Hayat import
+      # bundle the upgrade writes — across
       # container restarts.
       - tabletsgo-data:/app/data
       # OPTIONAL — one-click in-app updates. Mounting the Docker socket lets

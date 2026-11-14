@@ -10,7 +10,7 @@ import RailItem, { RailDivider } from '@/shared/ui/navigation/RailItem'
 import AccountTile from '@/shared/ui/AccountTile'
 import AccountMenu from '@/shared/ui/AccountMenu'
 import { PageTrailProvider, usePageCrumbs } from '@/shared/ui/page/PageTrail'
-import { BellIcon, BuildingIcon, CloudIcon, DatabaseIcon, DiagramIcon, GridIcon, HomeIcon, KeyIcon, Logo, MailIcon, MenuIcon, MoreHorizontalIcon, PanelLeftIcon, RefreshIcon, SettingsIcon, ShieldIcon, TerminalIcon, TreeIcon, UsersIcon, WorkflowIcon } from '@/shared/ui/icons'
+import { BellIcon, BuildingIcon, CloudIcon, DatabaseIcon, DiagramIcon, GridIcon, HomeIcon, KeyIcon, Logo, MailIcon, MenuIcon, MoreHorizontalIcon, PanelLeftIcon, RefreshIcon, SettingsIcon, ShieldIcon, TerminalIcon, UsersIcon, WorkflowIcon } from '@/shared/ui/icons'
 import { Button } from '@/shared/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/shared/ui/tooltip'
 
@@ -52,13 +52,12 @@ const NAV = {
       ],
     },
     {
-      // Resource Tree is who may do what — how the workspace is run, so it sits
-      // with the members it grants to, not with the things it grants on.
+      // Groups and who may do what are Hayat's (its console's Resource Tree);
+      // General and Member link there.
       group: 'Workspace',
       items: [
         { label: 'General', Icon: BuildingIcon, path: '/workspace' },
         { label: 'Member', Icon: UsersIcon, path: '/members' },
-        { label: 'Resource Tree', Icon: TreeIcon, path: '/resource-tree' },
         { label: 'Notification', Icon: BellIcon, path: '/notifications' },
       ],
     },
@@ -69,36 +68,31 @@ const NAV = {
   ],
 }
 
-// An instance admin belongs to no workspace, so none of the sections above have
-// anything to show them — `/admin` is their home, so it takes the pinned row.
-// Below it the groups read as: who can get in and what they may reach, then how
-// the instance itself is set up, plus the same personal settings. The instance's
-// group is `Settings`; the account's own is the `Setting` in the account menu.
+// The admin area: tabletsgo's own instance settings. Accounts, workspaces,
+// roles and sign-in are administered in Hayat. An admin may also belong to
+// workspaces now (the role is a grant at Hayat's root), so the way back is a row.
 const ADMIN_NAV = {
-  pinned: [{ label: 'Workspaces', Icon: BuildingIcon, path: '/admin', exact: true, also: '/admin/workspaces' }],
+  pinned: [{ label: 'Modules', Icon: GridIcon, path: '/admin/modules' }],
   groups: [
-    {
-      group: 'Access',
-      items: [
-        { label: 'Users', Icon: UsersIcon, path: '/admin/users' },
-        { label: 'Resource Tree', Icon: TreeIcon, path: '/resource-tree' },
-      ],
-    },
     {
       group: 'Settings',
       items: [
-        { label: 'Modules', Icon: GridIcon, path: '/admin/modules' },
-        { label: 'Authentication', Icon: KeyIcon, path: '/admin/sign-in' },
         { label: 'Email', Icon: MailIcon, path: '/admin/email' },
         { label: 'Updates', Icon: RefreshIcon, path: '/admin/updates' },
       ],
     },
     {
       group: 'Account',
-      items: [{ label: 'Setting', Icon: SettingsIcon, path: '/settings' }],
+      items: [
+        { label: 'Workspaces', Icon: HomeIcon, path: '/', exact: true },
+        { label: 'Setting', Icon: SettingsIcon, path: '/settings' },
+      ],
     },
   ],
 }
+
+// A tabletsgo admin sees the way into the admin area from the workspace side.
+const ADMIN_ENTRY = { label: 'Administration', Icon: ShieldIcon, path: '/admin' }
 
 // `also` is a second address the row owns: `/admin` can't own everything under
 // it, because the other admin sections live there too.
@@ -129,8 +123,12 @@ function PageTrail({ pathname, isAdmin }: { pathname: string; isAdmin: boolean }
   )
 }
 
-function Sidebar({ pathname, onNavigate, user, onSettings, onLogout, open, onClose, isAdmin, collapsed, onToggleCollapse }: any) {
-  const nav = isAdmin ? ADMIN_NAV : NAV
+function Sidebar({ pathname, onNavigate, user, onSettings, onLogout, open, onClose, isAdmin, canAdmin, collapsed, onToggleCollapse }: any) {
+  const nav = isAdmin
+    ? ADMIN_NAV
+    : canAdmin
+      ? { ...NAV, groups: NAV.groups.map((g) => (g.group === 'Account' ? { ...g, items: [...g.items, ADMIN_ENTRY] } : g)) }
+      : NAV
 
   // The Account group isn't listed: its one row is about *you*, so it opens from
   // the account menu, next to sign-out. It stays in the model because the page
@@ -359,7 +357,10 @@ export default function HomeLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [collapsed, setCollapsed] = useState(loadCollapsed)
 
-  const isAdmin = user?.role === 'admin'
+  // The admin menu shows inside the admin area; elsewhere an admin gets the
+  // workspace menu with a row into it.
+  const canAdmin = user?.role === 'admin'
+  const isAdmin = canAdmin && location.pathname.startsWith('/admin')
 
   useEffect(() => {
     try {
@@ -393,6 +394,7 @@ export default function HomeLayout() {
         }}
         onLogout={logout}
         isAdmin={isAdmin}
+        canAdmin={canAdmin}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
         collapsed={collapsed && !sidebarOpen}

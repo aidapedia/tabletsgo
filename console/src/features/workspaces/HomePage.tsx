@@ -5,7 +5,6 @@ import { DbTypePickerModal, useConnections } from '@/features/connections'
 import { useWorkspaces } from './stores/WorkspaceContext'
 import { can } from './api'
 import { Button } from '@/shared/ui/button'
-import EmptyState from '@/shared/ui/feedback/EmptyState'
 import { DatabaseIcon, GridIcon, PlusIcon, UsersIcon, WorkflowIcon } from '@/shared/ui/icons'
 import { formatTime } from '@/shared/lib/datetime'
 import PageHeader from '@/shared/ui/page/PageHeader'
@@ -31,25 +30,12 @@ const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
 export default function HomePage() {
   const { user } = useAuth()
   const navigate = useNavigate()
-  const { current, loading: loadingWorkspaces } = useWorkspaces()
+  const { current } = useWorkspaces()
   const { connections, loading: loadingConnections } = useConnections()
   const { workflows, dashboards, schemas, memberCount, loading } = useHomeOverview(current?.id)
   const [picker, setPicker] = useState(false)
 
   const firstName = (user?.name || '').split(' ')[0] || 'there'
-
-  // Someone who registered belongs nowhere until an owner adds them, and only an
-  // owner or an instance admin can do that.
-  if (!current && !loadingWorkspaces) {
-    return (
-      <div className="w-full">
-        <PageHeader title={`Welcome, ${firstName}`} desc="You're not in a workspace yet." />
-        <EmptyState bordered className="mt-6 py-16">
-          Ask a workspace owner to add {user?.email}, then refresh this page.
-        </EmptyState>
-      </div>
-    )
-  }
 
   const canCreate = can(current, 'connections.create')
   const canInvite = can(current, 'members.manage')

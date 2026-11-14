@@ -97,30 +97,6 @@ export const sendTestEmail = (cfg, { to, scope = 'SMTP settings' }) =>
     html: `<p>This is a test email from your Tabletsgo ${scope}.</p><p>If you received it, the configuration works.</p>`,
   })
 
-export const sendInviteEmail = (cfg, { to, workspaceName, link }) =>
-  sendMail(cfg, {
-    to,
-    subject: `You've been invited to ${workspaceName} on Tabletsgo`,
-    text: `You've been invited to join ${workspaceName} on Tabletsgo. Set your password: ${link}`,
-    html: `<p>You've been invited to join <b>${workspaceName}</b> on Tabletsgo.</p><p><a href="${link}">Accept your invite &amp; set a password</a></p><p style="color:#888">Or paste this link into your browser: ${link}</p>`,
-  })
-
-export const sendResetEmail = (cfg, { to, link }) =>
-  sendMail(cfg, {
-    to,
-    subject: 'Reset your Tabletsgo password',
-    text: `Reset your Tabletsgo password: ${link}\nThis link expires in 1 hour. If you didn't request this, ignore this email.`,
-    html: `<p>We received a request to reset your Tabletsgo password.</p><p><a href="${link}">Reset your password</a></p><p style="color:#888">This link expires in 1 hour. If you didn't request this, you can safely ignore this email.</p>`,
-  })
-
-export const sendRegistrationEmail = (cfg, { to, link }) =>
-  sendMail(cfg, {
-    to,
-    subject: 'Finish creating your Tabletsgo account',
-    text: `Finish creating your Tabletsgo account: ${link}\nThis link expires in 7 days. If you didn't ask for an account, ignore this email.`,
-    html: `<p>Choose a password to finish creating your Tabletsgo account.</p><p><a href="${link}">Finish creating your account</a></p><p style="color:#888">This link expires in 7 days. If you didn't ask for an account, you can safely ignore this email.</p>`,
-  })
-
 // Connection names and workspaces are user-typed — never raw into HTML.
 const escapeHtml = (s) =>
   String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c])

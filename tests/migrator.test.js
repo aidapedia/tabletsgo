@@ -19,6 +19,9 @@ const shippedMigrations = () =>
   fs.readdirSync('prisma/sqlite/migrations', { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name).sort()
 const appliedNames = (db) => db.prepare('SELECT migration_name FROM _prisma_migrations WHERE finished_at IS NOT NULL').all().map((r) => r.migration_name)
 
+const hasTable = (db, name) => !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name)
+const IDENTITY_TABLES = ['users', 'sessions', 'roles', 'role_permissions', 'resource_nodes', 'resource_grants', 'node_members', 'connection_access', 'user_identities', 'teams', 'team_members', 'workspace_members', 'spacetree_nodes']
+
 test('a fresh database is built from the Prisma baseline and seeded', () => {
   const file = path.join(dir, 'fresh.db')
   assert.equal(migrate(file, '--status').status, 2, 'pending before the first run')
@@ -27,8 +30,9 @@ test('a fresh database is built from the Prisma baseline and seeded', () => {
 
   const db = new Database(file, { readonly: true })
   assert.deepEqual(appliedNames(db).sort(), shippedMigrations())
-  assert.deepEqual(db.prepare('SELECT slug FROM roles WHERE builtin = 1 ORDER BY slug').all().map((r) => r.slug), ['member', 'owner'])
-  assert.equal(db.prepare("SELECT path FROM resource_nodes WHERE id = 'root'").get().path, '/root')
+  // Hayat owns identity and access: none of tabletsgo's old tables survive.
+  for (const t of IDENTITY_TABLES) assert.equal(hasTable(db, t), false, t)
+  assert.ok(hasTable(db, 'connections') && hasTable(db, 'workspaces'))
   // An image from before Prisma must see this database as already at v22.
   assert.equal(db.pragma('user_version', { simple: true }), MIGRATIONS.at(-1).version)
   db.close()
@@ -51,6 +55,7 @@ test('a pre-Prisma install runs the legacy steps, then adopts the baseline witho
   }
   legacy.prepare("INSERT INTO users (id, username, password_hash, role) VALUES ('u1', 'a@example.com', 'h', 'admin')").run()
   legacy.close()
+  const before = fs.readdirSync(dir).filter((f) => f.startsWith('hayat-import-'))
 
   const run = migrate(file)
   assert.equal(run.status, 0, run.stderr)
@@ -60,8 +65,16 @@ test('a pre-Prisma install runs the legacy steps, then adopts the baseline witho
   const db = new Database(file, { readonly: true })
   assert.deepEqual(appliedNames(db).sort(), shippedMigrations())
   assert.ok(db.prepare('PRAGMA table_info(ssh_gateways)').all().some((c) => c.name === 'transport'), 'v22 ran')
-  assert.equal(db.prepare('SELECT COUNT(*) AS c FROM users').get().c, 1, 'data survives')
+  assert.equal(hasTable(db, 'users'), false, 'accounts moved to Hayat')
   db.close()
+  // …but only after they were written out for `hayat import`.
+  const bundles = fs.readdirSync(dir).filter((f) => f.startsWith('hayat-import-') && !before.includes(f))
+  assert.equal(bundles.length, 1, run.stdout)
+  const bundle = JSON.parse(fs.readFileSync(path.join(dir, bundles[0]), 'utf8'))
+  assert.equal(bundle.format, 'hayat-import')
+  assert.deepEqual(bundle.users.map((u) => [u.id, u.email, u.passwordHash, u.admin]), [['u1', 'a@example.com', '$sha256$h', true]])
+  assert.deepEqual(bundle.rootGrants, [{ userId: 'u1', role: 'tabletsgo.admin' }])
+  assert.match(bundle.service.contract, /"service": "tabletsgo"/)
   assert.ok(fs.readdirSync(path.join(dir, 'backups')).some((f) => f.startsWith('pre-migrate-v20-')), 'snapshot taken')
 })
 

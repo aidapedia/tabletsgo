@@ -1,23 +1,21 @@
 import Popover from '@/shared/ui/overlay/Popover'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
 import { CheckIcon, ChevronDown } from '@/shared/ui/icons'
-import { useEffect, useState } from 'react'
-import { useWorkspaces, listRoles, type Role } from '@/features/workspaces'
+import { useWorkspaces } from '@/features/workspaces'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/shared/ui/tooltip'
 
-// Current-workspace picker: only the workspaces the user is a member of.
-// Creating a workspace lives in the admin area, settings in the sidebar's
-// Workspace section — neither belongs in a switcher.
+// Current-workspace picker: the Hayat tenants the user belongs to. Creating one
+// is Hayat's (an instance admin there), settings are the sidebar's Workspace
+// section — neither belongs in a switcher.
 //
 // `collapsed` is the icon-rail form: the initial bubble alone, which is all a
 // 64px rail has room for. The list it opens is unchanged.
 export default function WorkspaceSwitcher({ collapsed = false }) {
   const { workspaces, current, switchWorkspace } = useWorkspaces()
-  const [roles, setRoles] = useState<Role[]>([])
-  useEffect(() => {
-    listRoles().then(setRoles)
-  }, [])
-  const roleName = roles.find((r) => r.slug === current?.role)?.name || current?.role || ''
+  // In no workspace (nobody has added them in Hayat) it says so rather than
+  // showing a made-up "Workspace" they are a member of.
+  const name = current?.name || 'No workspace'
+  const roleName = !current ? 'Not a member yet' : current.role === 'owner' ? 'Owner' : 'Member'
 
   return (
     <Popover
@@ -37,11 +35,11 @@ export default function WorkspaceSwitcher({ collapsed = false }) {
                 }`}
               >
                 <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[11px] bg-primary text-[13px] font-bold text-white">
-                  {current?.name?.[0]?.toUpperCase() || 'W'}
+                  {name[0].toUpperCase()}
                 </span>
               </button>
             </TooltipTrigger>
-            {(current?.name || 'Workspace') && <TooltipContent side="right">{current?.name || 'Workspace'}</TooltipContent>}
+            <TooltipContent side="right">{name}</TooltipContent>
           </Tooltip>
         ) : (
           <button
@@ -51,12 +49,10 @@ export default function WorkspaceSwitcher({ collapsed = false }) {
             }`}
           >
             <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] bg-primary text-[12px] font-bold text-white">
-              {current?.name?.[0]?.toUpperCase() || 'W'}
+              {name[0].toUpperCase()}
             </span>
             <span className="min-w-0 flex-1">
-              <span className="block truncate text-[12px] font-semibold text-foreground">{current?.name || 'Workspace'}</span>
-              {/* The role's display name, resolved from the instance catalog —
-                  a custom role should read as itself, not as "Member". */}
+              <span className="block truncate text-[12px] font-semibold text-foreground">{name}</span>
               <span className="block text-[10px] text-faint">{roleName}</span>
             </span>
             <ChevronDown width={14} height={14} className="shrink-0 text-faint" />
@@ -68,6 +64,7 @@ export default function WorkspaceSwitcher({ collapsed = false }) {
         <div className="p-1.5">
           <div className="px-1.5 pb-1 text-[10px] font-semibold uppercase tracking-wide text-faint">Workspaces</div>
           <div className="max-h-[240px] overflow-y-auto">
+            {workspaces.length === 0 && <div className="px-1.5 py-2 text-[11px] text-faint">You're not in any workspace yet.</div>}
             {workspaces.map((w) => (
               <MenuItem key={w.id} onClick={() => { switchWorkspace(w.id); close() }}>
                 <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-muted text-[10px] font-bold text-muted-foreground">

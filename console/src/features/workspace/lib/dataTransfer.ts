@@ -46,7 +46,7 @@ function query(conn: any, params: Record<string, string | number | boolean | nul
 }
 
 async function call(path: string, init: RequestInit = {}) {
-  const token = getToken()
+  const token = await getToken()
   const res = await fetch(`${API_URL}${path}`, {
     ...init,
     headers: { ...(init.headers || {}), ...(token ? { Authorization: `Bearer ${token}` } : {}) },

@@ -22,15 +22,16 @@
 import fs from 'fs'
 import path from 'path'
 import { spawnSync } from 'child_process'
-import { randomUUID } from 'crypto'
 import { BACKUPS_DIR, META_DB_TYPE, ROOT_DIR } from '../config.js'
 import { APP_SETTINGS_KEY, encryptSecret } from '../crypto.js'
 import { openMeta, snapshotMeta } from '../meta-connection.js'
-import { BUILTIN_ROLES } from '../permissions-catalog.js'
+import { exportHayatBundle } from './hayat-export.js'
 import { LATEST_VERSION as LEGACY_VERSION, migrate as migrateLegacySqlite } from './legacy/sqlite.js'
 import { migratePostgres as migrateLegacyPostgres } from './legacy/postgresql.js'
 
 const BASELINE = '0_baseline'
+// The migration that drops tabletsgo's own identity tables once Hayat owns them.
+export const HAYAT_DROP = '20261110000000_hayat_owns_identity'
 const MIGRATIONS_DIR = path.join(ROOT_DIR, 'prisma', META_DB_TYPE, 'migrations')
 const PRISMA_CLI = path.join(ROOT_DIR, 'node_modules', 'prisma', 'build', 'index.js')
 const PRISMA_CONFIG = path.join(ROOT_DIR, 'prisma.config.mjs')
@@ -110,27 +111,12 @@ function upgradeLegacy(db) {
   })
 }
 
-// What a database needs beyond its tables: the built-in roles and the root of
-// the resource tree. Insert-if-missing, so a run that died between deploy and
-// seed finishes the job next time, and an upgraded install (which the legacy
-// steps already seeded) is left as it is.
+// What a database needs beyond its tables: the legacy marker, stamped so an
+// image from before Prisma that opens this database sees it already at v22
+// instead of replaying v1 over it. (Roles and the resource tree used to be
+// seeded here too; Hayat owns both now.)
 function seed(db) {
   db.transaction(() => {
-    const now = Date.now()
-    if (!db.prepare('SELECT 1 FROM roles WHERE builtin = 1 LIMIT 1').get()) {
-      const insRole = db.prepare('INSERT INTO roles (id, slug, name, description, builtin, applies_to, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?, ?)')
-      const insGrant = db.prepare('INSERT INTO role_permissions (role_id, permission) VALUES (?, ?)')
-      for (const role of BUILTIN_ROLES) {
-        const id = randomUUID()
-        insRole.run(id, role.slug, role.name, role.description, role.appliesTo ? JSON.stringify(role.appliesTo) : null, now, now)
-        for (const permission of role.permissions) insGrant.run(id, permission)
-      }
-    }
-    db.prepare(`INSERT OR IGNORE INTO resource_nodes (id, parent_id, kind, type, resource_id, name, owner_id, workspace_id, path, depth, sort, created_at, updated_at)
-      VALUES ('root', NULL, 'group', 'application', NULL, 'Application', NULL, NULL, '/root', 0, 0, ?, ?)`).run(now, now)
-
-    // Stamp the legacy marker too, so an image from before Prisma that opens
-    // this database sees it already at v22 instead of replaying v1 over it.
     if (isPostgres) {
       if (!db.prepare('SELECT 1 FROM metadata_schema_version').get()) {
         db.prepare('INSERT INTO metadata_schema_version (version) VALUES (?)').run(LEGACY_VERSION)
@@ -139,6 +125,24 @@ function seed(db) {
       db.pragma(`user_version = ${LEGACY_VERSION}`)
     }
   })()
+}
+
+/**
+ * Before the drop: write everything the identity tables hold to
+ * data/hayat-import-<time>.json, the bundle `hayat import` loads. Refuses to let
+ * the drop run if it can't — those rows exist nowhere else (the pre-migrate
+ * snapshot aside). An install with no accounts has nothing to carry over.
+ */
+export function writeHayatBundle(db, log, dir = path.dirname(BACKUPS_DIR)) {
+  if (!hasTable(db, 'users') || !db.prepare('SELECT COUNT(*) AS c FROM users').get().c) return null
+  const bundle = exportHayatBundle(db, (name) => hasTable(db, name))
+  fs.mkdirSync(dir, { recursive: true })
+  const file = path.join(dir, `hayat-import-${Date.now()}.json`)
+  fs.writeFileSync(file, JSON.stringify(bundle, null, 2), { mode: 0o600 })
+  log(`🪪 Accounts and access moved out for Hayat: ${file} (${bundle.users.length} people, ${bundle.tenants.length} workspaces).`)
+  log('   Load it with `hayat import --file <that file> --app-url <this instance>` — see README → Hayat.')
+  for (const s of bundle.skipped) log(`   not carried over: ${s}`)
+  return file
 }
 
 /** Bring the metadata database to the latest schema. Returns what it did. */
@@ -162,6 +166,7 @@ export function runMigrations({ log = console.log } = {}) {
     withMeta((db) => snapshot(db, before.applied.at(-1), log))
   }
 
+  if (metaSchemaStatus().pending.includes(HAYAT_DROP)) withMeta((db) => writeHayatBundle(db, log))
   log(prisma('migrate', 'deploy'))
   withMeta(seed)
 

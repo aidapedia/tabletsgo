@@ -1,41 +1,31 @@
-import { useState } from 'react'
-import { useWorkspaces, can, MembersPanel } from '@/features/workspaces'
-import { PlusIcon } from '@/shared/ui/icons'
+import { ExternalLink } from 'lucide-react'
+import { useWorkspaces, MembersPanel } from '@/features/workspaces'
 import { Section } from '@/shared/ui/page/Section'
 import LoadingState from '@/shared/ui/feedback/LoadingState'
 import { Button } from '@/shared/ui/button'
 
-// Member section — its own sidebar row rather than a Workspace tab, because
-// who belongs to the workspace is looked at far more often than the workspace's
-// own settings. `/workspace/member` redirects here so old links still land.
+// Member section — who belongs to the workspace. The roster is the Hayat
+// tenant's, so it is read here and changed in Hayat's console: inviting,
+// removing and granting roles all happen there. `/workspace/member` redirects
+// here so old links still land.
 export default function MembersPage() {
   const { current } = useWorkspaces()
-  const canManage = can(current, 'members.manage')
-  const [inviting, setInviting] = useState(false)
 
   return (
     <Section
       title="Member"
-      desc="Invite teammates and manage who can access this workspace."
+      desc="Who belongs to this workspace. People and their roles are managed in Hayat."
       action={
-        canManage && (
-          <Button variant="default" size="lg" onClick={() => setInviting(true)}>
-            <PlusIcon width={15} height={15} />
-            Invite member
+        current?.manageUrl && (
+          <Button asChild variant="default" size="lg">
+            <a href={current.manageUrl} target="_blank" rel="noreferrer">
+              Manage in Hayat <ExternalLink />
+            </a>
           </Button>
         )
       }
     >
-      {current ? (
-        <MembersPanel
-          workspaceId={current.id}
-          canManage={canManage}
-          inviting={inviting}
-          onInvitingChange={setInviting}
-        />
-      ) : (
-        <LoadingState className="" />
-      )}
+      {current ? <MembersPanel workspaceId={current.id} /> : <LoadingState className="" />}
     </Section>
   )
 }

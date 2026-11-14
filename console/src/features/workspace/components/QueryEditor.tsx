@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { format } from 'sql-formatter'
 import { sqlDialectOf } from '@/shared/lib/sqlDialect'
 import { getSchema, runQuery } from '@/shared/api/database'
-import DataGrid from '@/shared/ui/table/DataGrid'
+import PagedDataGrid from '@/shared/ui/table/PagedDataGrid'
 import CommandReference from '@/shared/ui/CommandReference'
 import SqlEditor from '@/shared/ui/SqlEditor'
 import { toast } from 'sonner'
@@ -303,7 +303,7 @@ export default function QueryEditor({ conn, dialect, initialSql, tabKey, persist
                   {result.rows.length} row(s)
                   {elapsedMs != null && <span className="text-faint"> · {elapsedMs} ms</span>}
                 </div>
-                <DataGrid columns={result.columns} rows={result.rows} />
+                <PagedDataGrid columns={result.columns} rows={result.rows} resetKey={result} />
               </>
             )}
             {!error && result?.type === 'message' && (

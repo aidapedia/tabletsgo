@@ -1,37 +1,26 @@
 /**
- * Sessions — who is logged in, and what the app currently holds open against a
- * database.
+ * Connection sessions — what the app currently holds open against a database.
  *
- * Two kinds share one pluggable store, but they are stored differently because
- * they mean different things:
- *
- *   auth        one record per bearer token. Sliding TTL, refreshed on use.
- *               *Durable*: the meta DB is the source of truth (db.js), with an
- *               in-process cache in front (hybrid.js) so the hot path isn't a
- *               read per request. A login survives a restart and a dropped
- *               cache.
- *   conn:<id>   *cache-only*, because it describes a live socket in one
- *               process: persisting it would let a restart resurrect sessions
- *               whose handles are gone. One record per *open driver handle*
- *               for a connection: the
- *               Postgres pool for a database, the ioredis client for a db
- *               index, the SQLite file handle. This is what "max sessions"
- *               counts — sessions track real connections to the database, not
- *               browser tabs, so five people browsing the same database share
- *               one session (and appear as its participants).
+ * A login is not a session here: it is a Hayat access token, verified on every
+ * request (server/auth.js) and never stored. What remains is `conn:<id>`, and it
+ * is *cache-only* on purpose, because it describes a live socket in one process:
+ * persisting it would let a restart resurrect sessions whose handles are gone.
+ * One record per *open driver handle* for a connection: the Postgres pool for a
+ * database, the ioredis client for a db index, the SQLite file handle. This is
+ * what "max sessions" counts — sessions track real connections to the database,
+ * not browser tabs, so five people browsing the same database share one session
+ * (and appear as its participants).
  *
  * A handle belongs to the process that opened it, so the local `handles` map is
- * the authority for releasing one, and the cache is where its record lives.
+ * the authority for releasing one, and the store is where its record lives.
  * Both are per-process, which is the honest model: another replica's handles
  * aren't ours to count or close. With more than one replica, the session limit
  * is therefore enforced per replica.
  */
 
 import { randomUUID } from 'crypto'
-import { SESSION_IDLE_TTL_MS, SESSION_TTL_MS } from '../config.js'
+import { SESSION_IDLE_TTL_MS } from '../config.js'
 import { memoryStore } from './memory.js'
-import { dbStore } from './db.js'
-import { hybridStore } from './hybrid.js'
 import { resolveMaxSessions } from './limits.js'
 
 export { resolveMaxSessions, workspaceMaxSessions } from './limits.js'
@@ -41,19 +30,11 @@ export { resolveMaxSessions, workspaceMaxSessions } from './limits.js'
 // the id changes on restart, tell a stale session record from a live one.
 export const INSTANCE_ID = randomUUID().slice(0, 8)
 
-const AUTH_NS = 'auth'
-
-// The cache layer is in-process: the meta DB underneath it holds the real
-// records, so losing the cache never signs anyone out. It stays behind the
-// store contract (`put/get/touch/del/list/count/clear`) so a shared/out-of-
-// process cache is a file plus a line here if one is ever needed again.
-export const cache = memoryStore()
-
-// Sign-in redirects: durable, because the provider may send the browser back to
-// a different replica than the one that started the round trip.
-const ONE_TIME_NS = 'oauth'
-
-export const store = hybridStore({ cache, source: dbStore(), durable: [AUTH_NS, ONE_TIME_NS] })
+// In-process, behind the store contract (`put/get/touch/del/list/count/clear`)
+// so a shared/out-of-process cache is a file plus a line here if one is ever
+// needed.
+export const store = memoryStore()
+export const cache = store
 const connNs = (connectionId) => `conn:${connectionId}`
 
 // Raised when a connection is already at its session limit. 429 rather than 403:
@@ -65,46 +46,6 @@ export class SessionLimitError extends Error {
     this.status = 429
     this.info = info
   }
-}
-
-// ---- Login sessions -------------------------------------------------------
-
-export async function createAuthSession(userId, context = {}) {
-  const token = randomUUID()
-  await store.put(AUTH_NS, token, { userId, createdAt: Date.now(), ...context }, SESSION_TTL_MS)
-  return token
-}
-
-// Resolve a bearer token, sliding its expiry. Null when unknown or expired.
-export async function readAuthSession(token) {
-  if (!token) return null
-  const session = await store.get(AUTH_NS, token)
-  if (!session) return null
-  await store.touch(AUTH_NS, token, SESSION_TTL_MS)
-  return session
-}
-
-export const destroyAuthSession = (token) => (token ? store.del(AUTH_NS, token) : Promise.resolve(false))
-
-// Sign a user out everywhere (password reset, role change, deactivation).
-// Goes through the indexed `user_id` column rather than scanning every session.
-export async function destroyAuthSessionsForUser(userId) {
-  const ids = await store.idsForUser(userId, AUTH_NS)
-  await Promise.all(ids.map((id) => store.del(AUTH_NS, id)))
-  return ids.length
-}
-
-// ---- Single-use records ---------------------------------------------------
-
-export const putOneTime = (id, value, ttlMs) => store.put(ONE_TIME_NS, id, value, ttlMs)
-
-// Read and burn. `del` is what decides: of two racing callers only one removes
-// the row, so the record is handed to exactly one of them.
-export async function takeOneTime(id) {
-  if (!id) return null
-  const value = await store.get(ONE_TIME_NS, id)
-  if (!value) return null
-  return (await store.del(ONE_TIME_NS, id)) ? value : null
 }
 
 // ---- Connection sessions --------------------------------------------------
@@ -265,9 +206,6 @@ export async function sweepConnectionSessions(now = Date.now()) {
     await store.del(h.ns, h.id).catch(() => {})
     await releaseLocal(h.conn.id, h.id)
   }
-  // Expired login rows are ignored on read but still occupy the table — the
-  // same pass reclaims them, since SQLite has no TTL of its own.
-  await store.sweepExpired().catch(() => {})
   return dead.length
 }
 

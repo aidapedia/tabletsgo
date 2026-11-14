@@ -21,6 +21,8 @@ export function PersonFace({ seed }: { seed: string }) {
 const SIZES = {
   sm: 'h-6 w-6',
   md: 'h-7 w-7',
+  // A page header's media slot — a person's own page.
+  lg: 'h-12 w-12',
 }
 
 export default function PersonAvatar({ seed, size = 'md', className = '' }: { seed: string; size?: keyof typeof SIZES; className?: string }) {

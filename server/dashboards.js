@@ -3,7 +3,6 @@
 
 import { randomUUID } from 'crypto'
 import { db, transaction } from './meta.js'
-import { createConnectionChildNode, deleteResourceNode, renameResourceNode } from './resource-tree.js'
 import { safeJson } from './util.js'
 
 const invalid = (message) => Object.assign(new Error(message), { status: 400 })
@@ -63,7 +62,6 @@ export async function createDashboard(connectionId, body = {}, { ownerId = null 
     await db().dashboards.create({
       data: { id: entry.id, connection_id: connectionId, name: entry.name, config: JSON.stringify(entry.config), folder_id: entry.folderId, ts: entry.ts },
     })
-    await createConnectionChildNode('dashboard', entry.id, connectionId, { name: entry.name, ownerId })
   })
   return entry
 }
@@ -93,12 +91,10 @@ export async function updateDashboard(connectionId, dashboardId, body = {}) {
   }
   if (!Object.keys(data).length) throw invalid('Nothing to update')
   const updated = (await db().dashboards.updateMany({ where: { id: dashboardId, connection_id: connectionId }, data })).count > 0
-  if (updated && data.name) await renameResourceNode('dashboard', dashboardId, data.name)
   return updated
 }
 
 export async function deleteDashboard(connectionId, dashboardId) {
   const deleted = (await db().dashboards.deleteMany({ where: { id: dashboardId, connection_id: connectionId } })).count > 0
-  if (deleted) await deleteResourceNode('dashboard', dashboardId)
   return deleted
 }

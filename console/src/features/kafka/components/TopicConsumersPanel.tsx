@@ -3,12 +3,15 @@ import RefreshButton from '@/shared/ui/RefreshButton'
 import { listGroups, type GroupSummary } from '../lib/api'
 import { compact, groupStateLook, lagTone } from '../lib/format'
 import { Badge } from '@/shared/ui/badge'
+import Pagination from '@/shared/ui/table/Pagination'
+import usePagination from '@/shared/ui/table/usePagination'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/shared/ui/tooltip'
 
 /** The consumer groups reading this topic — committed to it or assigned it — and their lag on it. */
 export default function TopicConsumersPanel({ conn, topic, onOpenGroup }: { conn: any; topic: string; onOpenGroup: (group: string) => void }) {
   const [groups, setGroups] = useState<GroupSummary[] | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const { pageRows, pager } = usePagination(groups ?? [], { resetKey: topic })
 
   const load = useCallback(
     () =>
@@ -57,7 +60,7 @@ export default function TopicConsumersPanel({ conn, topic, onOpenGroup }: { conn
               </tr>
             </thead>
             <tbody>
-              {groups.map((g) => {
+              {pageRows.map((g) => {
                 const look = groupStateLook(g.state)
                 const lag = g.lagByTopic?.[topic] ?? 0
                 return (
@@ -73,6 +76,7 @@ export default function TopicConsumersPanel({ conn, topic, onOpenGroup }: { conn
               })}
             </tbody>
           </table>
+          <Pagination className="px-3 py-1.5 text-[11px]" {...pager} />
           <p className="border-t border-border px-3.5 py-2 text-[11px] text-faint">Lag on {topic} only. Open a group for the per-partition picture across everything it reads.</p>
         </div>
       )}

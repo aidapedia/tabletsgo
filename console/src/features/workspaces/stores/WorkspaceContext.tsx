@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useState } from 'react'
 import { useAuth } from '@/features/auth'
-import { listWorkspaces, createWorkspace as apiCreate, Workspace } from '@/features/workspaces/api'
+import { listWorkspaces, Workspace } from '@/features/workspaces/api'
 
 type Ctx = {
   workspaces: Workspace[]
@@ -8,7 +8,6 @@ type Ctx = {
   currentId: string | null
   loading: boolean
   switchWorkspace: (id: string) => void
-  createWorkspace: (name: string) => Promise<Workspace>
   refresh: () => Promise<void>
 }
 
@@ -45,17 +44,10 @@ export function WorkspaceProvider({ children }) {
 
   const switchWorkspace = (id: string) => setCurrentId(id)
 
-  const createWorkspace = async (name: string) => {
-    const ws = await apiCreate(name)
-    setWorkspaces((prev) => [...prev, ws])
-    setCurrentId(ws.id)
-    return ws
-  }
-
   const current = workspaces.find((w) => w.id === currentId) || null
 
   return (
-    <WorkspaceContext.Provider value={{ workspaces, current, currentId, loading, switchWorkspace, createWorkspace, refresh }}>
+    <WorkspaceContext.Provider value={{ workspaces, current, currentId, loading, switchWorkspace, refresh }}>
       {children}
     </WorkspaceContext.Provider>
   )

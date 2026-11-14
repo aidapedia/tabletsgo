@@ -1,195 +1,112 @@
 ---
 name: auth-sessions
-description: Authentication, the two-tier role model (system admin vs workspace owner/member), route guards, brute-force login blocking, the session store (durable logins vs cache-only connection sessions), the max-sessions limit, and instance SMTP/mail configuration. Use this skill when touching server/auth.js, server/sessions/*, server/login-guard.js, server/users.js, server/workspaces.js, server/mail.js or server/app-settings.js; when adding a route that needs authorization or a new guard; when working on login/signup/invite/password-reset/accept-invite; when changing roles, permissions, members, teams or connection access; when working on session limits or `SessionLimitError`; or when sending email from the server.
+description: Signing in and authorization over Hayat — server/hayat (the service API client, cached decisions, Watch, resource mirrors), server/auth.js guards, server/permissions-catalog.js (permission keys and tabletsgo's Hayat contract), the Hayat import bundle, connection sessions and the max-sessions limit, and instance SMTP. Use this skill when touching server/auth.js, server/hayat/*, server/permissions-catalog.js, server/sessions/*, server/workspaces.js, server/mail.js or server/app-settings.js; when adding a route that needs authorization or a new permission; when working on sign-in, members, workspaces, groups, roles or who may open a connection; when mirroring a resource into Hayat; when working on session limits or `SessionLimitError`; or when sending email from the server.
 ---
 
-# Auth, sessions & mail
+# Auth (Hayat), sessions & mail
 
-## Auth model
+## The model in one paragraph
 
-Login/setup/accept-invite return `{ user, token }`; the token is stored in
-localStorage (`dbm.token`) and attached as `Authorization: Bearer` by
-`shared/api/request.ts`. Server-side the token's source of truth is the meta DB's
-`sessions` table, read through a cache.
+**Hayat owns identity and authorization; tabletsgo keeps none of it** (decided
+2026-11-10, migration `20261110000000_hayat_owns_identity` dropped the old tables).
+People sign in at Hayat — an OpenID provider — with the console as a public client
+(code + PKCE, `oidc-client-ts`), and every API call carries the Hayat access token.
+A workspace *is* a Hayat **tenant**; its roster, groups, roles and grants are edited
+in Hayat's console. Tabletsgo asks Hayat's service API (`server/hayat/`) every
+question and mirrors the two resources it owns — connections and storage
+destinations — into Hayat's tree so grants can be made on them.
 
-> **Never make `requireAuth` async.** `sessionMiddleware` resolves the token once
-> per request onto `req.authUser`, and `requireAuth` / `requireSystemAdmin` are
-> synchronous reads of it.
->
-> **The workspace guards are async** — `requirePermission`, `requireMember`,
-> `isMember`, `can`, `userCanAccessConnection` all read the resource tree through
-> Prisma. Always `await` them: `if (!(await requirePermission(req, res, id, 'x'))) return`.
-> A forgotten `await` is a silent bypass — a Promise is truthy — and so is
-> `list.filter((c) => userCanAccessConnection(c, uid))`; filter with
-> `filterAsync` (server/util.js) instead.
+## Asking: `server/hayat/`
 
-### Roles are two independent tiers. Don't collapse them.
+- `connect.js` — the wire: Connect protocol over `fetch` (unary JSON POSTs to
+  `/<pkg>.<Service>/<Method>`, Watch as length-prefixed frames), the
+  client-credentials token (`HAYAT_CLIENT_ID/SECRET`), offline JWT verification
+  against Hayat's JWKS (`jose`). No generated code. Discovery, token and JWKS go
+  to `HAYAT_AUTH_URL` (default the issuer) — the browser and the server may reach
+  the auth role at different addresses; the `iss` check is always the issuer.
+- `index.js` — tabletsgo's vocabulary: `verifyAccessToken` (also checks the token
+  was issued to `HAYAT_WEB_CLIENT_ID`), `getUser(s)`, `userTenants`,
+  `tenantMembers`, `tenantGrants` (what each member was granted — Hayat's
+  `DirectoryService.ListTenantGrants`, for the Member pages' roles and Access
+  list; display only, a decision is still `permissionsAt`/`check`), `permissionsAt`/`check`, `lookupSubjects`, `upsertResource` /
+  `updateResource` / `deleteResource`, `startHayat` (publishes the contract, starts
+  Watch), `consoleLink`.
+- **Caching lives only here.** Decisions are cached ~10 s keyed by tenant; Hayat's
+  Watch stream drops a tenant's entries the moment it changes (all of them on a
+  global event, and on reconnect). Our own writes drop the tenant too and send
+  `atLeastRev` for 2 s (read-your-writes). Never keep a Hayat answer anywhere else.
+- Tests swap the transport with `useHayatBackend({ call, watch, verify })` —
+  see `tests/hayat.test.js` for a fake.
 
-| Tier | Column | Values | Scope |
-| --- | --- | --- | --- |
-| System | `users.role` (surfaced as `user.role`) | `admin` \| `user` | The instance. **Hardcoded, and stays that way.** An `admin` manages workspaces and accounts through `/api/admin/*` and **holds no workspace membership at all** — `memberRole()` returns null for them, so every workspace-scoped guard denies them. Instance administration deliberately carries no data access, so a configurable system tier would only be a way around that. |
-| Workspace | `workspace_members.role` | any **role slug** from `roles` | One workspace. **Configurable data**: an instance admin defines what each role grants (`server/permissions.js`), a workspace owner assigns people to it. `owner` and `member` are seeded builtins. |
+## Guards: `server/auth.js`
 
-The guards live in `server/auth.js`: `requireSystemAdmin` (system),
-`requirePermission`/`requireMember` (workspace), plus `requireConnectionOwner` in
-`server.js` for the routes that change a connection record.
+`sessionMiddleware` verifies the bearer token, loads the person from Hayat's
+directory (inactive ⇒ signed out) and asks once whether they hold
+`tabletsgo.instance.manage` at Hayat's root (`role: 'admin'`). `requireAuth` and
+`requireSystemAdmin` stay **sync** reads of `req.authUser`.
 
-> **A route asks for the capability it needs, never for a role name:**
-> `requirePermission(req, res, wsId, 'teams.manage')`. Redefining a role then
-> changes who may call it without touching the route. The one place a role literal
-> is still read is the pre-v8 `admin` → `owner` normalization (in `memberRole` and
-> `permissionsForRole`).
+Workspace guards are **async** and ask by permission:
+`if (!(await requirePermission(req, res, wsId, 'storage.manage'))) return`.
+`isMember` is the tenant roster (`ListUserTenants`). `permissionsIn` is Hayat's
+`PermissionsAt` at the tenant node, mapped back to short keys (unknown keys
+dropped; `instance.manage` never counts at a workspace).
 
-### The permission catalog
+Connections:
+- **Open** = `connection.open` at the connection node (`userCanAccessConnection`).
+  Hayat's rule: owner short-circuit, grants with `inherit`, the roster of a
+  `hayat/group` ancestor (the contract sets `via_placement`, never the tenant
+  itself), membership required (`requires_membership`). Nothing granted means nobody.
+- **Manage the record** = own it, or `connections.manage` resolved *at the
+  connection* (`canManageConnection`). **Transfer** = `connections.transfer` at the
+  connection; Hayat's node owner is changed first, then our `owner_id` column.
 
-`server/permissions-catalog.js` is a **leaf module** (imports nothing) holding the
-closed set of permission keys plus the seeded builtins — leaf so that both
-`permissions.js` and `server/migrator/` can use it without a dependency cycle.
-`server/permissions.js` owns `roles` + `role_permissions` and caches the whole
-policy in memory: `loadPolicy()` reads it at boot and again after each role write,
-so `getRole`/`permissionsForRole`/`roleGrantableOn` stay synchronous reads on the
-hot path of every permission check.
+## Permissions and the contract: `server/permissions-catalog.js`
 
-Twelve keys today: `workspace.manage`, `workspace.delete`, `members.manage`,
-`teams.manage`, `notifications.manage`, `storage.manage`, `ssh.manage`,
-`connections.create`, `connections.manage`, `connections.transfer`,
-`resources.organise`, `resources.grant`.
+A leaf module. Each entry: the short `key` routes use, its `hayat` key, the
+`scope` (shallowest node type it means anything at) and whether tabletsgo's
+contract declares it (`tabletsgo.*`) or it is Hayat's own (`hayat.members.manage`,
+`hayat.groups.manage`, `hayat.resources.*` — shown so the console can point at
+Hayat). `contractManifest()` builds the contract tabletsgo publishes at boot:
+types `connection` (access: `connection.open`, placement, membership) and
+`storage`; default roles `admin` (root), `owner`, `connection-user`,
+`connection-manager`.
 
-A new key also needs a meta step that gives it to the built-in `owner` (which
-the catalog defines as holding every key) — `seedBuiltinRoles` only inserts
-missing roles, so an existing owner never picks it up otherwise. See v17 and
-v21 (`ssh.manage`), and mirror the step in `server/postgres-meta.js`.
+**Adding a permission:** add the entry, use it in a route, bump
+`CONTRACT_VERSION`. Versions only add; the new one goes live as soon as it is
+published, since it touches only tabletsgo's own namespace. Until it is
+published Hayat doesn't know the key and every check for it answers no.
 
-Rules that keep the model honest:
+## Mirrors
 
-- **The catalog is code, the grants are data.** A key exists because a route
-  enforces it; a role row holding an unknown key is *ignored*, not honoured —
-  which is what lets an older image open a newer DB.
-- **A slug is fixed at creation.** Memberships store it, so renaming a role never
-  touches a membership row. Deleting one is refused while anyone holds it (409),
-  and builtins are never deletable.
-- **`owner` always keeps `workspace.manage`** — `updateRole` puts it back whatever
-  the request says. A workspace whose owners can't manage it is unfixable.
-- **Opening a database is not a permission.** That's the per-connection access
-  list (`connection_access`), because it answers a per-resource question. Don't
-  add a `connections.query`-shaped key.
+`POST /api/connections` (and import) save the row, then `upsertResource` under
+the tenant or `parentNodeId` (a Hayat group); a refusal deletes the row. Rename
+and re-own go through `updateResource` (keeps the current parent). Delete removes
+the mirror first. Storage destinations the same. `DELETE /api/workspaces/:id`
+removes every mirror, then tabletsgo's data; the tenant stays in Hayat.
+Dashboards and workflows are **not** mirrored.
 
-Three invariants the routes enforce, all easy to break from a new code path:
+## Moving an existing install: the import bundle
 
-1. **An instance admin can never be added to a workspace** — invite, role change,
-   and workspace creation all refuse.
-2. **A workspace can never lose its last owner** — where "owner" means *holds
-   `workspace.manage`* (`isOwnerRole`/`countOwners`/`ownerRoleSlugs` in
-   `server/workspaces.js`, never a name comparison), so a custom role granting it
-   satisfies the rule too. Demote, remove, delete-user and promote-to-admin all
-   refuse, the last two with `409` + the affected workspaces.
-3. **A connection has an owner, and that owner can manage it.**
-   `requireConnectionOwner` passes on `connections.manage` **or**
-   `conn.ownerId === caller`. That is what lets a plain member run their own
-   connection; `PUT /api/connections/:id/owner` (`connections.transfer`) hands it
-   over, and the new owner must already be a member.
+The migrator, right before the drop, writes `data/hayat-import-<time>.json`
+(`server/migrator/hayat-export.js`; `npm run hayat:bundle` does it by hand, and
+writes a contract-only bundle on a fresh install). `hayat import --file … --app-url …`
+loads it (`--admin <email>` on the script adds a first admin — a pending account
+with `tabletsgo.admin` at the root, who finishes by signing up at Hayat; Hayat's
+console has no root grants, so this is how a fresh install gets one —
+`npm run dev:hayat` runs the whole thing on its first run in development): users with their ids (the old unsalted SHA-256 hash becomes
+`$sha256$<hex>`, verified once and upgraded to argon2id), workspaces → tenants
+with their ids, groups and rosters, connections/storage as resources, built-in
+`owner` → Hayat's Tenant admin + `tabletsgo.owner`, `member` → nothing, custom
+roles → admin-owned roles, `connection_access` rows → `connection-user` grants,
+instance admins → `tabletsgo.admin` at the root. An email Hayat already knew keeps
+its Hayat id; `npm run hayat:remap -- result.json` rewrites tabletsgo's columns.
 
-Connections carry a `workspace_id` column and are filtered by the caller's current
-workspace.
+## Connection sessions
 
-### Brute-force blocking
-
-`server/login-guard.js` is a third, orthogonal thing — not a role and not
-`users.status`. `LOGIN_MAX_ATTEMPTS` consecutive failures inside
-`LOGIN_ATTEMPT_WINDOW_MS` set `users.locked_at` and the account can't sign in until
-an instance admin lifts it (`POST /api/admin/users/:id/unblock`) or its password is
-changed.
-
-It lives on the account, not in memory, so a block survives a restart and is
-visible in the admin user list; `users.status` keeps meaning the invite lifecycle
-(`active` | `pending`) only. The check runs **before** the password is verified — a
-blocked account can't be probed, and a correct password doesn't bypass the block.
-
-> **An instance admin is never blocked indefinitely.** Blocking the last one would
-> leave nobody able to unblock anyone, so they get `LOGIN_ADMIN_COOLDOWN_MS` (a
-> `locked_until` that always expires) instead. Keep that asymmetry if you touch
-> this — it is what stops an attacker from locking the operator out on purpose.
-
-## Registration, Google and GitHub sign-in
-
-Registration is the `registration` module: it appears in the setup wizard and
-Admin → Modules like any other, but it is `offByDefault`, because an upgrade must
-not start accepting strangers. The apps live in `app_settings` under
-`sign_in_providers`, set up in Admin → Authentication. All of it is instance-wide: a
-workspace has no sign-in settings, and joining one still takes an invite.
-
-| Module | Owns |
-| --- | --- |
-| `server/identity/identities.js` | `user_identities`. Imports only `meta.js`, because `users.js` imports it |
-| `server/identity/providers.js` | The apps and their sealed secrets |
-| `server/identity/oauth.js` | The round trip. Knows no accounts |
-| `server/identity/accounts.js` | What a confirmed profile means |
-
-`signIn` decides in this order, and the order matters:
-
-1. An existing link wins; nothing else about the profile counts.
-2. Otherwise only an address the provider verified can match anything.
-3. A match on an account links it, and on a pending one also accepts the invite,
-   since the person has just proved that mailbox. **An instance admin never
-   matches**: nothing confirmed the address typed into the wizard, so an admin
-   links from Settings.
-4. No account: created if `registration` is on, otherwise refused.
-
-Rules that are easy to break:
-
-- **Email sign-up takes no password.** `registerByEmail` makes a pending account
-  and the emailed link leads to the invite page, where the password is chosen.
-  Inviting an existing account adds it straight to the workspace, so a usable
-  account on an unproven address is a way into any workspace that invites it.
-- **An invite can be accepted with any provider account**, whatever its email:
-  holding the link is the proof, the same as choosing a password from it.
-- **The session token never goes in a URL.** A sign-in ends in a one-time code
-  (`putOneTime`/`takeOneTime`, the durable `oauth` namespace) the page exchanges.
-- **The flow cookie is what stops login CSRF.** `state` alone would let someone
-  hand a victim a callback link and sign them in as the attacker.
-- **`password_hash` is `''` on an account with no password**, and it sets one
-  through "Forgot password". `unlink` refuses to remove the last way in.
-- **Brute-force blocks guard the password only.** A Google or GitHub sign-in
-  doesn't use it, so a blocked account can still sign in that way.
-- **Removing a provider's setup keeps the links**: provider user ids outlive an
-  app, and an account may have no other way in.
-
-## Sessions
-
-Three things share one store (`server/sessions`) but are **stored differently, on
-purpose**:
-
-- **Logins** (bearer tokens) are *durable*: the meta DB's `sessions` table is the
-  source of truth (`sessions/db.js`), read through a cache (`sessions/hybrid.js`).
-  A login survives a restart and a dropped cache — a cache failure degrades to a
-  slower DB read and warns once; it never signs anyone out.
-- **Sign-in redirects** (the `oauth` namespace) are *durable* too and single-use:
-  the provider may send the browser back to a different replica.
-- **Connection sessions** are *cache-only*: one describes a live driver handle in
-  one process, so persisting it would let a restart resurrect sessions whose
-  sockets are gone, and the limit count phantoms. Losing them on restart is correct.
-
-> **There is no external session store, and adding one is not the answer to a new
-> requirement.** The cache is in-process (`sessions/memory.js`); the meta DB
-> underneath it is what makes logins durable, so the app needs no infrastructure
-> beyond its own SQLite file. (`REDIS_URL`/`SESSION_REDIS_URL` were removed in 0.21.)
-
-The consequence is deliberate: with more than one replica each replica sees only
-its own connection sessions and enforces `maxSessions` on its own — which is
-honest, since another replica's handles aren't ours to count or close. The store
-contract (`put/get/touch/del/list/count/clear`) is still the seam, so a shared
-cache would be one file plus one line in `sessions/index.js` if that trade ever
-stops being the right one.
-
-Rules that keep the durable layer honest:
-
-- the DB is written **before** the cache;
-- `list`/`count` **always read the DB** (the cache is a partial view by design);
-- a cached copy is capped at 60s so an out-of-band revocation takes effect;
-- the sliding expiry only rewrites the DB once ~10% of the TTL has elapsed —
-  otherwise every authenticated request would be a write;
-- expired rows are ignored on read and reclaimed by the minutely sweeper (SQLite
-  has no TTL).
+`server/sessions` now holds only connection sessions, in process memory
+(`sessions/memory.js`). There is no login session to store — a login is a Hayat
+token. **Don't add an external store**: a connection session describes a socket
+in this process, so the limit is honestly per replica.
 
 ### What a session *is*
 
@@ -230,8 +147,8 @@ live session can't expire underneath the process holding it.
 ## Email / SMTP
 
 **There is exactly one mail server per instance, and only an instance admin sets
-it.** Mail is an instance-level concern — who sends the instance's password resets
-isn't a workspace owner's decision — so nothing outside `server/mail.js` +
+it.** Mail is an instance-level concern — who sends the instance's notices isn't a
+workspace owner's decision — so nothing outside `server/mail.js` +
 `server/app-settings.js` knows how it's configured, and **no caller passes a
 workspace**.
 
@@ -256,8 +173,9 @@ Rules:
   mail after an upgrade); it's the *fallback*, not the source of truth, so anything
   an operator might want to change belongs in the admin config, where it changes
   without a redeploy.
-- Mail is optional at both layers: with neither configured, invites still return a
-  copyable link.
+- Mail is optional at both layers: with neither configured, backup-failure and
+  module notices simply aren't sent. (Invites, password resets and sign-up mail are
+  Hayat's, sent by Hayat's own mail server.)
 
 > Per-workspace SMTP was removed in meta migration v10, which promotes a
 > workspace's config to the instance config when nothing else answers (see the step

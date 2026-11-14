@@ -26,7 +26,7 @@ backup schedule.
 ## What's deliberately not
 
 History/audit rows (`query_history`, `workflow_runs`, `backup_runs`,
-`schema_migrations`) and `connection_access` — they describe one instance, and their
+`schema_migrations`) and who may open it (grants in Hayat) — they describe one instance, and their
 principals don't exist in the importing workspace.
 
 Storage destinations are workspace-scoped too: references the target workspace

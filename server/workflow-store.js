@@ -3,7 +3,6 @@
 
 import { randomUUID } from 'crypto'
 import { db, transaction } from './meta.js'
-import { createConnectionChildNode, deleteResourceNode, renameResourceNode } from './resource-tree.js'
 import { safeJson } from './util.js'
 import { nextRunForGraph } from './workflow.js'
 
@@ -41,7 +40,6 @@ export async function createWorkflow(connectionId, body = {}, { ownerId = null }
     await db().workflows.create({
       data: { id: entry.id, connection_id: connectionId, name: entry.name, graph: JSON.stringify(entry.graph), folder_id: entry.folderId, ts: entry.ts },
     })
-    await createConnectionChildNode('workflow', entry.id, connectionId, { name: entry.name, ownerId })
   })
   return { ...entry, protected: false, scheduleEnabled: false }
 }
@@ -88,7 +86,6 @@ export async function updateWorkflow(connectionId, workflowId, body = {}) {
     data.next_run_at = nextRunForGraph(graph, enabled)
   }
   const updated = (await db().workflows.updateMany({ where: { id: workflowId, connection_id: connectionId }, data })).count > 0
-  if (updated && data.name) await renameResourceNode('workflow', workflowId, data.name)
   return updated
 }
 
@@ -97,7 +94,6 @@ export async function deleteWorkflow(connectionId, workflowId) {
   if (!row) return 'missing'
   if (row.protected) return 'protected'
   await db().workflows.deleteMany({ where: { id: workflowId, connection_id: connectionId } })
-  await deleteResourceNode('workflow', workflowId)
   return 'deleted'
 }
 

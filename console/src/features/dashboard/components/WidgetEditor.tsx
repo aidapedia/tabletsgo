@@ -17,7 +17,7 @@ import type {
   WidgetRowActionVariant,
   WidgetType,
 } from '../types'
-import { MAX_TABLE_PAGE_SIZE, MAX_TABLE_ROW_ACTIONS, TABLE_PAGE_SIZES, ROW_ACTION_OPERATORS, ROW_ACTION_BUTTON, ROW_ACTION_VARIANTS, WIDGET_TYPE_LABEL, widgetRowActions } from '../types'
+import { DEFAULT_TABLE_PAGE_SIZE, MAX_TABLE_PAGE_SIZE, MAX_TABLE_ROW_ACTIONS, TABLE_PAGE_SIZES, ROW_ACTION_OPERATORS, ROW_ACTION_BUTTON, ROW_ACTION_VARIANTS, WIDGET_TYPE_LABEL, widgetRowActions } from '../types'
 import { ROW_ACTION_ICONS, ROW_ACTION_ICON_KEYS, rowActionIcon } from '../lib/rowActionIcons'
 import { referencedVariables, substituteVariables, isVariableSet } from '../lib/variables'
 import { sampleResult } from '../lib/sampleData'
@@ -353,14 +353,13 @@ export default function WidgetEditor({
                 <div className="flex items-center gap-2">
                   <OptionSelect
                     className="!w-[220px] shrink-0"
-                    value={customPageSize ? 'custom' : draft.pageSize ? String(draft.pageSize) : ''}
+                    value={customPageSize ? 'custom' : String(draft.pageSize || DEFAULT_TABLE_PAGE_SIZE)}
                     onChange={(v: string) => {
                       setCustomPageSize(v === 'custom')
-                      if (v === 'custom') patch({ pageSize: draft.pageSize || TABLE_PAGE_SIZES[1] })
-                      else patch({ pageSize: v ? Number(v) : undefined })
+                      if (v === 'custom') patch({ pageSize: draft.pageSize || DEFAULT_TABLE_PAGE_SIZE })
+                      else patch({ pageSize: Number(v) })
                     }}
                     options={[
-                      { value: '', label: 'All rows (no pagination)' },
                       ...TABLE_PAGE_SIZES.map((n) => ({ value: String(n), label: `${n} rows` })),
                       { value: 'custom', label: 'Custom…' },
                     ]}
@@ -372,8 +371,8 @@ export default function WidgetEditor({
                       autoFocus
                       min={1}
                       max={MAX_TABLE_PAGE_SIZE}
-                      value={draft.pageSize ?? TABLE_PAGE_SIZES[1]}
-                      onChange={(n) => patch({ pageSize: n ?? TABLE_PAGE_SIZES[1] })}
+                      value={draft.pageSize ?? DEFAULT_TABLE_PAGE_SIZE}
+                      onChange={(n) => patch({ pageSize: n ?? DEFAULT_TABLE_PAGE_SIZE })}
                     />
                   )}
                 </div>

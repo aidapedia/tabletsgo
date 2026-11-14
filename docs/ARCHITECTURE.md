@@ -70,7 +70,9 @@ console/src/
 │   │   │                         #     point), SlideOverPanel (Sheet, driven by useSlideOver), CommandPalette
 │   │   │                         #     (CommandDialog), rowMenu (right-click a row → its kebab menu)
 │   │   ├── feedback/             #   LoadingState, EmptyState, ProgressBar (shadcn Progress), Wizard (Dialog)
-│   │   ├── table/                #   DataGrid (editable console grid shared with Redis), GridRules
+│   │   ├── table/                #   DataGrid (editable console grid shared with Redis), PagedDataGrid
+│   │   │                         #   (DataGrid + pager for a grid handed its whole row set: query results,
+│   │   │                         #     Kafka ACLs), usePagination (client-side paging for any list), GridRules
 │   │   │                         #   (a DataGrid's client-side Filter/Sort/Columns popovers + matchFilter/
 │   │   │                         #     sortRows/cycleSortRules — table tab, histories, Kafka ACLs), DataTable
 │   │   │                         #   (the shared list-as-table on shadcn Table: sortable columns, row click,
@@ -104,38 +106,34 @@ console/src/
 │   └── types/                    # ambient/shared TS types (globals.d.ts)
 │
 ├── features/                     # self-contained business features (each has index.ts barrel)
-│   ├── auth/                     # stores/AuthContext + api (login/setup/invite); session token.
-│   │                             #   `user.role` is the SYSTEM role ('admin' | 'user') — see the
-│   │                             #   `auth-sessions` skill.
-│   │                             #   components/ProfileSetting + PasswordSetting: the caller's own
-│   │                             #     account (rename / change password), rendered by Setting > Profile and Security.
-│   │                             #   components/TimeZoneSetting: the account's display zone, on Setting > Preferences.
-│   │                             #   components/SignInMethods (link/unlink Google or GitHub, Security tab) and
-│   │                             #     ProviderButtons ("Continue with …", on login, register and invite);
-│   │                             #     lib/signInErrors turns the callback's ?error= code into a sentence.
-│   │                             #     Email and system role stay read-only — an admin changes those
-│   ├── admin/                    # the instance-admin area (system role 'admin' only): AdminWorkspacesPanel
-│   │                             #   (every workspace + who owns it; a row opens the detail page)
-│   │                             #   workspace-detail/ (AdminWorkspaceDetail + one file per tab: Overview, Members,
-│   │                             #     Connections, Resources, Activity, Settings; metadata only, nothing opens a database)
-│   │                             #   AdminUsersPanel (accounts, system role, invites, password reset)
-│   │                             #   AdminSignInPanel (the Google and GitHub apps people sign in through)
-│   │                             #   and AdminSmtpPanel + SmtpForm (the instance's one mail server —
-│   │                             #     the only place SMTP is configurable; see `auth-sessions` skill).
-│   │                             #   Reaches nothing inside a workspace — an admin has no membership
+│   ├── auth/                     # signing in at Hayat: stores/AuthContext (oidc-client-ts, code + PKCE,
+│   │                             #   tokens per tab in sessionStorage, renewal on demand and deduplicated —
+│   │                             #   Hayat revokes a refresh token family on reuse; registers the token
+│   │                             #   source shared/api/request reads), CallbackPage (/callback), api
+│   │                             #   (/auth/config, /auth/me). `user.role` is 'admin' when they hold
+│   │                             #   tabletsgo's admin role at Hayat's root — see the `auth-sessions` skill.
+│   │                             #   components/AccountSetting: the account, read-only, linking to Hayat's
+│   │                             #     account page (name, password, time zone, sign-in methods are Hayat's)
+│   ├── admin/                    # the instance-admin area: AdminSmtpPanel + SmtpForm (the instance's one
+│   │                             #   mail server). Accounts, workspaces, roles and sign-in are Hayat's
 │   ├── modules/                  # which databases/features the instance offers (server/module-registry.js):
 │   │                             #   ModulesContext (useModules().isEnabled — the type picker and the
 │   │                             #   Backup tabs hide what's off; useEngineLimits(type) — the consoles'
 │   │                             #   query timeout and the table view's row limit), AdminModulesPanel (Admin → Modules:
 │   │                             #   toggles, the blocked-engine dialog, the settings slide-over),
-│   │                             #   ModulePicker + ModuleSettingsFields (also the setup wizard's steps;
-│   │                             #   fields are drawn from the schema the server sends)
-│   ├── workspaces/               # org/tenant layer (multi-workspace): WorkspaceContext (current
-│   │                             #   workspace + switch), WorkspaceSwitcher, MembersPanel,
+│   │                             #   ModulePicker + ModuleSettingsFields (fields are drawn from the
+│   │                             #   schema the server sends)
+│   ├── workspaces/               # org/tenant layer — a workspace is a Hayat tenant: WorkspaceContext (current
+│   │                             #   workspace + switch), WorkspaceSwitcher, MembersPanel (the roster,
+│   │                             #     read-only, with each member's workspace roles; MembersPage links to the
+│   │                             #     tenant in Hayat's console; MemberDetailPage + MemberAccessTable: one
+│   │                             #     member's Access list — every grant that reaches them, from Hayat),
+│   │                             #   RequireWorkspace / NoWorkspace (pages that need a current workspace),
 │   │                             #   NotificationSettings (backup-failure emails — the mail server
 │   │                             #     itself is instance-level, see `auth-sessions` skill),
-│   │                             #   WorkspaceGeneral (rename + the default "max sessions per
-│   │                             #     connection" every connection inherits);
+│   │                             #   WorkspaceGeneral (the name, read-only + link to Hayat; removing
+│   │                             #     tabletsgo's data for it), WorkspaceConfig (the default "max
+│   │                             #     sessions per connection" every connection inherits);
 │   │                             #   HomePage (the `/` landing) built from components/home/
 │   │                             #     (StatTile, HomePanel, ConnectionsPanel, AutomationPanel,
 │   │                             #     ActivityPanel, GettingStarted) + hooks/useHomeOverview
@@ -207,35 +205,6 @@ console/src/
 │   │                             #     and the reference panel), docs (kafkaCommandDoc: the reference panel's
 │   │                             #     options/returns/examples — the only docs our grammar has),
 │   │                             #     format (topic tree, lag tones, JSON)
-│   ├── resource-tree/            # the instance-wide resource hierarchy and the access granted on it:
-│   │   │                         #   application → workspace → group → {connection, storage} →
-│   │   │                         #   {dashboard, workflow}. Ownership and grants cascade down it, so this
-│   │   │                         #   is where "who can do what, where" is both shown and edited
-│   │   ├── components/           #   ResourceTree (the collapsible tree; right-click for "new group"
-│   │   │                         #     and "move…", both gated on the node's `canOrganise`), NodeDetail
-│   │   │                         #     (owner / breadcrumb / contents / your resolved access, plus group
-│   │   │                         #     create-rename-delete and the move button — mirrored nodes rename
-│   │   │                         #     with their resource but re-file freely), MoveNodeDialog (the
-│   │   │                         #     destination picker: candidates filtered by the catalog's `children`
-│   │   │                         #     so the shape is the server's, greyed where `canOrganise` is false,
-│   │   │                         #     own subtree excluded), NodeAccessList (the one access panel: owner,
-│   │   │                         #     grants made here and everyone who reaches this through an ancestor
-│   │   │                         #     or a group, in one list grouped by role — only a row granted *here*
-│   │   │                         #     offers a revoke, the rest link to the node where the grant lives, so
-│   │   │                         #     a grant still has exactly one place it's edited), GrantForm (the
-│   │   │                         #     role list is filtered by `grantableOn` so it can't offer what the
-│   │   │                         #     server refuses), NodeMembers (a group's roster — who a grant to that
-│   │   │                         #     group reaches; gated on `teams.manage`, not `resources.organise`,
-│   │   │                         #     because adding someone to a group grants them access, and kept a
-│   │   │                         #     separate panel because a roster is not access to the group itself),
-│   │   │                         #     NodeIcon (one icon per node type, in one place — a group draws as
-│   │   │                         #     people, since the roster is what a grant to it reaches)
-│   │   ├── hooks/                #   useResourceTree (tree + catalog + selection + detail in one place)
-│   │   └── lib/                  #   tree (nestNodes — the payload is flat because a member sees a sparse
-│   │                             #     slice; ancestorIds from the materialized path; nodeHref),
-│   │                             #     access (buildAccessRows: folds owner + grants + resolved people
-│   │                             #     into role buckets, one row per *path* not per person, and unions
-│   │                             #     `grants` in so a grant reaching nobody stays visible/revocable)
 │   ├── table-folders/            # the connected DB's tables grouped by the generic folders tree
 │   │                             #   (type='table', 3-level cap, one folder per table), each folder
 │   │                             #   carrying an optional color. Replaced the old "domains" feature —
@@ -384,8 +353,8 @@ console/src/
 │   │   │                         #   ({{name}} in widget SQL, query-backed or static lists), free-placement
 │   │   │                         #   12-col drag/resize grid (hard collision blocking), fullscreen, JSON
 │   │   │                         #   export/import. Charts are hand-rolled SVG (no chart/grid deps).
-│   │   │                         #   Table widgets: optional server-side pagination (LIMIT/OFFSET wrap,
-│   │   │                         #   N+1 has-more probe) + per-row action buttons (up to 3, styled via
+│   │   │                         #   Table widgets: server-side pagination, 25 rows unless set (LIMIT/OFFSET
+│   │   │                         #   wrap, falling back to slicing; N+1 has-more probe) + per-row action buttons (up to 3, styled via
 │   │   │                         #   variant/icon, optional per-row condition that disables/hides by a
 │   │   │                         #   column value) that run a workflow with the clicked row as its trigger
 │   │   │                         #   input (Widget.pageSize/rowActions; icons in lib/rowActionIcons).
@@ -448,16 +417,15 @@ Where each route's page lives:
 
 | Route | Page |
 | --- | --- |
-| `/login`, `/setup`, `/register`, `/forgot`, `/reset/:token`, `/invite/:token`, `/login/complete` | `features/auth/*Page.tsx` (+ `components/AuthCard`) |
-| `/`, `/members`, `/notifications(/:sub)`, `/workspace(/:sub)` | `features/workspaces/` HomePage, MembersPage, NotificationsPage, WorkspaceSettingsPage |
+| `/callback` (back from signing in at Hayat) | `features/auth/CallbackPage` (+ `components/AuthCard`) |
+| `/`, `/members`, `/members/:userId`, `/notifications(/:sub)`, `/workspace(/:sub)` | `features/workspaces/` HomePage, MembersPage, MemberDetailPage, NotificationsPage, WorkspaceSettingsPage |
 | `/connections`, `/connections/:id/:tab`, `/connections/new`, `…/edit/:tab` | `features/connections/` ConnectionsPage, ConnectionDetailPage, ConnectionFormPage |
 | `/connection/:id` (the console, outside HomeLayout) | `features/workspace/WorkspacePage.tsx` → DatabaseConsole |
 | `/dashboards` · `/workflows` · `/storage` | `features/dashboard/DashboardsPage` · `features/workflow/WorkflowsPage` · `features/backup/StoragePage` |
 | `/schemas`, `/schemas/:id`, `/schemas/connection/:connectionId` (editor, outside HomeLayout) | `features/schema-designer/` SchemasPage, SchemaDraftPage |
 | `/ssh/hosts`, `/ssh/keys` | `features/ssh/` SshHostsPage, SshKeysPage |
-| `/resource-tree(/:nodeId)` | `features/resource-tree/ResourceTreePage` |
 | `/settings(/:sub)` (the person's own account) | `features/settings/SettingsPage` |
-| `/admin…` | `features/admin/` AdminWorkspacesPage, AdminWorkspaceDetailPage, AdminUsersPage, AdminEmailPage, AdminSignInPage; `features/modules/AdminModulesPage`; `features/system-update/AdminUpdatesPage` |
+| `/admin…` | `features/modules/AdminModulesPage` (`/admin` lands here); `features/admin/AdminEmailPage`; `features/system-update/AdminUpdatesPage` |
 
 Tab bars bind to their address with `shared/hooks/useTabRoute`.
 
@@ -488,6 +456,8 @@ prisma/
 ├── sqlite/               # schema.prisma + migrations/ (0_baseline = legacy v22) — Prisma Migrate's
 └── postgresql/           #   history is provider-locked, so one per engine; both declare the same models
 scripts/migrate.js        # `npm run migrate [-- --status]` — the migrator by hand (also the updater's one-shot container)
+scripts/dev/hayat.sh      # `npm run dev:hayat` — Hayat from ../hayat's source + tabletsgo, configured as .env option B
+scripts/dev/demo-workspace.mjs# the Demo workspace hayat.sh seeds once: sample SQLite DBs + connections, people with every kind of access
 scripts/dev/kafka/        # local Kafka stacks (broker+ACLs, Schema Registry, Connect, ksqlDB) + seed.mjs sample data
 server.js                 # express app: 108 routes, static frontend, schedulers, shutdown
 server/
@@ -508,52 +478,34 @@ server/
 │   │                     #   app opens its store; also `npm run migrate` and the updater's
 │   │                     #   one-shot container
 │   ├── index.js          # runMigrations(): empty → Prisma baseline + seed; pre-Prisma → legacy
-│   │                     #   steps to v22, record 0_baseline applied; then `prisma migrate deploy`.
+│   │                     #   steps to v22, record 0_baseline applied; before the Hayat drop,
+│   │                     #   writeHayatBundle(); then `prisma migrate deploy`.
 │   │                     #   metaSchemaStatus() (what is applied / pending)
+│   ├── hayat-export.js   # the old identity tables → the bundle `hayat import` loads (Hayat terms)
 │   ├── boot.js           # server.js's FIRST import: runMigrations() before meta.js opens the store
 │   └── legacy/           # FROZEN pre-Prisma history, only for upgrading old installs to v22
+│       ├── catalog.js    #   the pre-Hayat permission catalog the steps seed from (frozen copy)
 │       ├── sqlite.js     #   v1–v22 stepped migrations + DEPRECATED_TABLES
 │       ├── postgresql.js #   PostgreSQL v20 bootstrap + v21–v22
 │       └── postgresql-v20.sql
 ├── dashboards.js         # dashboard metadata CRUD and workspace summaries
 ├── workflow-store.js     # workflow metadata CRUD and run-history reads
-├── auth.js               # the guards — requireAuth, requireSystemAdmin (system role),
-│                         #   requirePermission/requireMember (workspace role) — plus the
-│                         #   connection-access rules. `sessionMiddleware` resolves the bearer
-│                         #   token once per request, so requireAuth stays a sync read; the
-│                         #   workspace guards are async — always awaited.
-│                         #   `permissionsIn`/`can` resolve through resource-tree.js; membership
-│                         #   is what still gates *opening* a database
-├── permissions-catalog.js # leaf: the closed set of permission keys (each with the node type it
-│                         #   is meaningful at), the node types the resource tree is built from,
-│                         #   and the seeded builtin roles. Imports nothing, so permissions.js,
-│                         #   resource-tree.js and the migrator can all use it
-├── permissions.js        # ★ the role catalog: `roles` + `role_permissions`, an in-memory policy
-│                         #   cache (loaded at boot, reloaded on write), and a role's requirement criteria —
-│                         #   `roleGrantableOn(slug, nodeType)`. Roles are instance-wide, admin-defined
-├── resource-tree.js      # ★ the hierarchy everything hangs off, and where a role is granted:
-│                         #   application → workspace → group → {connection, storage} →
-│                         #   {dashboard, workflow}. Owns `resource_nodes` + `resource_grants` and
-│                         #   resolves every permission by walking a node's ancestors — ownership
-│                         #   short-circuits to everything, `inherit` decides a grant's reach.
-│                         #   `path` is materialized so that walk is one query
-├── workspaces.js         # workspaces + their roster on the workspace node: the admin listing, ownership
-│                         #   changes, and the one delete cascade both delete routes share.
-│                         #   "Owner" = holds `workspace.manage`, never a role-name comparison
-├── workspace-insights.js # read-only: what an instance admin sees about a workspace. Names every column, so secrets, query text and logs are never loaded
-├── users.js              # the instance user directory (`users`): system roles, invites,
-│                         #   promote/demote (promoting to admin strips every membership)
-├── identity/             # Google and GitHub sign-in
-│   ├── identities.js     #   owns `user_identities`: who a provider account belongs to, keyed on
-│   │                     #     the provider's user id. Leaf on meta.js, because users.js imports it
-│   ├── providers.js      #   the apps: `app_settings` key 'sign_in_providers', secret sealed like SMTP's
-│   ├── oauth.js          #   the round trip: start, callback state, code → profile. Knows no accounts
-│   └── accounts.js       #   what a confirmed profile means: sign in, link, accept an invite, register
-├── login-guard.js        # sign-in brute-force protection: counts consecutive failures on
-│                         #   the account and blocks it past the threshold. An instance admin
-│                         #   only ever gets a self-expiring cooldown — see the `auth-sessions` skill
+├── hayat/                # ★ Hayat, in tabletsgo's terms — see the `auth-sessions` skill
+│   ├── connect.js        #   the wire: Connect over fetch (unary JSON + Watch frames), the
+│   │                     #     client-credentials token, offline JWT verification (jose)
+│   └── index.js          #   people (directory), tenants + rosters, cached decisions (emptied by
+│                         #     Watch and our own writes), resource mirrors, the contract publish
+├── auth.js               # the guards over Hayat — requireAuth, requireSystemAdmin (tabletsgo
+│                         #   admin role at Hayat's root), requirePermission/requireMember. The
+│                         #   token is verified once per request in `sessionMiddleware`, so
+│                         #   requireAuth stays a sync read; the workspace guards are async —
+│                         #   always awaited. userCanAccessConnection = `connection.open` in Hayat
+├── permissions-catalog.js # leaf: every permission key ↔ its Hayat key and scope, and
+│                         #   contractManifest() — tabletsgo's Hayat contract (types, keys, roles)
+├── workspaces.js         # tabletsgo's per-workspace row (settings; name cached from Hayat) and
+│                         #   the data cascade DELETE /api/workspaces/:id runs
 ├── module-registry.js    # leaf (imports nothing): the module catalog — engines (postgresql,
-│                         #   sqlite, redis, kafka) and features (backup, registration) — plus an in-memory copy of
+│                         #   sqlite, redis, kafka) and features (backup) — plus an in-memory copy of
 │                         #   the admin's on/off choices and settings. isModuleEnabled / moduleSetting
 │                         #   are sync reads: the db layer's driverFor refuses a turned-off engine,
 │                         #   the Kafka driver reads its read caps here; every engine has its own query
@@ -568,16 +520,12 @@ server/
 │                         #   address — that a forced turn-off locked them
 ├── app-settings.js       # instance-wide settings (`app_settings`, key → JSON): the admin-owned
 │                         #   counterpart of workspaces.settings. Keys: 'smtp' (the global mail server,
-│                         #   its password sealed under its own scrypt namespace), 'modules',
-│                         #   'sign_in_providers'
-├── sessions/             # ★ the session store — logins + open-connection sessions
-│   ├── index.js          #   the registry: auth tokens, connection sessions, the limit, the sweeper
-│   ├── db.js             #   durable backend: the meta DB's `sessions` table — the source of
-│   │                     #     truth for logins (survives a restart / a flushed cache)
-│   ├── hybrid.js         #   composes cache + source; decides which namespaces are durable
-│   ├── memory.js         #   the cache: in-process, the only one (no external store)
-│   └── limits.js         #   resolveMaxSessions: connection → workspace → instance → unlimited
-├── mail.js               # SMTP resolution (admin app-settings → env) + the transactional emails
+│                         #   its password sealed under its own scrypt namespace), 'modules'
+├── sessions/             # open-connection sessions (a login is a Hayat token, never stored)
+│   ├── index.js          #   the registry: connection sessions, the limit, the sweeper
+│   ├── memory.js         #   the store: in-process (no external store)
+│   └── limits.js         #   resolveMaxSessions: workspace → instance → unlimited
+├── mail.js               # SMTP resolution (admin app-settings → env) + tabletsgo's notices
 ├── connections.js        # connection records: rowToConnection/connectionToRow + CRUD + schemaVersion
 ├── folders.js            # FOLDER_TYPES + the polymorphic folder tree (depth/height/ancestor checks)
 ├── schema-drafts.js      # from-scratch schema drafts (schema_drafts): a diagram the *workspace* owns

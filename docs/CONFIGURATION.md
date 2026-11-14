@@ -9,17 +9,21 @@ All configuration is via environment variables (see [`.env.example`](../.env.exa
 | `META_DB_TYPE` | `sqlite` | App metadata engine: `sqlite` or `postgresql`. |
 | `META_DATABASE_URL` | | PostgreSQL URL required when `META_DB_TYPE=postgresql`. |
 | `ENCRYPTION_KEY` | *(required)* | AES-256-GCM key encrypting connection credentials at rest — server refuses to start without it. Also derives (with a distinct salt) the key used for storage-destination credentials. |
+| `HAYAT_ISSUER` | *(required)* | Hayat's auth role (public URL). People sign in there; access tokens are verified against its keys. |
+| `HAYAT_API_URL` | *(required)* | Hayat's api role (gRPC/Connect), reachable from the server only. |
+| `HAYAT_CLIENT_ID` / `HAYAT_CLIENT_SECRET` | *(required)* | Tabletsgo's service credentials in Hayat (printed by `hayat import`). |
+| `HAYAT_WEB_CLIENT_ID` | *(required)* | The public client the browser signs in with; tokens issued to any other client are refused. |
+| `HAYAT_CONSOLE_URL` | | Hayat's console, for the "Manage in Hayat" links. |
+| `HAYAT_AUTH_URL` | `HAYAT_ISSUER` | Hayat's auth role as the server reaches it, when that isn't the public issuer (inside Docker `localhost` is the container). Discovery, the token endpoint and the keys are fetched there; tokens still name `HAYAT_ISSUER`. |
 | `WORKFLOW_SCHEDULER_ENABLED` | `true` | Set to `false` to disable the minutely cron tick that fires workflows with an active hourly/daily schedule (including backups). Useful for local dev/CI. |
-| `LOGIN_MAX_ATTEMPTS` | `5` | Consecutive failed sign-ins that block an account. `0` disables blocking. |
-| `LOGIN_ATTEMPT_WINDOW_MS` | `900000` (15 min) | How close together those failures must be — an older failure restarts the counter. |
-| `LOGIN_LOCKOUT_MS` | `0` | How long a block lasts. `0` = until an instance admin unblocks the account. |
-| `LOGIN_ADMIN_COOLDOWN_MS` | `900000` (15 min) | An instance admin is never blocked indefinitely — they get this cooldown instead. `0` leaves admin sign-ins unthrottled. |
+
+Hayat runs on its own; tabletsgo reads only the `HAYAT_*` values above. Its own settings (master key, database, mail) are Hayat's — see Hayat's README. For development against Hayat's source, `npm run dev:hayat` fills these in (README → Development).
 
 **System requirement:** PostgreSQL backup/restore shells out to `pg_dump`/`pg_restore`, so the `postgresql-client` package must be installed on the host/image running `server.js` (already added to the provided `Dockerfile`).
 
 ## PostgreSQL for app metadata
 
-To store accounts, workspaces, saved connections, and login sessions in PostgreSQL, set these in `.env` and start the optional database service:
+To store saved connections, workspace settings and the rest of the app's metadata in PostgreSQL, set these in `.env` and start the optional database service:
 
 ```dotenv
 META_DB_TYPE=postgresql

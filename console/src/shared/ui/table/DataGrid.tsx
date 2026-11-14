@@ -157,6 +157,7 @@ export default function DataGrid({
   actionsLabel = 'Actions', // header text for the trailing per-row actions column
   renderRowActions, // (row, i) => ReactNode — adds a trailing actions column when set
   columnWidths, // { [colName]: px } — opening widths; a drag still overrides them
+  rowOffset = 0, // added to the '#' column, so page 2 of 50 numbers from 51
 }: any) {
   const [editing, setEditing] = useState(null) // { rowIndex, col, kind, origText }
   const [draft, setDraftState] = useState('')
@@ -448,7 +449,7 @@ export default function DataGrid({
                         />
                       </div>
                     ) : (
-                      i + 1
+                      rowOffset + i + 1
                     )}
                   </td>
                   {columns.map((c, j) => {

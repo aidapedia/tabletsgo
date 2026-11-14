@@ -81,8 +81,9 @@ COPY --from=build /app/console/dist ./console/dist
 COPY package.json prisma.config.mjs server.js ./
 COPY prisma ./prisma
 COPY server ./server
-# The updater's one-shot migrate container runs this (`npm run migrate`).
-COPY scripts/migrate.js ./scripts/migrate.js
+# The updater's one-shot migrate container runs this (`npm run migrate`), and
+# hayat-bundle.js writes the bundle `hayat import` registers tabletsgo with.
+COPY scripts/migrate.js scripts/hayat-bundle.js ./scripts/
 
 # Image identity, baked in so the running app can report what it is and compare
 # itself against the latest published release (the in-app update checker). CI
@@ -101,9 +102,9 @@ ENV NODE_ENV=production
 ENV PORT=3000
 # SQLite default; set META_DB_TYPE=postgresql and META_DATABASE_URL for PostgreSQL.
 ENV META_DB=/app/data/app.db
-# NOTE: no admin is baked in — a fresh instance shows the first-run setup
-# wizard, which creates the instance admin. SMTP_* enable invite emails. See
-# .env.example.
+# NOTE: no accounts live here — people sign in at Hayat (HAYAT_* are required),
+# and an instance admin is whoever Hayat grants tabletsgo's Admin role at its
+# root. See .env.example and README → Hayat.
 
 EXPOSE 3000
 # /api/health answers 200 once Express is listening (boot migrations run before

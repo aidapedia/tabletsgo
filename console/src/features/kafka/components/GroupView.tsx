@@ -4,6 +4,8 @@ import { toast } from 'sonner'
 import { deleteGroup, describeGroup, type GroupDetail } from '../lib/api'
 import { compact, groupStateLook, lagTone, num } from '../lib/format'
 import ResetOffsetsDialog from './ResetOffsetsDialog'
+import Pagination from '@/shared/ui/table/Pagination'
+import usePagination from '@/shared/ui/table/usePagination'
 import { Button } from '@/shared/ui/button'
 import { Badge } from '@/shared/ui/badge'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/shared/ui/tooltip'
@@ -29,6 +31,7 @@ export default function GroupView({
   const [error, setError] = useState<string | null>(null)
   const [resetting, setResetting] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const { pageRows, pager } = usePagination(detail?.offsets ?? [], { resetKey: group })
 
   const load = useCallback(
     () =>
@@ -129,7 +132,8 @@ export default function GroupView({
           </div>
         </div>
 
-        <div className="overflow-x-auto rounded-xl border border-border bg-sidebar">
+        <div className="rounded-xl border border-border bg-sidebar">
+          <div className="overflow-x-auto">
           <table className="w-full min-w-[720px] border-collapse text-[12px]">
             <thead>
               <tr className="text-left text-[11px] text-faint">
@@ -143,7 +147,7 @@ export default function GroupView({
               </tr>
             </thead>
             <tbody>
-              {detail.offsets.map((o) => (
+              {pageRows.map((o) => (
                 <tr key={`${o.topic}:${o.partition}`}>
                   <td className="h-[30px] border-b border-border/60 px-3">
                     <button type="button" className="font-mono hover:text-primary" onClick={() => onOpenTopic(o.topic)}>
@@ -167,7 +171,8 @@ export default function GroupView({
               ))}
             </tbody>
           </table>
-          {!detail.offsets.length && <div className="p-6 text-center text-xs text-faint">This group has no committed offsets.</div>}
+          </div>
+          {detail.offsets.length ? <Pagination className="px-3 py-1.5 text-[11px]" {...pager} /> : <div className="p-6 text-center text-xs text-faint">This group has no committed offsets.</div>}
         </div>
       </div>
 

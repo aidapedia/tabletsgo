@@ -8,7 +8,7 @@
 import fs from 'fs'
 import { fileURLToPath } from 'url'
 import { randomUUID } from 'crypto'
-import { BUILTIN_ROLES } from '../../permissions-catalog.js'
+import { BUILTIN_ROLES } from './catalog.js'
 import { LATEST_VERSION } from './sqlite.js'
 
 const POSTGRES_BASELINE_VERSION = 20

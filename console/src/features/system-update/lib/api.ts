@@ -24,8 +24,9 @@ export function backupDownloadPath(file: string): string {
 }
 
 export async function downloadBackup(file: string): Promise<void> {
+  const token = await getToken()
   const res = await fetch(backupDownloadPath(file), {
-    headers: getToken() ? { Authorization: `Bearer ${getToken()}` } : {},
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
   })
   if (!res.ok) throw new Error(`Download failed (${res.status})`)
   const blob = await res.blob()

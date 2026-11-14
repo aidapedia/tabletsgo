@@ -7,7 +7,8 @@
  *
  *   db/           the engine-agnostic database layer (sqlite | postgres | mysql | redis | kafka)
  *   meta.js       the app's own SQLite/PostgreSQL store; migrator/ evolves its schema
- *   auth.js       sessions, guards, workspace/connection access rules
+ *   auth.js       guards over Hayat: who is calling, what they may do
+ *   hayat/        Hayat's service API — people, workspaces (tenants), decisions, mirrors
  *   connections.js  connection records (credentials encrypted at rest)
  *   folders.js    the polymorphic folder tree
  *   storage.js    S3-compatible + local backup destinations
@@ -41,6 +42,7 @@ import {
   BACKUP_TMP_DIR,
   DIST_DIR,
   GIT_SHA,
+  HAYAT_CONFIGURED,
   MAX_SESSIONS_PER_CONNECTION,
   META_DB_PATH,
   META_DB_TYPE,
@@ -48,123 +50,44 @@ import {
   SCHEDULER_ENABLED,
 } from './server/config.js'
 import { backupMeta, checkMetaIntegrity, closeMeta, db as meta, transaction } from './server/meta.js'
-import { sha256 } from './server/crypto.js'
-import { describeError, filterAsync, isTimeZone, safeJson, sanitizeForKey } from './server/util.js'
+import { describeError, filterAsync, safeJson, sanitizeForKey } from './server/util.js'
 import {
   authUser,
-  baseUrl,
-  bearerToken,
   can,
-  connectionAccess,
-  createSession,
-  deleteSession,
-  getUserByEmail,
+  canManageConnection,
   isMember,
-  isSystemAdmin,
-  memberRole,
-  permissionsIn,
+  permissionsAtConnection,
   publicUser,
   requireAuth,
   requireMember,
   requirePermission,
   requireSystemAdmin,
   sessionMiddleware,
-  setConnectionAccess,
   userCanAccessConnection,
-  userRow,
   workspaceForUser,
 } from './server/auth.js'
 import {
-  addMember as addWorkspaceMember,
-  countOwners,
-  isOwnerRole,
-  createWorkspace as createWorkspaceRow,
   deleteWorkspaceCascade,
+  getWorkspaceMember,
   getWorkspaceRow,
-  listAllWorkspaces,
-  listUserSoleOwnerships,
   listWorkspaceMembers,
-  membershipsOf,
-  removeMember as removeWorkspaceMember,
-  renameWorkspace,
-  setMemberRole as setWorkspaceMemberRole,
+  saveWorkspaceSettings,
+  syncWorkspaceRows,
 } from './server/workspaces.js'
-import {
-  workspaceActivity,
-  workspaceConnections,
-  workspaceMembersDetail,
-  workspaceOverview,
-  workspaceResources,
-} from './server/workspace-insights.js'
-import {
-  NODE_TYPES,
-  PERMISSIONS,
-  PERMISSION_KEYS,
-  countRoleUsage,
-  createRole,
-  deleteRole,
-  getRole,
-  listRoles,
-  loadPolicy,
-  roleExists,
-  roleGrantableOn,
-  roleUsageCounts,
-  updateRole,
-} from './server/permissions.js'
-import { CUSTOM_NODE_TYPES, OWNER_PERMISSION } from './server/permissions-catalog.js'
-import {
-  LOCK_FIELDS,
-  clearFailures,
-  loginRefusal,
-  recordFailure,
-  unlockUser as unblockUser,
-} from './server/login-guard.js'
-import {
-  SYSTEM_ROLES,
-  countAdmins,
-  createUser,
-  deleteUser,
-  getUser,
-  hasPassword,
-  issueInviteToken,
-  listUsers,
-  registerByEmail,
-  setSystemRole,
-  updateUser,
-  userSummaries,
-  verifyPassword,
-} from './server/users.js'
+import { CONNECTION_TYPE, STORAGE_TYPE, TENANT_TYPE, contractManifest, hayatKey } from './server/permissions-catalog.js'
+import * as hayat from './server/hayat/index.js'
 import {
   connectionSessionStats,
-  destroyAuthSessionsForUser,
   endAllConnectionSessions,
   endConnectionSession,
-  listConnectionSessions,
-  putOneTime,
-  resolveMaxSessions,
   sweepConnectionSessions,
-  takeOneTime,
   closeSessionStore,
-  cache as sessionCache,
 } from './server/sessions/index.js'
-import {
-  describeSmtpError,
-  envSmtp,
-  publicSmtpConfig,
-  sendInviteEmail,
-  sendRegistrationEmail,
-  sendResetEmail,
-  sendTestEmail,
-  smtpConfig,
-} from './server/mail.js'
+import { describeSmtpError, envSmtp, publicSmtpConfig, sendTestEmail, smtpConfig } from './server/mail.js'
 import { clearGlobalSmtp, publicGlobalSmtp, saveGlobalSmtp } from './server/app-settings.js'
 import { assertModuleEnabled, isModuleEnabled, moduleOffMessage, optionalModuleSetting } from './server/module-registry.js'
 import { adminModules, loadModules, publicModules, updateModules } from './server/module-settings.js'
 import { notifyModuleOwners } from './server/module-notices.js'
-import { IdentityError, linkIdentity, listIdentities } from './server/identity/identities.js'
-import { adminProviders, clearProvider, enabledProviders, saveProvider } from './server/identity/providers.js'
-import { fetchProfile, flowCookie, readFlowCookie, startFlow, takeFlow } from './server/identity/oauth.js'
-import { acceptInvite as acceptInviteWith, signIn as signInWith, unlink as unlinkIdentity } from './server/identity/accounts.js'
 import {
   bumpSchemaVersion,
   deleteConnectionMetadata,
@@ -256,31 +179,6 @@ import {
   updateDraft as updateSchemaDraft,
 } from './server/schema-drafts.js'
 import {
-  addGrant,
-  addNodeMember,
-  backfillResourceNodes,
-  chainOf,
-  childrenOf,
-  createGroupNode,
-  createResourceNode,
-  deleteNode,
-  deleteResourceNode,
-  getNode,
-  listGrants,
-  listNodeMembers,
-  memberCounts,
-  peopleAtNode,
-  moveNode,
-  ownsNode,
-  permissionsAtNode,
-  removeGrant,
-  removeNodeMember,
-  renameNode,
-  renameResourceNode,
-  setNodeOwner,
-  visibleTree,
-} from './server/resource-tree.js'
-import {
   cachedUpdateInfo,
   dockerSelfUpdate,
   dockerSelfUpdateAvailable,
@@ -314,21 +212,22 @@ app.use(express.json({ limit: '10mb' }))
 // `requireAuth` stays a synchronous read (see server/auth.js).
 app.use(sessionMiddleware)
 
-// Boot readiness — flipped true once the policy is loaded. The meta DB is
+// Boot readiness — flipped true once the modules are loaded. The meta DB is
 // already current: server/migrator/boot.js migrated it before any import here
 // opened it.
 let bootReady = false
-// The role policy is read once here; every permission check reads it from memory.
-await loadPolicy()
-// Same for the instance's modules: the db layer asks on every dispatch.
-await loadModules()
-// Every mirrored resource gets a node, including the dashboards and workflows
-// made while nothing created theirs. Without a node a resource is invisible in
-// the tree, even to the workspace's owners.
-{
-  const filed = await backfillResourceNodes()
-  if (filed) console.log(`🌳 Filed ${filed} resource(s) missing from the resource tree`)
+// Who people are and what they may do is Hayat's (CLAUDE.md "INVARIANTS"):
+// without it nobody could sign in, so refuse to start rather than serve a
+// login that can't work.
+if (!HAYAT_CONFIGURED) {
+  console.error('❌ Hayat is not configured. Set HAYAT_ISSUER, HAYAT_API_URL, HAYAT_CLIENT_ID, HAYAT_CLIENT_SECRET and HAYAT_WEB_CLIENT_ID (see README → Hayat).')
+  process.exit(1)
 }
+// The instance's modules are read once here: the db layer asks on every dispatch.
+await loadModules()
+// Publish this version's contract (it waits for approval in Hayat's console) and
+// follow Hayat's policy changes, which is what keeps cached answers honest.
+await hayat.startHayat({ contract: contractManifest() })
 bootReady = true
 
 // The database/schema a request is aimed at. Every db layer call takes one, and
@@ -353,652 +252,42 @@ const bodyCtx = (req) => {
   }
 }
 
-// What a login session records about where it was created, for the session list.
-const sessionContext = (req) => ({
-  ip: req.headers['x-forwarded-for']?.split(',')[0].trim() || req.socket?.remoteAddress || null,
-  userAgent: req.headers['user-agent'] || null,
-})
-
 // Route error → response. `status` is set by the db layer for "this engine
 // can't do that" and by the import/restore paths for bad input.
 const fail = (res, error, fallbackStatus = 500) => res.status(error.status || fallbackStatus).json({ error: error.message })
 
 // ============================================================================
-// Authentication
+// Signing in — at Hayat
+//
+// The browser signs in at Hayat (authorization code + PKCE, as a public client)
+// and sends the access token it gets as `Authorization: Bearer`. There is no
+// login, password, invite or sign-up route here: all of that is Hayat's.
 // ============================================================================
 
-// The lock the guard just created, in row shape, so the refusal message for the
-// attempt that tripped it is built the same way as every later one.
-const lockRow = (lock) => ({ locked_at: lock.lockedAt, locked_until: lock.lockedUntil, failed_logins: lock.attempts })
+// What the browser needs to start signing in. Public: nobody is signed in yet.
+app.get('/api/auth/config', (_req, res) => res.json(hayat.signInConfig()))
 
-// Authenticate a user (by email, stored in `username`). Returns a session token.
-//
-// Repeated failures block the account (server/login-guard.js). The block is
-// checked before the password is verified, so a locked account can neither be
-// probed nor signed into with a guessed password; an unknown address is never
-// counted and gets the same generic answer as a wrong password.
-app.post('/api/auth/login', async (req, res) => {
-  const { username, password } = req.body || {}
-  const row = username
-    ? await meta().users.findUnique({
-        where: { username: String(username) },
-        select: { id: true, username: true, name: true, role: true, status: true, password_hash: true, timezone: true, ...LOCK_FIELDS },
-      })
-    : null
-  if (row) {
-    const refusal = await loginRefusal(row)
-    if (refusal) return res.status(refusal.status).json(refusal.body)
-  }
-  if (!row || row.status === 'pending' || row.password_hash !== sha256(password)) {
-    if (row && row.status !== 'pending') {
-      const lock = await recordFailure(row)
-      if (lock) return res.status(423).json((await loginRefusal({ ...row, ...lockRow(lock) })).body)
-    }
-    return res.status(401).json({ error: 'Invalid email or password' })
-  }
-  await clearFailures(row.id)
-  res.json({ user: publicUser(row), token: await createSession(row.id, sessionContext(req)) })
-})
-
-// Log out — invalidate the current session token.
-app.post('/api/auth/logout', async (req, res) => {
-  const token = bearerToken(req)
-  if (token) await deleteSession(token)
-  res.json({ ok: true })
-})
-
-// ---- The signed-in user's own account -------------------------------------
-// These three are the self-service counterpart of /api/admin/users/*: they act
-// on the caller and only on the caller, so they need no role beyond being
-// authenticated. The email is the login identity and is deliberately not
-// editable here — changing it is an admin action.
-
-// The caller's own profile, re-read from the DB (the client caches it).
+// The caller, as Hayat knows them. `role` is 'admin' for whoever holds
+// tabletsgo's admin role at Hayat's root. `accountUrl` is where they change
+// their name, password, time zone or sign-in methods.
 app.get('/api/auth/me', async (req, res) => {
   const user = requireAuth(req, res)
   if (!user) return
-  res.json({ user: publicUser(user) })
-})
-
-// Your name and time zone are the self-editable profile fields; send either.
-// `timezone: null` goes back to whatever zone the browser is in.
-app.patch('/api/auth/profile', async (req, res) => {
-  const user = requireAuth(req, res)
-  if (!user) return
-  const { name, timezone } = req.body || {}
-  if (name === undefined && timezone === undefined) return res.status(400).json({ error: 'Nothing to update.' })
-  if (name !== undefined && !String(name).trim()) return res.status(400).json({ error: 'A name is required.' })
-  if (timezone !== undefined && timezone !== null && !isTimeZone(timezone)) {
-    return res.status(400).json({ error: 'Unknown time zone.' })
-  }
-  await updateUser(user.id, { name: name === undefined ? undefined : String(name).trim(), timezone })
-  res.json({ user: publicUser(await userRow(user.id)) })
-})
-
-// Change your own password. The current password is required — a session token
-// alone must not let someone lock its owner out of their account.
-//
-// A successful change signs out every session (this one included, since we
-// can't tell the other devices apart from a stolen copy of this token) and
-// hands back a fresh one, so the caller stays logged in where they are.
-app.post('/api/auth/password', async (req, res) => {
-  const user = requireAuth(req, res)
-  if (!user) return
-  const { currentPassword, newPassword } = req.body || {}
-  if (!currentPassword || !newPassword) {
-    return res.status(400).json({ error: 'Both your current and new password are required.' })
-  }
-  if (!(await verifyPassword(user.id, currentPassword))) {
-    return res.status(400).json({ error: 'Your current password is incorrect.' })
-  }
-  if (currentPassword === newPassword) {
-    return res.status(400).json({ error: 'The new password must be different from the current one.' })
-  }
-  await updateUser(user.id, { password: newPassword })
-  await destroyAuthSessionsForUser(user.id)
-  res.json({ user: publicUser(await userRow(user.id)), token: await createSession(user.id, sessionContext(req)) })
-})
-
-// Request a password reset. Always 200 — never reveal whether the email exists.
-// When SMTP is available the reset link is emailed; the link is never returned.
-app.post('/api/auth/forgot', async (req, res) => {
-  const email = (req.body?.email || '').trim().toLowerCase()
-  const user = email ? await meta().users.findUnique({ where: { username: email }, select: { id: true, status: true } }) : null
-  if (user && user.status !== 'pending') {
-    const token = randomUUID()
-    const expires = Date.now() + 60 * 60 * 1000 // 1 hour
-    await meta().users.update({ where: { id: user.id }, data: { reset_token: token, reset_expires: expires } })
-    const cfg = await smtpConfig()
-    if (cfg) {
-      try {
-        await sendResetEmail(cfg, { to: email, link: `${baseUrl(req)}/reset/${token}` })
-      } catch (e) {
-        console.error('Password reset email failed:', e.message)
-      }
-    } else {
-      console.warn('Password reset requested but no SMTP is configured; cannot email the link.')
-    }
-  }
-  res.json({ ok: true })
-})
-
-// Validate a reset token (for the reset page).
-app.get('/api/auth/reset/:token', async (req, res) => {
-  const u = await meta().users.findFirst({ where: { reset_token: req.params.token }, select: { username: true, reset_expires: true } })
-  if (!u || (u.reset_expires && u.reset_expires < Date.now())) {
-    return res.status(404).json({ error: 'This reset link is invalid or has expired.' })
-  }
-  res.json({ email: u.username })
-})
-
-// Set a new password, invalidate existing sessions, and log the user in.
-app.post('/api/auth/reset/:token', async (req, res) => {
-  const u = await meta().users.findFirst({ where: { reset_token: req.params.token }, select: { id: true, reset_expires: true } })
-  if (!u || (u.reset_expires && u.reset_expires < Date.now())) {
-    return res.status(404).json({ error: 'This reset link is invalid or has expired.' })
-  }
-  const { password } = req.body || {}
-  if (!password) return res.status(400).json({ error: 'A password is required.' })
-  await meta().users.update({
-    where: { id: u.id },
-    data: { password_hash: sha256(password), status: 'active', reset_token: null, reset_expires: null },
-  })
-  // Setting a new password through an emailed link proves control of the
-  // mailbox, so it lifts a brute-force block as well — otherwise the one
-  // self-service recovery path would dead-end at the login page.
-  await clearFailures(u.id)
-  await destroyAuthSessionsForUser(u.id) // sign out everywhere else
-  const user = await userRow(u.id)
-  res.json({ user: publicUser(user), token: await createSession(u.id, sessionContext(req)) })
-})
-
-// First-run status — the wizard runs until the instance has an *administrator*,
-// not until it has users. An install migrated from a version that predated the
-// system role (migrateToWorkspaces) has accounts but no admin, and the admin
-// area would otherwise be unreachable by everyone. `hasUsers` tells the wizard
-// which of its two shapes to render.
-app.get('/api/setup', async (req, res) => {
-  res.json({
-    needsSetup: await countAdmins() === 0,
-    hasUsers: (await meta().users.count()) > 0,
-  })
-})
-
-// First-run setup — creates the instance administrator, and nothing else. No
-// workspace is made here: an admin holds no workspace access (CLAUDE.md "AUTH
-// MODEL"), so an ownerless workspace created alongside them is just debt. The
-// admin signs in and creates the first workspace with a real owner.
-//
-// Allowed only while the instance has no admin. On an instance that already has
-// accounts the credentials must match one of them and that account is promoted
-// — creating an admin out of nothing is reserved for a genuinely empty install,
-// so an adminless legacy instance can't be claimed by a passing stranger.
-app.post('/api/setup', async (req, res) => {
-  if (await countAdmins() > 0) return res.status(403).json({ error: 'Setup has already been completed.' })
-  const email = (req.body?.email || '').trim()
-  const { password, name } = req.body || {}
-  if (!email || !password) return res.status(400).json({ error: 'Email and password are required.' })
-
-  if ((await meta().users.count()) > 0) {
-    const existing = await getUserByEmail(email)
-    if (!existing || existing.status === 'pending' || !(await verifyPassword(existing.id, password))) {
-      return res.status(401).json({ error: 'Invalid email or password' })
-    }
-    // Promotion drops every workspace membership, which can leave a legacy
-    // workspace ownerless — recoverable, and only from here: the new admin
-    // assigns an owner from the admin area (PUT /api/admin/workspaces/:id/members).
-    await setSystemRole(existing.id, 'admin')
-    if (name?.trim()) await updateUser(existing.id, { name: name.trim() })
-    // The sessions this account already holds were authorized for access it no
-    // longer has — same reason the admin role-change route signs them out.
-    await destroyAuthSessionsForUser(existing.id)
-    return res.json({ user: publicUser(await userRow(existing.id)), token: await createSession(existing.id, sessionContext(req)) })
-  }
-
-  if (await getUserByEmail(email)) return res.status(400).json({ error: 'That email already has an account.' })
-  const { user: created } = await createUser({ email, name: name?.trim() || 'Admin', password, role: 'admin' })
-  res.json({ user: publicUser(await userRow(created.id)), token: await createSession(created.id, sessionContext(req)) })
-})
-
-// Validate an invite token → who it's for and which workspace.
-app.get('/api/invite/:token', async (req, res) => {
-  const u = await meta().users.findFirst({
-    where: { invite_token: req.params.token },
-    select: { username: true, invite_workspace: true, token_expires: true },
-  })
-  if (!u || (u.token_expires && u.token_expires < Date.now())) {
-    return res.status(404).json({ error: 'This invite is invalid or has expired.' })
-  }
-  const ws = await getWorkspaceRow(u.invite_workspace)
-  res.json({ email: u.username, workspaceName: ws?.name || null })
-})
-
-// Accept an invite — set name + password, activate the account, log in.
-app.post('/api/invite/:token/accept', async (req, res) => {
-  const u = await meta().users.findFirst({
-    where: { invite_token: req.params.token },
-    select: { id: true, username: true, name: true, token_expires: true },
-  })
-  if (!u || (u.token_expires && u.token_expires < Date.now())) {
-    return res.status(404).json({ error: 'This invite is invalid or has expired.' })
-  }
-  const { name, password } = req.body || {}
-  if (!password) return res.status(400).json({ error: 'A password is required.' })
-  await meta().users.update({
-    where: { id: u.id },
-    data: {
-      password_hash: sha256(password),
-      name: name?.trim() || u.name || u.username,
-      status: 'active',
-      invite_token: null,
-      invite_workspace: null,
-      token_expires: null,
-    },
-  })
-  const user = await userRow(u.id)
-  res.json({ user: publicUser(user), token: await createSession(u.id, sessionContext(req)) })
-})
-
-// ---- Registration ----------------------------------------------------------
-
-// What the sign-in pages offer, before anyone is signed in. Email sign-up needs
-// a mail server because the link it sends is the proof of the address.
-app.get('/api/auth/providers', async (_req, res) => {
-  const open = isModuleEnabled('registration')
-  res.json({
-    providers: await enabledProviders(),
-    registration: { open, email: open && !!(await smtpConfig()) },
-  })
-})
-
-// Ask for an account: the emailed link finishes it, on the invite page. Always
-// the same answer, so this can't be used to find out who has an account.
-app.post('/api/auth/register', async (req, res) => {
-  try {
-    assertModuleEnabled('registration')
-  } catch (error) {
-    return fail(res, error)
-  }
-  const email = (req.body?.email || '').trim().toLowerCase()
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: 'Enter a valid email address.' })
-  const cfg = await smtpConfig()
-  if (!cfg) return res.status(503).json({ error: 'Signing up by email needs a mail server, and this instance has none.' })
-  const token = await registerByEmail({ email, name: req.body?.name?.trim() })
-  if (token) {
-    try {
-      await sendRegistrationEmail(cfg, { to: email, link: `${baseUrl(req)}/invite/${token}` })
-    } catch (e) {
-      console.error('Registration email failed:', e.message)
-    }
-  }
-  res.json({ ok: true })
-})
-
-// ---- Google and GitHub sign-in ---------------------------------------------
-const SIGN_IN_CODE_TTL_MS = 60 * 1000
-
-// One round trip with three purposes. Each starts with a POST that returns the
-// provider's URL, because a session token can't ride on a plain navigation: it
-// lives in localStorage, not a cookie.
-
-const startFlowFor = async (req, res, purpose) => {
-  try {
-    const { url, binding } = await startFlow(req.params.kind, purpose, `${baseUrl(req)}/api/auth/oauth/callback`)
-    res.setHeader('Set-Cookie', flowCookie(binding, { secure: baseUrl(req).startsWith('https:') }))
-    res.json({ url })
-  } catch (error) {
-    fail(res, error)
-  }
-}
-
-// Sign in, or with `invite` accept that invite.
-app.post('/api/auth/oauth/:kind/start', async (req, res) => {
-  const inviteToken = typeof req.body?.invite === 'string' ? req.body.invite : null
-  await startFlowFor(req, res, inviteToken ? { intent: 'invite', inviteToken } : { intent: 'login' })
-})
-
-// The provider sends the browser back here, for every purpose. No session
-// token ever goes into a URL: a sign-in ends with a one-time code the page trades
-// for one, the same { user, token } as /api/auth/login.
-app.get('/api/auth/oauth/callback', async (req, res) => {
-  const flow = await takeFlow(String(req.query.state ?? ''), readFlowCookie(req))
-  res.setHeader('Set-Cookie', flowCookie('', { secure: baseUrl(req).startsWith('https:') }))
-  const page =
-    flow?.intent === 'link' ? '/settings/account' : flow?.intent === 'invite' ? `/invite/${encodeURIComponent(flow.inviteToken)}` : '/login'
-  const back = (query) => res.redirect(`${baseUrl(req)}${page}?${query}`)
-
-  if (!flow) return back('error=expired')
-  if (req.query.error || !req.query.code) return back('error=cancelled')
-  try {
-    const profile = await fetchProfile(flow, String(req.query.code))
-    if (flow.intent === 'link') {
-      await linkIdentity(flow.userId, flow.kind, profile)
-      return back(`linked=${flow.kind}`)
-    }
-    const userId = flow.intent === 'invite' ? await acceptInviteWith(flow.inviteToken, flow.kind, profile) : await signInWith(flow.kind, profile)
-    const code = randomUUID()
-    await putOneTime(code, { userId }, SIGN_IN_CODE_TTL_MS)
-    res.redirect(`${baseUrl(req)}/login/complete?code=${code}`)
-  } catch (error) {
-    if (error instanceof IdentityError) return back(`error=${error.code}`)
-    console.error('Sign-in failed:', error.message)
-    back('error=failed')
-  }
-})
-
-app.post('/api/auth/oauth/exchange', async (req, res) => {
-  const ticket = await takeOneTime(String(req.body?.code ?? ''))
-  const user = ticket ? await userRow(ticket.userId) : null
-  if (!user) return res.status(404).json({ error: 'This sign-in has expired. Please try again.' })
-  res.json({ user: publicUser(user), token: await createSession(user.id, sessionContext(req)) })
-})
-
-// The caller's own linked accounts — Settings → Security.
-app.get('/api/auth/identities', async (req, res) => {
-  const user = requireAuth(req, res)
-  if (!user) return
-  res.json({ identities: await listIdentities(user.id), hasPassword: await hasPassword(user.id), providers: await enabledProviders() })
-})
-
-app.post('/api/auth/identities/:kind/link', async (req, res) => {
-  const user = requireAuth(req, res)
-  if (!user) return
-  await startFlowFor(req, res, { intent: 'link', userId: user.id })
-})
-
-app.delete('/api/auth/identities/:id', async (req, res) => {
-  const user = requireAuth(req, res)
-  if (!user) return
-  try {
-    await unlinkIdentity(user.id, req.params.id)
-    res.json({ ok: true })
-  } catch (error) {
-    fail(res, error)
-  }
+  res.json({ user: publicUser(user), accountUrl: hayat.consoleLink('/account') })
 })
 
 // ============================================================================
 // Instance administration (system admins only)
 //
-// The admin area is deliberately narrow: workspaces and accounts, and metadata
-// about what a workspace holds, never a way in. An admin holds no workspace
-// membership, so every route below this section's guard already denies them —
-// that's the separation, not an oversight. See CLAUDE.md "AUTH MODEL".
+// The admin area is deliberately narrow: modules, the mail server and updates.
+// Accounts, workspaces, roles and sign-in methods are administered in Hayat. The
+// admin role carries no workspace data access — it is granted at Hayat's root,
+// and connections require tenant membership.
 // ============================================================================
 
 app.use('/api/admin', (req, res, next) => {
   if (!requireSystemAdmin(req, res)) return
   next()
-})
-
-// ---- Workspaces ----
-
-app.get('/api/admin/workspaces', async (_req, res) => res.json(await listAllWorkspaces()))
-
-// Create a workspace and hand it to someone. `ownerEmail` must name an account
-// that already exists — creating a person as a side effect of creating a
-// workspace produced accounts nobody had reviewed, so the admin creates the
-// user first (POST /api/admin/users) and assigns them here. An account that is
-// still `pending` is fine: it gets a fresh invite link scoped to the new
-// workspace.
-app.post('/api/admin/workspaces', async (req, res) => {
-  const name = (req.body?.name || '').trim()
-  const ownerEmail = (req.body?.ownerEmail || '').trim().toLowerCase()
-  if (!name) return res.status(400).json({ error: 'Workspace name is required.' })
-  if (!ownerEmail) return res.status(400).json({ error: 'An owner email is required — a workspace needs someone to run it.' })
-
-  const owner = await getUserByEmail(ownerEmail)
-  if (!owner) {
-    return res.status(400).json({ error: 'No account with that email — create the user first, then assign them.' })
-  }
-  if (isSystemAdmin(owner)) {
-    return res.status(400).json({ error: 'That account administers the instance and cannot own a workspace.' })
-  }
-  const ws = await createWorkspaceRow(name)
-  let inviteLink = null
-  if (owner.status === 'pending') {
-    inviteLink = `${baseUrl(req)}/invite/${await issueInviteToken(owner.id, ws.id)}`
-  }
-  await addWorkspaceMember(ws.id, owner.id, 'owner')
-
-  let emailed = false
-  if (inviteLink) {
-    const cfg = await smtpConfig()
-    if (cfg) {
-      try {
-        await sendInviteEmail(cfg, { to: ownerEmail, workspaceName: ws.name, link: inviteLink })
-        emailed = true
-      } catch (e) {
-        console.error('Owner invite email failed:', e.message)
-      }
-    }
-  }
-  res.json({ workspace: { ...ws, memberCount: 1, groupCount: 0, connectionCount: 0 }, inviteLink, emailed })
-})
-
-app.put('/api/admin/workspaces/:id', async (req, res) => {
-  if (!(await getWorkspaceRow(req.params.id))) return res.status(404).json({ error: 'Workspace not found' })
-  const name = (req.body?.name || '').trim()
-  if (!name) return res.status(400).json({ error: 'Workspace name is required.' })
-  await renameWorkspace(req.params.id, name)
-  res.json({ ok: true, name })
-})
-
-app.delete('/api/admin/workspaces/:id', async (req, res) => {
-  if (!(await getWorkspaceRow(req.params.id))) return res.status(404).json({ error: 'Workspace not found' })
-  const removed = await dropWorkspace(req.params.id)
-  res.json({ ok: true, connectionsDeleted: removed.length })
-})
-
-// The membership list, so an admin can see and change who owns a workspace
-// without joining it.
-app.get('/api/admin/workspaces/:id/members', async (req, res) => {
-  if (!(await getWorkspaceRow(req.params.id))) return res.status(404).json({ error: 'Workspace not found' })
-  res.json(await workspaceMembersDetail(req.params.id))
-})
-
-// The workspace detail page: metadata about what a workspace holds, for an admin
-// who can't enter it. server/workspace-insights.js is what keeps this to metadata.
-app.get('/api/admin/workspaces/:id/overview', async (req, res) => {
-  const overview = await workspaceOverview(req.params.id)
-  if (!overview) return res.status(404).json({ error: 'Workspace not found' })
-  res.json(overview)
-})
-
-app.get('/api/admin/workspaces/:id/connections', async (req, res) => {
-  if (!(await getWorkspaceRow(req.params.id))) return res.status(404).json({ error: 'Workspace not found' })
-  res.json(await workspaceConnections(req.params.id))
-})
-
-app.get('/api/admin/workspaces/:id/resources', async (req, res) => {
-  if (!(await getWorkspaceRow(req.params.id))) return res.status(404).json({ error: 'Workspace not found' })
-  res.json(await workspaceResources(req.params.id))
-})
-
-app.get('/api/admin/workspaces/:id/activity', async (req, res) => {
-  if (!(await getWorkspaceRow(req.params.id))) return res.status(404).json({ error: 'Workspace not found' })
-  res.json(await workspaceActivity(req.params.id))
-})
-
-// Grant or revoke ownership. This is the admin's lever over a workspace they
-// can't enter: it can rescue one whose owners have all left.
-app.put('/api/admin/workspaces/:id/members/:userId', async (req, res) => {
-  if (!(await getWorkspaceRow(req.params.id))) return res.status(404).json({ error: 'Workspace not found' })
-  const role = req.body?.role
-  if (!roleExists(role)) return res.status(400).json({ error: 'Unknown role.' })
-  const target = await userRow(req.params.userId)
-  if (!target) return res.status(404).json({ error: 'User not found' })
-  if (isSystemAdmin(target)) return res.status(400).json({ error: 'An instance admin cannot belong to a workspace.' })
-
-  const current = await memberRole(req.params.id, req.params.userId)
-  if (!(await isMember(req.params.id, req.params.userId))) await addWorkspaceMember(req.params.id, req.params.userId, role)
-  else {
-    if (isOwnerRole(current) && !isOwnerRole(role) && await countOwners(req.params.id) <= 1) {
-      return res.status(400).json({ error: 'The workspace needs at least one owner.' })
-    }
-    await setWorkspaceMemberRole(req.params.id, req.params.userId, role)
-  }
-  res.json({ ok: true, role })
-})
-
-app.delete('/api/admin/workspaces/:id/members/:userId', async (req, res) => {
-  const current = await memberRole(req.params.id, req.params.userId)
-  if (!(await isMember(req.params.id, req.params.userId))) return res.status(404).json({ error: 'Member not found' })
-  if (isOwnerRole(current) && await countOwners(req.params.id) <= 1) {
-    return res.status(400).json({ error: 'The workspace needs at least one owner.' })
-  }
-  await removeWorkspaceMember(req.params.id, req.params.userId)
-  res.json({ ok: true })
-})
-
-// ---- Roles ----
-//
-// Workspace roles are instance-wide and defined here: an admin sets the access
-// model once, and a workspace owner assigns people to it. The system tier
-// (users.role) is deliberately not part of this — see server/permissions.js.
-
-// The permission catalog: everything a role can be given, grouped for the editor.
-// It comes from code, not the DB, so the UI can only offer what a route enforces.
-app.get('/api/admin/permissions', async (_req, res) => res.json(PERMISSIONS))
-
-app.post('/api/admin/roles', async (req, res) => {
-  const name = (req.body?.name || '').trim()
-  if (!name) return res.status(400).json({ error: 'A role name is required.' })
-  res.json(
-    await createRole({
-      name,
-      description: req.body?.description || '',
-      permissions: req.body?.permissions || [],
-      // The node types this role may be granted on — omit for "anywhere".
-      appliesTo: Array.isArray(req.body?.appliesTo) ? req.body.appliesTo : null,
-    })
-  )
-})
-
-// Rename a role or change what it grants. The slug is fixed at creation because
-// memberships store it, so a rename never touches a single membership row.
-app.put('/api/admin/roles/:slug', async (req, res) => {
-  if (!roleExists(req.params.slug)) return res.status(404).json({ error: 'Role not found' })
-  const { name, description, permissions, appliesTo } = req.body || {}
-  if (name !== undefined && !String(name).trim()) return res.status(400).json({ error: 'A role name is required.' })
-  // `appliesTo` is three-valued (see updateRole): absent leaves the criteria
-  // alone, null widens them to any node type, an array narrows them.
-  res.json(await updateRole(req.params.slug, { name, description, permissions, appliesTo }))
-})
-
-// Delete a custom role. Refused while anyone holds it — those memberships would
-// silently fail closed to no access — and builtins are never deletable.
-app.delete('/api/admin/roles/:slug', async (req, res) => {
-  const role = getRole(req.params.slug)
-  if (!role) return res.status(404).json({ error: 'Role not found' })
-  if (role.builtin) return res.status(400).json({ error: 'A built-in role cannot be deleted.' })
-  // Memberships *and* tree grants — either one would fail closed to no access.
-  const inUse = await countRoleUsage(req.params.slug)
-  if (inUse) return res.status(409).json({ error: `${inUse} member${inUse === 1 ? '' : 's'} or grant${inUse === 1 ? '' : 's'} still hold this role.`, inUse })
-  await deleteRole(req.params.slug)
-  res.json({ ok: true })
-})
-
-// ---- Users ----
-
-app.get('/api/admin/users', async (_req, res) => res.json(await listUsers()))
-
-// Create an account. With a password it's usable immediately; without one it's
-// pending and the returned invite link is how they set theirs.
-app.post('/api/admin/users', async (req, res) => {
-  const email = (req.body?.email || '').trim().toLowerCase()
-  const { name, password, role } = req.body || {}
-  if (!email) return res.status(400).json({ error: 'Email is required.' })
-  if (await getUserByEmail(email)) return res.status(400).json({ error: 'That email already has an account.' })
-  const { user: created, inviteToken } = await createUser({ email, name: name?.trim(), password, role })
-  res.json({ user: created, inviteLink: inviteToken ? `${baseUrl(req)}/invite/${inviteToken}` : null })
-})
-
-// Rename, reset a password, or move between the two system roles. Promoting to
-// admin drops every workspace membership the account had (server/users.js).
-app.put('/api/admin/users/:id', async (req, res) => {
-  const target = await userRow(req.params.id)
-  if (!target) return res.status(404).json({ error: 'User not found' })
-  const { name, password, role } = req.body || {}
-  if (role !== undefined && !SYSTEM_ROLES.includes(role)) return res.status(400).json({ error: "Role must be 'admin' or 'user'." })
-  if (role === 'user' && target.role === 'admin' && await countAdmins() <= 1) {
-    return res.status(400).json({ error: 'The instance needs at least one admin.' })
-  }
-  // Promoting drops every workspace membership (an admin holds none), so it
-  // would orphan any workspace this account is the last owner of. Same refusal
-  // as deleting them — reassign ownership first.
-  if (role === 'admin' && target.role !== 'admin') {
-    const orphaned = await listUserSoleOwnerships(req.params.id)
-    if (orphaned.length) {
-      return res.status(409).json({
-        error: `This account is the only owner of ${orphaned
-          .map((w) => w.name)
-          .join(', ')}. An instance admin holds no workspace access, so assign another owner first.`,
-        workspaces: orphaned,
-      })
-    }
-  }
-  await updateUser(req.params.id, { name: name?.trim(), password })
-  if (role !== undefined && role !== target.role) await setSystemRole(req.params.id, role)
-  // A changed password or a changed role invalidates what the open sessions
-  // were authorized for — make them sign in again.
-  if (password || (role !== undefined && role !== target.role)) await destroyAuthSessionsForUser(req.params.id)
-  res.json(await getUser(req.params.id))
-})
-
-// Lift a brute-force block: clears the failed-attempt counter and lets the
-// account sign in again. The only way back in for a blocked account other than
-// a password reset — an admin is never blocked indefinitely, so this can't be
-// the door that locks itself.
-app.post('/api/admin/users/:id/unblock', async (req, res) => {
-  const target = await userRow(req.params.id)
-  if (!target) return res.status(404).json({ error: 'User not found' })
-  await unblockUser(req.params.id)
-  res.json(await getUser(req.params.id))
-})
-
-app.delete('/api/admin/users/:id', async (req, res) => {
-  const target = await userRow(req.params.id)
-  if (!target) return res.status(404).json({ error: 'User not found' })
-  if (req.params.id === authUser(req).id) return res.status(400).json({ error: "You can't delete your own account." })
-  if (target.role === 'admin' && await countAdmins() <= 1) return res.status(400).json({ error: 'The instance needs at least one admin.' })
-  // Refuse to orphan a workspace — reassign its ownership first, so the deletion
-  // can never quietly leave a workspace nobody can manage.
-  const orphaned = await listUserSoleOwnerships(req.params.id)
-  if (orphaned.length) {
-    return res.status(409).json({
-      error: `This account is the only owner of ${orphaned.map((w) => w.name).join(', ')}. Assign another owner first.`,
-      workspaces: orphaned,
-    })
-  }
-  await destroyAuthSessionsForUser(req.params.id)
-  await deleteUser(req.params.id)
-  res.json({ ok: true })
-})
-
-// ---- Sign-in providers ----
-//
-// The Google and GitHub apps. Secrets are write-only, like the SMTP password.
-
-app.get('/api/admin/identity-providers', async (req, res) => {
-  res.json({ providers: await adminProviders(), callbackUrl: `${baseUrl(req)}/api/auth/oauth/callback` })
-})
-
-app.put('/api/admin/identity-providers/:kind', async (req, res) => {
-  try {
-    res.json({ providers: await saveProvider(req.params.kind, req.body) })
-  } catch (error) {
-    fail(res, error)
-  }
-})
-
-// Removes the app only. Linked accounts stay linked (server/identity/providers.js).
-app.delete('/api/admin/identity-providers/:kind', async (req, res) => {
-  try {
-    res.json({ providers: await clearProvider(req.params.kind) })
-  } catch (error) {
-    fail(res, error)
-  }
 })
 
 // ---- Email (SMTP) ----
@@ -1113,67 +402,28 @@ app.get('/api/modules', (req, res) => {
   res.json({ modules: publicModules() })
 })
 
-// The instance's role catalog, readable by any signed-in user: a workspace owner
-// needs the names to assign one, and the client needs the permission lists to
-// explain what each grants. Editing them is admin-only (/api/admin/roles).
-//
-// `memberCount` rides along (one grouped query, not one per role) so the admin
-// list can show who is affected by an edit — and why a delete would be refused.
-app.get('/api/roles', async (req, res) => {
-  if (!requireAuth(req, res)) return
-  const usage = await roleUsageCounts()
-  res.json(
-    listRoles().map((r) => ({
-      ...r,
-      memberCount: usage[r.slug]?.members || 0,
-      // Grants on tree nodes hold this role too, and also block a delete.
-      grantCount: usage[r.slug]?.grants || 0,
-      grantableOn: NODE_TYPES.filter((t) => roleGrantableOn(r.slug, t.type).ok).map((t) => t.type),
-    }))
-  )
-})
-
-// Workspaces the caller belongs to.
+// Workspaces the caller belongs to — their Hayat tenants, with tabletsgo's own
+// settings for each. `permissions` rides along so every nav item and button
+// gated on a capability renders right from the first payload.
 app.get('/api/workspaces', async (req, res) => {
   const user = requireAuth(req, res)
   if (!user) return
-  const rows = await membershipsOf(user.id)
-  // Beta experiment flags + notification prefs ship in the list response (not
-  // just the detail route) so nav-level gating and this settings panel don't
-  // go stale after a save that only refreshes via listWorkspaces().
-  // `permissions` rides along for the same reason: every nav item and button
-  // gated on a capability would otherwise flicker until the detail route lands.
+  const tenants = await hayat.userTenants(user.id)
+  await syncWorkspaceRows(tenants)
   res.json(
     await Promise.all(
-      rows.map(async (r) => {
-        const settings = safeJson(r.settings)
+      tenants.map(async (t) => {
+        const ws = await workspaceForUser(t.id, user.id)
+        const settings = safeJson((await getWorkspaceRow(t.id))?.settings)
         return {
-          id: r.id,
-          name: r.name,
-          role: r.role,
-          permissions: [...(await permissionsIn(r.id, user.id))],
-          createdAt: r.created_at,
+          ...ws,
           experiments: settings.experiments || {},
           notifications: settings.notifications || {},
+          manageUrl: hayat.consoleLink(`/tenants/${t.id}`),
         }
       })
     )
   )
-})
-
-// Create a workspace — the caller becomes its owner. Instance admins don't go
-// through here (they'd become a member of it); they use POST /api/admin/workspaces,
-// which names someone else as the owner.
-app.post('/api/workspaces', async (req, res) => {
-  const user = requireAuth(req, res)
-  if (!user) return
-  if (isSystemAdmin(user)) {
-    return res.status(403).json({ error: 'An instance admin cannot own a workspace. Create it from the admin area and assign an owner.' })
-  }
-  const { name } = req.body || {}
-  if (!name?.trim()) return res.status(400).json({ error: 'Workspace name is required.' })
-  const ws = await createWorkspaceRow(name.trim(), { ownerId: user.id })
-  res.json({ ...ws, role: 'owner' })
 })
 
 app.get('/api/workspaces/:id', async (req, res) => {
@@ -1181,52 +431,41 @@ app.get('/api/workspaces/:id', async (req, res) => {
   if (!user) return
   const ws = await workspaceForUser(req.params.id, user.id)
   if (!ws) return res.status(404).json({ error: 'Workspace not found' })
-  const row = await getWorkspaceRow(req.params.id)
-  const settings = safeJson(row?.settings)
-  // Beta experiment flags — visible to every member (they gate what the whole
-  // workspace sees, e.g. the S3/Backup nav item), toggleable by admins only
-  // (enforced in the PUT route below).
+  const settings = safeJson((await getWorkspaceRow(req.params.id))?.settings)
+  // Beta experiment flags and notification preferences — visible to every
+  // member, changed by permission (the PUT route below).
   ws.experiments = settings.experiments || {}
-  // Notification preferences (e.g. who to email on backup failure) — visible
-  // to every member, toggleable by admins only (enforced in the PUT route).
   ws.notifications = settings.notifications || {}
   // Session policy: the workspace-wide default cap on concurrent sessions per
-  // connection (0 = unlimited). `instanceDefault` is the env fallback that
-  // applies when the workspace leaves it at 0, so the form can show what's
-  // actually in effect.
+  // connection (0 = unlimited). `instanceDefault` is the env fallback.
   ws.sessions = { maxPerConnection: settings.sessions?.maxPerConnection || 0, instanceDefault: MAX_SESSIONS_PER_CONNECTION }
-  // Owners get the (non-secret) mail server the instance sends with — read-only
-  // here: SMTP is instance-level, configured by an admin at /api/admin/smtp.
-  // Null when the instance has none, which is what the Notification tab uses to
-  // warn that invites can only be shared as links.
-  if (ws.role === 'owner') ws.smtp = await publicSmtpConfig()
+  // Whoever manages notifications sees the (non-secret) instance mail server, to
+  // know whether emails can go out at all.
+  if (ws.permissions.includes('notifications.manage')) ws.smtp = await publicSmtpConfig()
+  // Members, groups, roles and the workspace's name live in Hayat's console.
+  ws.manageUrl = hayat.consoleLink(`/tenants/${req.params.id}`)
+  ws.treeUrl = hayat.consoleLink(`/resource-tree/${req.params.id}`)
   res.json(ws)
 })
 
 /**
- * Rename + beta experiment flags + notification/session policy.
- *
- * One route, two permissions: notification preferences are a separate capability
- * from the workspace's own settings (a role can be given `notifications.manage`
- * and nothing else), so the body is checked field by field rather than the whole
- * route being gated on `workspace.manage`.
+ * Tabletsgo's own settings for a workspace: experiment flags, notification and
+ * session policy. One route, two permissions — notification preferences are a
+ * capability of their own — so the body is checked field by field. The name is
+ * Hayat's: rename the tenant there.
  */
 app.put('/api/workspaces/:id', async (req, res) => {
   const user = requireAuth(req, res)
   if (!user) return
-  // No `smtp` here on purpose: the mail server is instance-level (admin-only).
-  // An older client still sending one is ignored rather than rejected.
   const { name, experiments, notifications, sessions } = req.body || {}
-  const needsManage = name?.trim() || experiments || sessions
-  if (needsManage && !(await requirePermission(req, res, req.params.id, 'workspace.manage'))) return
+  if (name !== undefined) return res.status(400).json({ error: 'Rename the workspace in Hayat — its name is the tenant’s.' })
+  if ((experiments || sessions) && !(await requirePermission(req, res, req.params.id, 'workspace.manage'))) return
   if (notifications && !(await requirePermission(req, res, req.params.id, 'notifications.manage'))) return
-  if (!needsManage && !notifications && !(await isMember(req.params.id, user.id))) return res.status(403).json({ error: 'Forbidden' })
+  const ws = await workspaceForUser(req.params.id, user.id)
+  if (!ws) return res.status(404).json({ error: 'Workspace not found' })
 
-  const row = await getWorkspaceRow(req.params.id)
-  if (!row) return res.status(404).json({ error: 'Workspace not found' })
-  if (name?.trim()) await meta().workspaces.update({ where: { id: req.params.id }, data: { name: name.trim() } })
   if (experiments || notifications || sessions) {
-    const settings = safeJson(row.settings)
+    const settings = safeJson((await getWorkspaceRow(req.params.id))?.settings)
     if (experiments) settings.experiments = { ...(settings.experiments || {}), ...experiments }
     if (sessions) {
       // 0 = unlimited; negatives and junk clamp to it.
@@ -1241,512 +480,55 @@ app.put('/api/workspaces/:id', async (req, res) => {
         }
       }
     }
-    await meta().workspaces.update({ where: { id: req.params.id }, data: { settings: JSON.stringify(settings) } })
+    await saveWorkspaceSettings(req.params.id, ws.name, settings)
   }
   res.json({ ok: true })
 })
 
-// Delete a workspace and everything scoped to it. Never the caller's last one.
+// Remove everything tabletsgo holds for a workspace. The tenant itself stays in
+// Hayat, where deleting it is an instance admin's call — and possible once this
+// has taken our resources out of its tree.
 app.delete('/api/workspaces/:id', async (req, res) => {
   const user = await requirePermission(req, res, req.params.id, 'workspace.delete')
   if (!user) return
-  const mine = (await membershipsOf(user.id)).length
-  if (mine <= 1) return res.status(400).json({ error: 'You must belong to at least one workspace.' })
-  await dropWorkspace(req.params.id)
-  res.json({ ok: true })
+  const removed = await dropWorkspace(req.params.id)
+  res.json({ ok: true, connectionsDeleted: removed.length })
 })
 
 /**
- * Tear down a workspace: close the live database handles its connections hold,
- * then cascade the metadata. Shared by the owner route above and the admin one,
- * so a workspace never disappears while its pools stay open.
+ * Tear down tabletsgo's side of a workspace: close the live database handles its
+ * connections hold, take their mirrors out of Hayat's tree, then cascade the
+ * metadata — so a workspace never disappears while its pools stay open.
  */
 async function dropWorkspace(workspaceId) {
   for (const conn of (await listConnections()).filter((c) => c.workspaceId === workspaceId)) {
     db.releaseConnection(conn)
     await endAllConnectionSessions(conn.id)
+    await hayat.deleteResource(CONNECTION_TYPE, conn.id)
   }
-  // The workspace's whole subtree goes with it — deleteWorkspaceCascade does it
-  // inside the same transaction as the rest of the metadata.
+  for (const dest of await listStorageRows(workspaceId)) await hayat.deleteResource(STORAGE_TYPE, dest.id)
   return await deleteWorkspaceCascade(workspaceId)
 }
 
-// ---- Resource tree ----
-//
-// One hierarchy of every addressable thing on the instance, and the place a role
-// is granted. Application → Workspace → {Team, Group} → {Connection, Storage} →
-// {Dashboard, Workflow}. See server/resource-tree.js for how a grant resolves.
-//
-// Authorization here is the tree answering about itself: what you may do to a
-// node is resolved *at* that node, so the owner of a group can reorganise and
-// grant inside it without holding anything at workspace level. An instance admin
-// passes because the application root is theirs.
-
-// May the caller do `permission` at this node? Returns the node, or null having
-// already sent the response — the same shape as the guards in server/auth.js.
-const requireNode = async (req, res, nodeId, permission) => {
-  const user = requireAuth(req, res)
-  if (!user) return null
-  const node = await getNode(nodeId)
-  if (!node) {
-    res.status(404).json({ error: 'Node not found' })
-    return null
-  }
-  if (isSystemAdmin(user)) return node
-  if (!permission) {
-    // A read: seeing the node at all is the permission.
-    if (!(await visibleTree(user)).some((n) => n.id === node.id)) {
-      res.status(403).json({ error: 'Forbidden' })
-      return null
-    }
-    return node
-  }
-  if (!(await permissionsAtNode(node, user.id)).has(permission)) {
-    res.status(403).json({ error: 'You do not have permission to do that.', permission })
-    return null
-  }
-  return node
-}
-
-// The whole tree the caller can see, flat — the client nests it. Connection nodes
-// carry `canOpen` because visibility and data access are different questions:
-// the tree shows you a connection exists, `connection_access` decides whether you
-// may open it.
-app.get('/api/resource-tree', async (req, res) => {
-  const user = requireAuth(req, res)
-  if (!user) return
-  try {
-    const counts = await memberCounts()
-    const admin = isSystemAdmin(user)
-    const nodes = await Promise.all((await visibleTree(user)).map(async (n) => ({
-      ...n,
-      owned: !!n.ownerId && n.ownerId === user.id,
-      // Groups are principals, so their size is part of reading the tree — it is
-      // how many people a grant to this group actually reaches.
-      memberCount: n.kind === 'group' ? counts.get(n.id) || 0 : undefined,
-      canOpen: n.type === 'connection' ? await userCanAccessConnection(await getConnection(n.resourceId), user.id) : undefined,
-      // Whether the caller may reorganise *here*: file a new group inside a
-      // group, and re-file this node somewhere else. Resolved at the node, like
-      // every other permission, so the tree can offer both exactly where the
-      // request would succeed instead of finding out by being refused. Answered
-      // for resources too — a connection is the thing you most often move, and
-      // the move guard asks at the node being moved, not at its parent.
-      canOrganise: admin || (await permissionsAtNode(n, user.id)).has('resources.organise'),
-    })))
-    res.json(nodes)
-  } catch (error) {
-    console.error('resource-tree error:', error.message)
-    res.json([])
-  }
-})
-
-// What the tree is made of, and which roles may be granted where — so the grant
-// editor never offers a choice the server would refuse.
-app.get('/api/resource-tree/catalog', async (req, res) => {
-  if (!requireAuth(req, res)) return
-  res.json({
-    nodeTypes: NODE_TYPES,
-    roles: listRoles().map((r) => ({
-      slug: r.slug,
-      name: r.name,
-      description: r.description,
-      builtin: r.builtin,
-      permissions: r.permissions,
-      appliesTo: r.appliesTo,
-      grantableOn: NODE_TYPES.filter((t) => roleGrantableOn(r.slug, t.type).ok).map((t) => t.type),
-    })),
-  })
-})
-
-/**
- * Who reaches this node — with the data-access answer attached where there is
- * one to give.
- *
- * `peopleAtNode` resolves *permissions*: grants up the chain, inheritance, group
- * rosters. On a connection that is only half the question, because opening a
- * database is not a permission (CLAUDE.md) — it is `userCanAccessConnection`,
- * which also reads membership, where the connection is filed and its access
- * list. Someone holding Member on the workspace therefore reaches every
- * connection node in it while being able to open none of them.
- *
- * The two answers are joined here rather than in `resource-tree.js` because that
- * module sits *below* `auth.js` in the dependency order and cannot see
- * `userCanAccessConnection`. Same reason, and the same `canOpen` field, as the
- * tree route above.
- */
-const resolvedPeople = async (node) => {
-  const people = await peopleAtNode(node)
-  if (node.type !== 'connection') return people
-  const conn = await getConnection(node.resourceId)
-  return Promise.all(people.map(async (p) => ({ ...p, canOpen: await userCanAccessConnection(conn, p.userId) })))
-}
-
-// One node in full: where it sits, what's in it, who has been granted what, and
-// what the caller themselves may do here.
-app.get('/api/resource-tree/:id', async (req, res) => {
-  const user = requireAuth(req, res)
-  if (!user) return
-  const node = await requireNode(req, res, req.params.id, null)
-  if (!node) return
-  const mine = isSystemAdmin(user) ? [...PERMISSION_KEYS] : [...await permissionsAtNode(node, user.id)]
-
-  // The tree already decided what this person may see; the detail payload has to
-  // give the same answer, because `childrenOf` is the raw hierarchy. At the
-  // application root that is *every workspace on the instance* — which a caller
-  // reaches whenever a node they do hold something in sits underneath it.
-  const seen = await visibleTree(user)
-  const visible = new Set(seen.map((n) => n.id))
-  // Scaffolding: in the payload only so what's underneath has a path to the root.
-  // They hold nothing here, so who else was granted what — and who is in it — is
-  // not theirs to read.
-  const context = !!seen.find((n) => n.id === node.id)?.context
-
-  res.json({
-    node,
-    context,
-    ancestors: (await chainOf(node)).slice(0, -1).filter((a) => visible.has(a.id)),
-    children: (await childrenOf(node.id)).filter((c) => visible.has(c.id)),
-    grants: context ? [] : await listGrants(node.id),
-    members: node.kind === 'group' && !context ? await listNodeMembers(node.id) : undefined,
-    // Everyone who can actually reach this node, and why. `grants` is only what
-    // was granted *here*; this resolves the ancestors, the inherited grants and
-    // the group rosters too, so access the node never mentions cannot hide. On a
-    // connection each person also carries `canOpen` — see `resolvedPeople`.
-    // Blanked for scaffolding for the same reason grants are: they hold nothing
-    // here, so who else does is not theirs to read.
-    people: context ? [] : await resolvedPeople(node),
-    permissions: mine,
-    owner: node.ownerId ? publicUser(await userRow(node.ownerId)) : null,
-  })
-})
-
-// Create a group — the one node type made by hand. Everything else appears
-// because its resource was created.
-app.post('/api/resource-tree/:id/groups', async (req, res) => {
-  const parent = await requireNode(req, res, req.params.id, 'resources.organise')
-  if (!parent) return
-  // You own what you create — but only inside a subtree you already own, where
-  // ownership is yours by cascade anyway and writing it down grants nothing new.
-  // Ungated, `resources.organise` alone would be enough to mint a group you own
-  // and move a connection into it, inheriting every permission on that
-  // connection: the move guard checks both ends, and both ends would be legal.
-  const caller = authUser(req)
-  const ownerId = req.body?.ownerId || (await ownsNode(parent, caller.id) ? caller.id : null)
-  const result = await createGroupNode(parent.id, req.body?.name, { ownerId })
-  if (result.error) return res.status(400).json({ error: result.error })
-  res.json(result.node)
-})
-
-// Rename a node. Mirrored nodes are renamed by their own resource's route, so
-// this is refused for them rather than letting the two drift.
-app.put('/api/resource-tree/:id', async (req, res) => {
-  const node = await requireNode(req, res, req.params.id, 'resources.organise')
-  if (!node) return
-  if (!CUSTOM_NODE_TYPES.includes(node.type)) {
-    return res.status(400).json({ error: `Rename the ${node.type} itself — its node follows automatically.` })
-  }
-  const result = await renameNode(node.id, req.body?.name)
-  if (result.error) return res.status(400).json({ error: result.error })
-  res.json(result.node)
-})
-
-// Re-file a node under a different group. Needs `resources.organise` at both
-// ends: moving a connection out of a group you control and into one you don't
-// would otherwise be a way to grant yourself access to it.
-app.put('/api/resource-tree/:id/move', async (req, res) => {
-  const node = await requireNode(req, res, req.params.id, 'resources.organise')
-  if (!node) return
-  const target = await requireNode(req, res, req.body?.parentId, 'resources.organise')
-  if (!target) return
-  // Re-filing a *connection* is a change to who may open the database, because a
-  // group's roster can use what is filed under it (server/auth.js
-  // `userCanAccessConnection`). `resources.organise` alone would otherwise be a
-  // way to read every database in the workspace: move them one by one into a
-  // group you are on the roster of. So moving one asks the same question its own
-  // routes ask — manage every connection here, or own this one. Tidying the tree
-  // still moves groups and everything else freely.
-  const caller = authUser(req)
-  if (node.type === 'connection' && !isSystemAdmin(caller)) {
-    const conn = await getConnection(node.resourceId)
-    if (conn && conn.ownerId !== caller.id && !(await permissionsAtNode(node, caller.id)).has('connections.manage')) {
-      return res.status(403).json({ error: 'You need to own this connection to move it.' })
-    }
-  }
-  const result = await moveNode(node.id, target.id)
-  if (result.error) return res.status(400).json({ error: result.error })
-  res.json(result.node)
-})
-
-// Hand a node over. Ownership cascades, so this is the strongest thing the tree
-// can do — only the current owner (who resolves to every permission here), an
-// owner of the workspace it sits in, or an instance admin can.
-//
-// "Owner of the workspace" means holding `workspace.manage` at this node, the
-// same test as the last-owner rule. Such a person already holds every
-// permission across the workspace, so this hands out nothing they couldn't
-// already give. Without it only the workspace's *first* owner (the one whose id
-// is on the workspace node) could re-own anything, and a co-owner could not.
-// The application root is out of their reach because a workspace grant never
-// travels upward.
-app.put('/api/resource-tree/:id/owner', async (req, res) => {
-  const user = requireAuth(req, res)
-  if (!user) return
-  const node = await getNode(req.params.id)
-  if (!node) return res.status(404).json({ error: 'Node not found' })
-  const mayHandOver =
-    isSystemAdmin(user) || (await ownsNode(node, user.id)) || (await permissionsAtNode(node, user.id)).has(OWNER_PERMISSION)
-  if (!mayHandOver) return res.status(403).json({ error: 'Only an owner can hand this over.' })
-
-  const ownerId = req.body?.ownerId || null
-  if (ownerId) {
-    const target = await userRow(ownerId)
-    if (!target) return res.status(404).json({ error: 'User not found' })
-    // An instance admin holds no membership anywhere by design; making one the
-    // owner of a workspace node would hand them the data access that rule exists
-    // to withhold.
-    if (target.role === 'admin' && node.type !== 'application') {
-      return res.status(400).json({ error: 'An instance admin cannot own a workspace resource.' })
-    }
-    if (node.workspaceId && !(await isMember(node.workspaceId, ownerId))) {
-      return res.status(400).json({ error: 'The new owner must be a member of this workspace.' })
-    }
-  }
-  res.json(await setNodeOwner(node.id, ownerId))
-})
-
-// Delete a group. What was filed inside it moves up rather than disappearing —
-// the resources still exist.
-app.delete('/api/resource-tree/:id', async (req, res) => {
-  const node = await requireNode(req, res, req.params.id, 'resources.organise')
-  if (!node) return
-  if (!CUSTOM_NODE_TYPES.includes(node.type)) {
-    return res.status(400).json({ error: `Delete the ${node.type} itself — its node goes with it.` })
-  }
-  // A node is deletable only when nothing is under it: re-filing what it held is
-  // the user's call, not a silent reparent they never asked for. It also settles
-  // by construction what `reparent` was there to prevent — a resource left with
-  // no node, invisible in the tree and unanswerable by the resolver.
-  const inside = await childrenOf(node.id)
-  if (inside.length) {
-    return res.status(409).json({
-      error: `Move or delete the ${inside.length} item${inside.length === 1 ? '' : 's'} inside this group first.`,
-      children: inside.map((n) => ({ id: n.id, name: n.name, type: n.type })),
-    })
-  }
-  const result = await deleteNode(node.id)
-  if (result.error) return res.status(400).json({ error: result.error })
-  res.json({ ok: true })
-})
-
-// ---- Grants on a node ----
-
-app.get('/api/resource-tree/:id/grants', async (req, res) => {
-  const node = await requireNode(req, res, req.params.id, null)
-  if (!node) return
-  res.json(await listGrants(node.id))
-})
-
-// Give a person or group a role here. The role's requirement criteria decide
-// whether it may be granted at this node type at all (server/permissions.js).
-app.post('/api/resource-tree/:id/grants', async (req, res) => {
-  const user = requireAuth(req, res)
-  if (!user) return
-  const node = await requireNode(req, res, req.params.id, 'resources.grant')
-  if (!node) return
-  const { principalType, principalId, roleSlug, inherit } = req.body || {}
-  const result = await addGrant(node.id, {
-    principalType,
-    principalId,
-    roleSlug,
-    inherit: inherit !== false,
-    createdBy: user.id,
-  })
-  if (result.error) return res.status(400).json({ error: result.error })
-  res.json(result.grant)
-})
-
-app.delete('/api/resource-tree/:id/grants/:grantId', async (req, res) => {
-  const node = await requireNode(req, res, req.params.id, 'resources.grant')
-  if (!node) return
-  await removeGrant(req.params.grantId)
-  res.json({ ok: true })
-})
-
-// ---- Membership: who is inside a group ----
-//
-// Governed by `teams.manage`, deliberately NOT by `resources.organise`. Adding
-// someone to a group is granting them access — every grant naming that group
-// reaches them the moment they are in it — and none of that shows up on the
-// grant list of the node they just reached. Tidying the tree must not carry that
-// power with it.
-
-app.get('/api/resource-tree/:id/members', async (req, res) => {
-  const node = await requireNode(req, res, req.params.id, null)
-  if (!node) return
-  if (node.kind !== 'group') return res.status(400).json({ error: 'Only a group holds people.' })
-  res.json(await listNodeMembers(node.id))
-})
-
-// A workspace's roster *is* its membership, so it answers to `members.manage`;
-// every other group's roster answers to `teams.manage`. Two capabilities, kept
-// separate on purpose: staffing a folder and admitting someone to the workspace
-// are different powers, and a role may carry one without the other.
-const rosterPermission = (node) => (node.type === 'workspace' ? 'members.manage' : 'teams.manage')
-
-app.post('/api/resource-tree/:id/members', async (req, res) => {
-  const node = await requireNode(req, res, req.params.id, null)
-  if (!node) return
-  if (!(await requireNode(req, res, req.params.id, rosterPermission(node)))) return
-  const userId = req.body?.userId
-  if (!userId) return res.status(400).json({ error: 'userId is required.' })
-  const target = await userRow(userId)
-  if (!target) return res.status(404).json({ error: 'User not found' })
-  // An instance admin holds no workspace membership by design — that is what
-  // keeps instance administration away from workspace data.
-  if (isSystemAdmin(target)) return res.status(400).json({ error: 'An instance admin cannot belong to a workspace.' })
-  // A group inside a workspace can only staff itself from that workspace's
-  // members. The workspace node is the exception: its roster is where membership
-  // begins, so requiring membership first would be circular.
-  if (node.type !== 'workspace' && node.workspaceId && !(await isMember(node.workspaceId, userId))) {
-    return res.status(400).json({ error: 'That person is not a member of this workspace.' })
-  }
-  if (node.type === 'workspace') {
-    // Goes through the workspace module so the roster and the membership's grant
-    // are written together, exactly as an invite would.
-    await addWorkspaceMember(node.resourceId, userId, 'member')
-    return res.json({ ok: true })
-  }
-  const result = await addNodeMember(node.id, userId)
-  if (result.error) return res.status(400).json({ error: result.error })
-  res.json({ ok: true })
-})
-
-app.delete('/api/resource-tree/:id/members/:userId', async (req, res) => {
-  const node = await requireNode(req, res, req.params.id, null)
-  if (!node) return
-  const user = await requireNode(req, res, req.params.id, rosterPermission(node))
-  if (!user) return
-  if (node.type === 'workspace') {
-    // Removing a workspace member is the full cascade (their grants, their group
-    // seats, anything they owned inside), and it must not strand the workspace.
-    if (req.params.userId === authUser(req).id) return res.status(400).json({ error: "You can't remove yourself." })
-    const role = await memberRole(node.resourceId, req.params.userId)
-    if (role && isOwnerRole(role) && await countOwners(node.resourceId) <= 1) {
-      return res.status(400).json({ error: 'The workspace needs at least one owner.' })
-    }
-    await removeWorkspaceMember(node.resourceId, req.params.userId)
-    return res.json({ ok: true })
-  }
-  await removeNodeMember(node.id, req.params.userId)
-  res.json({ ok: true })
-})
-
 // ---- Members ----
 
-// List a workspace's members (any member can view).
+// A workspace's members — the tenant's roster in Hayat. Read-only here: people
+// are added and removed, and given roles, in Hayat's console. Each carries the
+// roles they hold on the workspace and what they may do there, so the list can
+// say it without a second request.
 app.get('/api/workspaces/:id/members', async (req, res) => {
-  const user = await requireMember(req, res, req.params.id)
-  if (!user) return
+  if (!(await requireMember(req, res, req.params.id))) return
   res.json(await listWorkspaceMembers(req.params.id))
 })
 
-// Move a member to a different role. Any role in the instance catalog is valid;
-// a workspace can have any number of owners but never zero, and an instance
-// admin can't be given a seat at all.
-app.put('/api/workspaces/:id/members/:userId', async (req, res) => {
-  const user = await requirePermission(req, res, req.params.id, 'members.manage')
-  if (!user) return
-  const role = req.body?.role
-  if (!roleExists(role)) return res.status(400).json({ error: 'Unknown role.' })
-  const current = await memberRole(req.params.id, req.params.userId)
-  if (!(await isMember(req.params.id, req.params.userId))) return res.status(404).json({ error: 'Member not found' })
-  const target = await userRow(req.params.userId)
-  if (isSystemAdmin(target)) {
-    return res.status(400).json({ error: 'An instance admin cannot belong to a workspace.' })
-  }
-  // "Owner" is whoever holds workspace.manage — so this catches moving the last
-  // one to any role that doesn't, not just to the built-in 'member'.
-  if (isOwnerRole(current) && !isOwnerRole(role) && await countOwners(req.params.id) <= 1) {
-    return res.status(400).json({ error: 'The workspace needs at least one owner.' })
-  }
-  await setWorkspaceMemberRole(req.params.id, req.params.userId, role)
-  res.json({ ok: true, role })
-})
-
-// Invite a member by email (owner). Existing accounts are added directly;
-// unknown/pending emails get a pending account + an invite link. The link is
-// always returned so it works without SMTP.
-app.post('/api/workspaces/:id/members', async (req, res) => {
-  const user = await requirePermission(req, res, req.params.id, 'members.manage')
-  if (!user) return
-  const email = (req.body?.email || '').trim().toLowerCase()
-  if (!email) return res.status(400).json({ error: 'Email is required.' })
-  // Invite straight into a role rather than always landing on 'member' and
-  // needing a second call to move them.
-  const role = req.body?.role || 'member'
-  if (!roleExists(role)) return res.status(400).json({ error: 'Unknown role.' })
-
-  let target = await getUserByEmail(email)
-  if (target && await isMember(req.params.id, target.id)) {
-    return res.status(400).json({ error: 'That person is already a member.' })
-  }
-  if (isSystemAdmin(target)) {
-    return res.status(400).json({ error: 'That account administers the instance and cannot join a workspace.' })
-  }
-
-  let inviteLink = null
-  if (!target) {
-    // Brand-new account: 'user' is the system role (a plain, non-admin account);
-    // what they may do here is the workspace role set just below.
-    const { user: created, inviteToken } = await createUser({ email, name: email, inviteWorkspaceId: req.params.id })
-    target = { id: created.id, username: email, status: 'pending' }
-    inviteLink = `${baseUrl(req)}/invite/${inviteToken}`
-  } else if (target.status === 'pending') {
-    inviteLink = `${baseUrl(req)}/invite/${await issueInviteToken(target.id, req.params.id)}`
-  }
-
-  await addWorkspaceMember(req.params.id, target.id, role)
-
-  // Email the invite link when SMTP is configured — non-fatal, link is returned regardless.
-  let emailed = false
-  if (inviteLink) {
-    const ws = await getWorkspaceRow(req.params.id)
-    const cfg = await smtpConfig()
-    if (cfg) {
-      try {
-        await sendInviteEmail(cfg, { to: email, workspaceName: ws.name, link: inviteLink })
-        emailed = true
-      } catch (e) {
-        console.error('Invite email failed:', e.message)
-      }
-    }
-  }
-
-  res.json({
-    member: { userId: target.id, email, name: target.name || email, role, status: target.status },
-    inviteLink,
-    emailed,
-  })
-})
-
-// Remove a member. Can't remove yourself or the last owner.
-app.delete('/api/workspaces/:id/members/:userId', async (req, res) => {
-  const user = await requirePermission(req, res, req.params.id, 'members.manage')
-  if (!user) return
-  if (req.params.userId === user.id) return res.status(400).json({ error: "You can't remove yourself." })
-  const role = await memberRole(req.params.id, req.params.userId)
-  if (!(await isMember(req.params.id, req.params.userId))) return res.status(404).json({ error: 'Member not found' })
-  if (isOwnerRole(role) && await countOwners(req.params.id) <= 1) {
-    return res.status(400).json({ error: 'The workspace needs at least one owner.' })
-  }
-  // Drops the membership plus everything it granted (group seats, individual
-  // connection grants).
-  await removeWorkspaceMember(req.params.id, req.params.userId)
-  // Clean up a pending user that no longer belongs to any workspace.
-  const left = (await membershipsOf(req.params.userId)).length
-  const u = await userRow(req.params.userId)
-  if (left === 0 && u?.status === 'pending') await meta().users.deleteMany({ where: { id: req.params.userId } })
-  res.json({ ok: true })
+// One member and their Access list: every grant that reaches them — on the
+// workspace, a group, a connection or a storage destination; their own, a
+// group's or everyone's — and what they own.
+app.get('/api/workspaces/:id/members/:userId', async (req, res) => {
+  if (!(await requireMember(req, res, req.params.id))) return
+  const member = await getWorkspaceMember(req.params.id, req.params.userId)
+  if (!member) return res.status(404).json({ error: 'Not a member of this workspace' })
+  res.json(member)
 })
 
 // ============================================================================
@@ -1805,6 +587,16 @@ app.post('/api/test-connection', async (req, res) => {
   }
 })
 
+// The node mirroring a connection in Hayat's tree.
+const mirrorConnection = (conn, parentNodeId) =>
+  hayat.upsertResource({
+    type: CONNECTION_TYPE,
+    externalId: conn.id,
+    name: conn.name,
+    parent: parentNodeId ? hayat.nodeRef(parentNodeId) : hayat.ref(TENANT_TYPE, conn.workspaceId),
+    ownerId: conn.ownerId,
+  })
+
 // Add a connection to a workspace. Defining one is `connections.create`: the
 // credentials it carries are the workspace's, not something anyone who can use a
 // database gets to point somewhere else.
@@ -1822,14 +614,16 @@ app.post('/api/connections', async (req, res) => {
   // Default the owner to the creating user (unless one was explicitly provided).
   const conn = { ...req.body, id: randomUUID(), workspaceId, ownerId: req.body.ownerId || user.id }
   await saveConnection(conn)
-  // File it in the resource tree. `parentId` lets the caller drop it straight
-  // into a group they organise with; without one it lands under the workspace.
-  await createResourceNode('connection', conn.id, {
-    parentId: req.body.parentNodeId || null,
-    name: conn.name,
-    ownerId: conn.ownerId,
-    workspaceId,
-  })
+  // Mirror it into Hayat's tree, where its access is granted. `parentNodeId` (a
+  // Hayat group) files it straight into a group; without one it lands under the
+  // workspace. If Hayat refuses, the connection isn't kept: a connection Hayat
+  // doesn't know is one nobody could ever be granted.
+  try {
+    await mirrorConnection(conn, req.body.parentNodeId)
+  } catch (error) {
+    await deleteConnectionMetadata(conn.id)
+    return fail(res, error, 502)
+  }
   res.json(await getConnection(conn.id))
 })
 
@@ -1843,10 +637,12 @@ app.post('/api/connections/import', async (req, res) => {
   try {
     assertModuleEnabled(document?.connection?.type)
     const imported = await importConnectionDoc(document, { workspaceId, ownerId: user.id, name, settings })
-    await createResourceNode('connection', imported.id, { name: imported.name, ownerId: user.id, workspaceId })
-    // The bundle's dashboards and workflows were written before the connection
-    // had a node to file them under, so file them now.
-    await backfillResourceNodes({ connectionId: imported.id })
+    try {
+      await mirrorConnection({ ...imported, workspaceId, ownerId: user.id })
+    } catch (error) {
+      await deleteConnectionMetadata(imported.id)
+      throw error
+    }
     res.json(imported)
   } catch (error) {
     fail(res, error)
@@ -1872,7 +668,12 @@ app.post('/api/storages', async (req, res) => {
   if (!user) return
   if (!body.name?.trim() || !body.bucket?.trim()) return res.status(400).json({ error: 'A name and bucket are required' })
   const dest = await createStorage(body.workspaceId, body)
-  await createResourceNode('storage', dest.id, { name: dest.name, ownerId: user.id, workspaceId: body.workspaceId })
+  try {
+    await hayat.upsertResource({ type: STORAGE_TYPE, externalId: dest.id, name: dest.name, parent: hayat.ref(TENANT_TYPE, body.workspaceId), ownerId: user.id })
+  } catch (error) {
+    await deleteStorage(dest.id)
+    return fail(res, error, 502)
+  }
   res.json(dest)
 })
 
@@ -1891,7 +692,7 @@ app.use('/api/storages/:sid', async (req, res, next) => {
 app.put('/api/storages/:sid', async (req, res) => {
   const merged = { ...await getStorage(req.params.sid), ...(req.body || {}) }
   if (!merged.name?.trim() || !merged.bucket?.trim()) return res.status(400).json({ error: 'A name and bucket are required' })
-  await renameResourceNode('storage', req.params.sid, merged.name.trim())
+  await hayat.updateResource({ type: STORAGE_TYPE, externalId: req.params.sid, name: merged.name.trim(), workspaceId: merged.workspaceId })
   res.json(await updateStorage(req.params.sid, merged))
 })
 
@@ -1899,8 +700,8 @@ app.delete('/api/storages/:sid', async (req, res) => {
   if (await isStorageInUse(req.params.sid)) {
     return res.status(409).json({ error: 'This storage destination is used by a workflow and cannot be deleted.' })
   }
+  await hayat.deleteResource(STORAGE_TYPE, req.params.sid)
   await deleteStorage(req.params.sid)
-  await deleteResourceNode('storage', req.params.sid)
   res.json({ ok: true })
 })
 
@@ -2059,8 +860,7 @@ const requireConnectionOwner = async (req, res, what = 'change a connection') =>
     res.status(404).json({ error: 'Connection not found' })
     return null
   }
-  const userId = authUser(req).id
-  if (conn.workspaceId && conn.ownerId !== userId && !(await can(conn.workspaceId, userId, 'connections.manage'))) {
+  if (!(await canManageConnection(conn, authUser(req).id))) {
     res.status(403).json({ error: `You need to own this connection to ${what}.` })
     return null
   }
@@ -2089,7 +889,9 @@ app.put('/api/connections/:id', async (req, res) => {
     }
   }
   await saveConnection(updated)
-  await renameResourceNode('connection', req.params.id, updated.name)
+  if (updated.name !== existing.name) {
+    await hayat.updateResource({ type: CONNECTION_TYPE, externalId: req.params.id, name: updated.name, workspaceId: existing.workspaceId })
+  }
 
   // Drop any cached pool/handle so the next query reconnects with the new
   // config (otherwise edits to host/credentials/database are ignored), and end
@@ -2110,12 +912,9 @@ app.delete('/api/connections/:id', async (req, res) => {
   db.releaseConnection(conn)
   await endAllConnectionSessions(req.params.id)
 
-  await transaction(async () => {
-    await deleteConnectionMetadata(req.params.id)
-    // Takes the connection's node and everything filed under it (its dashboard
-    // and workflow nodes), plus every grant made on any of them.
-    await deleteResourceNode('connection', req.params.id)
-  })
+  // Its mirror first — Hayat takes every grant made on it along — then the rows.
+  if (conn.workspaceId) await hayat.deleteResource(CONNECTION_TYPE, req.params.id)
+  await deleteConnectionMetadata(req.params.id)
   res.json({ ok: true })
 })
 
@@ -2147,30 +946,43 @@ app.put('/api/connections/:id/owner', async (req, res) => {
   const conn = await getConnection(req.params.id)
   if (!conn) return res.status(404).json({ error: 'Connection not found' })
   if (!conn.workspaceId) return res.status(400).json({ error: 'This connection does not belong to a workspace.' })
-  if (!(await requirePermission(req, res, conn.workspaceId, 'connections.transfer'))) return
+  // Resolved at the connection, so a grant on this one connection's node (or the
+  // group it is filed in) is enough — not only one on the whole workspace.
+  if (!(await permissionsAtConnection(conn.id, authUser(req).id)).has('connections.transfer')) {
+    return res.status(403).json({ error: 'You do not have permission to do that.', permission: 'connections.transfer' })
+  }
 
   const ownerId = req.body?.ownerId
   if (!ownerId) return res.status(400).json({ error: 'ownerId is required.' })
   if (!(await isMember(conn.workspaceId, ownerId))) return res.status(400).json({ error: 'That person is not a member of this workspace.' })
-  if (isSystemAdmin(await userRow(ownerId))) return res.status(400).json({ error: 'An instance admin cannot own a connection.' })
 
+  // Hayat's node owner is what the decision rule reads; our column is what the
+  // console shows. Hayat first, so a refusal leaves both as they were.
+  await hayat.updateResource({ type: CONNECTION_TYPE, externalId: conn.id, name: conn.name, ownerId, workspaceId: conn.workspaceId })
   await saveConnection({ ...conn, ownerId })
   res.json(await getConnection(req.params.id))
 })
 
-// ---- Connection access (which groups/members may see this connection) ----
-// Any user who passes the access guard can read the assignment; only a
-// workspace owner can change it.
+// ---- Connection access: who may open it ----
+// Read-only here: opening a connection is the `connection.open` permission in
+// Hayat, granted on the connection (or a group above it) in Hayat's console.
+// `people` is Hayat's resolved answer — every grant, group roster and ownership
+// that reaches it — never the raw grant list; `manageUrl` opens its node there.
 app.get('/api/connections/:id/access', async (req, res) => {
-  res.json(await connectionAccess(req.params.id))
-})
-
-app.put('/api/connections/:id/access', async (req, res) => {
-  if (!(await requireConnectionOwner(req, res, "change a connection's access list"))) return
-  const groups = Array.isArray(req.body?.groups) ? req.body.groups : []
-  const users = Array.isArray(req.body?.users) ? req.body.users : []
-  await setConnectionAccess(req.params.id, { groups, users })
-  res.json(await connectionAccess(req.params.id))
+  const conn = await getConnection(req.params.id)
+  const resource = hayat.ref(CONNECTION_TYPE, req.params.id)
+  const [subjects, node] = await Promise.all([hayat.lookupSubjects(hayatKey('connection.open'), resource), hayat.getResource(resource)])
+  const people = await hayat.getUsers(subjects.map((s) => s.userId))
+  res.json({
+    people: subjects.map((s) => ({
+      userId: s.userId,
+      name: people.get(s.userId)?.name || null,
+      email: people.get(s.userId)?.email || null,
+      reason: s.reason,
+    })),
+    parentNodeId: node?.parentNodeId || null,
+    manageUrl: node && conn?.workspaceId ? hayat.consoleLink(`/resource-tree/${conn.workspaceId}/${node.nodeId}`) : null,
+  })
 })
 
 // ============================================================================
@@ -2555,7 +1367,7 @@ app.get('/api/workspaces/:id/dashboards', async (req, res) => {
  * One query for the whole page, not one per row.
  */
 const withAudit = async (rows) => {
-  const people = await userSummaries(rows.flatMap((r) => [r.createdBy, r.updatedBy]))
+  const people = await hayat.getUsers(rows.flatMap((r) => [r.createdBy, r.updatedBy])).catch(() => new Map())
   return rows.map((r) => ({
     ...r,
     createdByName: people.get(r.createdBy)?.name || null,
@@ -4227,7 +3039,7 @@ cron.schedule('* * * * *', () => {
 app.listen(PORT, async () => {
   console.log(`✅ Server running on http://localhost:${PORT}`)
   console.log(`📊 API available at http://localhost:${PORT}/api`)
-  console.log(`🔑 Sessions: logins in ${META_DB_TYPE === 'postgresql' ? 'PostgreSQL metadata' : META_DB_PATH}, cached in ${sessionCache.kind}`)
+  console.log(`🪪 Sign-in and access: Hayat at ${hayat.signInConfig().issuer}`)
   // Open what can be opened eagerly (SQLite files) so the first query is fast.
   const connections = await listConnections().catch((error) => {
     console.error('Listing connections to prewarm failed:', error.message)
@@ -4246,6 +3058,7 @@ app.listen(PORT, async () => {
 process.on('SIGINT', async () => {
   console.log('\n🛑 Shutting down...')
   db.closeAllConnections()
+  hayat.stopHayat()
   await closeSessionStore().catch(() => {})
   await closeMeta().catch(() => {})
   process.exit(0)
