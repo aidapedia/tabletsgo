@@ -7,6 +7,7 @@
 
 import fs from 'fs'
 import path from 'path'
+import { randomBytes } from 'crypto'
 import { fileURLToPath } from 'url'
 
 // This file lives in server/, so the repo root is one level up. Paths that used
@@ -20,15 +21,6 @@ export const PUBLIC_URL = (process.env.PUBLIC_URL || '').trim().replace(/\/+$/, 
 export const DIST_DIR = path.join(ROOT_DIR, 'console', 'dist')
 export const OPENAPI_PATH = path.join(ROOT_DIR, 'server', 'openapi.yaml')
 
-// Connection credentials (host/port/username/password/…) are encrypted at rest
-// with this key. Required — refuse to boot rather than silently store secrets
-// in plaintext.
-if (!process.env.ENCRYPTION_KEY) {
-  console.error('❌ ENCRYPTION_KEY is not set. Set it in your environment (see .env.example) before starting the server.')
-  process.exit(1)
-}
-export const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY
-
 // ---- Metadata store (the app's own records, separate from user connections) ----
 export const META_DB_TYPE = (process.env.META_DB_TYPE || 'sqlite').toLowerCase()
 if (!['sqlite', 'postgresql'].includes(META_DB_TYPE)) throw new Error('META_DB_TYPE must be sqlite or postgresql')
@@ -36,6 +28,43 @@ export const META_DATABASE_URL = process.env.META_DATABASE_URL || ''
 if (META_DB_TYPE === 'postgresql' && !META_DATABASE_URL) throw new Error('META_DATABASE_URL is required when META_DB_TYPE=postgresql')
 export const META_DB_PATH = process.env.META_DB || path.join(ROOT_DIR, 'data', 'app.db')
 if (META_DB_TYPE === 'sqlite') fs.mkdirSync(path.dirname(META_DB_PATH), { recursive: true })
+// Where the instance keeps what it writes for itself (the generated key, the
+// Hayat import bundle): beside the SQLite file, which is the volume in Docker.
+export const DATA_DIR = META_DB_TYPE === 'sqlite' ? path.dirname(META_DB_PATH) : path.join(ROOT_DIR, 'data')
+
+// ---- Mode: solo or enterprise ----
+// Solo: one person, signed in by password, no Hayat. Enterprise: Hayat owns
+// accounts, workspaces and grants. The migrator records the mode in the store
+// the first time it boots (server/migrator/identity.js); this is only what the
+// environment asks for. '' = not asked: the stored mode wins, else HAYAT_ISSUER
+// decides.
+export const MODE_SETTING = (process.env.TABLETSGO_MODE || '').trim().toLowerCase()
+if (MODE_SETTING && !['solo', 'enterprise'].includes(MODE_SETTING)) throw new Error('TABLETSGO_MODE must be solo or enterprise')
+// A v1.0 install with several accounts moving to solo: the one who keeps it.
+export const SOLO_OWNER = (process.env.SOLO_OWNER || '').trim().toLowerCase()
+
+// Connection credentials (host/port/username/password/…) are encrypted at rest
+// with this key. Required — refuse to boot rather than silently store secrets
+// in plaintext. A new solo install on SQLite may go without: it generates one
+// into the data volume. Only a *new* one — an existing store was sealed under a
+// key nobody may silently replace.
+export const ENCRYPTION_KEY_FILE = path.join(DATA_DIR, 'encryption.key')
+export const ENCRYPTION_KEY = resolveEncryptionKey()
+
+function resolveEncryptionKey() {
+  if (process.env.ENCRYPTION_KEY) return process.env.ENCRYPTION_KEY
+  if (fs.existsSync(ENCRYPTION_KEY_FILE)) return fs.readFileSync(ENCRYPTION_KEY_FILE, 'utf8').trim()
+  const soloHint = MODE_SETTING ? MODE_SETTING === 'solo' : !process.env.HAYAT_ISSUER
+  if (soloHint && META_DB_TYPE === 'sqlite' && !fs.existsSync(META_DB_PATH)) {
+    const key = randomBytes(32).toString('hex')
+    fs.mkdirSync(DATA_DIR, { recursive: true })
+    fs.writeFileSync(ENCRYPTION_KEY_FILE, `${key}\n`, { mode: 0o600 })
+    console.log(`🔐 Generated an encryption key at ${ENCRYPTION_KEY_FILE}. Back it up with the data: without it, saved credentials can't be read.`)
+    return key
+  }
+  console.error('❌ ENCRYPTION_KEY is not set. Set it in your environment (see .env.example) before starting the server.')
+  process.exit(1)
+}
 
 // App-level snapshots of the meta DB (connections, saved queries, …) — distinct from the
 // S3 database backups feature. Both the boot pre-migration snapshot and the
@@ -71,10 +100,11 @@ function resolveAppVersion() {
 // the app only ever updates to its own official release.
 export const DOCKER_SOCKET = process.env.DOCKER_SOCKET || '/var/run/docker.sock'
 
-// ---- Hayat: who people are and what they may do ----
-// Tabletsgo keeps no accounts of its own. People sign in at Hayat (an OpenID
-// provider), and every permission question is asked of Hayat's service API.
-// Required: server.js refuses to start without the four marked below.
+// ---- Hayat: who people are and what they may do (enterprise mode) ----
+// In enterprise mode tabletsgo keeps no accounts of its own. People sign in at
+// Hayat (an OpenID provider), and every permission question is asked of Hayat's
+// service API. Required in enterprise mode: server.js refuses to start without
+// the ones marked below. Solo mode reads none of them.
 const trimUrl = (v) => (v || '').trim().replace(/\/+$/, '')
 // The auth role's public URL — tokens are verified against its published keys.
 export const HAYAT_ISSUER = trimUrl(process.env.HAYAT_ISSUER) // required

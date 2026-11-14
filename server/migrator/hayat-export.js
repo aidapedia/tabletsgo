@@ -257,3 +257,50 @@ export function exportHayatBundle(db, hasTable) {
   }
   return bundle
 }
+
+/**
+ * A solo instance as the bundle `hayat import` loads: its owner, its one
+ * workspace as a tenant with the same id, and its connections and storage
+ * destinations as resources the owner owns. Written when the instance moves to
+ * enterprise (server/migrator/identity.js) and by `npm run hayat:bundle`.
+ *
+ * The owner's scrypt hash means nothing to Hayat, so they arrive as a pending
+ * account and finish by signing up at Hayat with the same email — keeping their
+ * id, and with it everything they own. A v1.0 hash nobody has signed in with
+ * since (`$sha256$…`) is one Hayat does read, so that account arrives active.
+ */
+export function exportSoloBundle(db, hasTable) {
+  const bundle = emptyBundle()
+  const row = hasTable('app_settings') ? db.prepare("SELECT value FROM app_settings WHERE key = 'solo'").get() : null
+  const solo = parseJson(row?.value, null)
+  if (!solo?.owner) return bundle
+  const o = solo.owner
+  const legacy = String(o.passwordHash || '').startsWith('$sha256$')
+  bundle.users.push({
+    id: o.id,
+    email: o.email,
+    name: o.name || '',
+    passwordHash: legacy ? o.passwordHash : '',
+    status: legacy ? 'active' : 'pending',
+    zoneinfo: o.timezone || '',
+    admin: true,
+  })
+  bundle.rootGrants.push({ userId: o.id, role: roleSlug('admin') })
+
+  const ws = solo.workspace
+  const tenant = { id: ws.id, name: ws.name || 'Personal', ownerId: o.id, members: [o.id], groups: [], resources: [], grants: [] }
+  const all = (sql) => db.prepare(sql).all(ws.id)
+  if (hasTable('connections')) {
+    for (const c of all('SELECT id, name FROM connections WHERE workspace_id = ?')) {
+      tenant.resources.push({ type: CONNECTION_TYPE, externalId: c.id, name: c.name || c.id, parent: '', ownerId: o.id })
+    }
+  }
+  if (hasTable('storage_destinations')) {
+    for (const s of all('SELECT id, name FROM storage_destinations WHERE workspace_id = ?')) {
+      tenant.resources.push({ type: STORAGE_TYPE, externalId: s.id, name: s.name || s.id, parent: '', ownerId: o.id })
+    }
+  }
+  for (const role of ['hayat.tenant-admin', roleSlug('owner')]) tenant.grants.push({ on: 'tenant', principal: `user:${o.id}`, role, inherit: true })
+  bundle.tenants.push(tenant)
+  return bundle
+}

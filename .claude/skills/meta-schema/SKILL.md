@@ -51,6 +51,7 @@ prisma/postgresql/schema.prisma
 prisma/postgresql/migrations/
 server/migrator/index.js           # runMigrations(), metaSchemaStatus()
 server/migrator/boot.js            # runs runMigrations() on boot — server.js's first import
+server/migrator/identity.js        # after migrating, boot resolves and records the mode (solo | enterprise) in app_settings `identity`; captureSoloOwner() runs just before the drop — see the auth-sessions skill
 server/migrator/legacy/            # FROZEN pre-Prisma steps v1–v22 (sqlite.js, postgresql.js + v20 SQL)
 ```
 

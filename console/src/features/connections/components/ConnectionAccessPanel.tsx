@@ -4,6 +4,7 @@ import { ExternalLink } from 'lucide-react'
 import PersonAvatar from '@/shared/ui/PersonAvatar'
 import PersonRow from '@/shared/ui/PersonRow'
 import { useWorkspaces, can, listMembers, type Member } from '@/features/workspaces'
+import { useIdentity } from '@/features/auth'
 import { getConnectionAccess, transferConnection, type ConnectionAccess } from '../api'
 import LoadingState from '@/shared/ui/feedback/LoadingState'
 import { Button } from '@/shared/ui/button'
@@ -20,6 +21,19 @@ import OptionSelect from '@/shared/ui/form/OptionSelect'
  * over here, because it is a field of the connection itself.
  */
 export default function ConnectionAccessPanel({ conn, onChange }: { conn: any; onChange?: () => void }) {
+  // Solo: nobody else exists, so there is nothing to show or hand over.
+  const { people } = useIdentity()
+  if (!people) {
+    return (
+      <p className="max-w-[560px] text-[13px] text-muted-foreground">
+        Only you. This instance runs in solo mode, so nobody else can open this connection. Switch to enterprise mode to share connections with a team.
+      </p>
+    )
+  }
+  return <AccessPanel conn={conn} onChange={onChange} />
+}
+
+function AccessPanel({ conn, onChange }: { conn: any; onChange?: () => void }) {
   const { current } = useWorkspaces()
   const workspaceId = current?.id
   const canTransfer = can(current, 'connections.transfer')

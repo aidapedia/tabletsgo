@@ -13,6 +13,7 @@
     "migrate": "node --env-file-if-exists=.env scripts/migrate.js",
     "hayat:bundle": "node --env-file-if-exists=.env scripts/hayat-bundle.js",
     "hayat:remap": "node --env-file-if-exists=.env scripts/hayat-remap.js",
+    "solo:reset-password": "node --env-file-if-exists=.env scripts/solo-reset-password.js",
     "prisma": "node --env-file-if-exists=.env node_modules/prisma/build/index.js",
     "prisma:generate": "prisma generate --schema prisma/sqlite/schema.prisma --config prisma/generate.config.mjs && prisma generate --schema prisma/postgresql/schema.prisma --config prisma/generate.config.mjs",
     "dev:all": "concurrently \"npm run dev\" \"npm run server\"",

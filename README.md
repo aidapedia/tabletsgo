@@ -29,11 +29,11 @@ Browse data, write queries, design schemas, automate workflows and back up to S3
 - **Backups** — scheduled dumps to any S3‑compatible bucket, with one‑click restore.
 - **Data export / import** — CSV, JSON or SQL, with a dry‑run preview.
 - **SSH tunnels** — reach private databases through a bastion (plain SSH, Railway, Cloudflare Access).
-- **Teams, through Hayat** — sign-in, workspaces, groups, roles and who may open each connection come from [Hayat](https://github.com/aidapedia/hayat), the identity and access service tabletsgo shares with your other apps. Tabletsgo shows who can open a connection and links to Hayat's console to change it.
+- **Solo or enterprise, one image** — run it alone with nothing else (**solo**: one owner, a password, one workspace), or for a team (**enterprise**: sign-in, workspaces, groups, roles and who may open each connection come from [Hayat](https://github.com/aidapedia/hayat), the identity and access service tabletsgo shares with your other apps). Both are free; a solo instance moves to enterprise with its data.
 - **Time zones** — each person picks a time zone in **Setting → Preferences**, and times across the app show in it. Values stored in your databases are shown exactly as stored.
-- **Sign-in** — single sign-on at Hayat (OpenID Connect, authorization code + PKCE). Accounts, passwords, sign-up and sign-in methods are managed there and shared by every app that uses it.
+- **Sign-in** — solo: the owner's email and password, set at first run with a code from the server's log. Enterprise: single sign-on at Hayat (OpenID Connect, authorization code + PKCE), where accounts, passwords, sign-up and sign-in methods are managed and shared by every app that uses it.
 - **Modules** — the instance admin chooses which databases (PostgreSQL, MySQL, SQLite, Redis, Kafka) and features (Backups) the instance offers under **Administration → Modules**, and sets their instance-wide settings — each database's query timeout and table row limit, Kafka's read caps. Workspaces only see what's on. Turning off a database that connections still use locks those connections instead of deleting them, and notifies their owners by email.
-- **Secure by default** — credentials encrypted at rest (AES‑256‑GCM); access tokens verified offline against Hayat's keys, every permission asked of Hayat.
+- **Secure by default** — credentials encrypted at rest (AES‑256‑GCM); solo passwords hashed with scrypt and sessions ended at once on a password change; enterprise access tokens verified offline against Hayat's keys, every permission asked of Hayat.
 - **In‑app updates**, split view, configurable keymap, light/dark theme.
 
 Every feature in detail: **[docs/FEATURES.md](docs/FEATURES.md)**.
@@ -58,28 +58,73 @@ Every feature in detail: **[docs/FEATURES.md](docs/FEATURES.md)**.
 
 ## Quick start
 
-Tabletsgo signs people in through [Hayat](https://github.com/aidapedia/hayat), so it needs a Hayat to run against — one you already run, or [Hayat's own compose file](https://github.com/aidapedia/hayat/tree/main/deploy/compose). Register tabletsgo in it once, then point tabletsgo at it:
+For one person, Tabletsgo needs nothing but Docker:
 
 ```bash
-git clone https://github.com/aidapedia/tabletsgo.git
-cd tabletsgo
+docker run -d --name tabletsgo -p 3000:3000 -v tabletsgo-data:/app/data ghcr.io/aidapedia/tabletsgo
+docker logs tabletsgo     # 🔑 Solo setup: … enter this code: amber-falcon-river-stone-maple-orbit
+```
+
+Open **http://localhost:3000**, enter the setup code with your name, email and a password, and you're in. That is **solo mode**: you own the instance, you can do everything, and there is nobody else. Under **Administration → Modules** pick the databases and features it offers.
+
+With compose instead (`docker-compose.yml` is the solo file):
+
+```bash
+git clone https://github.com/aidapedia/tabletsgo.git && cd tabletsgo
 cp .env.example .env
-npm ci
-npm run hayat:bundle -- --out hayat-import.json --admin you@acme.com
-hayat import --file hayat-import.json --app-url http://localhost:3000 --out hayat-result.json
+docker compose up -d && docker compose logs tabletsgo
 ```
 
-In `.env`, set `ENCRYPTION_KEY` and the `HAYAT_*` values `hayat import` printed (see **Hayat** below), then:
+For a team, run it in **enterprise mode** against [Hayat](#enterprise-mode-hayat).
 
-```bash
-docker compose up -d
-```
+## Solo and enterprise
 
-Open **http://localhost:3000**. You are sent to Hayat to sign in; the `--admin` address is tabletsgo's instance admin (someone Hayat doesn't know yet signs up with it first). Create a workspace in Hayat's console and add people there; under tabletsgo's **Administration → Modules** pick the databases and features the instance offers.
+One codebase and one image run either way. The mode is chosen when the instance first starts and recorded in its store.
 
-### Hayat
+| | Solo | Enterprise |
+|---|---|---|
+| For | one developer | a team |
+| Runs | tabletsgo alone | tabletsgo + [Hayat](https://github.com/aidapedia/hayat) |
+| People | one owner, email + password | everyone Hayat lets in, signing in at Hayat (one account across your apps) |
+| Workspaces | one, renamed in **Workspace → General** | Hayat tenants, with rosters and groups |
+| Access | the owner can do everything | roles and grants in Hayat's console |
+| Required settings | none | `ENCRYPTION_KEY` + the `HAYAT_*` values |
+| Price | free | free |
 
-Tabletsgo keeps no accounts of its own. Hayat holds the people, the workspaces (Hayat *tenants*), groups, roles and grants; tabletsgo asks it. Hayat runs on its own — tabletsgo only needs its addresses and credentials in `.env`:
+**Which mode starts:** `TABLETSGO_MODE` (`solo` or `enterprise`) when set; otherwise the mode the instance recorded the first time it ran; otherwise enterprise when `HAYAT_ISSUER` is set, else solo. An instance that has run in enterprise mode never starts in solo mode, even if its `HAYAT_*` settings go missing: it refuses to start instead.
+
+**Solo, the details:**
+
+- **First run.** A new solo instance prints a six-word setup code to its log. Only someone who can read the log can claim it, even when the port is reachable from elsewhere.
+- **Encryption key.** With `ENCRYPTION_KEY` unset, a new solo install generates one into the data volume (`/app/data/encryption.key`). Back it up with the volume, or set `ENCRYPTION_KEY` yourself to keep the key apart from the data.
+- **Sessions.** Signing in gives a 15-minute access token and a 30-day refresh cookie (httpOnly, SameSite=Strict). Changing the password, or **Setting → Account → Sign out everywhere**, ends every session.
+- **Forgotten password:** `docker compose exec tabletsgo npm run solo:reset-password` (or `docker exec tabletsgo npm run solo:reset-password`) prints a new one.
+
+### Moving from solo to enterprise
+
+Your connections, storage destinations, workspace and settings come along; you keep your id, so you keep owning everything.
+
+1. Deploy Hayat ([its compose file](https://github.com/aidapedia/hayat/tree/main/deploy/compose)).
+2. Write the import bundle from the running solo instance:
+   ```bash
+   docker compose exec tabletsgo npm run hayat:bundle -- --out /app/data/hayat-import.json
+   docker compose cp tabletsgo:/app/data/hayat-import.json .
+   ```
+3. Load it into Hayat. It registers tabletsgo and prints the `HAYAT_*` values:
+   ```bash
+   hayat import --file hayat-import.json --app-url https://db.acme.com --out hayat-result.json
+   ```
+4. Put `ENCRYPTION_KEY` (copy `/app/data/encryption.key` if solo generated it) and the `HAYAT_*` values in `.env`, then restart with the overlay:
+   ```bash
+   docker compose -f docker-compose.yml -f docker-compose.enterprise.yml up -d
+   ```
+5. Sign up at Hayat with the owner's email. That account takes over your id, and with it everything you owned.
+
+Going back from enterprise to solo isn't supported in place: export the connections you want and import them into a new solo instance.
+
+### Enterprise mode (Hayat)
+
+In enterprise mode tabletsgo keeps no accounts of its own. Hayat holds the people, the workspaces (Hayat *tenants*), groups, roles and grants; tabletsgo asks it. Hayat runs on its own — tabletsgo only needs its addresses and credentials in `.env`:
 
 | Variable | What |
 |---|---|
@@ -101,7 +146,13 @@ hayat import --file hayat-import.json --app-url https://db.acme.com --out hayat-
 
 If this server reaches Hayat's sign-in at a different address than browsers do — a private network, or Docker, where `localhost` is the container — set `HAYAT_AUTH_URL` to that address. Tokens still name `HAYAT_ISSUER`.
 
-**Upgrading an install that had its own accounts:** the first start of this version writes everything its account tables held to `data/hayat-import-<time>.json` and then drops those tables (a `pre-migrate` snapshot is taken too). Load it the same way:
+Start tabletsgo with the enterprise overlay, which sets `TABLETSGO_MODE=enterprise` and refuses to start with a `HAYAT_*` value missing:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.enterprise.yml up -d
+```
+
+**Upgrading a v1.0 install that had its own accounts:** in enterprise mode, the first start of this version writes everything its account tables held to `data/hayat-import-<time>.json` and then drops those tables (a `pre-migrate` snapshot is taken too). Load it the same way:
 
 ```bash
 hayat import --file data/hayat-import-<time>.json --app-url https://db.acme.com --out hayat-result.json
@@ -109,6 +160,8 @@ npm run hayat:remap -- hayat-result.json   # only if Hayat already had some of t
 ```
 
 People keep their ids and passwords (the old hash is upgraded the first time they sign in), workspaces keep their ids, groups and rosters come along, owners become Hayat **Tenant admin** + **Workspace owner (tabletsgo)**, each connection's access list becomes **Connection user** grants, and instance admins get **Tabletsgo admin**. Google and GitHub sign-in links don't carry over — sign-in methods are Hayat's. Opening a connection is now the `tabletsgo.connection.open` permission; the **Access** tab on a connection shows who has it and links to Hayat to change it.
+
+**Upgrading a v1.0 install to solo instead:** with one account, start it with no `HAYAT_*` set — that account becomes the owner, keeps its password and its id, and every workspace's data moves into the one solo workspace. With several accounts the start stops and says so: deploy Hayat (everyone keeps access), or set `SOLO_OWNER=<email>` to keep that person and all the data (the others lose access; the Hayat bundle written beside the data still holds them).
 
 > Keep `ENCRYPTION_KEY` safe — losing or changing it makes saved credentials unreadable.
 
@@ -118,7 +171,7 @@ People keep their ids and passwords (the old hash is upgraded the first time the
 
 ## System requirements
 
-**A 1 vCPU / 1 GB RAM server with Docker is enough for a team.**
+**A 1 vCPU / 1 GB RAM server with Docker is enough for a team.** Enterprise mode also needs a Hayat ([its requirements](https://github.com/aidapedia/hayat)); solo needs nothing else.
 
 | | Minimum | Recommended |
 |---|---|---|
@@ -130,14 +183,16 @@ Tabletsgo itself uses ~150–250 MB of RAM; the rest is for the OS and Docker. M
 
 ## Configuration
 
-Set these in `.env`. Everything else is optional.
+Set these in `.env`. A solo install needs none of them.
 
 | Variable | Description |
 |---|---|
-| `ENCRYPTION_KEY` | **Required.** Encrypts connection credentials at rest. |
-| `HAYAT_ISSUER` / `HAYAT_API_URL` | **Required.** Hayat's sign-in (public) and service API (internal) addresses. |
-| `HAYAT_CLIENT_ID` / `HAYAT_CLIENT_SECRET` | **Required.** Tabletsgo's service credentials in Hayat. |
-| `HAYAT_WEB_CLIENT_ID` | **Required.** The public client the browser signs in with. |
+| `TABLETSGO_MODE` | `solo` or `enterprise`. Unset: the recorded mode, else enterprise when `HAYAT_ISSUER` is set, else solo. |
+| `ENCRYPTION_KEY` | Encrypts connection credentials at rest. **Required in enterprise mode**; a new solo install generates one if unset. |
+| `SOLO_OWNER` | A v1.0 install with several accounts moving to solo: the email of the one who keeps it. |
+| `HAYAT_ISSUER` / `HAYAT_API_URL` | **Enterprise, required.** Hayat's sign-in (public) and service API (internal) addresses. |
+| `HAYAT_CLIENT_ID` / `HAYAT_CLIENT_SECRET` | **Enterprise, required.** Tabletsgo's service credentials in Hayat. |
+| `HAYAT_WEB_CLIENT_ID` | **Enterprise, required.** The public client the browser signs in with. |
 | `HAYAT_CONSOLE_URL` | Hayat's console, for the "Manage in Hayat" links. |
 | `HAYAT_AUTH_URL` | Hayat's sign-in as this server reaches it, when that isn't `HAYAT_ISSUER` (Docker, private networks). |
 | `PORT` | Host port (default `3000`). |
@@ -151,7 +206,7 @@ Full list: [docs/CONFIGURATION.md](docs/CONFIGURATION.md) and [`.env.example`](.
 
 ```bash
 npm install
-npm run dev:all     # Vite frontend + API server (runs migrations first)
+npm run dev:all     # Vite frontend + API server (runs migrations first) — solo mode unless .env sets HAYAT_*
 npm test
 ```
 

@@ -6,7 +6,7 @@
 
 import fs from 'fs'
 import { pipeline } from 'stream/promises'
-import { createCipheriv, createDecipheriv, createHash, randomBytes, scryptSync } from 'crypto'
+import { createCipheriv, createDecipheriv, createHash, randomBytes, scrypt, scryptSync, timingSafeEqual } from 'crypto'
 import { ENCRYPTION_KEY } from './config.js'
 
 export const sha256 = (s) => createHash('sha256').update(String(s)).digest('hex')
@@ -21,6 +21,37 @@ export const BACKUP_FILE_KEY = scryptSync(ENCRYPTION_KEY, 'tabletsgo-backup-file
 export const APP_SETTINGS_KEY = scryptSync(ENCRYPTION_KEY, 'tabletsgo-app-settings', 32)
 // SSH secrets: a key's private half + passphrase, a gateway's password.
 export const SSH_CRED_KEY = scryptSync(ENCRYPTION_KEY, 'tabletsgo-ssh', 32)
+// Signs the solo owner's session tokens (server/solo.js). Not a cipher key: an
+// HMAC secret, in its own namespace like the rest.
+export const SOLO_SESSION_KEY = scryptSync(ENCRYPTION_KEY, 'tabletsgo-solo-session', 32)
+
+// ---- Passwords (solo mode's one owner) ----
+// scrypt from Node itself, so no native dependency: `$scrypt$N$r$p$salt$hash`.
+// `$sha256$<hex>` is a v1.0 account's unsalted hash, carried over once and
+// replaced on the first sign-in (the caller sees `legacy: true`).
+const SCRYPT = { N: 16384, r: 8, p: 1 }
+const scryptAsync = (password, salt, len, opts) =>
+  new Promise((resolve, reject) => scrypt(password, salt, len, opts, (e, key) => (e ? reject(e) : resolve(key))))
+
+export async function hashPassword(password) {
+  const salt = randomBytes(16)
+  const hash = await scryptAsync(String(password), salt, 32, SCRYPT)
+  return `$scrypt$${SCRYPT.N}$${SCRYPT.r}$${SCRYPT.p}$${salt.toString('hex')}$${hash.toString('hex')}`
+}
+
+/** → { ok, legacy }. Never throws on a malformed hash: it just doesn't match. */
+export async function verifyPassword(password, stored) {
+  const value = String(stored || '')
+  const same = (a, b) => a.length === b.length && timingSafeEqual(a, b)
+  if (value.startsWith('$sha256$')) {
+    const ok = same(Buffer.from(sha256(password)), Buffer.from(value.slice(8)))
+    return { ok, legacy: ok }
+  }
+  const [, kind, N, r, p, salt, hash] = value.split('$')
+  if (kind !== 'scrypt' || !salt || !hash) return { ok: false, legacy: false }
+  const got = await scryptAsync(String(password), Buffer.from(salt, 'hex'), 32, { N: +N, r: +r, p: +p })
+  return { ok: same(got, Buffer.from(hash, 'hex')), legacy: false }
+}
 
 export function encryptSecret(plaintext, key = CRED_KEY) {
   const iv = randomBytes(12)

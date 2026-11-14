@@ -15,6 +15,9 @@ type RequestOptions = {
   method?: string
   body?: unknown
   signal?: AbortSignal
+  // false: send no token. For the calls that get one (solo sign-in and refresh),
+  // which would otherwise ask the token source — and so themselves — for one.
+  auth?: boolean
 }
 
 /**
@@ -25,8 +28,8 @@ type RequestOptions = {
  * Use for mutations (callers `try/catch` and surface the message). For reads
  * that should degrade to a default instead, use {@link safeRequest}.
  */
-export async function request<T = any>(path: string, { method = 'GET', body, signal }: RequestOptions = {}): Promise<T> {
-  const token = await getToken()
+export async function request<T = any>(path: string, { method = 'GET', body, signal, auth = true }: RequestOptions = {}): Promise<T> {
+  const token = auth ? await getToken() : null
   const headers: Record<string, string> = {}
   if (body !== undefined) headers['Content-Type'] = 'application/json'
   if (token) headers['Authorization'] = `Bearer ${token}`

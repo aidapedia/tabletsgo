@@ -18,7 +18,8 @@ Violating any of these breaks something silently. Load the named skill before
 working in that area — it has the reasoning and the full rules.
 
 - **No route branches on `conn.type`** — the db layer answers for every engine. → skill `db-engine`
-- **Hayat owns identity and authorization; tabletsgo keeps none of it.** Accounts, sign-in, SSO, workspaces (= Hayat *tenants*), rosters, groups, roles and grants live in Hayat; `server/hayat/` is the only way to ask. Never reintroduce a local user, login, role, grant or tree table, or a local-login fallback (decided 2026-11-10). → skill `auth-sessions`
+- **Identity lives in Hayat (enterprise) or in one solo owner (solo), never in a table of people.** In enterprise mode accounts, sign-in, SSO, workspaces (= Hayat *tenants*), rosters, groups, roles and grants live in Hayat. Solo mode keeps exactly one person in `app_settings` key `solo` (`server/solo.js`) — no roles, grants or tree; a second person means enterprise. Either way `server/hayat/` is the only way to ask: in solo its backend is `server/hayat/solo-backend.js`. Solo is a mode chosen at install and recorded in the store (`server/migrator/identity.js`), **never a fallback** when Hayat is missing or unreachable; an instance recorded as enterprise never boots solo. Never reintroduce a local user, login, role, grant or tree table (decided 2026-11-10, amended 2026-11-14 for solo). → skill `auth-sessions`
+- **No route branches on the mode.** `server/hayat/` answers for both modes and `server/solo.js` answers 404 in enterprise, so a route reads the same either way; a difference in behaviour goes into the backend or `server/solo.js`. Only boot wiring in `server.js` reads `server/mode.js`. → skill `auth-sessions`
 - **`requireAuth` is sync**, and stays sync — the Hayat token is verified in `sessionMiddleware`. The workspace guards are **async**: `if (!(await requirePermission(req, res, wsId, 'x'))) return` — a missing `await` is a silent authorization bypass (a Promise is truthy), and so is `list.filter(async …)`; use `filterAsync`. → skill `auth-sessions`
 - **Reach the metadata store through `db()`** (from `server/meta.js`), never a client you hold — `transaction(fn)` only composes because nested calls read `db()`. In `server.js` it is imported as `meta()`, since `db` there is the database layer. → skill `meta-schema`
 - **A route asks for a permission, never a role name** — `requirePermission(req, res, wsId, 'storage.manage')`. Roles are Hayat data; routes use the short key and `server/permissions-catalog.js` maps it to Hayat's (`tabletsgo.storage.manage`). → skill `auth-sessions`
@@ -27,7 +28,7 @@ working in that area — it has the reasoning and the full rules.
 - **Membership gates data** — `isMember()` (the tenant's roster in Hayat) decides who sees a workspace's resources; what they may do is a permission. An instance admin (`instance.manage` at Hayat's root) holds no data access through that role. → skill `auth-sessions`
 - **A connection or storage destination is mirrored into Hayat's tree by the route that creates, renames, re-owns or deletes it** — never on its own, and the row and the mirror change together (create: mirror or roll back; delete: mirror first). Dashboards and workflows are not mirrored. → skill `auth-sessions`
 - **Never cache a Hayat answer outside `server/hayat/`** — its caches are emptied by Hayat's Watch stream and by our own writes (read-your-writes); a copy kept elsewhere would outlive a revoked grant. → skill `auth-sessions`
-- **People, rosters and grants are managed in Hayat's console**, never through a tabletsgo route — tabletsgo's pages read them and link there (`consoleLink`). The workspace's name is the tenant's: `PUT /api/workspaces/:id` refuses `name`. → skill `auth-sessions`
+- **People, rosters and grants are managed in Hayat's console**, never through a tabletsgo route — tabletsgo's pages read them and link there (`consoleLink`, null in solo). The workspace's name is the tenant's: `PUT /api/workspaces/:id` sends `name` through `hayat.renameTenant`, which refuses in enterprise and renames solo's one workspace. The console gates people pages on `useIdentity().people`, never on the mode's name. → skill `auth-sessions`
 - **Meta migrations are append-only and additive-only** — Prisma Migrate owns them (`prisma/<engine>/migrations`, one history per engine, edited together); never edit a shipped migration or the frozen legacy steps (they read the frozen `server/migrator/legacy/catalog.js`), never `DROP`/rename, never add `NOT NULL` without a default. The one sanctioned exception is `20261110000000_hayat_owns_identity`, which the migrator precedes by writing the Hayat import bundle. → skill `meta-schema`
 - **The app migrates on boot, before anything opens the meta DB** — `import './server/migrator/boot.js'` stays the *first* import of `server.js`. On SQLite Prisma Migrate can't work on a file another connection holds, and `server/meta.js` opens its client the moment it is evaluated; never migrate from anywhere that runs after it. → skill `meta-schema`
 - **`workspaces.settings.smtp` is dead data** — never read it. SMTP is instance-level. → skill `auth-sessions`
@@ -59,7 +60,7 @@ console/src/
 
 | Feature | What it owns |
 | --- | --- |
-| `auth` | AuthContext: signing in at Hayat (OIDC code + PKCE via `oidc-client-ts`), the `/callback` page, the caller's account (read-only, links to Hayat) |
+| `auth` | AuthContext: signing in at Hayat (OIDC code + PKCE via `oidc-client-ts`, `/callback`) or as solo's owner (SoloSignIn / SoloSetup, drawn in place), `useIdentity()` (`{ mode, people }`), `EnterpriseOnly`, the caller's account (links to Hayat, or edited here in solo) |
 | `admin` | instance-admin area (`instance.manage` at Hayat's root): the one SMTP config. Accounts and workspaces are Hayat's |
 | `modules` | which databases/features the instance offers: `useModules().isEnabled(id)`, Admin → Modules panel, the wizard's module picker + settings fields |
 | `workspaces` | org/tenant layer: current workspace (a Hayat tenant), its roster (read-only, links to Hayat), notifications, tabletsgo's settings |
@@ -88,7 +89,9 @@ respond**.
 ```
 prisma/<engine>/         # schema.prisma + migrations/ per engine (sqlite | postgresql) → skill meta-schema
 scripts/migrate.js       # `npm run migrate [-- --status]` — the migrator by hand (the app runs it on boot; the updater's one-shot container runs this)
-scripts/hayat-bundle.js  # `npm run hayat:bundle [-- --admin <email>]` — the bundle `hayat import` loads (contract + named first admin on a fresh install)
+scripts/hayat-bundle.js  # `npm run hayat:bundle [-- --admin <email>]` — the bundle `hayat import` loads (contract + named first admin on a fresh install; a solo instance's owner + workspace)
+scripts/solo-reset-password.js # `npm run solo:reset-password [-- --password x]` — a solo owner's way back in; ends every session
+docker-compose.yml       # solo mode (nothing else to run); docker-compose.enterprise.yml is the overlay that adds TABLETSGO_MODE=enterprise + HAYAT_*
 scripts/hayat-remap.js   # `npm run hayat:remap -- result.json` — rewrite user ids Hayat matched to existing accounts
 scripts/dev/hayat.sh     # `npm run dev:hayat` — Hayat from ../hayat's source beside tabletsgo; writes .env option B
 scripts/dev/demo-workspace.mjs# the Demo workspace hayat.sh seeds once: sample SQLite DBs + connections, people with every kind of access
@@ -99,8 +102,10 @@ server/
 ├── util.js  crypto.js   # helpers; AES-256-GCM secret + file encryption
 ├── meta.js              # Prisma Client for the app's own store: db(), transaction(), backups → skill meta-schema
 ├── meta-connection.js   # openMeta() + snapshotMeta(): the one place that picks the engine
-├── migrator/            # ★ the migrator, run on boot (boot.js): Prisma Migrate + frozen legacy v1–v22; hayat-export.js writes the Hayat import bundle → skill meta-schema
-├── hayat/               # ★ Hayat's service API: connect.js (Connect over fetch, Watch, token verify), index.js (people, tenants, cached decisions, mirrors) → skill auth-sessions
+├── migrator/            # ★ the migrator, run on boot (boot.js): Prisma Migrate + frozen legacy v1–v22; hayat-export.js writes the Hayat import bundle; identity.js resolves and records the mode → skill meta-schema
+├── mode.js              # leaf: 'solo' | 'enterprise', as boot resolved it — only server.js's wiring reads it
+├── hayat/               # ★ Hayat's service API: connect.js (Connect over fetch, Watch, token verify), index.js (people, tenants, cached decisions, mirrors), solo-backend.js (the same answers in-process, solo mode) → skill auth-sessions
+├── solo.js              # solo's one owner (`app_settings` key `solo`): setup code, password, tokens, account → skill auth-sessions
 ├── auth.js              # the guards + sessionMiddleware, over Hayat          → skill auth-sessions
 ├── permissions-catalog.js  # leaf: permission keys ↔ Hayat keys, tabletsgo's Hayat contract → skill auth-sessions
 ├── sessions/            # connection sessions (in-process cache)              → skill auth-sessions
@@ -144,7 +149,7 @@ server/
 
 ### Backend
 - A module owns its table(s): if a route is writing raw SQL against `backup_schedules` or `storage_destinations`, that belongs in the module.
-- Dependencies point one way: `module-registry` and `permissions-catalog` are leaves (import nothing); `config → hayat → crypto → meta-connection → meta → sessions → {auth, workspaces, app-settings, connections, folders, storage, module-settings} → ssh → mail → db → workflow/backup/transfer → server.js`. `hayat/` imports only `config` (no meta store), so anything may ask it. `migrator/` sits beside them on `config → crypto → meta-connection → permissions-catalog` and never imports `meta.js` (its handle would lock the SQLite file Prisma needs). No cycles — `sessions` never imports `db`; the db layer hands it a release callback instead (`setReleaseHandler`), which is what lets the sweeper close idle handles. Also `backup/schedule.js` is split out from the runner precisely so `connection-transfer.js` can read a schedule without importing the pipeline.
+- Dependencies point one way: `module-registry`, `permissions-catalog` and `mode` are leaves (import nothing); `solo` sits beside `app-settings` (it imports it and `hayat`), and `hayat/` never imports it — `server.js` hands the solo backend its state; `config → hayat → crypto → meta-connection → meta → sessions → {auth, workspaces, app-settings, connections, folders, storage, module-settings} → ssh → mail → db → workflow/backup/transfer → server.js`. `hayat/` imports only `config` (no meta store), so anything may ask it. `migrator/` sits beside them on `config → crypto → meta-connection → permissions-catalog` and never imports `meta.js` (its handle would lock the SQLite file Prisma needs). No cycles — `sessions` never imports `db`; the db layer hands it a release callback instead (`setReleaseHandler`), which is what lets the sweeper close idle handles. Also `backup/schedule.js` is split out from the runner precisely so `connection-transfer.js` can read a schedule without importing the pipeline.
 
 ## EXTRA ACTION
 - Every time you add endpoint on server, describe its request, response and sample values in `server/openapi.yaml` — it is served as Swagger UI at `/api/docs`, and `tests/openapi.test.js` fails when it and `server.js` disagree

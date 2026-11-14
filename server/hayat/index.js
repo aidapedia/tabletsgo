@@ -13,6 +13,11 @@
  * the TTL would. After a write of our own, the next reads ask for at least that
  * revision (read-your-writes), like Hayat's SDKs.
  *
+ * In solo mode the backend below is server/hayat/solo-backend.js instead of
+ * Hayat's service API: the same questions, answered in-process for an instance
+ * of one person. Nothing above this module can tell the difference, which is
+ * what keeps routes from branching on the mode.
+ *
  * Sits just above config.js in the dependency order: it imports no meta store,
  * so anything may use it.
  */
@@ -50,6 +55,15 @@ export function useHayatBackend(fake) {
   backend = fake
   clearCaches()
 }
+
+/** Is this solo mode's in-process backend (server/hayat/solo-backend.js)? */
+export const isSoloBackend = () => !!backend?.solo
+
+/**
+ * Forget every cached answer. Solo mode calls it after changing the owner's
+ * profile, since nothing else would tell these caches; enterprise has Watch.
+ */
+export const dropCaches = () => clearCaches()
 
 const need = () => {
   if (!backend) throw new HayatError('unavailable', 'Hayat is not configured — set HAYAT_ISSUER, HAYAT_API_URL, HAYAT_CLIENT_ID, HAYAT_CLIENT_SECRET and HAYAT_WEB_CLIENT_ID.')
@@ -106,7 +120,8 @@ const isNotFound = (e) => e instanceof HayatError && e.code === 'not_found'
 export async function verifyAccessToken(token) {
   const claims = await need().verify(token)
   const aud = Array.isArray(claims.aud) ? claims.aud : claims.aud ? [claims.aud] : []
-  if (HAYAT_WEB_CLIENT_ID && claims.client_id !== HAYAT_WEB_CLIENT_ID && !aud.includes(HAYAT_WEB_CLIENT_ID)) {
+  // Solo tokens are tabletsgo's own (server/solo.js) and checked by its verifier.
+  if (!backend.solo && HAYAT_WEB_CLIENT_ID && claims.client_id !== HAYAT_WEB_CLIENT_ID && !aud.includes(HAYAT_WEB_CLIENT_ID)) {
     throw new Error('token was issued to another application')
   }
   return { userId: claims.sub, sessionId: claims.sid || null }
@@ -299,6 +314,17 @@ export async function updateResource({ type, externalId, name, ownerId, workspac
   return upsertResource({ type, externalId, name, parent, ownerId: ownerId ?? cur?.ownerId ?? '' })
 }
 
+/**
+ * Rename a workspace. Hayat owns a tenant's name, so in enterprise mode this
+ * refuses and the workspace is renamed in Hayat's console; solo's backend
+ * keeps the one workspace's name itself.
+ */
+export async function renameTenant(tenantId, name) {
+  if (!need().solo) throw new HayatError('failed_precondition', 'Rename the workspace in Hayat — its name is the tenant’s.', 400)
+  const res = await backend.call('DirectoryService', 'UpdateTenant', { tenantId, name })
+  wrote(res.tenantId, res.rev)
+}
+
 /** Remove a mirror. Already gone is fine. */
 export async function deleteResource(type, externalId) {
   try {
@@ -320,7 +346,7 @@ let watching = null
  * request will say so on its own.
  */
 export async function startHayat({ contract, log = console.log } = {}) {
-  if (!backend) return
+  if (!backend || backend.solo) return
   try {
     const res = await backend.call('SchemaService', 'PublishContract', { manifest: contract })
     log(`📜 Published tabletsgo's contract v${res.version} to Hayat — approve it in Hayat's console (Services → tabletsgo).`)
@@ -362,11 +388,20 @@ async function followChanges(signal, log) {
 }
 
 /** A link into Hayat's console, or null when its address isn't configured. */
-export const consoleLink = (path = '') => (HAYAT_CONSOLE_URL ? `${HAYAT_CONSOLE_URL}${path}` : null)
+export const consoleLink = (path = '') => (HAYAT_CONSOLE_URL && !backend?.solo ? `${HAYAT_CONSOLE_URL}${path}` : null)
 
-/** What the browser needs to sign in: public, served before anyone is signed in. */
-export const signInConfig = () => ({
-  issuer: HAYAT_ISSUER || null,
-  clientId: HAYAT_WEB_CLIENT_ID || null,
-  consoleUrl: HAYAT_CONSOLE_URL || null,
-})
+/**
+ * What the browser needs to sign in: public, served before anyone is signed in.
+ * `mode` says which sign-in to show; `people` whether there is anyone but the
+ * caller to see (members, access lists) — the console gates on that capability.
+ */
+export const signInConfig = () =>
+  backend?.solo
+    ? backend.signInConfig()
+    : {
+        mode: 'enterprise',
+        issuer: HAYAT_ISSUER || null,
+        clientId: HAYAT_WEB_CLIENT_ID || null,
+        consoleUrl: HAYAT_CONSOLE_URL || null,
+        people: true,
+      }

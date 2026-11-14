@@ -26,6 +26,7 @@ import { BACKUPS_DIR, META_DB_TYPE, ROOT_DIR } from '../config.js'
 import { APP_SETTINGS_KEY, encryptSecret } from '../crypto.js'
 import { openMeta, snapshotMeta } from '../meta-connection.js'
 import { exportHayatBundle } from './hayat-export.js'
+import { captureSoloOwner, intendedMode, resolveIdentity } from './identity.js'
 import { LATEST_VERSION as LEGACY_VERSION, migrate as migrateLegacySqlite } from './legacy/sqlite.js'
 import { migratePostgres as migrateLegacyPostgres } from './legacy/postgresql.js'
 
@@ -145,6 +146,17 @@ export function writeHayatBundle(db, log, dir = path.dirname(BACKUPS_DIR)) {
   return file
 }
 
+/**
+ * Migrate, then decide the mode (server/migrator/identity.js) and record it.
+ * What boot.js runs. → 'solo' | 'enterprise'.
+ */
+export function migrateAndResolveMode({ log = console.log } = {}) {
+  const result = runMigrations({ log })
+  // Past the drop before this boot: the database ran under Hayat.
+  const wasHayat = result.state === 'prisma' && !result.applied.includes(HAYAT_DROP)
+  return withMeta((db) => resolveIdentity(db, { wasHayat, log }))
+}
+
 /** Bring the metadata database to the latest schema. Returns what it did. */
 export function runMigrations({ log = console.log } = {}) {
   const before = metaSchemaStatus()
@@ -166,7 +178,14 @@ export function runMigrations({ log = console.log } = {}) {
     withMeta((db) => snapshot(db, before.applied.at(-1), log))
   }
 
-  if (metaSchemaStatus().pending.includes(HAYAT_DROP)) withMeta((db) => writeHayatBundle(db, log))
+  if (metaSchemaStatus().pending.includes(HAYAT_DROP)) {
+    withMeta((db) => {
+      writeHayatBundle(db, log)
+      // A v1.0 install going solo keeps one account as its owner — before the
+      // drop, which is the last moment those accounts exist.
+      if (intendedMode(db) === 'solo') captureSoloOwner(db, log)
+    })
+  }
   log(prisma('migrate', 'deploy'))
   withMeta(seed)
 

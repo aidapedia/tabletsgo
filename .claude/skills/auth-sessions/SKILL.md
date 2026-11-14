@@ -1,12 +1,13 @@
 ---
 name: auth-sessions
-description: Signing in and authorization over Hayat — server/hayat (the service API client, cached decisions, Watch, resource mirrors), server/auth.js guards, server/permissions-catalog.js (permission keys and tabletsgo's Hayat contract), the Hayat import bundle, connection sessions and the max-sessions limit, and instance SMTP. Use this skill when touching server/auth.js, server/hayat/*, server/permissions-catalog.js, server/sessions/*, server/workspaces.js, server/mail.js or server/app-settings.js; when adding a route that needs authorization or a new permission; when working on sign-in, members, workspaces, groups, roles or who may open a connection; when mirroring a resource into Hayat; when working on session limits or `SessionLimitError`; or when sending email from the server.
+description: Signing in and authorization in both modes — solo (one owner, server/solo.js, server/hayat/solo-backend.js, the recorded mode in server/migrator/identity.js) and enterprise over Hayat — server/hayat (the service API client, cached decisions, Watch, resource mirrors), server/auth.js guards, server/permissions-catalog.js (permission keys and tabletsgo's Hayat contract), the Hayat import bundle, connection sessions and the max-sessions limit, and instance SMTP. Use this skill when touching server/auth.js, server/hayat/*, server/solo.js, server/mode.js, server/migrator/identity.js, server/permissions-catalog.js, server/sessions/*, server/workspaces.js, server/mail.js or server/app-settings.js; when adding a route that needs authorization or a new permission; when working on sign-in, members, workspaces, groups, roles or who may open a connection; when mirroring a resource into Hayat; when working on session limits or `SessionLimitError`; or when sending email from the server.
 ---
 
 # Auth (Hayat), sessions & mail
 
 ## The model in one paragraph
 
+*Enterprise mode — see "Two modes, one seam" below for solo.*
 **Hayat owns identity and authorization; tabletsgo keeps none of it** (decided
 2026-11-10, migration `20261110000000_hayat_owns_identity` dropped the old tables).
 People sign in at Hayat — an OpenID provider — with the console as a public client
@@ -15,6 +16,48 @@ A workspace *is* a Hayat **tenant**; its roster, groups, roles and grants are ed
 in Hayat's console. Tabletsgo asks Hayat's service API (`server/hayat/`) every
 question and mirrors the two resources it owns — connections and storage
 destinations — into Hayat's tree so grants can be made on them.
+
+## Two modes, one seam (decided 2026-11-14)
+
+The same code and image run **solo** (one developer, nothing else to run) or
+**enterprise** (Hayat owns people and access). `server/hayat/index.js` asks every
+question through a backend `{ call, watch, verify }`: in enterprise it is
+`connect.js` (Hayat's service API); in solo it is `solo-backend.js`, which answers
+the same RPCs in-process — one owner, one workspace, the owner holds every
+permission, nobody else holds anything, mirrors are accepted and kept nowhere, any
+RPC it doesn't know answers `unimplemented`. Everything above `index.js` — guards,
+routes, caches — can't tell the difference. **No route branches on the mode.**
+
+- **The mode** is resolved on boot by `server/migrator/identity.js` (called from
+  `boot.js` after migrating) and held in `server/mode.js`: `TABLETSGO_MODE`, else
+  the mode recorded in `app_settings` key `identity`, else enterprise iff
+  `HAYAT_ISSUER`. **An instance recorded as enterprise never boots solo** (a lost
+  env var must not open a first-run setup on a team instance); a database that was
+  already past the drop migration with data counts as enterprise. Solo → enterprise
+  writes the import bundle (`exportSoloBundle`) beside the data and records the change.
+- **Solo's owner** lives in `app_settings` key `solo`, owned by `server/solo.js`:
+  `{ owner: { id, email, name, timezone, passwordHash } | null, workspace: { id, name }, tokenEpoch }`.
+  Never a table of people; a second person means enterprise. First run: a six-word
+  code printed to the log (`announceSetup`) is required by `POST /api/auth/solo/setup`.
+  Passwords are scrypt (`crypto.js` `hashPassword`); a v1.0 `$sha256$` hash verifies
+  once and is replaced. Sessions are HS256 JWTs under `SOLO_SESSION_KEY`: a 15-min
+  access token (Bearer, verified by the solo backend → `solo.verifyAccess`) and a
+  30-day refresh token in an httpOnly SameSite=Strict cookie on `/api/auth/solo`.
+  Both carry `tokenEpoch`; bumping it (password change, sign out everywhere,
+  `npm run solo:reset-password`) ends every session. 5 failures/min/IP → 429.
+  Every `solo.*` function answers 404 in enterprise mode — that is how the
+  `/api/auth/solo/*` routes avoid branching.
+- **The workspace's name**: `hayat.renameTenant` refuses in enterprise (rename it in
+  Hayat) and goes through the solo backend's `UpdateTenant` to `solo.renameWorkspace`.
+- **v1.0 → solo**: before the drop migration, `captureSoloOwner` keeps the one
+  email account (or `SOLO_OWNER`'s; several and none named → refuse, nothing
+  changed), folds every workspace's rows into the oldest, makes every connection
+  the owner's.
+- **The console** asks `GET /api/auth/config` (`{ mode, people, … }`), draws solo's
+  sign-in/setup in place (`RequireAuth`), keeps solo's access token in memory only,
+  and gates people pages on `useIdentity().people` — never on the mode's name.
+- Tests: `tests/solo.test.js` (the backend, tokens, the mode rules, v1.0 capture);
+  `tests/hayat.test.js` stays the enterprise side.
 
 ## Asking: `server/hayat/`
 

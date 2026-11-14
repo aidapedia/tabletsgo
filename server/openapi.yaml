@@ -45,6 +45,19 @@ tags:
       - **Instance admin** is a grant, not a column: `tabletsgo.instance.manage` at Hayat's root, which the `tabletsgo.admin` role carries.
 
       </details>
+  - name: Signing in (solo)
+    description: |-
+      **Solo mode** (`TABLETSGO_MODE=solo`, the default without Hayat) is tabletsgo for one person: one owner, one workspace, no Hayat. The owner holds every permission and is the instance admin. In enterprise mode every route under this tag answers `404`.
+
+      <details><summary>More about solo sign-in</summary>
+
+      - **First run.** A new solo instance prints a six-word setup code to its log. `POST /api/auth/solo/setup` takes it with the owner's name, email and password, so whoever can reach the port but not read the log can't claim the instance.
+      - **Tokens.** Setup, sign-in and refresh answer with a 15-minute `accessToken` (send it as `Authorization: Bearer`, exactly like a Hayat token) and set a 30-day refresh token in the `tabletsgo_solo_refresh` cookie — `HttpOnly`, `SameSite=Strict`, `Path=/api/auth/solo`.
+      - **Ending sessions.** A password change and `logout` with `everywhere: true` end every session at once.
+      - **Forgotten password:** `npm run solo:reset-password` on the server (`docker compose exec tabletsgo npm run solo:reset-password`).
+      - **Limits.** Five failed attempts per minute per address, then `429`.
+
+      </details>
   - name: Permissions
     description: |-
       Every workspace-scoped route asks for a **permission** — `requirePermission(req, res, wsId, 'storage.manage')` — and Hayat answers it from the grants on the workspace's tenant node and above (roles, groups and grants are edited in Hayat's console). Routes and the console use short keys; tabletsgo's contract declares them in Hayat as `tabletsgo.<key>`.
@@ -493,29 +506,49 @@ paths:
     get:
       tags:
         - Signing in (Hayat)
-      summary: What the browser needs to sign in at Hayat
-      description: "Public — nobody is signed in yet. The console starts an authorization-code + PKCE sign-in at `issuer` with `clientId` (Hayat's public client for tabletsgo, `HAYAT_WEB_CLIENT_ID`) and sends the access token it gets back as `Authorization: Bearer` on every call. `consoleUrl` is Hayat's console, where members, groups, roles and accounts are managed; `null` when `HAYAT_CONSOLE_URL` is unset."
+      summary: What the browser needs to sign in
+      description: "Public — nobody is signed in yet. `mode` says which sign-in to show. **enterprise:** the console starts an authorization-code + PKCE sign-in at `issuer` with `clientId` (Hayat's public client for tabletsgo, `HAYAT_WEB_CLIENT_ID`) and sends the access token it gets back as `Authorization: Bearer` on every call; `consoleUrl` is Hayat's console, where members, groups, roles and accounts are managed (`null` when `HAYAT_CONSOLE_URL` is unset). **solo:** the console shows its own sign-in (see Signing in (solo)), or the first-run setup while `setupRequired`. `people` says whether there is anyone but the caller to see — members, access lists — and is what the console gates those pages on."
       security: []
       responses:
         "200":
-          description: "`{ issuer, clientId, consoleUrl }`"
+          description: "`{ mode: 'enterprise', issuer, clientId, consoleUrl, people: true }` or `{ mode: 'solo', setupRequired, people: false }`"
           content:
             application/json:
               schema:
                 type: object
                 properties:
+                  mode:
+                    type: string
+                    enum: [solo, enterprise]
+                  people:
+                    type: boolean
+                  setupRequired:
+                    type: boolean
+                    description: solo only
                   issuer:
                     type: string
+                    description: enterprise only
                   clientId:
                     type: string
+                    description: enterprise only
                   consoleUrl:
                     type:
                       - string
                       - "null"
-              example:
-                issuer: https://auth.example.com
-                clientId: 0193f3a2-9a7e-7c1d-b1a8-5d1f2e3c4b5a
-                consoleUrl: https://hayat.example.com
+                    description: enterprise only
+              examples:
+                enterprise:
+                  value:
+                    mode: enterprise
+                    issuer: https://auth.example.com
+                    clientId: 0193f3a2-9a7e-7c1d-b1a8-5d1f2e3c4b5a
+                    consoleUrl: https://hayat.example.com
+                    people: true
+                solo:
+                  value:
+                    mode: solo
+                    setupRequired: false
+                    people: false
   /api/auth/me:
     get:
       tags:
@@ -551,6 +584,208 @@ paths:
                 accountUrl: https://hayat.example.com/account
         "401":
           $ref: "#/components/responses/Unauthorized"
+  /api/auth/solo/setup:
+    post:
+      tags:
+        - Signing in (solo)
+      summary: Claim a new solo instance
+      description: "Only while `GET /api/auth/config` says `setupRequired`. `code` is the six-word setup code the instance printed to its log on boot (case and surrounding spaces don't matter). Makes the owner, signs them in and sets the refresh cookie. `timezone` is optional (an IANA zone; `null` follows the browser)."
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SoloSetup"
+            example:
+              code: amber-falcon-river-stone-maple-orbit
+              name: Dev
+              email: dev@example.com
+              password: correct-horse-battery
+              timezone: Asia/Jakarta
+      responses:
+        "201":
+          description: Set up and signed in. The refresh token is in the `Set-Cookie` header.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SoloTokens"
+        "400":
+          description: An invalid email, or a password under 8 characters
+        "403":
+          description: The setup code is wrong
+        "404":
+          description: Enterprise mode
+        "409":
+          description: Already set up — sign in instead
+        "429":
+          description: Too many attempts from this address; wait a minute
+  /api/auth/solo/login:
+    post:
+      tags:
+        - Signing in (solo)
+      summary: Sign in as the owner
+      description: Email and password. A v1.0 account's old password hash is replaced with scrypt on its first sign-in.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                password:
+                  type: string
+            example:
+              email: dev@example.com
+              password: correct-horse-battery
+      responses:
+        "200":
+          description: Signed in. The refresh token is in the `Set-Cookie` header.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SoloTokens"
+        "401":
+          description: Wrong email or password
+        "404":
+          description: Enterprise mode
+        "409":
+          description: Not set up yet
+        "429":
+          description: Too many attempts from this address; wait a minute
+  /api/auth/solo/refresh:
+    post:
+      tags:
+        - Signing in (solo)
+      summary: A fresh access token from the refresh cookie
+      description: Reads the `tabletsgo_solo_refresh` cookie and answers with a new access token (and a new cookie). Refused from another origin.
+      security: []
+      responses:
+        "200":
+          description: A new access token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SoloTokens"
+        "401":
+          description: No cookie, or it expired or was ended — sign in again
+        "403":
+          description: Called from another origin
+        "404":
+          description: Enterprise mode
+  /api/auth/solo/logout:
+    post:
+      tags:
+        - Signing in (solo)
+      summary: Sign out
+      description: Clears the refresh cookie. With `everywhere`, ends every session on every device, which takes a signed-in caller.
+      security: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                everywhere:
+                  type: boolean
+            example:
+              everywhere: true
+      responses:
+        "204":
+          description: Signed out
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Enterprise mode
+  /api/auth/solo/account:
+    put:
+      tags:
+        - Signing in (solo)
+      summary: Change the owner's name, email or time zone
+      description: Fields left out keep their value. `timezone` is an IANA zone, or `null` to follow the browser.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                email:
+                  type: string
+                timezone:
+                  type:
+                    - string
+                    - "null"
+            example:
+              name: Dev
+              timezone: Europe/Berlin
+      responses:
+        "200":
+          description: "`{ user }`, as `GET /api/auth/me` shows it"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user: {}
+              example:
+                user:
+                  id: 6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b
+                  email: dev@example.com
+                  name: Dev
+                  role: admin
+                  timezone: Europe/Berlin
+                  picture: null
+        "400":
+          description: An invalid email
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Enterprise mode
+  /api/auth/solo/password:
+    put:
+      tags:
+        - Signing in (solo)
+      summary: Change the owner's password
+      description: Needs the current password. Every other session ends; this one gets fresh tokens.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current, next]
+              properties:
+                current:
+                  type: string
+                next:
+                  type: string
+            example:
+              current: correct-horse-battery
+              next: a-longer-better-one
+      responses:
+        "200":
+          description: Changed. New tokens for this session; the refresh token is in the `Set-Cookie` header.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SoloTokens"
+        "400":
+          description: The new password is under 8 characters
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: The current password is wrong
+        "404":
+          description: Enterprise mode
+        "429":
+          description: Too many attempts from this address; wait a minute
   /api/workspaces:
     get:
       tags:
@@ -617,7 +852,7 @@ paths:
       tags:
         - Workspaces
       summary: Change tabletsgo's settings for a workspace
-      description: "Checked **field by field**: `experiments` and `sessions` need `workspace.manage`, `notifications` needs `notifications.manage`. `name` is refused with `400` — the name is the Hayat tenant's; rename it in Hayat's console. `experiments` is a partial `{ [key]: boolean }` merged onto the stored flags; `sessions` is `{ maxPerConnection }` (0 = unlimited); `notifications.backupFailure` (`{ enabled, memberIds }`) replaces the stored value."
+      description: "Checked **field by field**: `name`, `experiments` and `sessions` need `workspace.manage`, `notifications` needs `notifications.manage`. `name` renames the workspace in **solo** mode; in **enterprise** mode it is refused with `400`, since the name is the Hayat tenant's (rename it in Hayat's console). `experiments` is a partial `{ [key]: boolean }` merged onto the stored flags; `sessions` is `{ maxPerConnection }` (0 = unlimited); `notifications.backupFailure` (`{ enabled, memberIds }`) replaces the stored value."
       parameters:
         - name: id
           in: path
@@ -626,12 +861,15 @@ paths:
           schema:
             type: string
       requestBody:
-        description: "`{ experiments?, notifications?, sessions? }`"
+        description: "`{ name?, experiments?, notifications?, sessions? }`"
         content:
           application/json:
             schema:
               type: object
               properties:
+                name:
+                  type: string
+                  description: Solo mode only
                 experiments: {}
                 notifications: {}
                 sessions: {}
@@ -650,7 +888,7 @@ paths:
                     type: boolean
                     example: true
         "400":
-          description: "`name` was sent — rename the workspace in Hayat"
+          description: "`name` was sent in enterprise mode (rename the workspace in Hayat), or it is blank"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -10739,7 +10977,7 @@ components:
     bearerAuth:
       type: http
       scheme: bearer
-      description: A Hayat access token, from signing in at Hayat (see GET /api/auth/config).
+      description: An access token — Hayat's in enterprise mode, from signing in at Hayat; tabletsgo's own in solo mode, from POST /api/auth/solo/login (see GET /api/auth/config).
   responses:
     Unauthorized:
       description: Missing, expired or revoked token.
@@ -10748,6 +10986,46 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
   schemas:
+    SoloSetup:
+      type: object
+      required: [code, email, password]
+      properties:
+        code:
+          type: string
+          description: The setup code from the instance's log
+        name:
+          type: string
+        email:
+          type: string
+        password:
+          type: string
+          minLength: 8
+        timezone:
+          type:
+            - string
+            - "null"
+    SoloTokens:
+      type: object
+      properties:
+        accessToken:
+          type: string
+          description: "Send as `Authorization: Bearer`"
+        expiresIn:
+          type: integer
+          description: Seconds until the access token expires (900)
+        user:
+          type: object
+          description: The owner, as `GET /api/auth/me` shows them
+      example:
+        accessToken: eyJhbGciOiJIUzI1NiJ9.eyJjbGllbnRfaWQiOiJ0YWJsZXRzZ28tc29sbyJ9.c2lnbmF0dXJl
+        expiresIn: 900
+        user:
+          id: 6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b
+          email: dev@example.com
+          name: Dev
+          role: admin
+          timezone: Asia/Jakarta
+          picture: null
     WorkspaceMember:
       type: object
       properties:

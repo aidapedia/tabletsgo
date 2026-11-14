@@ -47,8 +47,10 @@ import {
   META_DB_PATH,
   META_DB_TYPE,
   PORT,
+  PUBLIC_URL,
   SCHEDULER_ENABLED,
 } from './server/config.js'
+import { isSolo, mode } from './server/mode.js'
 import { backupMeta, checkMetaIntegrity, closeMeta, db as meta, transaction } from './server/meta.js'
 import { describeError, filterAsync, safeJson, sanitizeForKey } from './server/util.js'
 import {
@@ -74,8 +76,10 @@ import {
   saveWorkspaceSettings,
   syncWorkspaceRows,
 } from './server/workspaces.js'
-import { CONNECTION_TYPE, STORAGE_TYPE, TENANT_TYPE, contractManifest, hayatKey } from './server/permissions-catalog.js'
+import { CONNECTION_TYPE, HAYAT_KEYS, STORAGE_TYPE, TENANT_TYPE, contractManifest, hayatKey } from './server/permissions-catalog.js'
 import * as hayat from './server/hayat/index.js'
+import { soloBackend } from './server/hayat/solo-backend.js'
+import * as solo from './server/solo.js'
 import {
   connectionSessionStats,
   endAllConnectionSessions,
@@ -216,11 +220,18 @@ app.use(sessionMiddleware)
 // already current: server/migrator/boot.js migrated it before any import here
 // opened it.
 let bootReady = false
-// Who people are and what they may do is Hayat's (CLAUDE.md "INVARIANTS"):
-// without it nobody could sign in, so refuse to start rather than serve a
-// login that can't work.
-if (!HAYAT_CONFIGURED) {
-  console.error('❌ Hayat is not configured. Set HAYAT_ISSUER, HAYAT_API_URL, HAYAT_CLIENT_ID, HAYAT_CLIENT_SECRET and HAYAT_WEB_CLIENT_ID (see README → Hayat).')
+// Who people are and what they may do: Hayat's in enterprise mode, solo's one
+// owner otherwise (CLAUDE.md "INVARIANTS"). Solo answers Hayat's questions
+// in-process through the same seam, so nothing below this knows which it is.
+if (isSolo()) {
+  await solo.loadSolo()
+  hayat.useHayatBackend(
+    soloBackend({ state: solo.current, permissions: HAYAT_KEYS, verifyToken: solo.verifyAccess, renameWorkspace: solo.renameWorkspace })
+  )
+} else if (!HAYAT_CONFIGURED) {
+  // Without Hayat nobody could sign in: refuse to start rather than serve a
+  // login that can't work.
+  console.error('❌ Hayat is not configured. Set HAYAT_ISSUER, HAYAT_API_URL, HAYAT_CLIENT_ID, HAYAT_CLIENT_SECRET and HAYAT_WEB_CLIENT_ID (see README → Enterprise mode), or run this instance in solo mode.')
   process.exit(1)
 }
 // The instance's modules are read once here: the db layer asks on every dispatch.
@@ -274,6 +285,91 @@ app.get('/api/auth/me', async (req, res) => {
   const user = requireAuth(req, res)
   if (!user) return
   res.json({ user: publicUser(user), accountUrl: hayat.consoleLink('/account') })
+})
+
+// ---- Solo mode: one owner, signed in by password ----
+//
+// server/solo.js owns all of it and answers 404 in enterprise mode, so these
+// routes don't ask which mode they're in. The access token goes back in the body
+// (the console sends it as Bearer, like Hayat's); the refresh token rides in an
+// httpOnly, SameSite=Strict cookie scoped to /api/auth/solo.
+
+const secureRequest = (req) => req.secure || req.headers['x-forwarded-proto'] === 'https' || PUBLIC_URL.startsWith('https://')
+
+// Tokens out: the refresh one as the cookie, the rest as JSON.
+const sendSoloTokens = (req, res, tokens, status = 200) => {
+  const { refreshToken, ...body } = tokens
+  res.setHeader('Set-Cookie', solo.refreshCookie(refreshToken, { secure: secureRequest(req) }))
+  res.status(status).json(body)
+}
+
+// A cookie-authenticated call must come from this site, whatever SameSite does.
+const sameOrigin = (req) => {
+  const origin = req.headers.origin
+  if (!origin) return true
+  try {
+    const host = new URL(origin).host
+    return host === req.headers.host || (PUBLIC_URL && host === new URL(PUBLIC_URL).host)
+  } catch {
+    return false
+  }
+}
+
+app.post('/api/auth/solo/setup', async (req, res) => {
+  try {
+    const owner = await solo.setup(req.body || {}, req.ip)
+    sendSoloTokens(req, res, await solo.issueTokens(owner), 201)
+  } catch (error) {
+    fail(res, error, 400)
+  }
+})
+
+app.post('/api/auth/solo/login', async (req, res) => {
+  try {
+    const owner = await solo.signIn(req.body || {}, req.ip)
+    sendSoloTokens(req, res, await solo.issueTokens(owner))
+  } catch (error) {
+    fail(res, error, 400)
+  }
+})
+
+app.post('/api/auth/solo/refresh', async (req, res) => {
+  if (!sameOrigin(req)) return res.status(403).json({ error: 'Forbidden' })
+  try {
+    sendSoloTokens(req, res, await solo.refresh(solo.readRefreshCookie(req)))
+  } catch (error) {
+    fail(res, error, 401)
+  }
+})
+
+app.post('/api/auth/solo/logout', async (req, res) => {
+  try {
+    // "Everywhere" ends every session, so only the signed-in owner may ask for it.
+    if (req.body?.everywhere && !requireAuth(req, res)) return
+    await solo.signOut({ everywhere: !!req.body?.everywhere })
+    res.setHeader('Set-Cookie', solo.refreshCookie('', { secure: secureRequest(req) }))
+    res.status(204).end()
+  } catch (error) {
+    fail(res, error, 400)
+  }
+})
+
+app.put('/api/auth/solo/account', async (req, res) => {
+  if (!requireAuth(req, res)) return
+  try {
+    res.json({ user: await solo.updateAccount(req.body || {}) })
+  } catch (error) {
+    fail(res, error, 400)
+  }
+})
+
+app.put('/api/auth/solo/password', async (req, res) => {
+  if (!requireAuth(req, res)) return
+  try {
+    sendSoloTokens(req, res, await solo.changePassword(req.body || {}, req.ip))
+  } catch (error) {
+    fail(res, error, 400)
+  }
 })
 
 // ============================================================================
@@ -458,11 +554,20 @@ app.put('/api/workspaces/:id', async (req, res) => {
   const user = requireAuth(req, res)
   if (!user) return
   const { name, experiments, notifications, sessions } = req.body || {}
-  if (name !== undefined) return res.status(400).json({ error: 'Rename the workspace in Hayat — its name is the tenant’s.' })
-  if ((experiments || sessions) && !(await requirePermission(req, res, req.params.id, 'workspace.manage'))) return
+  if ((name !== undefined || experiments || sessions) && !(await requirePermission(req, res, req.params.id, 'workspace.manage'))) return
   if (notifications && !(await requirePermission(req, res, req.params.id, 'notifications.manage'))) return
   const ws = await workspaceForUser(req.params.id, user.id)
   if (!ws) return res.status(404).json({ error: 'Workspace not found' })
+
+  // The name is the tenant's: Hayat refuses here (rename it in Hayat's console);
+  // solo keeps its one workspace's name itself.
+  if (name !== undefined) {
+    try {
+      await hayat.renameTenant(req.params.id, name)
+    } catch (error) {
+      return fail(res, error, 400)
+    }
+  }
 
   if (experiments || notifications || sessions) {
     const settings = safeJson((await getWorkspaceRow(req.params.id))?.settings)
@@ -3039,7 +3144,12 @@ cron.schedule('* * * * *', () => {
 app.listen(PORT, async () => {
   console.log(`✅ Server running on http://localhost:${PORT}`)
   console.log(`📊 API available at http://localhost:${PORT}/api`)
-  console.log(`🪪 Sign-in and access: Hayat at ${hayat.signInConfig().issuer}`)
+  if (isSolo()) {
+    console.log('🪪 Mode: solo — one owner, signed in by password')
+    solo.announceSetup(console.log, PUBLIC_URL || `http://localhost:${PORT}`)
+  } else {
+    console.log(`🪪 Mode: ${mode()} — sign-in and access by Hayat at ${hayat.signInConfig().issuer}`)
+  }
   // Open what can be opened eagerly (SQLite files) so the first query is fast.
   const connections = await listConnections().catch((error) => {
     console.error('Listing connections to prewarm failed:', error.message)

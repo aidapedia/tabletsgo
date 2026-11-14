@@ -149,6 +149,8 @@ export const PERMISSIONS = [
 const ITEMS = PERMISSIONS.flatMap((g) => g.items)
 
 export const PERMISSION_KEYS = new Set(ITEMS.map((i) => i.key))
+// Every qualified key — what solo mode's one owner holds (server/hayat/solo-backend.js).
+export const HAYAT_KEYS = ITEMS.map((i) => i.hayat)
 const TO_HAYAT = new Map(ITEMS.map((i) => [i.key, i.hayat]))
 const FROM_HAYAT = new Map(ITEMS.map((i) => [i.hayat, i.key]))
 

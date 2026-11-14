@@ -1,7 +1,7 @@
 import { Suspense, useEffect, useState, type MouseEvent } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { PageLoading } from '@/shared/ui/feedback/LoadingState'
-import { useAuth } from '@/features/auth'
+import { useAuth, useIdentity } from '@/features/auth'
 import { WorkspaceSwitcher } from '@/features/workspaces'
 import { UpdateBanner } from '@/features/system-update'
 import Breadcrumb from '@/shared/ui/navigation/Breadcrumb'
@@ -123,12 +123,18 @@ function PageTrail({ pathname, isAdmin }: { pathname: string; isAdmin: boolean }
   )
 }
 
-function Sidebar({ pathname, onNavigate, user, onSettings, onLogout, open, onClose, isAdmin, canAdmin, collapsed, onToggleCollapse }: any) {
+// Rows about other people. A solo instance has nobody else, so they go.
+const PEOPLE_PATHS = new Set(['/members'])
+
+function Sidebar({ pathname, onNavigate, user, onSettings, onLogout, open, onClose, isAdmin, canAdmin, people, collapsed, onToggleCollapse }: any) {
+  const workspaceNav = people
+    ? NAV
+    : { ...NAV, groups: NAV.groups.map((g) => ({ ...g, items: g.items.filter((i) => !PEOPLE_PATHS.has(i.path)) })) }
   const nav = isAdmin
     ? ADMIN_NAV
     : canAdmin
-      ? { ...NAV, groups: NAV.groups.map((g) => (g.group === 'Account' ? { ...g, items: [...g.items, ADMIN_ENTRY] } : g)) }
-      : NAV
+      ? { ...workspaceNav, groups: workspaceNav.groups.map((g) => (g.group === 'Account' ? { ...g, items: [...g.items, ADMIN_ENTRY] } : g)) }
+      : workspaceNav
 
   // The Account group isn't listed: its one row is about *you*, so it opens from
   // the account menu, next to sign-out. It stays in the model because the page
@@ -352,6 +358,7 @@ const loadCollapsed = () => {
 // Home shell: sidebar + the active section page (rendered via <Outlet/>).
 export default function HomeLayout() {
   const { user, logout } = useAuth()
+  const { people } = useIdentity()
   const navigate = useNavigate()
   const location = useLocation()
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -395,6 +402,7 @@ export default function HomeLayout() {
         onLogout={logout}
         isAdmin={isAdmin}
         canAdmin={canAdmin}
+        people={people}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
         collapsed={collapsed && !sidebarOpen}

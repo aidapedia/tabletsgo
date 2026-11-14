@@ -86,6 +86,8 @@ export async function getWorkspace(id: string) {
 export async function updateWorkspace(
   id: string,
   patch: {
+    // Solo mode only: an enterprise workspace is renamed in Hayat.
+    name?: string
     experiments?: Record<string, boolean>
     notifications?: NotificationSettings
     sessions?: { maxPerConnection: number }

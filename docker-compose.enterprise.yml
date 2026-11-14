@@ -1,0 +1,25 @@
+# Enterprise mode — accounts, workspaces, roles and grants live in Hayat
+# (https://github.com/aidapedia/hayat). An overlay on docker-compose.yml:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.enterprise.yml up -d
+#
+# Hayat runs on its own (its repo's deploy/compose); `hayat import` prints the
+# HAYAT_* values below. Moving a solo instance here: README → Moving from solo
+# to enterprise. The `:?` guards make compose refuse to start with one missing.
+services:
+  tabletsgo:
+    environment:
+      - TABLETSGO_MODE=enterprise
+      # Every replica must share it, so set it here rather than relying on the
+      # file a solo install generated (copy that file's value if you had one).
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY:?set ENCRYPTION_KEY}
+      - HAYAT_ISSUER=${HAYAT_ISSUER:?set HAYAT_ISSUER (Hayat's auth role, public URL)}
+      - HAYAT_API_URL=${HAYAT_API_URL:?set HAYAT_API_URL (Hayat's api role)}
+      - HAYAT_CLIENT_ID=${HAYAT_CLIENT_ID:?set HAYAT_CLIENT_ID}
+      - HAYAT_CLIENT_SECRET=${HAYAT_CLIENT_SECRET:?set HAYAT_CLIENT_SECRET}
+      - HAYAT_WEB_CLIENT_ID=${HAYAT_WEB_CLIENT_ID:?set HAYAT_WEB_CLIENT_ID}
+      # Optional: where "Manage in Hayat" links point.
+      - HAYAT_CONSOLE_URL=${HAYAT_CONSOLE_URL:-}
+      # Optional: Hayat's auth role as this container reaches it, when that isn't
+      # HAYAT_ISSUER (inside Docker, `localhost` is the container itself).
+      - HAYAT_AUTH_URL=${HAYAT_AUTH_URL:-}

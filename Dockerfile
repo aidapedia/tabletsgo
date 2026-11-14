@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1
 # Tabletsgo — one image: the Express API, which also serves the built console on
-# the same port. Built in stages so the shipped image carries no compiler, no
+# the same port. The same image runs solo and enterprise mode: the mode is a
+# runtime setting (TABLETSGO_MODE), never a build argument. Built in stages so the shipped image carries no compiler, no
 # console source and no dev/frontend packages — only what `node server.js` runs.
 #
 #   toolchain → build   (all deps, Vite build of console/, Prisma clients)
@@ -81,9 +82,11 @@ COPY --from=build /app/console/dist ./console/dist
 COPY package.json prisma.config.mjs server.js ./
 COPY prisma ./prisma
 COPY server ./server
-# The updater's one-shot migrate container runs this (`npm run migrate`), and
-# hayat-bundle.js writes the bundle `hayat import` registers tabletsgo with.
-COPY scripts/migrate.js scripts/hayat-bundle.js ./scripts/
+# The updater's one-shot migrate container runs this (`npm run migrate`),
+# hayat-bundle.js writes the bundle `hayat import` registers tabletsgo with (and
+# moves a solo instance to enterprise), and solo-reset-password.js is a solo
+# owner's way back in.
+COPY scripts/migrate.js scripts/hayat-bundle.js scripts/solo-reset-password.js ./scripts/
 
 # Image identity, baked in so the running app can report what it is and compare
 # itself against the latest published release (the in-app update checker). CI
@@ -102,9 +105,10 @@ ENV NODE_ENV=production
 ENV PORT=3000
 # SQLite default; set META_DB_TYPE=postgresql and META_DATABASE_URL for PostgreSQL.
 ENV META_DB=/app/data/app.db
-# NOTE: no accounts live here — people sign in at Hayat (HAYAT_* are required),
-# and an instance admin is whoever Hayat grants tabletsgo's Admin role at its
-# root. See .env.example and README → Hayat.
+# Mode: with no HAYAT_* set this runs solo — one owner, who claims the instance
+# with the setup code printed to the log; ENCRYPTION_KEY is generated into
+# /app/data on a new install if unset. Enterprise mode (TABLETSGO_MODE=enterprise
+# + HAYAT_*) signs people in at Hayat. See .env.example and README.
 
 EXPOSE 3000
 # /api/health answers 200 once Express is listening (boot migrations run before

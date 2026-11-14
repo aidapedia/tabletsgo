@@ -8,14 +8,18 @@
  * so this runs (synchronously, `prisma migrate deploy` in a child process) and
  * finishes before meta.js, or anything that imports it, is evaluated.
  *
- * With nothing pending it is a quick status read. A failed run stops the boot;
+ * With nothing pending it is a quick status read. It also resolves the mode
+ * (server/mode.js) before anything asks for it. A failed run stops the boot;
  * the pre-migrate snapshot in data/backups/ has the data as it was.
  */
-import { runMigrations } from './index.js'
+import { migrateAndResolveMode } from './index.js'
+import { setMode } from '../mode.js'
 
 try {
-  runMigrations()
+  // Then which mode the instance runs in (solo | enterprise), recorded in the
+  // store so a lost env var can't change it (server/migrator/identity.js).
+  setMode(migrateAndResolveMode())
 } catch (e) {
-  console.error(`❌ Migration failed: ${e.message}`)
+  console.error(`❌ Couldn't start: ${e.message}`)
   process.exit(1)
 }

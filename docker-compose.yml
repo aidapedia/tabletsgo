@@ -1,3 +1,8 @@
+# Solo mode — tabletsgo for one person. Nothing else to run:
+#   docker compose up -d && docker compose logs tabletsgo   # the setup code
+# For a team (enterprise mode, people and access in Hayat), add the overlay:
+#   docker compose -f docker-compose.yml -f docker-compose.enterprise.yml up -d
+# Same image either way; README → Solo and enterprise.
 services:
   tabletsgo:
     # Run the published image so `docker compose pull && up -d` upgrades in place
@@ -25,21 +30,14 @@ services:
       - META_DB=/app/data/app.db
       - META_DB_TYPE=${META_DB_TYPE:-sqlite}
       - META_DATABASE_URL=${META_DATABASE_URL:-}
-      # Required — encrypts connection credentials at rest. The server refuses
-      # to start without it. Generate one with:
+      # Encrypts connection credentials at rest. Optional for a new solo
+      # install: left empty, one is generated into the data volume
+      # (/app/data/encryption.key) — back the volume up with it. Set it yourself
+      # to keep the key apart from the data. Generate one with:
       #   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
       - ENCRYPTION_KEY=${ENCRYPTION_KEY:-}
-      # Required — sign-in and authorization are Hayat's. `hayat import` prints
-      # these (README → Hayat). The server refuses to start without the first five.
-      - HAYAT_ISSUER=${HAYAT_ISSUER:-}
-      - HAYAT_API_URL=${HAYAT_API_URL:-}
-      - HAYAT_CLIENT_ID=${HAYAT_CLIENT_ID:-}
-      - HAYAT_CLIENT_SECRET=${HAYAT_CLIENT_SECRET:-}
-      - HAYAT_WEB_CLIENT_ID=${HAYAT_WEB_CLIENT_ID:-}
-      - HAYAT_CONSOLE_URL=${HAYAT_CONSOLE_URL:-}
-      # Optional — Hayat's auth role as this container reaches it, when that isn't
-      # HAYAT_ISSUER (inside Docker, `localhost` is the container itself).
-      - HAYAT_AUTH_URL=${HAYAT_AUTH_URL:-}
+      # A v1.0 install with several accounts moving to solo: the one who keeps it.
+      - SOLO_OWNER=${SOLO_OWNER:-}
       # Optional SMTP for tabletsgo's own notices — the fallback under the mail
       # server an admin configures in Administration > Email (that one wins).
       - SMTP_HOST=${SMTP_HOST:-}
@@ -60,9 +58,8 @@ services:
       - SESSION_IDLE_TTL_MS=${SESSION_IDLE_TTL_MS:-}
       - MAX_SESSIONS_PER_CONNECTION=${MAX_SESSIONS_PER_CONNECTION:-}
     volumes:
-      # Persist app metadata (connections / saved queries) — and the Hayat import
-      # bundle the upgrade writes — across
-      # container restarts.
+      # Persist app metadata (connections, saved queries, the solo owner), the
+      # generated encryption key and any Hayat import bundle across restarts.
       - tabletsgo-data:/app/data
       # OPTIONAL — one-click in-app updates. Mounting the Docker socket lets
       # Tabletsgo pull the new image and recreate its own container from the

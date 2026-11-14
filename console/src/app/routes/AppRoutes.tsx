@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect } from 'react'
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
-import { useAuth, AuthCard } from '@/features/auth'
+import { useAuth, useIdentity, AuthCard, EnterpriseOnly, SoloSetup, SoloSignIn } from '@/features/auth'
+import { Section } from '@/shared/ui/page/Section'
 import { RequireWorkspace } from '@/features/workspaces'
 import { PageLoading } from '@/shared/ui/feedback/LoadingState'
 
@@ -33,17 +34,33 @@ const AdminUpdatesPage = lazy(() => import('@/features/system-update/AdminUpdate
 const routeFallback = <PageLoading screen />
 
 /**
- * Signed in, or on the way to Hayat. Nobody signs in here: a visitor without a
- * token is sent to Hayat's sign-in page and comes back to where they were.
+ * Signed in, or on the way there. Enterprise: a visitor without a token is sent
+ * to Hayat's sign-in page and comes back to where they were. Solo: the owner's
+ * sign-in (or the first-run setup) is drawn right here, at the address asked for.
  */
 function RequireAuth({ children }: { children: React.ReactNode }) {
-  const { status, signIn } = useAuth()
+  const { status, config, signIn } = useAuth()
   const location = useLocation()
+  const solo = config?.mode === 'solo'
   useEffect(() => {
-    if (status === 'signedOut') void signIn(location.pathname + location.search)
-  }, [status, signIn, location.pathname, location.search])
+    if (status === 'signedOut' && !solo) void signIn(location.pathname + location.search)
+  }, [status, solo, signIn, location.pathname, location.search])
   if (status === 'unconfigured') return <SignInUnavailable />
+  if (status === 'setup') return <SoloSetup />
+  if (status === 'signedOut' && solo) return <SoloSignIn />
   return status === 'signedIn' ? children : routeFallback
+}
+
+// Pages about other people. A solo instance has nobody else: say why at the
+// address instead of showing an empty roster (the menu doesn't list them).
+function RequirePeople({ children }: { children: React.ReactNode }) {
+  const { people } = useIdentity()
+  if (people) return children
+  return (
+    <Section title="Member" desc="Who belongs to this workspace.">
+      <EnterpriseOnly />
+    </Section>
+  )
 }
 
 // The admin area is for whoever holds tabletsgo's admin role at Hayat's root.
@@ -52,8 +69,9 @@ function RequireSystemAdmin({ children }: { children: React.ReactNode }) {
   return <RequireAuth>{user?.role === 'admin' ? children : <Navigate to="/" replace />}</RequireAuth>
 }
 
-// The server refuses to start without Hayat, so this is a misconfigured proxy or
-// an old server answering — say so instead of looping through a sign-in.
+// The server refuses to start in enterprise mode without Hayat, so this is a
+// misconfigured proxy or an old server answering — say so instead of looping
+// through a sign-in.
 function SignInUnavailable() {
   return (
     <AuthCard>
@@ -117,9 +135,9 @@ export function AppRoutes() {
             A static segment outranks `:sub`, so this wins. */}
         <Route path="/workspace/member" element={<Navigate to="/members" replace />} />
         <Route path="/workspace/:sub" element={<WorkspaceSettingsPage />} />
-        <Route path="/members" element={<MembersPage />} />
+        <Route path="/members" element={<RequirePeople><MembersPage /></RequirePeople>} />
         {/* One member and what reaches them — an address, so it can be linked to. */}
-        <Route path="/members/:userId" element={<MemberDetailPage />} />
+        <Route path="/members/:userId" element={<RequirePeople><MemberDetailPage /></RequirePeople>} />
         <Route path="/notifications" element={<NotificationsPage />} />
         {/* The section lost its tabs when SMTP moved to the admin area; the
             :sub route stays so old links (e.g. /notifications/smtp) still land

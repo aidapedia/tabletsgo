@@ -106,7 +106,11 @@ console/src/
 │   └── types/                    # ambient/shared TS types (globals.d.ts)
 │
 ├── features/                     # self-contained business features (each has index.ts barrel)
-│   ├── auth/                     # signing in at Hayat: stores/AuthContext (oidc-client-ts, code + PKCE,
+│   ├── auth/                     # signing in, either mode (GET /api/auth/config says which). Solo: the
+│   │                             #   owner's SoloSignIn / SoloSetup drawn in place by RequireAuth, access
+│   │                             #   token in memory + httpOnly refresh cookie; useIdentity() → { mode,
+│   │                             #   people } gates member pages (EnterpriseOnly). Enterprise: at Hayat —
+│   │                             #   stores/AuthContext (oidc-client-ts, code + PKCE,
 │   │                             #   tokens per tab in sessionStorage, renewal on demand and deduplicated —
 │   │                             #   Hayat revokes a refresh token family on reuse; registers the token
 │   │                             #   source shared/api/request reads), CallbackPage (/callback), api
@@ -481,8 +485,13 @@ server/
 │   │                     #   steps to v22, record 0_baseline applied; before the Hayat drop,
 │   │                     #   writeHayatBundle(); then `prisma migrate deploy`.
 │   │                     #   metaSchemaStatus() (what is applied / pending)
-│   ├── hayat-export.js   # the old identity tables → the bundle `hayat import` loads (Hayat terms)
-│   ├── boot.js           # server.js's FIRST import: runMigrations() before meta.js opens the store
+│   ├── hayat-export.js   # the old identity tables → the bundle `hayat import` loads (Hayat terms);
+│   │                     #   exportSoloBundle(): a solo owner + workspace, for moving to enterprise
+│   ├── identity.js       # the mode: TABLETSGO_MODE → recorded (`app_settings.identity`) → HAYAT_ISSUER;
+│   │                     #   never enterprise → solo; solo → enterprise writes the bundle;
+│   │                     #   captureSoloOwner() keeps a v1.0 account as the owner before the drop
+│   ├── boot.js           # server.js's FIRST import: migrateAndResolveMode() before meta.js opens
+│   │                     #   the store; sets server/mode.js
 │   └── legacy/           # FROZEN pre-Prisma history, only for upgrading old installs to v22
 │       ├── catalog.js    #   the pre-Hayat permission catalog the steps seed from (frozen copy)
 │       ├── sqlite.js     #   v1–v22 stepped migrations + DEPRECATED_TABLES
@@ -493,8 +502,14 @@ server/
 ├── hayat/                # ★ Hayat, in tabletsgo's terms — see the `auth-sessions` skill
 │   ├── connect.js        #   the wire: Connect over fetch (unary JSON + Watch frames), the
 │   │                     #     client-credentials token, offline JWT verification (jose)
-│   └── index.js          #   people (directory), tenants + rosters, cached decisions (emptied by
-│                         #     Watch and our own writes), resource mirrors, the contract publish
+│   ├── index.js          #   people (directory), tenants + rosters, cached decisions (emptied by
+│   │                     #     Watch and our own writes), resource mirrors, the contract publish
+│   └── solo-backend.js   #   solo mode's backend at the same seam: Hayat's RPCs answered in-process
+│                         #     for one owner + one workspace (owner holds every permission)
+├── mode.js               # leaf: 'solo' | 'enterprise', as boot resolved it. No route reads it
+├── solo.js               # solo's one owner (`app_settings` key `solo`, never a table): setup code,
+│                         #   scrypt password, HS256 access/refresh tokens + tokenEpoch, account,
+│                         #   the workspace's name. Answers 404 in enterprise mode
 ├── auth.js               # the guards over Hayat — requireAuth, requireSystemAdmin (tabletsgo
 │                         #   admin role at Hayat's root), requirePermission/requireMember. The
 │                         #   token is verified once per request in `sessionMiddleware`, so

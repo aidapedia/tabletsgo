@@ -30,12 +30,22 @@ SMTP/admin-seed fallbacks are the exception, read where they're used).
 ### Runtime
 - `PORT` (server), `META_DB` (metadata SQLite path), `NODE_ENV`.
 
-### Required
-- `ENCRYPTION_KEY` — **required**. Encrypts connection credentials
-  (host/port/username/password/…) at rest (AES-256-GCM); the server refuses to boot
-  without it.
+### Mode
+- `TABLETSGO_MODE` — `solo` | `enterprise`. Unset: the mode the store recorded
+  (`app_settings` key `identity`), else enterprise when `HAYAT_ISSUER` is set, else
+  solo. Resolved by `server/migrator/identity.js` on boot into `server/mode.js`.
+  A store recorded as enterprise refuses to boot as solo.
+- `SOLO_OWNER` — a v1.0 install with several accounts moving to solo: the email
+  of the one who keeps it (`captureSoloOwner`, before the drop migration).
 
-### Hayat (sign-in and authorization) — required
+### Required
+- `ENCRYPTION_KEY` — **required in enterprise mode**. Encrypts connection
+  credentials (host/port/username/password/…) at rest (AES-256-GCM). Unset on a
+  *new* solo install on SQLite (no meta DB file yet), `config.js` generates one
+  into `DATA_DIR/encryption.key` (0600); an existing key file is read in either
+  mode. Otherwise the server refuses to boot without it.
+
+### Hayat (sign-in and authorization) — enterprise mode, required
 - `HAYAT_ISSUER` — Hayat's auth role public URL; tokens are verified against its keys.
 - `HAYAT_API_URL` — Hayat's api role (gRPC/Connect), reachable from the server only.
 - `HAYAT_CLIENT_ID` / `HAYAT_CLIENT_SECRET` — tabletsgo's service credentials
@@ -47,7 +57,7 @@ SMTP/admin-seed fallbacks are the exception, read where they're used).
   server reaches it (Docker: `http://hayat-auth:8443`, since `localhost` is the
   container). `connect.js` fetches discovery there and rewrites the discovered
   token/JWKS endpoints onto it; the `iss` check stays the published issuer.
-- The server refuses to start without the five required ones. There is no first-run
+- Enterprise mode refuses to start without the five required ones. There is no first-run
   wizard and no admin seed in tabletsgo: the first admin is whoever Hayat grants
   `tabletsgo.admin` at its root — `hayat import` does it for the bundle's admins,
   which are former admins plus whoever `npm run hayat:bundle -- --admin <email>` names.
