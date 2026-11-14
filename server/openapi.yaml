@@ -16,23 +16,14 @@ info:
     - **Base URL:** `http://localhost:3000` (port from `PORT`, default `3000`). All endpoints live under `/api`.
     - **Content type:** requests and responses are JSON. The JSON body limit is `10mb`.
     - **CORS:** enabled for all origins (`cors()` with defaults).
-    - **Auth:** login, setup and accept-invite return `{ user, token }`. Send the token as `Authorization: Bearer <token>` on later calls — use **Authorize** on this page to do that for you. Workspace, member and every per-connection route (`/api/connections/{id}/*`) require it and enforce workspace membership: unauthenticated → `401`, non-member → `403`.
+    - **Auth:** sign in at Hayat (see **Signing in (Hayat)**) and send its access token as `Authorization: Bearer <token>` — use **Authorize** on this page. Workspace, member and every per-connection route require it: unauthenticated → `401`, not a member → `403`.
     - **Error shape:** errors return `{ "error": "<message>" }` with `400` (bad input), `401` (bad login), `404` (not found) or `500` (server error). The query, insert and test routes return database errors in the body too — see each route.
     - **Query params** (where supported): `database` is the target database on the same server (PostgreSQL multi-database browsing; on Redis the numbered database, as `db0`…`dbN` or a bare index), `schema` is the target schema (PostgreSQL, default `public`), `limit` is the row cap for table data (default `200`).
     - **Engines:** `sqlite`, `postgresql`, `redis`, `kafka`. Routes that only make sense for a relational engine (`/columns`, `/indexes`, `/diagram`, `/insert`, `/analyze`, `/table/{table}`, backups) reject a Redis connection with a `400` naming the type; `/tables` and `/objects` return `[]`. Redis browses its keyspace through the `/redis/*` routes and runs commands through the shared `/query` route.
 
-    ## Roles
+    ## Who may do what
 
-    Roles come in two independent tiers.
-
-    | Tier | Stored in | Values | Can do |
-    | --- | --- | --- | --- |
-    | System | `users.role` (on `user.role` in every auth response) | `admin` or `user` | `admin` manages workspaces and accounts via `/api/admin/*` — and *nothing else*. An instance admin holds **no** workspace membership, so every workspace-scoped route `403`s for them by design. |
-    | Workspace | the user grant on the workspace's node | any **role slug** from the instance catalog | Configurable: an instance admin defines what each role grants (see **Roles & permissions**), and routes authorize by *permission*, never by role name. `owner` and `member` are seeded builtins. "Owner" means *holds `workspace.manage`* — a workspace may have **any number of owners but never zero**. Neither tier grants database access on its own: *using* a connection comes from its own access list. |
-
-    Workspace-tier refusals return `403 { "error": "You do not have permission to do that.", "permission": "<key>" }` when the caller is a member of the workspace and `403 { "error": "Forbidden" }` when they aren't; admin-only routes return `403 { "error": "Admin access required" }`.
-
-    The workspace role used to be spelled `admin`; meta migration v8 rewrites it to `owner` in place, and the server also normalizes it on read so a rolled-back-then-forward DB never exposes a mixed vocabulary.
+    Hayat decides. Two tiers: **instance** — tabletsgo's admin role at Hayat's root, for `/api/admin/*` and updates, carrying no workspace data access; and **workspace** — grants on the workspace's tenant node and below, asked for by permission (see **Permissions**), never by role name.
 
     ## Static frontend
 
@@ -43,384 +34,83 @@ servers:
 security:
   - bearerAuth: []
 tags:
-  - name: Auth & setup
+  - name: Signing in (Hayat)
     description: |-
-      `user` shape: `{ id, email, name, role }` — `role` here is the **system** role (`admin` | `user`), not a workspace role. `{ user, token }` is returned by login, setup and accept-invite; store the token and send it as `Authorization: Bearer`.
+      Tabletsgo keeps no accounts. People sign in at **Hayat** — an OpenID provider — and every request carries the Hayat access token as `Authorization: Bearer` (use **Authorize** on this page). The token is verified offline against Hayat's published keys and must have been issued to tabletsgo's sign-in client; an account that isn't active in Hayat is treated as signed out.
 
-      <details><summary>More about auth & setup</summary>
+      <details><summary>More about signing in</summary>
 
-      **Where the token lives.** The meta DB's `sessions` table is the source of truth,
-      read through a cache — in-process by default, or Redis when `SESSION_REDIS_URL`
-      is set (`server/sessions/`). The practical consequences:
-
-      - a login survives a server restart, a flushed cache, and a Redis outage (a cache
-        failure degrades to a slower DB read, it never signs anyone out);
-      - with more than one replica, set `SESSION_REDIS_URL` so they share the cache —
-        but they already share the logins themselves through the DB;
-      - the lifetime slides on every request (`SESSION_TTL_MS`, default 30 days). The
-        DB is only rewritten once ~10% of that has elapsed, so the sliding expiry
-        doesn't put a write in front of every authenticated request;
-      - revocation (logout, password reset, role change) deletes the row and evicts the
-        cached copy. Another replica stops honouring the token once its cached copy
-        lapses (≤60s).
-
-      **Setup** creates the first account as an *instance admin*, which by design holds
-      no workspace membership — so the workspace it names is created ownerless, and the
-      admin's first job is `POST /api/admin/users` + `PUT /api/admin/workspaces/:id/members/:userId`.
-
-      ### Your own account (auth required)
-
-      The self-service counterpart of `/api/admin/users/*`: these act on the caller and
-      only on the caller, so they need no role beyond a valid token. **Email is not
-      editable here** — it's the sign-in identity, and changing it (like the system
-      role) is an instance-admin action via `PUT /api/admin/users/:id`.
+      - **No login, password, invite, sign-up or Google/GitHub routes** — all of that is Hayat's, on Hayat's hosted pages. Sign-out ends the Hayat session (RP-initiated logout).
+      - **No session store.** A token is verified on every request; who someone is (`GET /api/auth/me`) and what they may do are asked of Hayat's service API and cached for a few seconds, emptied as soon as Hayat's Watch stream reports a change.
+      - **Instance admin** is a grant, not a column: `tabletsgo.instance.manage` at Hayat's root, which the `tabletsgo.admin` role carries.
 
       </details>
-  - name: Resource tree
+  - name: Signing in (solo)
     description: |-
-      One hierarchy of every addressable thing on the instance, and **the place a role is granted**. Since meta v14 this tree — not a role column — is what every `requirePermission(...)` resolves through (`server/resource-tree.js`).
+      **Solo mode** (`TABLETSGO_MODE=solo`, the default without Hayat) is tabletsgo for one person: one owner, one workspace, no Hayat. The owner holds every permission and is the instance admin. In enterprise mode every route under this tag answers `404`.
 
-      <details><summary>More about resource tree</summary>
+      <details><summary>More about solo sign-in</summary>
 
-      ```
-      Application (root, one per instance)
-      └── Workspace                     group — mirrors a `workspaces` row
-              ├── Group                     group — created by hand, mirrors nothing
-          ├── Storage                   resource
-          └── Connection                resource
-              ├── Dashboard             resource
-              └── Workflow              resource
-      ```
-
-      A **group** node holds other nodes and is where you organise and grant; a
-      **resource** node is a thing someone uses. The closed list of types, and which
-      type may parent which, lives in `server/permissions-catalog.js`.
-
-      ### How a permission resolves
-
-      A grant is `(node, principal, role, inherit)`. Answering "may this user do X
-      here" walks the node's ancestors root-first and unions what each grant carries:
-
-      * **Ownership short-circuits.** `ownerId` on any ancestor ⇒ every permission in
-        that subtree. This is what "the owner of a node can do anything under it"
-        means, and why the application root's owner is instance-wide.
-      * **`inherit` decides reach.** `true` applies to the whole subtree; `false`
-        applies to that node alone — how you grant one connection without the workspace.
-      * **A principal is a user or a group**, resolved through `node_members` — the
-        roster of the group node the grant names. Membership is flat (a group holds
-        users, never other groups), so nesting a group under another organises
-        resources and says nothing about who belongs to it: re-filing a folder never
-        hands anyone access.
-
-      A group's roster does one thing no grant does: **its people can open the
-      connections filed under that group**, without a row on each connection's access
-      list (see Connection access). That is the half of "a group is a folder *and* a
-      roster" that makes filing a resource into a team mean something. It is data
-      access only — never a permission, because belonging to a group is not a
-      capability. A new group is created holding a grant of the `member` role **to
-      itself**, so its roster resolves through the ordinary machinery from the first
-      request instead of waiting for someone to remember that second step.
-
-      Memberships still exist and still decide *membership* (which is what gates
-      opening a database); `server/workspaces.js` mirrors each one into a grant on its
-      workspace node so the two can never drift.
-
-      > **An instance admin sees the whole tree and resolves to every permission on it
-      > (they hold the root), but still holds no membership anywhere — so they cannot
-      > open a database.** Visibility and data access are separate questions;
-      > `connection_access` answers the second one.
-
-      ### Requirement criteria
-
-      Two independent tests decide whether a role may be granted on a node, and both
-      must pass:
-
-      1. **`roles.applies_to`** — a JSON array of node types an admin restricted the
-         role to, or `null` for "anywhere".
-      2. **Permission scope** — every permission the role carries must be meaningful at
-         that node type (each key declares a `scope` in the catalog). Granting a role
-         holding `workspace.manage` on a single connection is refused rather than
-         stored as a promise no route can keep.
-
-      Both are applied on write *and* published to the client, so the grant editor can
-      only offer what the server would accept.
-
-      ### Nodes follow their resources
-
-      A node is created, renamed and deleted alongside the row it mirrors — never on
-      its own. `POST /api/connections` accepts an optional `parentNodeId` to file the
-      new connection straight into a group instead of at the workspace root. Removing
-      someone from a workspace revokes every grant they held anywhere in its subtree
-      and clears any node ownership inside it.
-
-      ---
+      - **First run.** A new solo instance prints a six-word setup code to its log. `POST /api/auth/solo/setup` takes it with the owner's name, email and password, so whoever can reach the port but not read the log can't claim the instance.
+      - **Tokens.** Setup, sign-in and refresh answer with a 15-minute `accessToken` (send it as `Authorization: Bearer`, exactly like a Hayat token) and set a 30-day refresh token in the `tabletsgo_solo_refresh` cookie — `HttpOnly`, `SameSite=Strict`, `Path=/api/auth/solo`.
+      - **Ending sessions.** A password change and `logout` with `everywhere: true` end every session at once.
+      - **Forgotten password:** `npm run solo:reset-password` on the server (`docker compose exec tabletsgo npm run solo:reset-password`).
+      - **Limits.** Five failed attempts per minute per address, then `429`.
 
       </details>
-  - name: Roles & permissions
+  - name: Permissions
     description: |-
-      Workspace access is an **instance-wide role catalog**: an instance admin defines what each role may do, and a workspace owner assigns their people to it. A membership (the grant on the workspace's node) stores a role **slug**, and every workspace-scoped route authorizes by *permission*, never by role name — so redefining a role changes who may call a route without touching the route.
+      Every workspace-scoped route asks for a **permission** — `requirePermission(req, res, wsId, 'storage.manage')` — and Hayat answers it from the grants on the workspace's tenant node and above (roles, groups and grants are edited in Hayat's console). Routes and the console use short keys; tabletsgo's contract declares them in Hayat as `tabletsgo.<key>`.
 
-      <details><summary>More about roles & permissions</summary>
+      <details><summary>More about permissions</summary>
 
-      The account's *system* role (`admin` | `user`) is **not** part of this model and
-      is not configurable. Instance administration deliberately carries no workspace
-      data access; making the system tier editable would only be a way around that.
+      | Key | Hayat key | Scope | Allows |
+      | --- | --- | --- | --- |
+      | `instance.manage` | `tabletsgo.instance.manage` | root | The admin area: modules, mail server, updates. |
+      | `workspace.manage` | `tabletsgo.workspace.manage` | tenant | `experiments` and `sessions` on `PUT /api/workspaces/:id`. |
+      | `workspace.delete` | `tabletsgo.workspace.delete` | tenant | `DELETE /api/workspaces/:id` (tabletsgo's data only). |
+      | `notifications.manage` | `tabletsgo.notifications.manage` | tenant | `notifications` on `PUT /api/workspaces/:id`. |
+      | `storage.manage` | `tabletsgo.storage.manage` | tenant | Create/edit/delete storage destinations. |
+      | `ssh.manage` | `tabletsgo.ssh.manage` | tenant | SSH keys and gateways. |
+      | `connections.create` | `tabletsgo.connections.create` | tenant | `POST /api/connections`, `/api/connections/import`. |
+      | `connections.manage` | `tabletsgo.connections.manage` | connection | Edit/delete/export a connection it reaches. |
+      | `connections.transfer` | `tabletsgo.connections.transfer` | connection | `PUT /api/connections/:id/owner`. |
+      | `connection.open` | `tabletsgo.connection.open` | connection | Open a connection: query, browse, edit data, its dashboards and workflows. |
+      | `members.manage`, `teams.manage`, `resources.organise`, `resources.grant` | `hayat.*` | tenant/group | Hayat's own — shown so the console can point at Hayat's console. |
 
-      **Permission keys** (the closed set, from `server/permissions-catalog.js`):
+      Roles tabletsgo's contract suggests: `tabletsgo.admin` (root), `tabletsgo.owner` (every workspace key), `tabletsgo.connection-user` (open), `tabletsgo.connection-manager` (manage + open).
 
-      `scope` is the shallowest node type the key means anything at — the criterion
-      that decides where a role carrying it may be granted (see Resource tree).
-
-      | Key | Scope | Allows |
-      | --- | --- | --- |
-      | `workspace.manage` | workspace | Rename the workspace; change general settings, experiments and the session policy. Also the anchor of the last-owner rule — "owner" means *holds this*. |
-      | `workspace.delete` | workspace | `DELETE /api/workspaces/:id`. |
-      | `members.manage` | workspace | Invite, remove, and change a member's role. |
-      | `teams.manage` | workspace | Change who belongs to a group. Key unchanged when teams became groups (v15) — `role_permissions` stores these strings and drops unknown ones, so renaming it would silently strip the power from every role holding it. Deliberately not `resources.organise`: adding someone to a group grants them access, tidying the tree must not. Old text: create/rename/delete teams and change their membership. |
-      | `notifications.manage` | workspace | The `notifications` block on `PUT /api/workspaces/:id`. |
-      | `storage.manage` | workspace | Create/edit/delete storage destinations. |
-      | `ssh.manage` | workspace | Create/rename/delete SSH keys; create/edit/delete/test SSH gateways. |
-      | `connections.create` | workspace | `POST /api/connections` and `POST /api/connections/import`. |
-      | `connections.manage` | connection | Edit/delete/export/set access on every connection in scope — the whole workspace, or one connection when granted on its node. |
-      | `connections.transfer` | connection | `PUT /api/connections/:id/owner`. |
-      | `resources.organise` | workspace | Create, rename, move and delete the groups resources are filed under. |
-      | `resources.grant` | workspace | Give a person or group a role on a node, and take it away again. |
-
-      Deliberately absent: *using* a database (queries, row edits, workflows,
-      dashboards, schema changes) is not a permission. That is a per-resource grant on
-      the connection itself (`connection_access` — see Connection access), because it
-      answers a per-connection question, not a workspace-wide one.
-
-      Two seeded built-in roles, `owner` (every permission) and `member` (none). Their
-      slugs match the literals a membership held before roles became
-      configurable, so meta migration v12 rewrote nothing. A built-in can be renamed and
-      re-permissioned but never deleted, and `owner` always keeps `workspace.manage`.
-
-      A failed workspace-tier check returns
-      `403 { "error": "You do not have permission to do that.", "permission": "<key>" }`
-      when the caller is in the workspace, and `403 { "error": "Forbidden" }` when they
-      aren't — so a client can tell "ask an owner" from "wrong workspace".
-
-      ### Managing roles (`/api/admin/*`, system admin only)
-
-      > **API-only today — there is no Roles screen.** The app assigns roles (the
-      > member dropdowns read `GET /api/roles`) but does not create them, so an
-      > instance ships with the two seeded builtins unless an admin adds more through
-      > these endpoints. They are fully enforced either way; the UI is what's missing.
-
-      ---
+      A refusal is `403 { "error": "You do not have permission to do that.", "permission": "<key>" }` inside the workspace and `403 { "error": "Forbidden" }` outside it.
 
       </details>
   - name: Workspaces
     description: |-
+      A workspace is a **Hayat tenant**: Hayat owns its existence, name, roster and owner, and tabletsgo never creates, renames or deletes one. Tabletsgo keeps its own settings per workspace (`workspaces.settings`): beta experiments, notification preferences and the session policy.
+
       <details><summary>More about workspaces</summary>
 
-      - **Beta experiments:** a per-workspace `{ [key]: boolean }` map stored in
-        `workspaces.settings.experiments`, surfaced via `GET` and `PUT /api/workspaces/{id}` and
-        toggled from the frontend's Workspace → Beta tab. Current keys: `s3Backup`
-        (gates the S3 Storage nav item and each connection's Backup tab — see the
-        Storage destinations / Backup sections below).
-      - **Notifications:** `workspaces.settings.notifications.backupFailure` is
-        `{ enabled: boolean, memberIds: string[] }`, surfaced via `GET` and `PUT /api/workspaces/{id}`
-        and edited from the frontend's Notification tab. When enabled, a scheduled backup
-        that ends up failed (after any configured retries — see the Backup section) emails
-        every listed member via the instance's SMTP config (see `smtpConfig`). Manual
-        "Run now" failures never trigger this.
-
-      ### Members
-
-      All three mutations need `members.manage`.
-      - **Example:** `PUT http://localhost:3000/api/workspaces/ws_123/members/u_456` body `{ "role": "owner" }`.
-
-      ### Workspace membership
-
-      A workspace's members live in `node_members` on the workspace's own node — the
-      same roster table every group uses (meta migration v16 moved them; the old
-      `workspace_members` table is kept, unread, for rollback). Two facts sit on that
-      node:
-
-      | Fact | Where | Means |
-      | --- | --- | --- |
-      | Belonging | `node_members` row | They are in the workspace, and **see every resource in it** |
-      | Role | the user grant on that node | What they may actually **do** |
-
-      So a member holding no grant is a real, useful state: the whole workspace is
-      visible to them and they can act on none of it. `isMember()` answers belonging;
-      `memberRole()` reads the grant and returns `null` for a member without one — use
-      `isMember` for "do they belong", never `memberRole` truthiness.
-
-      The roster routes above work on a workspace node too, with two differences the
-      server applies by node type:
-
-      - the permission is **`members.manage`**, not `teams.manage` — admitting someone
-        to the workspace and staffing a folder are different powers;
-      - adding goes through the workspace module (roster + membership grant written
-        together), removing runs the full member cascade and refuses to drop the last
-        owner or yourself. An instance admin can never be added.
-
-      The UI keeps invitations on the workspace's Members page rather than here, since
-      joining a workspace needs an email and an invite token.
-
-      ### Who can reach a node
-
-      `GET /api/resource-tree/:id` carries a `people` array: everyone who can reach that
-      node, resolved up the whole chain, and **why**.
-
-      This is not the same as `grants`. That field is what was granted *at* this node,
-      so on a connection it will not show the people arriving through an inherited grant
-      higher up, the people arriving because they are on the roster of a group granted
-      somewhere above, or the owner of an ancestor who short-circuits to everything.
-      Access a node never mentions is what makes a permission model impossible to audit,
-      so it is derived and returned. It is stored nowhere — the grants and rosters it
-      reads are the only facts, and access is still edited where the grant lives.
-
-      On a **connection** each person additionally carries `canOpen`, because reaching
-      a connection node and being able to open the database are different questions: a
-      grant on the workspace reaches every connection node inside it, while *opening*
-      one is not a permission — it is answered per connection by
-      `userCanAccessConnection`. A person with `canOpen: false` holds a role here and
-      still cannot query anything. The UI lists the people who can open the connection
-      and states the rest separately rather than mixing them.
-
-      ```json
-      {
-        "userId": "u_7", "name": "Dana Reyes", "email": "dana@example.com",
-        "owner": false,
-        "member": true,
-        "permissions": ["connections.manage"],
-        "sources": [
-          { "type": "group", "nodeId": "n_1", "nodeName": "Main", "groupId": "n_9",
-            "groupName": "Analytics", "roleSlug": "analyst", "roleName": "Analyst",
-            "here": false, "instanceWide": false }
-        ]
-      }
-      ```
-
-      | Field | Meaning |
-      | --- | --- |
-      | `owner` | Owns this node or an ancestor, so resolves to every permission below it |
-      | `member` | `false` = permissions but **no data access**: opening a database needs a roster row on the workspace node |
-      | `canOpen` | **Connection nodes only** — may they actually open this database (`userCanAccessConnection`: membership, `connections.manage` here, ownership, the roster of a group it is filed under, or its access list)? Absent on every other node type, which has nothing to open |
-      | `sources[].type` | `"owner"` \| `"grant"` (a user grant) \| `"group"` (via a roster) |
-      | `sources[].here` | Granted on this very node rather than inherited from above |
-      | `sources[].instanceWide` | Granted above every workspace (the application root), so it reaches in without a membership |
-
-      Every path is listed, not just the first — two ways into a node are two different
-      things to revoke. Instance admins are deliberately absent: they administer every
-      node without holding a grant, and hold no data access at all.
-
-      Blanked (`[]`) for a scaffolding node, the same as `grants`.
-
-      At a **workspace** node this list equals the workspace's member list, because
-      `server/workspaces.js` mirrors every membership into a grant there and a grant to a
-      non-member is refused. The only rows that can differ are application-root grants,
-      flagged `instanceWide`.
-
-      ### Groups (people)
-
-      A group node is both a folder resources are filed under **and** a named set of
-      people, so there is no separate teams API: the roster lives on the node, next to
-      the grants made there. See "Resource tree" above for creating, renaming, moving
-      and deleting the group itself.
-
-      Reading the roster needs only to be able to see the node; changing it needs
-      `teams.manage` — **not** `resources.organise`. Adding someone to a group grants
-      them access (every grant naming that group reaches them, and none of it shows on
-      the grant list of the node they just reached), so tidying the tree deliberately
-      does not carry that power.
-
-      - **Example:** `POST http://localhost:3000/api/resource-tree/n_42/members` body `{ "userId": "u_456" }`.
-
-      Deleting a group takes its roster with it, plus every grant and access row that
-      named it as a principal — a grant whose roster no longer exists would otherwise
-      be stranded.
-
-      > Migrated from `teams`/`team_members` by meta migration v15. The old tables are
-      > kept but never read; the old `/api/workspaces/:id/teams*` routes are gone.
-
-      ---
+      - **Membership** is the tenant's roster. It gates data: a member sees every connection in the workspace; opening one is `connection.open`.
+      - **Notifications:** `settings.notifications.backupFailure` is `{ enabled, memberIds }`; a scheduled backup that ends up failed emails every listed member (addresses from Hayat's directory).
 
       </details>
   - name: Instance administration
     description: |-
-      Every route below requires an account whose **system** role is `admin`; anything else gets `403 { "error": "Admin access required" }`. The surface is deliberately narrow — which workspaces exist, who runs them and what they hold, plus the accounts on the instance. An instance admin holds no workspace membership, so there is no route here that reaches a connection or a database: the workspace detail routes report metadata only (`server/workspace-insights.js` names the columns it reads, so credentials, query text, run logs and error messages are never loaded).
+      Every route below requires tabletsgo's admin role — `tabletsgo.instance.manage` granted at Hayat's root; anything else gets `403 { "error": "Admin access required" }`. The surface is modules, the mail server and updates. Accounts, workspaces, roles and sign-in methods are administered in Hayat's console.
 
       <details><summary>More about instance administration</summary>
 
-      ### Workspaces
-
-      ### Users
-
-      - **Example:** `PUT http://localhost:3000/api/admin/users/u_123` body `{ "role": "admin" }`.
-      - **Example:** `POST http://localhost:3000/api/admin/users/u_123/unblock`.
-
       ### Email (SMTP)
 
-      The instance's **one** mail server — every email the app sends (invites,
-      password resets, backup-failure notifications) uses it, for every workspace.
-      Workspaces cannot configure their own; these routes are the only place SMTP is
-      set. **Resolution order:** this saved config → the `SMTP_*` env vars. The env
-      vars still work untouched (an install configured through docker-compose keeps
-      sending mail); saving here takes over from them, and can be changed without a
-      redeploy. Stored in the meta DB's `app_settings` table under the key `smtp`,
-      with the password AES-256-GCM encrypted at rest — it is never returned.
+      The instance's **one** mail server for what tabletsgo itself sends (backup-failure and module notices). **Resolution order:** this saved config → the `SMTP_*` env vars. Stored in `app_settings` under `smtp`, the password encrypted at rest and never returned.
 
       ### Modules
 
-      Which databases and features this instance offers, and their instance-wide
-      settings. Every module ships in the build; an instance admin switches them on
-      or off — in the first-run wizard (which calls these routes with the new admin's
-      token) and later in Admin → Modules. Two kinds:
-
-      - `engine` — a connection type; its `id` is the connection `type`
-        (`postgresql`, `sqlite`, `redis`, `kafka`).
-      - `feature` — a capability across connections (`backup`).
-
-      Stored in `app_settings` under the key `modules`
-      (`{ enabled: { [id]: bool }, settings: { [id]: { [key]: number } } }`) and
-      cached in memory (`server/module-registry.js`). **A module with no stored choice
-      is on**, so an upgraded instance hides nothing.
-
-      Rules the server enforces:
-
-      - **An engine still in use is only turned off on purpose** → without `force`,
-        `409` with the connections (below), so the admin can turn it off anyway
-        (`force`) — which also notifies their owners when asked (`notify`). Forced, those connections are **locked, not deleted** (below).
-        Turning a module off never deletes anything.
-      - **At least one engine stays on** → `400`.
-
-      What "off" does: a turned-off **engine** is refused by the db layer on every
-      dispatch (`403`, e.g. `POST /api/connections`, `/api/connections/import`,
-      `/api/test-connection`; the handshake reports `reason: "disabled"`) and drops
-      out of `GET /api/schema-engines`. A turned-off **Backup** answers `403` on every
-      `/api/connections/:id/backup/*` and `/restore/*` route and its scheduler tick is
-      skipped; schedules, run history and stored files stay and resume when it's
-      turned back on.
-
-      **Locked connections.** A connection whose engine is off stays as it is, but:
-      `GET /api/connections` lists it with `"locked": true`; every
-      `/api/connections/:id` and `/api/connections/:id/*` route answers
-      `403 { "error": "SQLite is turned off on this instance. …", "locked": true }` —
-      except `DELETE /api/connections/:id` (its owner can still delete it) and
-      `GET /:id/handshake` (which reports `reason: "disabled"`); its webhook
-      (`/api/hooks/wf/…`) answers the same `403`; and the schedulers skip its
-      workflows and backups. Turning the engine back on unlocks all of it as it was.
-
-      Settings per module (all integers; `null` resets one to its default):
-
-      | Module | Setting | Default | Notes |
-      | --- | --- | --- | --- |
-      | postgresql, mysql, sqlite | `tableRowLimit` | `50000` (1–1,000,000) | The most rows opening a table fetches — enforced by `GET /table/:table`. |
-      | postgresql, mysql, sqlite, redis, kafka | `queryTimeoutSec` | `30` (1–3600) | How long the console waits before giving up. Client-side: the browser stops waiting; a statement already running may still finish. |
-      | kafka | `readMaxMessages` / `readMaxBytes` / `readTimeoutMs` | `500` / 16 MiB / `8000` ms | Server-side caps on one read. These replaced the `KAFKA_READ_*` env vars, which are no longer read. |
-
-      These replaced the per-browser "Table row limit" and "Query timeout" in
-      Settings → Data; each engine has its own value.
+      Which databases and features this instance offers, and their settings. `engine` modules are connection types; `feature` modules are capabilities (`backup`). Stored in `app_settings` under `modules`; **a module with no stored choice is on**. An engine still in use is only turned off with `force` — its connections are then **locked, not deleted**: every `/api/connections/:id` route answers `403 { locked: true }` except `DELETE` and the handshake, its webhook refuses, and the schedulers skip it. At least one engine stays on.
 
       </details>
   - name: Connections
     description: |-
-      **Who may change a connection record.** `PUT`, `DELETE`, `/export` and `/access` all use one rule: hold **`connections.manage`** (any connection in the workspace) *or* be the connection's own **`ownerId`** (that one connection, whatever your role). That is what lets a plain member run the connections they own — edit them, back them up, set their access list — without being given the whole workspace. Failing it returns `403 { "error": "You need to own this connection to <action>." }`. Using the *database* behind a connection is a different question entirely — see Connection access.
+      **Who may change a connection record.** `PUT`, `DELETE` and `/export` all use one rule: hold **`connections.manage`** at the connection (a grant on it, a group above it, or the workspace) *or* be the connection's own **`ownerId`** (that one connection, whatever your role). That is what lets a plain member run the connections they own — edit them, back them up — without being given the whole workspace. Failing it returns `403 { "error": "You need to own this connection to <action>." }`. Using the *database* behind a connection is a different question entirely — see Connection access.
 
       <details><summary>More about connections</summary>
 
@@ -439,44 +129,9 @@ tags:
 
       ### Connection access
 
-      Controls which groups / individual members may see and **open** a connection. This
-      is the per-resource grant that workspace permissions deliberately don't cover: it
-      answers "may this person use this database", which is a question about one
-      connection, not about the workspace.
+      Opening a connection is the `tabletsgo.connection.open` permission in Hayat, asked at the connection's node: a grant on it or on a group above it (the `connection-user` role), the roster of a **group it is filed under** (placement — the contract sets `via_placement`), or owning it. Hayat refuses anyone not on the workspace's roster (`requires_membership`). **Nothing granted means nobody.** Enforced by the `GET /api/connections` filter and the `/api/connections/:id/*` guard; changed in Hayat's console (`GET /api/connections/:id/access` links there).
 
-      **An empty set means nobody** — not everybody (changed in v16). Seeing a
-      connection and being able to open it are different questions: every workspace
-      member already sees every connection in their workspace, because their membership
-      grant reaches the whole subtree, and opening one is granted per connection. The
-      set lists users + groups; a group may be the **workspace node itself**, which
-      names exactly "everyone in this workspace" and is what v16 wrote for every
-      connection that was implicitly open, so nothing lost access on upgrade.
-
-      Four ways in, tested in this order by `userCanAccessConnection`
-      (`server/auth.js`), all of them behind workspace membership as a floor:
-
-      1. `connections.manage` resolved **at this connection** (so a grant on one
-         connection's node opens one connection, not the workspace);
-      2. being the connection's own `ownerId`;
-      3. **sitting on the roster of a `group` node the connection is filed under** —
-         where a resource lives is itself a statement about who may use it, which is
-         what a group is for. Company A holds Team Promotions and Team Orders, staffed
-         differently, and the connections filed under a team are the team's. Only
-         `type === 'group'` ancestors count, **never the workspace node**, whose roster
-         is every member — counting it would make every access list below dead letter.
-         A group nested inside another still does not merge rosters: reach comes from
-         being under *your* group, never from your group gaining a parent;
-      4. being named on this connection's access list, as a user or through a group
-         listed there. This is how one person crosses teams — put User B in Team
-         Database Admin, list that group on a connection in each team, and one row per
-         connection covers the whole roster.
-
-      With none of the four, the answer is no. Enforced by the `GET /api/connections`
-      list filter and the `/api/connections/:id/*` access guard.
-
-      > Because (3) makes placement grant access, `PUT /api/resource-tree/:id/move`
-      > asks for manage-or-own before it will re-file a **connection**. See that
-      > endpoint.
+      Every connection and storage destination is mirrored into Hayat's tree when it is created, renamed, re-owned or deleted — always by tabletsgo, never on its own in Hayat.
 
       </details>
   - name: Saved queries
@@ -847,111 +502,62 @@ tags:
       </details>
   - name: Health
 paths:
-  /api/auth/login:
-    post:
+  /api/auth/config:
+    get:
       tags:
-        - Auth & setup
-      summary: Validate credentials
-      description: |-
-        **Brute-force protection** (`server/login-guard.js`). `LOGIN_MAX_ATTEMPTS`
-        consecutive failures (default 5) inside `LOGIN_ATTEMPT_WINDOW_MS` (default 15
-        min) block the account; an older failure doesn't count, so the counter restarts
-        rather than accumulating over weeks. The state lives on the account
-        (`users.failed_logins / last_failed_at / locked_at / locked_until`), so a block
-        survives a restart and is visible in `GET /api/admin/users`.
-
-        - The block is checked **before** the password is verified: a blocked account
-          can't be probed, and a guessed-correctly password doesn't bypass it.
-        - A blocked account is *told* it's blocked, which does reveal the address exists
-          — deliberate, since the person needs to know why and whom to ask. An unknown
-          address is never counted and always gets the generic 401.
-        - **An instance admin is never blocked indefinitely** (nobody would be left to
-          unblock them). They get `LOGIN_ADMIN_COOLDOWN_MS` (default 15 min) instead —
-          same threshold, always self-expiring, so the account is neither brute-forceable
-          nor lockable-out by an attacker. Set it to `0` to leave admin logins unthrottled.
-        - **Clearing it:** `POST /api/admin/users/:id/unblock`, or any password change
-          (`PUT /api/admin/users/:id` with `password`, or the reset-link flow). A
-          successful sign-in resets the counter.
-        - `LOGIN_LOCKOUT_MS` (default `0` = until an admin unblocks) makes ordinary
-          blocks self-expire too.
+        - Signing in (Hayat)
+      summary: What the browser needs to sign in
+      description: "Public — nobody is signed in yet. `mode` says which sign-in to show. **enterprise:** the console starts an authorization-code + PKCE sign-in at `issuer` with `clientId` (Hayat's public client for tabletsgo, `HAYAT_WEB_CLIENT_ID`) and sends the access token it gets back as `Authorization: Bearer` on every call; `consoleUrl` is Hayat's console, where members, groups, roles and accounts are managed (`null` when `HAYAT_CONSOLE_URL` is unset). **solo:** the console shows its own sign-in (see Signing in (solo)), or the first-run setup while `setupRequired`. `people` says whether there is anyone but the caller to see — members, access lists — and is what the console gates those pages on."
       security: []
-      requestBody:
-        description: '`{ "username": "you@example.com", "password": "…" }` (`username` is the email)'
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                username:
-                  type: string
-                  example: you@example.com
-                password:
-                  type: string
       responses:
         "200":
-          description: '`{ "user": { … }, "token": "uuid" }`'
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Session"
-        "401":
-          description: '`{ "error": "Invalid email or password" }`'
+          description: "`{ mode: 'enterprise', issuer, clientId, consoleUrl, people: true }` or `{ mode: 'solo', setupRequired, people: false }`"
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  error:
+                  mode:
                     type: string
-                    example: Invalid email or password
-        "423":
-          description: '`{ "error": "…", "blocked": true, "lockedUntil": 1735689600000 | null }` — the account is blocked by the brute-force guard (below). `lockedUntil` is `null` when only an admin can lift it.'
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                  blocked:
+                    enum: [solo, enterprise]
+                  people:
                     type: boolean
-                    example: true
-                  lockedUntil:
+                  setupRequired:
+                    type: boolean
+                    description: solo only
+                  issuer:
+                    type: string
+                    description: enterprise only
+                  clientId:
+                    type: string
+                    description: enterprise only
+                  consoleUrl:
                     type:
-                      - integer
+                      - string
                       - "null"
-                    example: 1735689600000
-  /api/auth/logout:
-    post:
-      tags:
-        - Auth & setup
-      summary: Invalidate the current session token
-      description: Invalidate the current session token.
-      security: []
-      responses:
-        "200":
-          description: '`{ "ok": true }`'
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                    example: true
+                    description: enterprise only
+              examples:
+                enterprise:
+                  value:
+                    mode: enterprise
+                    issuer: https://auth.example.com
+                    clientId: 0193f3a2-9a7e-7c1d-b1a8-5d1f2e3c4b5a
+                    consoleUrl: https://hayat.example.com
+                    people: true
+                solo:
+                  value:
+                    mode: solo
+                    setupRequired: false
+                    people: false
   /api/auth/me:
     get:
       tags:
-        - Auth & setup
-      summary: The caller's own profile, re-read from the DB (clients cache it in localStorage)
-      description: |-
-        The caller's own profile, re-read from the DB (clients cache it in localStorage).
-
-        `timezone` is an IANA zone, or `null` to follow the browser. Every `{ user }` an auth
-        route returns carries it.
+        - Signing in (Hayat)
+      summary: The caller, as Hayat knows them
+      description: The person the bearer token belongs to. `role` is `admin` when they hold tabletsgo's admin role (`tabletsgo.instance.manage`) at Hayat's root, else `user`. `timezone` is the zone set on their Hayat account (`null` = follow the browser). `accountUrl` is where they change their name, password, time zone and sign-in methods — Hayat's console, or `null` without `HAYAT_CONSOLE_URL`.
       responses:
         "200":
-          description: '`{ "user": { "id", "email", "name", "role", "timezone" } }`'
+          description: "`{ user: { id, email, name, role, timezone, picture }, accountUrl }`"
           content:
             application/json:
               schema:
@@ -965,1498 +571,352 @@ paths:
                       name: {}
                       role: {}
                       timezone: {}
-        "401":
-          description: unauthenticated
-  /api/auth/profile:
-    patch:
-      tags:
-        - Auth & setup
-      summary: Update your own name and display time zone; send either or both
-      description: |-
-        Update your own name and display time zone; send either or both. The zone only
-        changes how the frontend renders times: the server stores and sends UTC milliseconds,
-        and backup schedules stay defined in UTC.
-      requestBody:
-        description: "`{ \"name\": \"Ada Lovelace\", \"timezone\": \"Asia/Jakarta\" }` (`\"timezone\": null` goes back to the browser's zone)"
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                name:
-                  type: string
-                  example: Ada Lovelace
-                timezone:
-                  type: string
-                  example: Asia/Jakarta
-      responses:
-        "200":
-          description: '`{ "user": { … } }`'
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  user:
-                    type: object
-        "400":
-          description: '`{ "error": "A name is required." }` (blank), `{ "error": "Unknown time zone." }`, or `{ "error": "Nothing to update." }`'
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                    example: A name is required.
+                      picture: {}
+                  accountUrl: {}
+              example:
+                user:
+                  id: 0193f3a2-0000-7000-8000-000000000001
+                  email: olive@example.com
+                  name: Olive
+                  role: user
+                  timezone: Asia/Jakarta
+                  picture: null
+                accountUrl: https://hayat.example.com/account
         "401":
           $ref: "#/components/responses/Unauthorized"
-  /api/auth/password:
-    post:
-      tags:
-        - Auth & setup
-      summary: Change your own password
-      description: |-
-        Change your own password. The current password is **required and re-checked
-        server-side** — a session token alone must not let someone lock its owner out.
-        A success invalidates *every* session for the user (this browser's included,
-        since a stolen copy of the token is indistinguishable from it) and returns a
-        fresh one, so the caller stays signed in where they are and is signed out
-        everywhere else. It also clears any brute-force block, like every other password
-        change.
-      requestBody:
-        description: '`{ "currentPassword": "…", "newPassword": "…" }`'
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                currentPassword:
-                  type: string
-                newPassword:
-                  type: string
-      responses:
-        "200":
-          description: '`{ "user", "token" }` — **persist the new token**, the old one is dead'
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  user: {}
-                  token: {}
-        "400":
-          description: '`{ "error": "Both your current and new password are required." }` · `{ "error": "Your current password is incorrect." }` · `{ "error": "The new password must be different from the current one." }`'
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                    example: Both your current and new password are required.
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-  /api/auth/providers:
+  /api/me/appearance:
     get:
       tags:
-        - Auth & setup
-      summary: What the sign-in pages offer
+        - Signing in (Hayat)
+      summary: The caller's theme
       description: |-
-        Public. What the sign-in pages offer. `registration.email` is false without a
-        mail server, because the emailed link is what proves the address; sign-up then
-        only works through a provider.
-      security: []
+        One theme per account, the same in every app the person signs in to: colors (an accent, the content area, the sidebar, status), sizes and type. Every field is optional — an empty one means "tabletsgo's own default" — and `appearance` is `null` when they never chose anything. The shape is the proto3 JSON of Hayat's `Appearance`.
+
+        In enterprise mode it is Hayat's (`DirectoryService.GetUserAppearance`), edited in Hayat's console: `editable` is `false` and `editUrl` points there (`null` without `HAYAT_CONSOLE_URL`). A solo instance keeps its owner's, so `editable` is `true`. Asked fresh on every page load and never cached, so a change shows on the next one.
       responses:
         "200":
-          description: '`{ "providers": [{ "kind": "google", "label": "Google" }], "registration": { "open": true, "email": true } }`'
+          description: "`{ appearance, editable, editUrl }`"
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  providers:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        kind:
-                          type: string
-                          example: google
-                        label:
-                          type: string
-                          example: Google
-                  registration:
-                    type: object
-                    properties:
-                      open:
-                        type: boolean
-                        example: true
-                      email:
-                        type: boolean
-                        example: true
-  /api/auth/register:
-    post:
+                  appearance:
+                    oneOf:
+                      - $ref: "#/components/schemas/Appearance"
+                      - type: "null"
+                  editable:
+                    type: boolean
+                    description: The theme is changed here (`PUT`), not in Hayat
+                  editUrl:
+                    type:
+                      - string
+                      - "null"
+                    description: Where to change it in enterprise mode
+              examples:
+                enterprise:
+                  value:
+                    appearance:
+                      preset: slate-rail
+                      mode: light
+                      accent: "#2563eb"
+                      sidebarBackground: "#0f172a"
+                      sidebarText: "#e2e8f0"
+                      sidebarActive: "#1e293b"
+                      sidebarBorder: "#0f172a"
+                      textSize: 15
+                      density: compact
+                    editable: false
+                    editUrl: https://hayat.example.com/account/appearance
+                solo, never chosen:
+                  value:
+                    appearance: null
+                    editable: true
+                    editUrl: null
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "502":
+          description: Hayat couldn't be asked.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    put:
       tags:
-        - Auth & setup
-      summary: Ask for an account by email
-      description: |-
-        Public, while the `registration` module is on. Asks for an account: a pending one
-        is created and a link to `/invite/:token` is emailed, where the person chooses a
-        password. No password is taken here, so nobody can claim an address that isn't
-        theirs. **Same 200 whether or not the address has an account.** An address with
-        no account or a pending one gets the email, at most once a minute; an active
-        account gets nothing.
-      security: []
+        - Signing in (Hayat)
+      summary: Change the caller's theme (solo)
+      description: Saves the owner's theme on a solo instance and answers with what was stored. `null` (or a theme that sets nothing) goes back to the defaults. Colors are lower-cased; a field no app could draw is refused with `400`, by the same rules Hayat applies, so the theme moves to Hayat unchanged if the instance joins a team. In enterprise mode the theme is Hayat's and this answers `400` — change it in Hayat's console (`editUrl`).
       requestBody:
-        description: '`{ "email": "rina@acme.com", "name": "Rina" }` (`name` optional)'
+        required: true
         content:
           application/json:
             schema:
               type: object
+              properties:
+                appearance:
+                  oneOf:
+                    - $ref: "#/components/schemas/Appearance"
+                    - type: "null"
+            example:
+              appearance:
+                preset: custom
+                mode: dark
+                accent: "#7AA2FF"
+                sidebarMatchContent: true
+                font: inter
+                textSize: 14
+                radius: 6
+                sidebarWidth: 232
+                contentWidth: full
+      responses:
+        "200":
+          description: "`{ appearance }` — what was stored"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  appearance:
+                    oneOf:
+                      - $ref: "#/components/schemas/Appearance"
+                      - type: "null"
+              example:
+                appearance:
+                  preset: custom
+                  mode: dark
+                  accent: "#7aa2ff"
+                  sidebarMatchContent: true
+                  font: inter
+                  textSize: 14
+                  radius: 6
+                  sidebarWidth: 232
+                  contentWidth: full
+        "400":
+          description: A field no app could draw, or enterprise mode (the theme is changed in Hayat).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                bad color:
+                  value:
+                    error: "The accent color must look like #1d6a54."
+                enterprise:
+                  value:
+                    error: Change your theme in Hayat — it’s your account’s, shared by every app.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/auth/solo/setup:
+    post:
+      tags:
+        - Signing in (solo)
+      summary: Claim a new solo instance
+      description: "Only while `GET /api/auth/config` says `setupRequired`. `code` is the six-word setup code the instance printed to its log on boot (case and surrounding spaces don't matter). Makes the owner, signs them in and sets the refresh cookie. `timezone` is optional (an IANA zone; `null` follows the browser)."
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SoloSetup"
+            example:
+              code: amber-falcon-river-stone-maple-orbit
+              name: Dev
+              email: dev@example.com
+              password: correct-horse-battery
+              timezone: Asia/Jakarta
+      responses:
+        "201":
+          description: Set up and signed in. The refresh token is in the `Set-Cookie` header.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SoloTokens"
+        "400":
+          description: An invalid email, or a password under 8 characters
+        "403":
+          description: The setup code is wrong
+        "404":
+          description: Enterprise mode
+        "409":
+          description: Already set up — sign in instead
+        "429":
+          description: Too many attempts from this address; wait a minute
+  /api/auth/solo/login:
+    post:
+      tags:
+        - Signing in (solo)
+      summary: Sign in as the owner
+      description: Email and password. A v1.0 account's old password hash is replaced with scrypt on its first sign-in.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
               properties:
                 email:
                   type: string
-                  example: rina@acme.com
-                name:
+                password:
                   type: string
-                  example: Rina
-      responses:
-        "200":
-          description: '`{ "ok": true }`'
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                    example: true
-        "400":
-          description: '`{ "error": "Enter a valid email address." }`'
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                    example: Enter a valid email address.
-        "403":
-          description: registration is off
-        "503":
-          description: no mail server
-  /api/auth/oauth/{kind}/start:
-    post:
-      tags:
-        - Auth & setup
-      summary: Begin Google/GitHub sign-in
-      description: |-
-        Public. Begins a Google or GitHub sign-in (`:kind` is `google` | `github`). Sets
-        the `tg_oauth` cookie that ties the callback to this browser, and returns the URL
-        to send the browser to. With `invite`, a successful sign-in accepts that invite.
-      security: []
-      parameters:
-        - name: kind
-          in: path
-          required: true
-          description: Identity provider (`google` or `github`)
-          schema:
-            type: string
-          example: google
-      requestBody:
-        description: '`{ "invite": "<invite token>" }` (optional)'
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                invite:
-                  type: string
-      responses:
-        "200":
-          description: '`{ "url": "https://accounts.google.com/o/oauth2/v2/auth?…" }`'
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  url:
-                    type: string
-        "403":
-          description: the provider is off
-        "404":
-          description: unknown provider
-  /api/auth/oauth/callback:
-    get:
-      tags:
-        - Auth & setup
-      summary: Provider redirect target
-      description: |-
-        Where the provider sends the browser back, for sign-in, linking and invites.
-        Register this URL with the provider. Always answers with a redirect:
-        - signed in → `/login/complete?code=<one-time code>` (valid 60 s)
-        - linked → `/settings/account?linked=google`
-        - refused → the page it started from with `?error=<code>`: `not_linked`,
-          `email_unverified`, `already_linked`, `provider_taken`, `provider_off`,
-          `invite_invalid`, `expired`, `cancelled` or `failed`
-      security: []
-      parameters:
-        - name: state
-          in: query
-          schema:
-            type: string
-        - name: error
-          in: query
-          schema:
-            type: string
-        - name: code
-          in: query
-          schema:
-            type: string
-      responses:
-        "302":
-          description: Always a redirect.
-  /api/auth/oauth/exchange:
-    post:
-      tags:
-        - Auth & setup
-      summary: One-time code → session
-      description: |-
-        Public. Trades the one-time code for a session, the same shape as
-        `/api/auth/login`. The session token never appears in a URL.
-      security: []
-      requestBody:
-        description: '`{ "code": "<one-time code>" }`'
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                code:
-                  type: string
-      responses:
-        "200":
-          description: '`{ "user", "token" }`'
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Session"
-        "404":
-          description: '`{ "error": "This sign-in has expired. Please try again." }` (unknown, expired or already used)'
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                    example: This sign-in has expired. Please try again.
-  /api/auth/identities:
-    get:
-      tags:
-        - Auth & setup
-      summary: Your linked accounts
-      description: The caller's linked Google and GitHub accounts, plus what they could still link.
-      responses:
-        "200":
-          description: '`{ "identities": [{ "id", "provider": "google", "email", "createdAt", "lastUsedAt" }], "hasPassword": true, "providers": [{ "kind", "label" }] }`'
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  identities:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        id: {}
-                        provider:
-                          type: string
-                          example: google
-                        email: {}
-                        createdAt: {}
-                        lastUsedAt: {}
-                  hasPassword:
-                    type: boolean
-                    example: true
-                  providers:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        kind: {}
-                        label: {}
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-  /api/auth/identities/{kind}/link:
-    post:
-      tags:
-        - Auth & setup
-      summary: Begin linking an account
-      description: |-
-        Begins linking a provider account to the caller. Same answer as
-        `/api/auth/oauth/:kind/start`; the result arrives at the callback.
-      parameters:
-        - name: kind
-          in: path
-          required: true
-          description: Identity provider (`google` or `github`)
-          schema:
-            type: string
-          example: github
-      responses:
-        "200":
-          description: '`{ "url" }` · **401**'
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  url: {}
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          description: the provider is off
-  /api/auth/identities/{id}:
-    delete:
-      tags:
-        - Auth & setup
-      summary: Unlink an account
-      description: Unlinks one of the caller's own accounts.
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: string
-          example: 8c1fx
-      responses:
-        "200":
-          description: '`{ "ok": true }`'
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                    example: true
-        "400":
-          description: it is their only way to sign in
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          description: not theirs
-  /api/auth/forgot:
-    post:
-      tags:
-        - Auth & setup
-      summary: Request password-reset link
-      description: |-
-        Request a password-reset link. **Always 200** `{ "ok": true }` — never reveals
-        whether the email exists. When SMTP is available (the global/env config, else
-        any of the user's workspaces' SMTP) the reset link is emailed; the link is
-        **never** returned.
-      security: []
-      requestBody:
-        description: '`{ "email" }`'
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                email: {}
-      responses:
-        "200":
-          description: Always, so the route never reveals whether the email exists.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                    example: true
-  /api/auth/reset/{token}:
-    get:
-      tags:
-        - Auth & setup
-      summary: Validate reset token
-      description: Validate a reset token.
-      security: []
-      parameters:
-        - name: token
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        "200":
-          description: '`{ "email" }`'
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  email: {}
-        "404":
-          description: invalid/expired
-    post:
-      tags:
-        - Auth & setup
-      summary: Set new password + log in
-      description: Set a new password, invalidate the user's other sessions, and log in.
-      security: []
-      parameters:
-        - name: token
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        description: '`{ "password" }`'
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                password: {}
-      responses:
-        "200":
-          description: '`{ "user", "token" }`'
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Session"
-        "400":
-          description: missing password
-        "404":
-          description: invalid/expired
-  /api/setup:
-    get:
-      tags:
-        - Auth & setup
-      summary: First-run status
-      description: |-
-        First-run status.
-        `needsSetup` is **"the instance has no administrator"**, not "it has no users" —
-        an install migrated from before the system role existed has accounts but nobody
-        who can reach the admin area. `hasUsers` separates the two cases for the wizard.
-      security: []
-      responses:
-        "200":
-          description: '`{ "needsSetup": true, "hasUsers": false }`'
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  needsSetup:
-                    type: boolean
-                    example: true
-                  hasUsers:
-                    type: boolean
-                    example: false
-    post:
-      tags:
-        - Auth & setup
-      summary: Create the instance administrator — and nothing else
-      description: |-
-        Create the **instance administrator — and nothing else**. No workspace is made
-        here: an admin holds no workspace access, so the first workspace is theirs to
-        create (with an owner) via `POST /api/admin/workspaces` once signed in.
-
-        Allowed only while the instance has no admin. The two cases:
-        - **`hasUsers: false`** (empty install) — the account is created from the body.
-        - **`hasUsers: true`** (adminless install with accounts) — the credentials must
-          match an existing **active** account, which is then promoted. Creating an admin
-          out of nothing is reserved for an empty instance so an adminless install can't
-          be claimed by a stranger. Promotion drops every workspace membership the
-          account had and signs out its other sessions.
-
-        **Example:** `POST http://localhost:3000/api/setup`
-        ```json
-        { "email": "admin@acme.com", "password": "s3cret", "name": "Jane" }
-        ```
-      security: []
-      requestBody:
-        description: '`{ "email", "password", "name" }` (`name` optional; ignored on promotion unless given)'
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                email: {}
-                password: {}
-                name: {}
-      responses:
-        "200":
-          description: '`{ "user", "token" }`'
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  user: {}
-                  token: {}
-        "400":
-          description: missing email/password, or the email already has an account
-        "401":
-          description: '`{ "error": "Invalid email or password" }` (promotion path)'
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                    example: Invalid email or password
-        "403":
-          description: an admin already exists
-  /api/invite/{token}:
-    get:
-      tags:
-        - Auth & setup
-      summary: Validate an invite
-      description: Validate an invite.
-      security: []
-      parameters:
-        - name: token
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        "200":
-          description: '`{ "email", "workspaceName" }`'
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  email: {}
-                  workspaceName: {}
-        "404":
-          description: invalid/expired
-  /api/invite/{token}/accept:
-    post:
-      tags:
-        - Auth & setup
-      summary: Set password, activate, log in
-      description: |-
-        Set password, activate, log in.
-
-        ---
-      security: []
-      parameters:
-        - name: token
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        description: '`{ "name", "password" }`'
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                name: {}
-                password: {}
-      responses:
-        "200":
-          description: '`{ "user", "token" }`'
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  user: {}
-                  token: {}
-  /api/resource-tree:
-    get:
-      tags:
-        - Resource tree
-      summary: The visible resource tree, flat
-      description: |-
-        The whole tree the caller can see, flat — the client nests it via `parentId`.
-
-        An instance admin gets every node. Everyone else gets the nodes they own or hold
-        a grant on, everything beneath those, and the ancestors in between marked
-        `context: true`.
-
-        **Example (workspace owner):**
-        ```json
-        [
-          { "id": "root", "parentId": null, "kind": "group", "type": "application", "resourceId": null, "name": "Application", "ownerId": null, "workspaceId": null, "path": "/root", "depth": 0, "context": true, "owned": false },
-          { "id": "n1", "parentId": "root", "kind": "group", "type": "workspace", "resourceId": "w1", "name": "Acme", "ownerId": "u2", "workspaceId": "w1", "path": "/root/n1", "depth": 1, "context": false, "owned": true },
-          { "id": "n2", "parentId": "n1", "kind": "group", "type": "group", "resourceId": null, "name": "Production", "ownerId": null, "workspaceId": "w1", "path": "/root/n1/n2", "depth": 2, "context": false, "owned": false, "memberCount": 4, "canOrganise": true },
-          { "id": "n3", "parentId": "n2", "kind": "resource", "type": "connection", "resourceId": "c1", "name": "prod-db", "ownerId": "u2", "workspaceId": "w1", "path": "/root/n1/n2/n3", "depth": 3, "context": false, "owned": true, "canOrganise": true, "canOpen": true }
-        ]
-        ```
-      responses:
-        "200":
-          description: "`[{ id, parentId, kind, type, resourceId, name, ownerId, workspaceId, path, depth, context, owned, memberCount, canOrganise, canOpen }]`"
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Node"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-  /api/resource-tree/catalog:
-    get:
-      tags:
-        - Resource tree
-      summary: Node types + where each role may be granted
-      description: |-
-        What the tree is made of, and where each role may be granted — criteria already
-        applied.
-      responses:
-        "200":
-          description: |-
-            `{ nodeTypes: [{ type, kind, label, description, children, custom?, mirrors?, singleton? }], roles: [{ slug, name, description, builtin, permissions, appliesTo, grantableOn }] }`
-            ```json
-            {
-              "nodeTypes": [
-                { "type": "workspace", "kind": "group", "label": "Workspace", "description": "One tenant: its groups, its connections and its storage.", "children": ["group", "connection", "storage"], "mirrors": "workspaces" }
-              ],
-              "roles": [
-                { "slug": "owner", "name": "Owner", "builtin": true, "permissions": ["workspace.manage", "…"], "appliesTo": ["application", "workspace"], "grantableOn": ["application", "workspace"] },
-                { "slug": "member", "name": "Member", "builtin": true, "permissions": [], "appliesTo": null, "grantableOn": ["application", "workspace", "group", "connection", "storage", "dashboard", "workflow"] }
-              ]
-            }
-            ```
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  nodeTypes:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        type: {}
-                        kind: {}
-                        label: {}
-                        description: {}
-                        children: {}
-                        custom: {}
-                        mirrors: {}
-                        singleton: {}
-                  roles:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        slug: {}
-                        name: {}
-                        description: {}
-                        builtin: {}
-                        permissions: {}
-                        appliesTo: {}
-                        grantableOn: {}
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-  /api/resource-tree/{id}:
-    get:
-      tags:
-        - Resource tree
-      summary: "One node: ancestors, children, grants, your access"
-      description: |-
-        One node in full: where it sits, what's in it, who has been granted what, and what
-        the caller themselves may do here. Seeing the node at all is the permission.
-
-        **Scoped to the caller.** `ancestors` and `children` are filtered to nodes the
-        caller can already see in `GET /api/resource-tree` — `childrenOf` is the raw
-        hierarchy, and at the application root that is *every workspace on the instance*,
-        which any caller reaches because the root is an ancestor of everything they hold.
-
-        **`context: true`** means the caller holds nothing on this node itself; it is in
-        the tree only so what they *do* hold has a path back to the root. Grants come back
-        `[]` and `members` is omitted in that case — who else can reach a node you hold
-        nothing on is not yours to read. The application root is `context` for everyone
-        except an instance admin, who owns it.
-
-        `members` is present only for a group node the caller is not in `context` at. On
-        a **connection** node each entry in `people` also carries `canOpen` — see
-        Who can reach a node.
-
-        **`grants` vs `people`.** `grants` is what was granted *on this node*; `people`
-        resolves the whole chain — inherited grants from above, the rosters of granted
-        groups, and the owner of any ancestor — so access the node itself never mentions
-        cannot hide. Each `source` says where its access comes from, and names the
-        `grantId` behind it so a caller standing on the granting node can revoke exactly
-        that grant (a person can hold the same role twice, through two grants). An
-        `owner` source carries no `grantId`: ownership is a column on the node, not a
-        grant. `here: true` means the grant lives on this node and is revocable from it;
-        otherwise `nodeId`/`nodeName` say where it does live.
-
-        The two lists don't imply one another in either direction. A grant to a group
-        with an empty roster appears in `grants` and reaches nobody in `people`; a person
-        reaching this node through a grant three levels up appears in `people` with no
-        row in `grants` at all.
-      parameters:
-        - name: id
-          in: path
-          required: true
-          description: Node id
-          schema:
-            type: string
-          example: n_42
-      responses:
-        "200":
-          description: Success.
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  node:
-                    type: object
-                    properties:
-                      id:
-                        type: string
-                        example: n_42
-                      type:
-                        type: string
-                        example: group
-                      kind:
-                        type: string
-                        example: group
-                      name:
-                        type: string
-                        example: Production
-                      ...:
-                        type: string
-                  context:
-                    type: boolean
-                    example: false
-                  ancestors:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        id:
-                          type: string
-                          example: root
-                        type:
-                          type: string
-                          example: application
-                        name:
-                          type: string
-                          example: Application
-                        ...:
-                          type: string
-                  children:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        id:
-                          type: string
-                          example: n_43
-                        type:
-                          type: string
-                          example: connection
-                        name:
-                          type: string
-                          example: Billing DB
-                        ...:
-                          type: string
-                  grants:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        id:
-                          type: string
-                          example: g_1
-                        principalType:
-                          type: string
-                          example: node
-                        principalId:
-                          type: string
-                          example: n_9
-                        principalName:
-                          type: string
-                          example: Ops
-                        roleSlug:
-                          type: string
-                          example: analyst
-                        inherit:
-                          type: boolean
-                          example: true
-                  members:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        userId:
-                          type: string
-                          example: u_7
-                        email:
-                          type: string
-                          example: sam@example.com
-                        name:
-                          type: string
-                          example: Sam
-                        createdAt:
-                          type: integer
-                          example: 1730000000000
-                  people:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        userId:
-                          type: string
-                          example: u_7
-                        name:
-                          type: string
-                          example: Sam
-                        email:
-                          type: string
-                          example: sam@example.com
-                        owner:
-                          type: boolean
-                          example: false
-                        member:
-                          type: boolean
-                          example: true
-                        permissions:
-                          type: array
-                          items:
-                            type: string
-                            example: connections.read
-                        sources:
-                          type: array
-                          items:
-                            type: object
-                            properties:
-                              type:
-                                type: string
-                                example: group
-                              grantId:
-                                type: string
-                                example: g_1
-                              nodeId:
-                                type: string
-                                example: n_42
-                              nodeName:
-                                type: string
-                                example: Production
-                              groupId:
-                                type: string
-                                example: n_9
-                              groupName:
-                                type: string
-                                example: Ops
-                              roleSlug:
-                                type: string
-                                example: analyst
-                              roleName:
-                                type: string
-                                example: Analyst
-                              here:
-                                type: boolean
-                                example: true
-                              instanceWide:
-                                type: boolean
-                                example: false
-                  permissions:
-                    type: array
-                    items:
-                      type: string
-                      example: resources.organise
-                  owner:
-                    type: object
-                    properties:
-                      id:
-                        type: string
-                        example: u_3
-                      email:
-                        type: string
-                        example: ada@example.com
-                      name:
-                        type: string
-                        example: Ada
-                      role:
-                        type: string
-                        example: user
-              example:
-                node:
-                  id: n_42
-                  type: group
-                  kind: group
-                  name: Production
-                  ...: ...
-                context: false
-                ancestors:
-                  - id: root
-                    type: application
-                    name: Application
-                    ...: ...
-                children:
-                  - id: n_43
-                    type: connection
-                    name: Billing DB
-                    ...: ...
-                grants:
-                  - id: g_1
-                    principalType: node
-                    principalId: n_9
-                    principalName: Ops
-                    roleSlug: analyst
-                    inherit: true
-                members:
-                  - userId: u_7
-                    email: sam@example.com
-                    name: Sam
-                    createdAt: 1730000000000
-                people:
-                  - userId: u_7
-                    name: Sam
-                    email: sam@example.com
-                    owner: false
-                    member: true
-                    permissions:
-                      - connections.read
-                    sources:
-                      - type: group
-                        grantId: g_1
-                        nodeId: n_42
-                        nodeName: Production
-                        groupId: n_9
-                        groupName: Ops
-                        roleSlug: analyst
-                        roleName: Analyst
-                        here: true
-                        instanceWide: false
-                permissions:
-                  - resources.organise
-                  - resources.grant
-                owner:
-                  id: u_3
-                  email: ada@example.com
-                  name: Ada
-                  role: user
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-    put:
-      tags:
-        - Resource tree
-      summary: Rename a group
-      description: |-
-        Rename a node. Requires `resources.organise`. **Only custom groups** — a mirrored
-        node follows its own resource, so this is `400` for a workspace/connection/etc.
-      parameters:
-        - name: id
-          in: path
-          required: true
-          description: Node id
-          schema:
-            type: string
-      requestBody:
-        description: '`{ "name": "Staging" }` → the updated Node.'
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                name:
-                  type: string
-                  example: Staging
-      responses:
-        "200":
-          description: Success.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Node"
-        "400":
-          description: "**Only custom groups** — a mirrored node follows its own resource, so this is `400` for a workspace/connection/etc."
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-    delete:
-      tags:
-        - Resource tree
-      summary: Delete a group (must be empty)
-      description: |-
-        Delete a custom group. Requires `resources.organise`. **The group must be empty** —
-        move or delete everything inside it first; nothing is ever silently re-filed.
-        `400` for a mirrored node (delete the resource itself; its node goes with it).
-
-        **`409`** when the group still holds something, with what is in the way:
-
-        ```json
-        {
-          "error": "Move or delete the 2 items inside this group first.",
-          "children": [
-            { "id": "n7", "name": "Billing DB", "type": "connection" },
-            { "id": "n8", "name": "Archive", "type": "group" }
-          ]
-        }
-        ```
-      parameters:
-        - name: id
-          in: path
-          required: true
-          description: Node id
-          schema:
-            type: string
-      responses:
-        "200":
-          description: '`{ "ok": true }`'
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                    example: true
-        "400":
-          description: "`400` for a mirrored node (delete the resource itself; its node goes with it)."
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "409":
-          description: "**`409`** when the group still holds something, with what is in the way:"
-  /api/resource-tree/{id}/groups:
-    post:
-      tags:
-        - Resource tree
-      summary: Create a group under this node
-      description: |-
-        Create a group under `:id`. Requires `resources.organise` **at that node**.
-        Groups are the only node type created by hand — everything else appears because
-        its resource was created.
-
-        Omitting `ownerId` makes **the caller the owner, but only when they already own
-        the parent** — where ownership is theirs by cascade anyway, so recording it grants
-        nothing new. A caller who merely holds `resources.organise` gets an ownerless
-        group: otherwise that permission alone would be enough to create a group they own
-        and move a connection into it, inheriting every permission on that connection.
-
-        The new group is created holding a grant of the `member` role **to itself**
-        (`principalType: "node"`, `principalId`: the new node's own id, `inherit: true`),
-        so its roster resolves through the ordinary grant machinery from the first
-        request. Combined with the roster's data access to what is filed inside it (see
-        Connection access), that is what makes staffing the group the whole act of
-        admitting someone to its resources. The grant is an ordinary row: delete it from
-        `DELETE /api/resource-tree/:id/grants/:grantId` like any other. Groups created
-        before this shipped simply don't have it — their rosters still open the
-        connections filed under them, which is resolved in `server/auth.js` rather than
-        from the grant, so nothing needs backfilling.
-      parameters:
-        - name: id
-          in: path
-          required: true
-          description: Node id
-          schema:
-            type: string
-          example: n1
-      requestBody:
-        description: '`{ "name": "Production", "ownerId": "u3" }` (`ownerId` optional)'
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                name:
-                  type: string
-                  example: Production
-                ownerId:
-                  type: string
-                  example: u3
-      responses:
-        "200":
-          description: the created Node. `400` if the parent's type cannot hold a group.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Node"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-  /api/resource-tree/{id}/move:
-    put:
-      tags:
-        - Resource tree
-      summary: Re-file a node under another group
-      description: |-
-        Re-file a node under a different group. Requires `resources.organise` at **both**
-        ends — otherwise moving something into a group you control would be a way to
-        grant yourself access to it.
-
-        **Moving a `connection` node needs more:** the caller must also hold
-        `connections.manage` resolved at that connection, or own it. A group's roster can
-        open the connections filed under it (see Connection access), so re-filing one
-        changes who may use the database; without this test, `resources.organise` alone
-        would be a way to read every connection in the workspace by moving them one at a
-        time into a group you sit on. Every other node type moves on
-        `resources.organise` as before.
-
-        `400` if the target cannot hold this type, or if the target is inside the node
-        being moved.
-        `403` `{ "error": "You need to own this connection to move it." }` for a
-        connection the caller neither owns nor manages.
-
-        The whole subtree moves with the node, and its `path`/`depth`/`workspaceId` are
-        rewritten in one pass. No *grant* is copied or rewritten: a grant is made on a
-        node, so the node simply starts inheriting what its new parent carries and stops
-        inheriting the old one's. Data access to a connection does follow the move,
-        though — that is the point of filing one into a team.
-
-        Both ends are resolved for the client by `canOrganise` on `GET /api/resource-tree`
-        — the destination picker offers only nodes whose type may hold this one (per
-        `GET /api/resource-tree/catalog`'s `children`) and greys out the ones the caller
-        cannot file into.
-      parameters:
-        - name: id
-          in: path
-          required: true
-          description: Node id
-          schema:
-            type: string
-          example: n3
-      requestBody:
-        description: '`{ "parentId": "n2" }` → the updated Node.'
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                parentId:
-                  type: string
-                  example: n2
-      responses:
-        "200":
-          description: Success.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Node"
-        "400":
-          description: "`400` if the target cannot hold this type, or if the target is inside the node being moved."
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          description: '`403` `{ "error": "You need to own this connection to move it." }` for a connection the caller neither owns nor manages.'
-  /api/resource-tree/{id}/owner:
-    put:
-      tags:
-        - Resource tree
-      summary: Hand a node over (owners only)
-      description: |-
-        Hand a node over. Ownership cascades, so only the **current owner** of the node
-        (or of an ancestor), anyone holding `workspace.manage` at the node — every owner
-        of the workspace it sits in — or an instance admin may call this.
-
-        `400` if the new owner is not a member of the node's workspace, or is an instance
-        admin being made owner of anything below the application root.
-      parameters:
-        - name: id
-          in: path
-          required: true
-          description: Node id
-          schema:
-            type: string
-          example: n1
-      requestBody:
-        description: '`{ "ownerId": "u5" }` — or `{ "ownerId": null }` to clear it.'
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                ownerId:
-                  type: string
-                  example: u5
-      responses:
-        "200":
-          description: the updated Node.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Node"
-        "400":
-          description: "`400` if the new owner is not a member of the node's workspace, or is an instance admin being made owner of anything below the application root."
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-  /api/resource-tree/{id}/grants:
-    get:
-      tags:
-        - Resource tree
-      summary: Grants made on this node
-      description: The grants made on this node. Same visibility rule as `GET /:id`.
-      parameters:
-        - name: id
-          in: path
-          required: true
-          description: Node id
-          schema:
-            type: string
-      responses:
-        "200":
-          description: "`Grant[]`"
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Grant"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-    post:
-      tags:
-        - Resource tree
-      summary: Grant a role here
-      description: |-
-        Give a person or group a role here. Requires `resources.grant` at that node.
-
-        **`400` when the user isn't a member of the node's workspace.** Membership is the
-        authority on who belongs to a workspace and is what gates opening a database, so
-        granting a non-member would leave them half in: resolving to permissions through
-        the tree while `memberRole()` returns null, meaning `requireMember` and
-        `userCanAccessConnection` both still refuse them. The group-roster route and
-        `PUT /api/connections/:id/owner` already applied this rule; grants were the one
-        path that skipped it. A grant made on the **application root** has no workspace,
-        so it is exempt — that is the one way someone reaches a workspace node without
-        being a member of it, and the access view marks it.
-        | `roleSlug` | string | A slug from the role catalog |
-        | `inherit` | boolean | Default `true` — applies to the whole subtree; `false` = this node only |
-
-        ```json
-        { "principalType": "user", "principalId": "u4", "roleSlug": "member", "inherit": true }
-        ```
-
-        `400` with a specific reason when the requirement criteria refuse it:
-
-        ```json
-        { "error": "Owner can only be granted on: application, workspace." }
-        ```
-      parameters:
-        - name: id
-          in: path
-          required: true
-          description: Node id
-          schema:
-            type: string
-          example: n2
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                principalType:
-                  description: 'Who the grant is for Type: "user" | "node".'
-                principalId:
-                  type: string
-                  description: User id, or the id of a group node — the grant then reaches everyone on its roster
-      responses:
-        "200":
-          description: the created Grant. Re-granting the same `(node, principal, role)` updates `inherit` rather than duplicating.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Grant"
-        "400":
-          description: "**`400` when the user isn't a member of the node's workspace.** Membership is the authority on who belongs to a workspace and is what gates opening a database, so granting a non-member would leave them half in: resolving to permissions through the tree while `memberRole()` returns null, meaning `requireMember` and `userCanAccessConnection` both still refuse them."
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-  /api/resource-tree/{id}/grants/{grantId}:
-    delete:
-      tags:
-        - Resource tree
-      summary: Revoke a grant
-      description: Revoke a grant. Requires `resources.grant`.
-      parameters:
-        - name: id
-          in: path
-          required: true
-          description: Node id
-          schema:
-            type: string
-        - name: grantId
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        "200":
-          description: '`{ "ok": true }`'
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                    example: true
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-  /api/roles:
-    get:
-      tags:
-        - Roles & permissions
-      summary: The instance's role catalog
-      description: "Readable by **any signed-in user**: assigning a member a role needs the names, and the UI explains what each grants. Built-ins first, then alphabetical. `memberCount` is how many memberships hold the role and `grantCount` how many tree grants do (two grouped queries, not one per role) — together they are who an edit affects, and whether a delete will be refused. `appliesTo` is the admin-set node-type restriction (null = anywhere) and `grantableOn` is where the role may actually be granted once every criterion is applied. The write endpoints below return the role **without** the counts."
-      responses:
-        "200":
-          description: "`[{ id, slug, name, description, builtin, permissions, appliesTo, grantableOn, memberCount, grantCount, createdAt, updatedAt }]`"
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  type: object
-                  properties:
-                    id: {}
-                    slug: {}
-                    name: {}
-                    description: {}
-                    builtin: {}
-                    permissions: {}
-                    appliesTo: {}
-                    grantableOn: {}
-                    memberCount: {}
-                    grantCount: {}
-                    createdAt: {}
-                    updatedAt: {}
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-  /api/admin/permissions:
-    get:
-      tags:
-        - Roles & permissions
-      summary: The permission catalog (grouped)
-      description: "the catalog grouped for a role editor: `[{ group, items: [{ key, label, description, scope }] }]`. It comes from the server's **code**, not its database, so a UI can only ever offer a permission some route actually enforces. `scope` is where the key means anything."
-      responses:
-        "200":
-          description: "The catalog grouped for a role editor: `[{ group, items: [{ key, label, description, scope }] }]`"
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  type: object
-                  properties:
-                    group: {}
-                    items:
-                      type: array
-                      items:
-                        type: object
-                        properties:
-                          key: {}
-                          label: {}
-                          description: {}
-                          scope: {}
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-  /api/admin/roles:
-    post:
-      tags:
-        - Roles & permissions
-      summary: Create a role
-      description: the created role. The slug is derived from the name (`"Data Analyst"` → `data-analyst`, suffixed `-2`, `-3` … if taken) and is **fixed for the life of the role**, because memberships store it. Unknown permission keys and unknown node types are dropped silently. `appliesTo` restricts which node types the role may be granted on; omit it (or send `null`) for "anywhere". `400` when `name` is empty.
-      requestBody:
-        description: "`{ name, description?, permissions?, appliesTo? }`"
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                name: {}
-                description: {}
-                permissions: {}
-                appliesTo: {}
             example:
-              name: Data Analyst
-              description: Builds connections, runs queries
-              permissions:
-                - connections.create
-              appliesTo:
-                - workspace
-                - group
+              email: dev@example.com
+              password: correct-horse-battery
       responses:
         "200":
-          description: The created role
-        "400":
-          description: "`400` when `name` is empty."
+          description: Signed in. The refresh token is in the `Set-Cookie` header.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SoloTokens"
         "401":
-          $ref: "#/components/responses/Unauthorized"
-  /api/admin/roles/{slug}:
-    put:
+          description: Wrong email or password
+        "404":
+          description: Enterprise mode
+        "409":
+          description: Not set up yet
+        "429":
+          description: Too many attempts from this address; wait a minute
+  /api/auth/solo/refresh:
+    post:
       tags:
-        - Roles & permissions
-      summary: Rename / re-permission a role
-      description: "the updated role. Omitting `permissions` leaves the grants alone; sending it **replaces** them wholesale (not a partial patch). `appliesTo` is three-valued: absent leaves the criteria alone, `null` widens them to any node type, an array narrows them — and narrowing decides only what may be granted *next*, it never revokes a grant someone already holds. Renaming never touches a membership row. Editing `owner` always keeps `workspace.manage`, whatever the body says. `404` for an unknown slug."
-      parameters:
-        - name: slug
-          in: path
-          required: true
-          description: Role slug
-          schema:
-            type: string
+        - Signing in (solo)
+      summary: A fresh access token from the refresh cookie
+      description: Reads the `tabletsgo_solo_refresh` cookie and answers with a new access token (and a new cookie). Refused from another origin.
+      security: []
+      responses:
+        "200":
+          description: A new access token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SoloTokens"
+        "401":
+          description: No cookie, or it expired or was ended — sign in again
+        "403":
+          description: Called from another origin
+        "404":
+          description: Enterprise mode
+  /api/auth/solo/logout:
+    post:
+      tags:
+        - Signing in (solo)
+      summary: Sign out
+      description: Clears the refresh cookie. With `everywhere`, ends every session on every device, which takes a signed-in caller.
+      security: []
       requestBody:
-        description: "`{ name?, description?, permissions?, appliesTo? }`"
         content:
           application/json:
             schema:
               type: object
               properties:
-                name: {}
-                description: {}
-                permissions: {}
-                appliesTo: {}
+                everywhere:
+                  type: boolean
+            example:
+              everywhere: true
       responses:
-        "200":
-          description: The updated role
+        "204":
+          description: Signed out
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
-          description: "`404` for an unknown slug."
-    delete:
+          description: Enterprise mode
+  /api/auth/solo/account:
+    put:
       tags:
-        - Roles & permissions
-      summary: Delete a custom, unused role
-      description: "`400` for a built-in; `409 { error, inUse }` while any membership **or tree grant** still holds the role — those people would otherwise fail closed to no access, so move them first."
-      parameters:
-        - name: slug
-          in: path
-          required: true
-          description: Role slug
-          schema:
-            type: string
+        - Signing in (solo)
+      summary: Change the owner's name, email or time zone
+      description: Fields left out keep their value. `timezone` is an IANA zone, or `null` to follow the browser.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                email:
+                  type: string
+                timezone:
+                  type:
+                    - string
+                    - "null"
+            example:
+              name: Dev
+              timezone: Europe/Berlin
       responses:
         "200":
-          description: "`{ ok: true }`"
+          description: "`{ user }`, as `GET /api/auth/me` shows it"
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  ok:
-                    type: boolean
-                    example: true
+                  user: {}
+              example:
+                user:
+                  id: 6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b
+                  email: dev@example.com
+                  name: Dev
+                  role: admin
+                  timezone: Europe/Berlin
+                  picture: null
         "400":
-          description: "`400` for a built-in; `409 { error, inUse }` while any membership **or tree grant** still holds the role — those people would otherwise fail closed to no access, so move them first."
+          description: An invalid email
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Enterprise mode
+  /api/auth/solo/password:
+    put:
+      tags:
+        - Signing in (solo)
+      summary: Change the owner's password
+      description: Needs the current password. Every other session ends; this one gets fresh tokens.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current, next]
+              properties:
+                current:
+                  type: string
+                next:
+                  type: string
+            example:
+              current: correct-horse-battery
+              next: a-longer-better-one
+      responses:
+        "200":
+          description: Changed. New tokens for this session; the refresh token is in the `Set-Cookie` header.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SoloTokens"
+        "400":
+          description: The new password is under 8 characters
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: The current password is wrong
+        "404":
+          description: Enterprise mode
+        "429":
+          description: Too many attempts from this address; wait a minute
   /api/workspaces:
     get:
       tags:
         - Workspaces
       summary: List the caller's workspaces
-      description: "The workspaces the caller belongs to. `role` is a **role slug** from the instance's catalog and `permissions` is what that role grants here (see Roles & permissions below) — ships on the list route, not just the detail one, so permission-gated nav doesn't flicker while the detail request is in flight. **Don't branch on the slug**: ask `permissions`. `experiments` is `{ [key]: boolean }` (see Beta experiments below) — included for every member, not just admins, since it gates what the whole workspace sees. `notifications` ships here too (not just the detail route) so a settings panel that only calls `refresh()`/`listWorkspaces()` after saving sees the persisted value instead of it reverting to empty."
+      description: The caller's Hayat tenants — a workspace *is* one. `permissions` is what they may do here, in tabletsgo's short keys (see Permissions); ask it, never `role`, which is only a label (`owner` for the tenant's owner in Hayat). `experiments` and `notifications` are tabletsgo's own settings for the workspace. `manageUrl` opens the tenant in Hayat's console, where its name, members and groups are changed.
       responses:
         "200":
-          description: "`[{ id, name, role, permissions, createdAt, experiments, notifications }]`"
+          description: "`[{ id, name, role, permissions, memberCount, experiments, notifications, manageUrl }]`"
           content:
             application/json:
               schema:
@@ -2468,37 +928,18 @@ paths:
                     name: {}
                     role: {}
                     permissions: {}
-                    createdAt: {}
+                    memberCount: {}
                     experiments: {}
                     notifications: {}
+                    manageUrl: {}
         "401":
           $ref: "#/components/responses/Unauthorized"
-    post:
-      tags:
-        - Workspaces
-      summary: Create a workspace
-      description: creates one; caller becomes `owner`. An instance admin gets `403` here (they cannot own a workspace) — they use `POST /api/admin/workspaces`, which names someone else as the owner.
-      requestBody:
-        description: "`{ name }`"
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                name: {}
-      responses:
-        "200":
-          description: Creates one; caller becomes `owner`
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          description: An instance admin gets `403` here (they cannot own a workspace) — they use `POST /api/admin/workspaces`, which names someone else as the owner.
   /api/workspaces/{id}:
     get:
       tags:
         - Workspaces
       summary: Read a workspace
-      description: "`sessions` is `{ maxPerConnection, instanceDefault }` — the workspace-wide cap on concurrent sessions per connection (0 = unlimited) plus the read-only `MAX_SESSIONS_PER_CONNECTION` env fallback that applies while it's 0, so the settings form can show what's actually in effect. See \"Connection sessions\". Owners also get `smtp` — the instance's mail server, **read-only**: `{ source: 'global' | 'env', host, port, secure, user, from }`, or `null` when the instance has none. `source` is `global` for the config an instance admin saved (`/api/admin/smtp`) and `env` for the `SMTP_*` vars under it. Non-secret fields only — no password ever leaves the server. A workspace **cannot** configure its own SMTP (removed in meta migration v10); this field exists so the Notification tab can say what will send, or that nothing will."
+      description: "`404` unless the caller is on the tenant's roster. `sessions` is `{ maxPerConnection, instanceDefault }` (0 = unlimited). Whoever holds `notifications.manage` also gets `smtp`, the instance mail server, read-only (`null` when there is none). `manageUrl` and `treeUrl` open the tenant and its resource tree in Hayat's console."
       parameters:
         - name: id
           in: path
@@ -2508,7 +949,7 @@ paths:
             type: string
       responses:
         "200":
-          description: "`{ id, name, role, permissions, createdAt, experiments, notifications, sessions }`"
+          description: "`{ id, name, role, permissions, memberCount, experiments, notifications, sessions, smtp?, manageUrl, treeUrl }`"
           content:
             application/json:
               schema:
@@ -2518,17 +959,22 @@ paths:
                   name: {}
                   role: {}
                   permissions: {}
-                  createdAt: {}
+                  memberCount: {}
                   experiments: {}
                   notifications: {}
                   sessions: {}
+                  smtp: {}
+                  manageUrl: {}
+                  treeUrl: {}
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Not a member, or no such workspace
     put:
       tags:
         - Workspaces
-      summary: Checked field by field, not once for the whole route
-      description: "Checked **field by field**, not once for the whole route: `name`/`experiments`/ `sessions` need `workspace.manage`, `notifications` needs `notifications.manage`, so a role can be trusted with one and not the other. `sessions` is `{ maxPerConnection }` (integer, 0 = unlimited; negatives and junk clamp to 0) — the cap every connection in the workspace is held to. It is the only place this is configurable: there is no per-connection override. There is no `smtp` here — the mail server is instance-level, set at `PUT /api/admin/smtp`; an older client still sending one is ignored, not rejected. `experiments` is a partial `{ [key]: boolean }`, merged onto the existing flags (so toggling one doesn't clear the others). `notifications` is `{ backupFailure?: { enabled, memberIds } }` — `backupFailure`, if present, fully replaces the stored value (send the complete object, not a partial patch)."
+      summary: Change tabletsgo's settings for a workspace
+      description: "Checked **field by field**: `name`, `experiments` and `sessions` need `workspace.manage`, `notifications` needs `notifications.manage`. `name` renames the workspace in **solo** mode; in **enterprise** mode it is refused with `400`, since the name is the Hayat tenant's (rename it in Hayat's console). `experiments` is a partial `{ [key]: boolean }` merged onto the stored flags; `sessions` is `{ maxPerConnection }` (0 = unlimited); `notifications.backupFailure` (`{ enabled, memberIds }`) replaces the stored value."
       parameters:
         - name: id
           in: path
@@ -2543,373 +989,18 @@ paths:
             schema:
               type: object
               properties:
-                name: {}
+                name:
+                  type: string
+                  description: Solo mode only
                 experiments: {}
                 notifications: {}
                 sessions: {}
-      responses:
-        "200":
-          description: "`{ ok: true }`"
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                    example: true
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-    delete:
-      tags:
-        - Workspaces
-      summary: Requires workspace.delete
-      description: Requires **workspace.delete**. deletes it + its connections/queries. `400` if it's the caller's only workspace. Live driver handles for its connections are released and their sessions ended before the cascade runs.
-      parameters:
-        - name: id
-          in: path
-          required: true
-          description: Workspace id
-          schema:
-            type: string
-      responses:
-        "200":
-          description: Deletes it + its connections/queries
-        "400":
-          description: "`400` if it's the caller's only workspace."
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-  /api/workspaces/{id}/members:
-    get:
-      tags:
-        - Workspaces
-      summary: List workspace members
-      description: "`role` is the role slug; `permissions` is what it grants and `isOwner` whether that includes `workspace.manage` — both resolved server-side so a client never has to interpret a slug. `systemRole` is the account's system role, so the UI can tell an instance admin apart."
-      parameters:
-        - name: id
-          in: path
-          required: true
-          description: Workspace id
-          schema:
-            type: string
-      responses:
-        "200":
-          description: "`[{ userId, email, name, role, permissions, isOwner, status, systemRole, createdAt }]`"
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  type: object
-                  properties:
-                    userId: {}
-                    email: {}
-                    name: {}
-                    role: {}
-                    permissions: {}
-                    isOwner: {}
-                    status: {}
-                    systemRole: {}
-                    createdAt: {}
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-    post:
-      tags:
-        - Workspaces
-      summary: Add or invite a member
-      description: "`role` defaults to `member` and must be a slug in the catalog (`400` otherwise) — invite straight into a role instead of adding then promoting. Existing accounts are added directly; otherwise a pending user + invite link is created (and emailed when SMTP is configured; `inviteLink` returned regardless). `400` if the email belongs to an instance admin — such an account cannot join a workspace."
-      parameters:
-        - name: id
-          in: path
-          required: true
-          description: Workspace id
-          schema:
-            type: string
-      requestBody:
-        description: "`{ email, role? }`"
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                email: {}
-                role: {}
-      responses:
-        "200":
-          description: "`{ member, inviteLink, emailed }`"
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  member: {}
-                  inviteLink: {}
-                  emailed: {}
-        "400":
-          description: "`role` defaults to `member` and must be a slug in the catalog (`400` otherwise) — invite straight into a role instead of adding then promoting."
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-  /api/workspaces/{id}/members/{userId}:
-    put:
-      tags:
-        - Workspaces
-      summary: Moves the member to any role in the catalog
-      description: Moves the member to any role in the catalog. `400` for an unknown slug, when the target is an instance admin, or when this would move the **last** member holding `workspace.manage` to a role that doesn't ("The workspace needs at least one owner.") — the check is on the permission, so a custom role granting `workspace.manage` satisfies it too.
-      parameters:
-        - name: id
-          in: path
-          required: true
-          description: Workspace id
-          schema:
-            type: string
-        - name: userId
-          in: path
-          required: true
-          description: User id
-          schema:
-            type: string
-      requestBody:
-        description: "`{ role }`"
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                role: {}
-      responses:
-        "200":
-          description: "`{ ok: true, role }`"
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                    example: true
-                  role: {}
-        "400":
-          description: "`400` for an unknown slug, when the target is an instance admin, or when this would move the **last** member holding `workspace.manage` to a role that doesn't (\"The workspace needs at least one owner.\") — the check is on the permission, so a custom role granting `workspace.manage` satisfies it too."
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-    delete:
-      tags:
-        - Workspaces
-      summary: Can't remove yourself or the last owner
-      description: Can't remove yourself or the last owner. Also drops the removed user from every group in this workspace, from any individual connection grants, and from ownership of any node inside it.
-      parameters:
-        - name: id
-          in: path
-          required: true
-          description: Workspace id
-          schema:
-            type: string
-        - name: userId
-          in: path
-          required: true
-          description: User id
-          schema:
-            type: string
-      responses:
-        "200":
-          description: "`{ ok: true }`"
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                    example: true
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-  /api/resource-tree/{id}/members:
-    get:
-      tags:
-        - Workspaces
-      summary: Who is inside this group
-      description: "`400` if the node is not a group."
-      parameters:
-        - name: id
-          in: path
-          required: true
-          description: Node id
-          schema:
-            type: string
-      responses:
-        "200":
-          description: "`[{ userId, email, name, createdAt }]`"
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  type: object
-                  properties:
-                    userId: {}
-                    email: {}
-                    name: {}
-                    createdAt: {}
-        "400":
-          description: "`400` if the node is not a group."
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-    post:
-      tags:
-        - Workspaces
-      summary: Add someone to the group
-      description: "`400` if the user isn't a member of the group's workspace — a group scopes access inside one workspace, so its roster can't reach outside it."
-      parameters:
-        - name: id
-          in: path
-          required: true
-          description: Node id
-          schema:
-            type: string
-      requestBody:
-        description: "`{ userId }`"
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                userId: {}
-      responses:
-        "200":
-          description: "`{ ok: true }`"
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                    example: true
-        "400":
-          description: "`400` if the user isn't a member of the group's workspace — a group scopes access inside one workspace, so its roster can't reach outside it."
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-  /api/resource-tree/{id}/members/{userId}:
-    delete:
-      tags:
-        - Workspaces
-      summary: Remove someone from the group
-      parameters:
-        - name: id
-          in: path
-          required: true
-          description: Node id
-          schema:
-            type: string
-        - name: userId
-          in: path
-          required: true
-          description: User id
-          schema:
-            type: string
-      responses:
-        "200":
-          description: "`{ ok: true }`"
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                    example: true
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-  /api/admin/workspaces:
-    get:
-      tags:
-        - Instance administration
-      summary: Every workspace + its owners
-      description: for **every** workspace on the instance. `owners` is the member objects whose role carries `workspace.manage` — an empty array means the workspace is currently ownerless (its owners left, or it was just created), which is the state an admin acts on.
-      responses:
-        "200":
-          description: "`[{ id, name, createdAt, memberCount, groupCount, connectionCount, owners }]`"
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  type: object
-                  properties:
-                    id: {}
-                    name: {}
-                    createdAt: {}
-                    memberCount: {}
-                    groupCount: {}
-                    connectionCount: {}
-                    owners: {}
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-    post:
-      tags:
-        - Instance administration
-      summary: Create one, assign an owner
-      description: |-
-        Creates the workspace and hands it to `ownerEmail`, which **must be an account that already exists** — create the user with `POST /api/admin/users` first (`400 No account with that email` otherwise; nothing is created). An owner whose account is still `pending` gets an `inviteLink` scoped to the new workspace (emailed when SMTP is configured; returned either way); for an active owner `inviteLink` is `null`. `400` if `ownerEmail` belongs to an instance admin.
-
-        ```
-        POST /api/admin/workspaces
-        { "name": "Acme Production", "ownerEmail": "owner@example.com" }
-
-        → { "workspace": { "id": "ws_9f3", "name": "Acme Production", "createdAt": 1754630400000,
-                           "memberCount": 1, "groupCount": 0, "connectionCount": 0 },
-            "inviteLink": "https://tabletsgo.example.com/invite/8c1d…", "emailed": true }
-        ```
-      requestBody:
-        description: "`{ name, ownerEmail }`"
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                name: {}
-                ownerEmail: {}
             example:
-              name: Engineering
-              ownerEmail: olive@example.com
+              sessions:
+                maxPerConnection: 5
       responses:
         "200":
-          description: "`{ workspace, inviteLink, emailed }`"
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  workspace: {}
-                  inviteLink: {}
-                  emailed: {}
-        "400":
-          description: "`400` if `ownerEmail` belongs to an instance admin."
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-  /api/admin/workspaces/{id}:
-    put:
-      tags:
-        - Instance administration
-      summary: Rename a workspace
-      parameters:
-        - name: id
-          in: path
-          required: true
-          description: Workspace id
-          schema:
-            type: string
-      requestBody:
-        description: "`{ name }`"
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                name: {}
-      responses:
-        "200":
-          description: "`{ ok: true, name }`"
+          description: "`{ ok: true }`"
           content:
             application/json:
               schema:
@@ -2918,14 +1009,17 @@ paths:
                   ok:
                     type: boolean
                     example: true
-                  name: {}
+        "400":
+          description: "`name` was sent in enterprise mode (rename the workspace in Hayat), or it is blank"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Missing the permission a field needs
     delete:
       tags:
-        - Instance administration
-      summary: Delete a workspace + contents
-      description: Releases the live driver handles and ends the sessions first, then cascades the metadata (connections, queries, folders, workflows, dashboards, history, groups, storage destinations, SSH hosts and keys).
+        - Workspaces
+      summary: Remove everything tabletsgo holds for a workspace
+      description: Requires **workspace.delete**. Closes its connections' database handles, removes their (and its storage destinations') mirrors from Hayat's tree, then deletes its connections and everything under them, storage destinations, SSH hosts and keys, schema drafts and settings. **The tenant stays in Hayat** — deleting it is an instance admin's action there, possible once nothing is filed under it.
       parameters:
         - name: id
           in: path
@@ -2941,18 +1035,20 @@ paths:
               schema:
                 type: object
                 properties:
-                  ok:
-                    type: boolean
-                    example: true
-                  connectionsDeleted: {}
+                  ok: {}
+                  connectionsDeleted:
+                    type: integer
+                    example: 3
         "401":
           $ref: "#/components/responses/Unauthorized"
-  /api/admin/workspaces/{id}/members:
+        "403":
+          description: Missing `workspace.delete`
+  /api/workspaces/{id}/members:
     get:
       tags:
-        - Instance administration
-      summary: Its membership list
-      description: "`role` is null for a member holding no grant. `blocked` is the brute-force guard's block, `signIn` lists how the account can get in (`password`, `google`, `github`), and `groupCount` is how many of this workspace's groups they are on."
+        - Workspaces
+      summary: List workspace members (read-only)
+      description: "The tenant's roster in Hayat. Each person carries `roles` — the roles they hold on the workspace itself, from Hayat's grants (`via`: `user` granted to them, `group` through a group they are on, `everyone` granted to the whole workspace) — and `permissions`, what those add up to here (short keys). Read-only: people are added, removed and given roles in Hayat's console (`manageUrl` on the workspace). `role` is a label — `owner` for the tenant's owner, else `member`."
       parameters:
         - name: id
           in: path
@@ -2962,157 +1058,35 @@ paths:
             type: string
       responses:
         "200":
-          description: "`[{ userId, email, name, role, permissions, isOwner, status, systemRole, createdAt, blocked, signIn, groupCount }]`"
+          description: "`[{ userId, email, name, status, role, isOwner, createdAt, roles: [{ role, name, via, groupName }], permissions }]`"
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  type: object
-                  properties:
-                    userId: {}
-                    email: {}
-                    name: {}
-                    role: {}
-                    permissions: {}
-                    isOwner: {}
-                    status: {}
-                    systemRole: {}
-                    createdAt: {}
-                    blocked: {}
-                    signIn: {}
-                    groupCount: {}
+                  $ref: "#/components/schemas/WorkspaceMember"
+              example:
+                - userId: 01a1bf47-cfa1-7c3e-9a51-6f0e2b7d1c11
+                  email: admin@hayat.test
+                  name: Ada Admin
+                  status: active
+                  role: owner
+                  isOwner: true
+                  createdAt: 1794556800000
+                  roles:
+                    - { role: tabletsgo.owner, name: Workspace owner (tabletsgo), via: user, groupName: null }
+                    - { role: hayat.tenant-admin, name: Tenant admin, via: user, groupName: null }
+                  permissions: [workspace.manage, connections.create, storage.manage, ssh.manage]
         "401":
           $ref: "#/components/responses/Unauthorized"
-  /api/admin/workspaces/{id}/overview:
+        "403":
+          description: Not a member
+  /api/workspaces/{id}/members/{userId}:
     get:
       tags:
-        - Instance administration
-      summary: Workspace overview
-      description: |-
-        the header and Overview tab. `404` if the workspace doesn't exist. `queries.days` is always 30 entries, oldest first, bucketed by UTC day.
-        ```
-        GET /api/admin/workspaces/7f3a91c2-5e0b-4d6e-a18c-2b94e6d0c417/overview
-        {
-          "workspace": { "id": "7f3a…", "name": "Meridian", "createdAt": 1793000000000, "lastActivityAt": 1793760000000,
-                         "maxSessionsPerConnection": 5, "backupFailureAlerts": true },
-          "owners": [{ "userId": "…", "name": "Amara Okafor", "email": "amara@meridian.example" }],
-          "counts": { "members": 24, "pendingMembers": 3, "connections": 12, "lockedConnections": 2, "groups": 4,
-                      "dashboards": 18, "workflows": 9, "scheduledWorkflows": 4, "savedQueries": 143, "schemaDrafts": 3,
-                      "storageDestinations": 2, "sshHosts": 2, "sshKeys": 3 },
-          "queries": { "days": [{ "day": "2026-10-06", "total": 1980, "failed": 19 }], "total": 48845, "failed": 573 },
-          "backups": { "runs": 94, "succeeded": 90 },
-          "engines": [{ "type": "postgresql", "count": 6, "locked": false }],
-          "environments": [{ "environment": "production", "count": 5 }],
-          "attention": {
-            "lockedConnections": ["events-main"],
-            "failingBackups": [{ "connectionId": "…", "name": "billing-prod", "consecutiveFailures": 2, "lastSuccessAt": 1793500000000 }]
-          }
-        }
-        ```
-      parameters:
-        - name: id
-          in: path
-          required: true
-          description: Workspace id
-          schema:
-            type: string
-      responses:
-        "200":
-          description: The header and Overview tab
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          description: "`404` if the workspace doesn't exist."
-  /api/admin/workspaces/{id}/connections:
-    get:
-      tags:
-        - Instance administration
-      summary: A workspace's connections (metadata only)
-      description: |-
-        what each connection is, never what's in it. `canOpen` is resolved person by person through `userCanAccessConnection`; `state` is `locked` when the engine is turned off in Modules; `backup` is null with no enabled schedule.
-        ```
-        GET /api/admin/workspaces/7f3a91c2-5e0b-4d6e-a18c-2b94e6d0c417/connections
-        [{ "id": "…", "name": "billing-prod", "type": "postgresql", "environment": "production", "state": "active",
-           "ownerName": "Amara Okafor", "canOpen": 6, "createdAt": 1793000000000,
-           "backup": { "frequency": "daily", "hourOfDay": 2, "consecutiveFailures": 2 } }]
-        ```
-      parameters:
-        - name: id
-          in: path
-          required: true
-          description: Workspace id
-          schema:
-            type: string
-      responses:
-        "200":
-          description: What each connection is, never what's in it
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-  /api/admin/workspaces/{id}/resources:
-    get:
-      tags:
-        - Instance administration
-      summary: What a workspace holds
-      description: |-
-        what the workspace holds.
-        ```
-        GET /api/admin/workspaces/7f3a91c2-5e0b-4d6e-a18c-2b94e6d0c417/resources
-        {
-          "totals": { "dashboards": { "total": 18, "connections": 7 }, "workflows": { "total": 9, "connections": 5 },
-                      "savedQueries": { "total": 143, "connections": 8 }, "scheduledWorkflows": 4, "schemaDrafts": 3 },
-          "groups": [{ "id": "…", "name": "Platform", "people": 8, "connections": 5 }],
-          "storage": [{ "id": "…", "name": "Primary backups", "bucket": "meridian-db-backups", "region": "eu-west-1", "schedules": 3 }],
-          "sshHosts": [{ "id": "…", "name": "prod-bastion", "host": "bastion.meridian.example", "port": 22, "transport": "tcp", "hostKeyPinned": true }],
-          "sshKeys": [{ "id": "…", "name": "prod-deploy", "algorithm": "ed25519", "fingerprint": "SHA256:…" }]
-        }
-        ```
-      parameters:
-        - name: id
-          in: path
-          required: true
-          description: Workspace id
-          schema:
-            type: string
-      responses:
-        "200":
-          description: What the workspace holds
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-  /api/admin/workspaces/{id}/activity:
-    get:
-      tags:
-        - Instance administration
-      summary: Workspace activity, last 30 days
-      description: |-
-        counts over the last 30 days (top 5 of each) and the 50 newest backup and workflow runs. `name` is null on a backup run.
-        ```
-        GET /api/admin/workspaces/7f3a91c2-5e0b-4d6e-a18c-2b94e6d0c417/activity
-        {
-          "busiestConnections": [{ "id": "…", "name": "orders-prod", "queries": 16420 }],
-          "activeMembers": [{ "id": "…", "name": "Diego Ramos", "queries": 9240 }],
-          "runs": [{ "id": "…", "kind": "backup", "name": null, "connectionId": "…", "connectionName": "billing-prod",
-                     "trigger": "schedule", "status": "failed", "startedAt": 1793760000000, "finishedAt": 1793760072000 }]
-        }
-        ```
-      parameters:
-        - name: id
-          in: path
-          required: true
-          description: Workspace id
-          schema:
-            type: string
-      responses:
-        "200":
-          description: Counts over the last 30 days (top 5 of each) and the 50 newest backup and workflow runs
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-  /api/admin/workspaces/{id}/members/{userId}:
-    put:
-      tags:
-        - Instance administration
-      summary: Set a member's role
-      description: "`role` is any slug from the catalog (`400` otherwise). Adds the user to the workspace if they aren't in it yet — this is how an admin rescues a workspace whose owners have all left. `400` when demoting the last owner, or when the target is an instance admin."
+        - Workspaces
+      summary: One member and their access (read-only)
+      description: "The member as in the list, plus `access`: every grant that reaches them in this workspace and every node they own, from Hayat. `kind` is `workspace`, `group`, `connection` or `storage`; `id` is the connection's or storage destination's tabletsgo id (the Hayat node id for the workspace and groups). `via` says how it reaches them — `owner` (they own it; no role), `user`, `group` (`groupName` names it) or `everyone`. `inherit` means it reaches what is filed below as well. Change any of it in Hayat's console."
       parameters:
         - name: id
           in: path
@@ -3123,210 +1097,51 @@ paths:
         - name: userId
           in: path
           required: true
-          description: User id
+          description: The member's Hayat user id
           schema:
             type: string
-      requestBody:
-        description: "`{ role }`"
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                role: {}
       responses:
         "200":
-          description: "`{ ok: true, role }`"
+          description: "`{ ...member, access: [{ kind, id, name, via, role, roleName, inherit, groupName }] }`"
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                    example: true
-                  role: {}
-        "400":
-          description: "`role` is any slug from the catalog (`400` otherwise)."
+                allOf:
+                  - $ref: "#/components/schemas/WorkspaceMember"
+                  - type: object
+                    properties:
+                      access:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            kind: { type: string, enum: [workspace, group, connection, storage] }
+                            id: { type: string }
+                            name: { type: string }
+                            via: { type: string, enum: [owner, user, group, everyone] }
+                            role: { type: string, nullable: true }
+                            roleName: { type: string, nullable: true }
+                            inherit: { type: boolean }
+                            groupName: { type: string, nullable: true }
+              example:
+                userId: 01a1bf47-cfa1-7c3e-9a51-6f0e2b7d1c11
+                email: bob@hayat.test
+                name: Bob
+                status: active
+                role: member
+                isOwner: false
+                createdAt: 1794556800000
+                roles: []
+                permissions: []
+                access:
+                  - { kind: connection, id: c_8f2a, name: orders-db, via: group, role: tabletsgo.connection-user, roleName: Connection user, inherit: true, groupName: Backend }
+                  - { kind: storage, id: s_41d0, name: nightly-backups, via: owner, role: null, roleName: null, inherit: true, groupName: null }
         "401":
           $ref: "#/components/responses/Unauthorized"
-    delete:
-      tags:
-        - Instance administration
-      summary: Remove a member
-      description: "`400` when it would remove the last owner."
-      parameters:
-        - name: id
-          in: path
-          required: true
-          description: Workspace id
-          schema:
-            type: string
-        - name: userId
-          in: path
-          required: true
-          description: User id
-          schema:
-            type: string
-      responses:
-        "200":
-          description: "`{ ok: true }`"
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                    example: true
-        "400":
-          description: "`400` when it would remove the last owner."
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-  /api/admin/users:
-    get:
-      tags:
-        - Instance administration
-      summary: Every account on the instance
-      description: "where `workspaces` is `[{ id, name, role }]` — what the account would lose if promoted. `status` is the invite lifecycle (`active` | `pending`); `blocked` is the brute-force guard and is independent of it (`blockedUntil: null` = only an admin can lift it)."
-      responses:
-        "200":
-          description: "`[{ id, email, name, role, status, blocked, blockedAt, blockedUntil, failedAttempts, workspaces }]`"
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  type: object
-                  properties:
-                    id: {}
-                    email: {}
-                    name: {}
-                    role: {}
-                    status: {}
-                    blocked: {}
-                    blockedAt: {}
-                    blockedUntil: {}
-                    failedAttempts: {}
-                    workspaces: {}
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-    post:
-      tags:
-        - Instance administration
-      summary: Create an account
-      description: With `password` the account is active immediately; without it the account is `pending` and `inviteLink` is how they set one. `role` is `admin` | `user` (default `user`). `400` if the email already has an account.
-      requestBody:
-        description: "`{ email, name?, password?, role? }`"
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                email: {}
-                name: {}
-                password: {}
-                role: {}
-      responses:
-        "200":
-          description: "`{ user, inviteLink }`"
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  user: {}
-                  inviteLink: {}
-        "400":
-          description: "`400` if the email already has an account."
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-  /api/admin/users/{id}:
-    put:
-      tags:
-        - Instance administration
-      summary: Rename / reset password / role
-      description: |-
-        the updated user. Changing `password` or `role` signs the account out everywhere.
-        - `409` when promoting an account to `admin` that is the **only** owner of a
-          workspace — promotion strips every membership, so it would orphan it. The body
-          carries `workspaces: [{ id, name }]`; reassign ownership first.
-        - `400` when demoting the last instance admin.
-      parameters:
-        - name: id
-          in: path
-          required: true
-          description: User id
-          schema:
-            type: string
-      requestBody:
-        description: "`{ name?, password?, role? }`"
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                name: {}
-                password: {}
-                role: {}
-      responses:
-        "200":
-          description: The updated user
-        "400":
-          description: "The body carries `workspaces: [{ id, name }]`; reassign ownership first. - `400` when demoting the last instance admin."
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "409":
-          description: Changing `password` or `role` signs the account out everywhere. - `409` when promoting an account to `admin` that is the **only** owner of a workspace — promotion strips every membership, so it would orphan it.
-    delete:
-      tags:
-        - Instance administration
-      summary: Delete an account
-      description: "`400` for your own account or the last instance admin; `409` (same shape as above) when the account is the only owner of a workspace. The cascade drops every membership, then releases any resource-tree node the account still owned and every grant it held **instance-wide** — memberships only reach the workspaces they were memberships *of*, so a node owned in a workspace the account had already left would otherwise keep a dangling owner. The nodes themselves survive; they become ownerless, and a parent node's owner can reassign them."
-      parameters:
-        - name: id
-          in: path
-          required: true
-          description: User id
-          schema:
-            type: string
-      responses:
-        "200":
-          description: "`{ ok: true }`"
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  ok:
-                    type: boolean
-                    example: true
-        "400":
-          description: "`400` for your own account or the last instance admin; `409` (same shape as above) when the account is the only owner of a workspace."
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "409":
-          description: "`400` for your own account or the last instance admin; `409` (same shape as above) when the account is the only owner of a workspace."
-  /api/admin/users/{id}/unblock:
-    post:
-      tags:
-        - Instance administration
-      summary: Lift a brute-force block
-      description: the updated user. Lifts a brute-force block and clears the failed-attempt counter; a no-op on an account that isn't blocked. `404` when the user doesn't exist.
-      parameters:
-        - name: id
-          in: path
-          required: true
-          description: User id
-          schema:
-            type: string
-      responses:
-        "200":
-          description: The updated user
-        "401":
-          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Not a member
         "404":
-          description: "`404` when the user doesn't exist."
+          description: That person is not on this workspace's roster
   /api/admin/smtp:
     get:
       tags:
@@ -3385,7 +1200,7 @@ paths:
       tags:
         - Instance administration
       summary: Drop it (fall back to env)
-      description: Drops the saved config entirely; the instance falls back to the `SMTP_*` env vars, or to sending no mail at all (invites still return a copyable link).
+      description: Drops the saved config entirely; the instance falls back to the `SMTP_*` env vars, or to sending no mail at all.
       responses:
         "200":
           description: "`{ ok: true, smtp }`"
@@ -3470,119 +1285,6 @@ paths:
                             queryTimeoutSec:
                               type: integer
                               example: 30
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-  /api/admin/identity-providers:
-    get:
-      tags:
-        - Instance administration
-      summary: Sign-in providers (admin)
-      description: |-
-        Both sign-in providers and how many people linked each. Secrets are write-only:
-        reads report `hasSecret`.
-      responses:
-        "200":
-          description: '`{ "providers": [{ "kind": "google", "label": "Google", "clientId", "hasSecret": true, "enabled": true, "linked": 12 }], "callbackUrl": "https://db.acme.com/api/auth/oauth/callback" }`'
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  providers:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        kind:
-                          type: string
-                          example: google
-                        label:
-                          type: string
-                          example: Google
-                        clientId: {}
-                        hasSecret:
-                          type: boolean
-                          example: true
-                        enabled:
-                          type: boolean
-                          example: true
-                        linked:
-                          type: integer
-                          example: 12
-                  callbackUrl:
-                    type: string
-                    example: https://db.acme.com/api/auth/oauth/callback
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-  /api/admin/identity-providers/{kind}:
-    put:
-      tags:
-        - Instance administration
-      summary: Save a provider (admin)
-      description: Save a provider's app. An omitted or blank `clientSecret` keeps the saved one.
-      parameters:
-        - name: kind
-          in: path
-          required: true
-          description: Identity provider (`google` or `github`)
-          schema:
-            type: string
-          example: google
-      requestBody:
-        description: '`{ "clientId": "…", "clientSecret": "…", "enabled": true }` (all optional)'
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                clientId:
-                  type: string
-                clientSecret:
-                  type: string
-                enabled:
-                  type: boolean
-                  example: true
-      responses:
-        "200":
-          description: '`{ "providers": [ … ] }`'
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  providers:
-                    type: array
-                    items: {}
-        "400":
-          description: turned on without a client ID and secret
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          description: unknown provider
-    delete:
-      tags:
-        - Instance administration
-      summary: Remove a provider (admin)
-      description: Removes the app. Linked accounts stay linked and work again once it is set up.
-      parameters:
-        - name: kind
-          in: path
-          required: true
-          description: Identity provider (`google` or `github`)
-          schema:
-            type: string
-          example: github
-      responses:
-        "200":
-          description: '`{ "providers": [ … ] }`'
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  providers:
-                    type: array
-                    items: {}
         "401":
           $ref: "#/components/responses/Unauthorized"
   /api/admin/modules:
@@ -4608,8 +2310,8 @@ paths:
     get:
       tags:
         - Connections
-      summary: Read connection access (groups/users)
-      description: Read the current assignment (any caller who already has access).
+      summary: Who may open this connection (read-only)
+      description: "Hayat's resolved answer for `tabletsgo.connection.open` at this connection — every way in (a grant on it or a group above it, the roster of a group it is filed under, owning it), each with Hayat's `reason`. Not the raw grant list. Access is changed in Hayat's console: `manageUrl` opens this connection's node there (`null` without `HAYAT_CONSOLE_URL`). `parentNodeId` is the Hayat node it is filed under."
       parameters:
         - name: id
           in: path
@@ -4617,83 +2319,35 @@ paths:
           description: Connection id
           schema:
             type: string
-          example: demo-sqlite
       responses:
         "200":
-          description: '`{ "groups": ["n_42"], "users": ["user_1"] }` (id arrays — `groups` holds group **node** ids; empty = nobody named here, which still leaves the owner, `connections.manage`, and the rosters of the groups this connection is filed under)'
+          description: "`{ people: [{ userId, name, email, reason }], parentNodeId, manageUrl }`"
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  groups:
+                  people:
                     type: array
                     items:
-                      type: string
-                      example: n_42
-                  users:
-                    type: array
-                    items:
-                      type: string
-                      example: user_1
+                      type: object
+                      properties:
+                        userId: {}
+                        name: {}
+                        email: {}
+                        reason: {}
+                  parentNodeId: {}
+                  manageUrl: {}
+              example:
+                people:
+                  - userId: 0193f3a2-0000-7000-8000-000000000002
+                    name: Mo
+                    email: mo@example.com
+                    reason: on the roster of Promotions, where it is filed
+                parentNodeId: 0193f3a2-0000-7000-8000-0000000000aa
+                manageUrl: https://hayat.example.com/resource-tree/ws-id/node-id
         "401":
           $ref: "#/components/responses/Unauthorized"
-    put:
-      tags:
-        - Connections
-      summary: Set connection access (admin)
-      description: |-
-        Replace the assignment (manage-or-own, see the note above the connection routes).
-        Send the full desired set.
-
-        ---
-      parameters:
-        - name: id
-          in: path
-          required: true
-          description: Connection id
-          schema:
-            type: string
-          example: demo-sqlite
-      requestBody:
-        description: '`{ "groups": ["n_42"], "users": ["user_1"] }` (either may be omitted → treated as `[]`)'
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                groups:
-                  type: array
-                  items:
-                    type: string
-                    example: n_42
-                users:
-                  type: array
-                  items:
-                    type: string
-                    example: user_1
-      responses:
-        "200":
-          description: the stored `{ groups, users }`
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  groups: {}
-                  users: {}
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          description: "`{ \"error\": \"You need to own this connection to change a connection's access list.\" }`"
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-                    example: You need to own this connection to change a connection's access list.
   /api/workspaces/{id}/schemas:
     get:
       tags:
@@ -13445,7 +11099,7 @@ components:
     bearerAuth:
       type: http
       scheme: bearer
-      description: The `token` from login, setup or accept-invite.
+      description: An access token — Hayat's in enterprise mode, from signing in at Hayat; tabletsgo's own in solo mode, from POST /api/auth/solo/login (see GET /api/auth/config).
   responses:
     Unauthorized:
       description: Missing, expired or revoked token.
@@ -13454,6 +11108,96 @@ components:
           schema:
             $ref: "#/components/schemas/Error"
   schemas:
+    Appearance:
+      type: object
+      description: A person's theme. Every field is optional; an empty one means the app's own default. Colors are `#rrggbb`.
+      properties:
+        preset: { type: string, pattern: "^[a-z0-9-]{1,40}$", description: "The preset it started from (`tg-dark`, `hayat-light`, …) or `custom`" }
+        mode: { type: string, enum: [system, light, dark], description: The neutral palette behind the colors left empty }
+        accent: { type: string, pattern: "^#[0-9a-fA-F]{6}$" }
+        background: { type: string, pattern: "^#[0-9a-fA-F]{6}$" }
+        surface: { type: string, pattern: "^#[0-9a-fA-F]{6}$" }
+        text: { type: string, pattern: "^#[0-9a-fA-F]{6}$" }
+        muted: { type: string, pattern: "^#[0-9a-fA-F]{6}$" }
+        border: { type: string, pattern: "^#[0-9a-fA-F]{6}$" }
+        sidebarMatchContent: { type: boolean, description: The sidebar follows the content colors; its own four are ignored }
+        sidebarBackground: { type: string, pattern: "^#[0-9a-fA-F]{6}$" }
+        sidebarText: { type: string, pattern: "^#[0-9a-fA-F]{6}$" }
+        sidebarActive: { type: string, pattern: "^#[0-9a-fA-F]{6}$" }
+        sidebarBorder: { type: string, pattern: "^#[0-9a-fA-F]{6}$" }
+        success: { type: string, pattern: "^#[0-9a-fA-F]{6}$" }
+        warning: { type: string, pattern: "^#[0-9a-fA-F]{6}$" }
+        destructive: { type: string, pattern: "^#[0-9a-fA-F]{6}$" }
+        font: { type: string, enum: [system, inter, plex] }
+        textSize: { type: integer, minimum: 12, maximum: 18, description: Root font size in pixels }
+        density: { type: string, enum: [comfortable, compact, condensed] }
+        radius: { type: integer, minimum: 0, maximum: 18, description: Corner radius in pixels }
+        sidebarWidth: { type: integer, minimum: 200, maximum: 320, description: Sidebar width in pixels }
+        contentWidth: { type: string, enum: [narrow, default, full] }
+    SoloSetup:
+      type: object
+      required: [code, email, password]
+      properties:
+        code:
+          type: string
+          description: The setup code from the instance's log
+        name:
+          type: string
+        email:
+          type: string
+        password:
+          type: string
+          minLength: 8
+        timezone:
+          type:
+            - string
+            - "null"
+    SoloTokens:
+      type: object
+      properties:
+        accessToken:
+          type: string
+          description: "Send as `Authorization: Bearer`"
+        expiresIn:
+          type: integer
+          description: Seconds until the access token expires (900)
+        user:
+          type: object
+          description: The owner, as `GET /api/auth/me` shows them
+      example:
+        accessToken: eyJhbGciOiJIUzI1NiJ9.eyJjbGllbnRfaWQiOiJ0YWJsZXRzZ28tc29sbyJ9.c2lnbmF0dXJl
+        expiresIn: 900
+        user:
+          id: 6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b
+          email: dev@example.com
+          name: Dev
+          role: admin
+          timezone: Asia/Jakarta
+          picture: null
+    WorkspaceMember:
+      type: object
+      properties:
+        userId: { type: string }
+        email: { type: string }
+        name: { type: string }
+        status: { type: string, enum: [pending, active, disabled] }
+        role: { type: string, enum: [owner, member], description: "A label: `owner` for the tenant's owner." }
+        isOwner: { type: boolean }
+        createdAt: { type: integer, nullable: true, description: When they joined (ms) }
+        roles:
+          type: array
+          description: The roles they hold on the workspace itself, once each.
+          items:
+            type: object
+            properties:
+              role: { type: string, description: "Hayat role slug, e.g. `tabletsgo.owner`" }
+              name: { type: string }
+              via: { type: string, enum: [user, group, everyone] }
+              groupName: { type: string, nullable: true }
+        permissions:
+          type: array
+          items: { type: string }
+          description: What they may do in the workspace (short keys).
     Error:
       type: object
       required:
@@ -13477,7 +11221,7 @@ components:
           description: 'The permission the caller lacks. Present when they are a member of the workspace; a non-member gets `{ "error": "Forbidden" }`.'
     User:
       type: object
-      description: "`role` is the **system** role, not a workspace role."
+      description: "`role` is `admin` for whoever holds tabletsgo's admin role at Hayat's root, else `user`."
       properties:
         id:
           type: string
@@ -13495,14 +11239,6 @@ components:
             - string
             - "null"
           description: An IANA zone, or `null` to follow the browser.
-    Session:
-      type: object
-      description: "What login, setup and accept-invite return. Send `token` as `Authorization: Bearer <token>`."
-      properties:
-        user:
-          $ref: "#/components/schemas/User"
-        token:
-          type: string
     Connection:
       type: object
       additionalProperties: true
@@ -13790,104 +11526,3 @@ components:
               type: string
           example:
             error: "no such table: foo"
-    Node:
-      type: object
-      description: One node of the resource tree. Mirrors `ResourceNode` in `src/features/resource-tree/types.ts`.
-      properties:
-        id:
-          type: string
-          description: Node id (the application root is literally `"root"`)
-        parentId:
-          type:
-            - string
-            - "null"
-          description: Parent node id; null only for the application root
-        kind:
-          type: string
-          enum:
-            - group
-            - resource
-          description: Holds other nodes, or is a thing you use
-        type:
-          type: string
-          enum:
-            - application
-            - workspace
-            - group
-            - connection
-            - storage
-            - dashboard
-            - workflow
-          description: Node type
-        resourceId:
-          type:
-            - string
-            - "null"
-          description: Id in the mirrored table; null for the root and custom groups
-        name:
-          type: string
-          description: Display name
-        ownerId:
-          type:
-            - string
-            - "null"
-          description: Owns this node and, by cascade, everything under it
-        workspaceId:
-          type:
-            - string
-            - "null"
-          description: The workspace this node lives in (null for the root)
-        path:
-          type: string
-          description: Materialized ancestor path, `/root/<id>/<id>`
-        depth:
-          type: integer
-          description: 0 at the root
-        createdAt:
-          type: integer
-        updatedAt:
-          type: integer
-        context:
-          type: boolean
-          description: "Present only so descendants have a path back to the root — the caller holds nothing here. Still selectable: `GET /api/resource-tree/:id` answers for it, scoped"
-        owned:
-          type: boolean
-          description: The caller owns this node outright
-        canOpen:
-          type: boolean
-          description: "Connections only: whether the caller may actually open the database"
-        memberCount:
-          type: integer
-          description: "Groups only: how many people a grant to this group would reach"
-        canOrganise:
-          type: boolean
-          description: 'Whether the caller may reorganise **here**: file a new group in (`POST /api/resource-tree/:id/groups`, groups only) and re-file this node (`PUT /api/resource-tree/:id/move`). Resolved at the node, so a grant deep in the tree says yes without one above it — it is what lets the UI offer "new group" and "move" only where they are allowed. Answered for resources too: the move guard asks at the node being moved, not at its parent'
-    Grant:
-      type: object
-      description: A role given to a person, or to a group node standing for its roster.
-      properties:
-        id:
-          type: string
-        nodeId:
-          type: string
-        principalType:
-          type: string
-          enum:
-            - user
-            - node
-        principalId:
-          type: string
-        principalName:
-          type:
-            - string
-            - "null"
-        principalEmail:
-          type:
-            - string
-            - "null"
-        roleSlug:
-          type: string
-        inherit:
-          type: boolean
-        createdAt:
-          type: integer

@@ -1,24 +1,10 @@
-// Public API for the auth feature.
-export { AuthProvider, useAuth } from './stores/AuthContext'
-export {
-  getSetupStatus,
-  submitSetup,
-  getInvite,
-  acceptInvite,
-  forgotPassword,
-  getReset,
-  resetPassword,
-  getMe,
-  updateProfile,
-  changePassword,
-  getSignInOptions,
-  register,
-  exchangeSignIn,
-} from './api'
-export type { SignInOptions } from './api'
-export { signInErrorMessage } from './lib/signInErrors'
-export { default as ProfileSetting } from './components/ProfileSetting'
-export { default as TimeZoneSetting } from './components/TimeZoneSetting'
-export { default as PasswordSetting } from './components/PasswordSetting'
-export { default as SignInMethods } from './components/SignInMethods'
-export { default as ProviderButtons, OrDivider, PROVIDER_ICONS } from './components/ProviderButtons'
+// Public API for the auth feature: signing in — at Hayat (enterprise) or as the
+// instance's one owner (solo).
+export { AuthProvider, useAuth, useIdentity } from './stores/AuthContext'
+export { getMe, getAuthConfig } from './api'
+export type { AuthUser, AuthConfig } from './api'
+export { default as AccountSetting } from './components/AccountSetting'
+export { default as AuthCard } from './components/AuthCard'
+export { default as SoloSignIn } from './components/SoloSignIn'
+export { default as SoloSetup } from './components/SoloSetup'
+export { default as EnterpriseOnly } from './components/EnterpriseOnly'

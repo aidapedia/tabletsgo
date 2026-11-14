@@ -7,6 +7,8 @@
 // steps: additive only, never DROP or rename, no NOT NULL column without a default.
 // Superseded tables stay declared here (see DEPRECATED_TABLES in
 // server/migrator/legacy/sqlite.js), or the next migration would drop them.
+// The identity and authorization tables were dropped on purpose when Hayat took
+// them over (migration 20261110000000_hayat_owns_identity).
 
 // The app's query client (server/meta.js picks the one matching META_DB_TYPE).
 // Generated, not committed: `npm run prisma:generate`.
@@ -55,17 +57,6 @@ model backup_schedules {
   created_at      BigInt?
   updated_at      BigInt?
   include_config  BigInt? @default(0)
-}
-
-model connection_access {
-  id             String  @id
-  connection_id  String
-  principal_type String
-  principal_id   String
-  created_at     BigInt?
-
-  @@unique([connection_id, principal_type, principal_id])
-  @@index([connection_id], map: "idx_connection_access_conn")
 }
 
 model connection_tables {
@@ -123,17 +114,6 @@ model folders {
   color         String?
 }
 
-model node_members {
-  id         String  @id
-  node_id    String
-  user_id    String
-  created_at BigInt?
-
-  @@unique([node_id, user_id])
-  @@index([node_id], map: "idx_node_members_node")
-  @@index([user_id], map: "idx_node_members_user")
-}
-
 model query_history {
   id            String  @id
   connection_id String
@@ -145,62 +125,6 @@ model query_history {
   executor_id   String?
   executor_name String?
   ts            BigInt?
-}
-
-model resource_grants {
-  id             String  @id
-  node_id        String
-  principal_type String
-  principal_id   String
-  role_slug      String
-  inherit        BigInt  @default(1)
-  created_at     BigInt?
-  created_by     String?
-
-  @@unique([node_id, principal_type, principal_id, role_slug])
-  @@index([node_id], map: "idx_resource_grants_node")
-  @@index([principal_type, principal_id], map: "idx_resource_grants_principal")
-}
-
-model resource_nodes {
-  id           String  @id
-  parent_id    String?
-  kind         String
-  type         String
-  resource_id  String?
-  name         String
-  owner_id     String?
-  workspace_id String?
-  path         String
-  depth        BigInt  @default(0)
-  sort         BigInt? @default(0)
-  created_at   BigInt?
-  updated_at   BigInt?
-
-  @@unique([type, resource_id], map: "idx_resource_nodes_resource")
-  @@index([owner_id], map: "idx_resource_nodes_owner")
-  @@index([parent_id], map: "idx_resource_nodes_parent")
-  @@index([path], map: "idx_resource_nodes_path")
-  @@index([workspace_id], map: "idx_resource_nodes_workspace")
-}
-
-model role_permissions {
-  role_id    String
-  permission String
-
-  @@unique([role_id, permission])
-  @@index([role_id], map: "idx_role_permissions_role")
-}
-
-model roles {
-  id          String  @id
-  slug        String  @unique
-  name        String
-  description String?
-  builtin     BigInt? @default(0)
-  created_at  BigInt?
-  updated_at  BigInt?
-  applies_to  String?
 }
 
 model saved_folders {
@@ -251,34 +175,6 @@ model schema_migrations {
   executor_id   String?
   executor_name String?
   ts            BigInt?
-}
-
-model sessions {
-  token      String  @id
-  user_id    String
-  created_at BigInt?
-  ns         String?
-  context    String?
-  expires_at BigInt?
-
-  @@index([ns, expires_at], map: "idx_sessions_ns_expires")
-  @@index([user_id], map: "idx_sessions_user")
-}
-
-model spacetree_nodes {
-  id                    String            @id
-  parent_id             String?
-  type                  String
-  resource_id           String?
-  name                  String
-  owner_id              String?
-  ts                    BigInt
-  spacetree_nodes       spacetree_nodes?  @relation("spacetree_nodesTospacetree_nodes", fields: [parent_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  other_spacetree_nodes spacetree_nodes[] @relation("spacetree_nodesTospacetree_nodes")
-
-  @@index([owner_id], map: "idx_spacetree_owner")
-  @@index([parent_id], map: "idx_spacetree_parent")
-  @@index([type, resource_id], map: "idx_spacetree_type_resource")
 }
 
 model ssh_gateways {
@@ -339,55 +235,6 @@ model table_domains {
   @@index([connection_id], map: "idx_table_domains_conn")
 }
 
-model team_members {
-  id         String  @id
-  team_id    String
-  user_id    String
-  created_at BigInt?
-
-  @@unique([team_id, user_id])
-  @@index([team_id], map: "idx_team_members_team")
-}
-
-model teams {
-  id           String  @id
-  workspace_id String
-  name         String
-  created_at   BigInt?
-}
-
-model user_identities {
-  id           String  @id
-  user_id      String
-  provider     String
-  subject      String
-  email        String?
-  created_at   BigInt
-  last_used_at BigInt?
-
-  @@unique([provider, subject], map: "idx_user_identities_subject")
-  @@unique([user_id, provider], map: "idx_user_identities_user")
-}
-
-model users {
-  id               String  @id
-  username         String  @unique
-  password_hash    String
-  name             String?
-  role             String?
-  status           String?
-  invite_token     String?
-  invite_workspace String?
-  token_expires    BigInt?
-  reset_token      String?
-  reset_expires    BigInt?
-  failed_logins    BigInt? @default(0)
-  last_failed_at   BigInt?
-  locked_at        BigInt?
-  locked_until     BigInt?
-  timezone         String?
-}
-
 model workflow_runs {
   id            String  @id
   workflow_id   String
@@ -413,16 +260,6 @@ model workflows {
   schedule_enabled BigInt? @default(0)
   next_run_at      BigInt?
   folder_id        String?
-}
-
-model workspace_members {
-  id           String  @id
-  workspace_id String
-  user_id      String
-  role         String
-  created_at   BigInt?
-
-  @@unique([workspace_id, user_id])
 }
 
 model workspaces {

@@ -17,6 +17,7 @@ import { exportDatabaseToFile } from '../db/index.js'
 import { LOCAL_STORAGE_ID, storeFile } from '../storage.js'
 import { exportConnectionConfigToFile } from '../connection-transfer.js'
 import { smtpConfig, sendMail } from '../mail.js'
+import { getUsers } from '../hayat/index.js'
 
 // Runs export → store once, recording the outcome in backup_runs. Shared by
 // manual "Run now" and the scheduler (see runBackupWithRetries below).
@@ -129,7 +130,7 @@ async function notifyBackupFailure(conn, result) {
     if (!cfg?.enabled || !cfg.memberIds?.length) return
     const smtp = await smtpConfig()
     if (!smtp) return
-    const recipients = await db().users.findMany({ where: { id: { in: cfg.memberIds } }, select: { username: true } })
+    const recipients = [...(await getUsers(cfg.memberIds)).values()]
     const when = new Date().toISOString()
     for (const r of recipients) {
       try {

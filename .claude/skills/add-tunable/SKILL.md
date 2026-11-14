@@ -30,55 +30,80 @@ SMTP/admin-seed fallbacks are the exception, read where they're used).
 ### Runtime
 - `PORT` (server), `META_DB` (metadata SQLite path), `NODE_ENV`.
 
-### Required
-- `ENCRYPTION_KEY` — **required**. Encrypts connection credentials
-  (host/port/username/password/…) at rest (AES-256-GCM); the server refuses to boot
-  without it.
+### Mode
+- `TABLETSGO_MODE` — `solo` | `enterprise`. Unset: the mode the store recorded
+  (`app_settings` key `identity`), else enterprise when `HAYAT_ISSUER` is set, else
+  solo. Resolved by `server/migrator/identity.js` on boot into `server/mode.js`.
+  A store recorded as enterprise refuses to boot as solo.
+- `SOLO_OWNER` — a v1.0 install with several accounts moving to solo: the email
+  of the one who keeps it (`captureSoloOwner`, before the drop migration).
 
-### First-run seeding
-- **None.** The in-browser first-run setup wizard creates the instance admin;
-  there is no env pre-seed (`ADMIN_USERNAME` / `ADMIN_PASSWORD` were removed, as
-  was `WORKSPACE_NAME` in 0.21.3). Don't reintroduce one.
+### Required
+- `ENCRYPTION_KEY` — **required in enterprise mode**. Encrypts connection
+  credentials (host/port/username/password/…) at rest (AES-256-GCM). Unset on a
+  *new* solo install on SQLite (no meta DB file yet), `config.js` generates one
+  into `DATA_DIR/encryption.key` (0600); an existing key file is read in either
+  mode. Otherwise the server refuses to boot without it.
+
+### Hayat (sign-in and authorization) — enterprise mode, required
+- `HAYAT_ISSUER` — Hayat's auth role public URL; tokens are verified against its keys.
+- `HAYAT_API_URL` — Hayat's api role (gRPC/Connect), reachable from the server only.
+- `HAYAT_CLIENT_ID` / `HAYAT_CLIENT_SECRET` — tabletsgo's service credentials
+  (printed by `hayat import`, or Hayat console → Services).
+- `HAYAT_WEB_CLIENT_ID` — the public client the browser signs in with; a token
+  issued to any other client is refused.
+- `HAYAT_CONSOLE_URL` — **optional**; where the "Manage in Hayat" links point.
+- `HAYAT_AUTH_URL` — **optional**, default `HAYAT_ISSUER`. The auth role as this
+  server reaches it (Docker: `http://hayat-auth:8443`, since `localhost` is the
+  container). `connect.js` fetches discovery there and rewrites the discovered
+  token/JWKS endpoints onto it; the `iss` check stays the published issuer.
+- Enterprise mode refuses to start without the five required ones. There is no first-run
+  wizard and no admin seed in tabletsgo: the first admin is whoever Hayat grants
+  `tabletsgo.admin` at its root — `hayat import` does it for the bundle's admins,
+  which are former admins plus whoever `npm run hayat:bundle -- --admin <email>` names.
+
+### Hayat runs on its own
+Tabletsgo supports one setup: a Hayat that runs elsewhere, reached through the
+`HAYAT_*` vars above. There is no compose overlay that runs Hayat beside tabletsgo —
+Hayat's own settings (`HAYAT_MASTER_KEY`, its database, mail) never belong in this
+repo's `.env.example`, `docker-compose.yml` or `server/config.js`. For development,
+`scripts/dev/hayat.sh` (`npm run dev:hayat`) runs Hayat from `../hayat`'s source and
+writes the `HAYAT_*` values into `.env`.
 
 ### Mail
 - `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` /
-  `SMTP_SECURE` — **optional** SMTP, and the *fallback* under the admin's config
+  `SMTP_SECURE` — **optional** SMTP for tabletsgo's own notices, the *fallback* under the admin's config
   (`/api/admin/smtp`, stored in `app_settings`), which is where SMTP is meant to be
   set — it changes without a redeploy. The env vars stay supported so existing
-  deployments keep working. Invites always return a copyable link even without
-  SMTP. See the `auth-sessions` skill.
+  deployments keep working. See the `auth-sessions` skill.
 
 ### Public address
 - `PUBLIC_URL` — **optional**. The address people reach the instance at. `baseUrl`
-  prefers it over the request, for emailed links and the Google/GitHub callback
-  URL. Set it behind a reverse proxy.
+  prefers it over the request, for emailed links. Set it behind a reverse proxy.
 
 ### Frontend
 - `VITE_API_URL` — frontend API base, **baked at build time** via Dockerfile `ARG`
   (not runtime). Default `/api`.
 
 ### Sessions
-- `SESSION_TTL_MS` / `SESSION_IDLE_TTL_MS` — **optional**. Sliding login lifetime
-  (default 30 days) and how long an idle connection session keeps its database
-  handle open (default 15 min).
+- `SESSION_IDLE_TTL_MS` — **optional**. How long an idle connection session keeps
+  its database handle open (default 15 min). There is no login lifetime here: a
+  login is a Hayat token (`SESSION_TTL_MS` was removed with the move to Hayat).
 - `MAX_SESSIONS_PER_CONNECTION` — **optional**. Instance-wide default cap on
   concurrent sessions per connection (0 = unlimited, the default). A workspace
   overrides it. Connection sessions are per-process, so with more than one replica
   this applies per replica.
 
-> **The app runs no Redis of its own** — the meta DB plus an in-process cache is the
-> whole session layer, and there is nothing to point at (`REDIS_URL` /
+> **The app runs no Redis of its own** — connection sessions are an in-process
+> cache and logins are Hayat tokens, so there is nothing to point at (`REDIS_URL` /
 > `SESSION_REDIS_URL` were removed in 0.21). Don't reintroduce an external store for
 > state the meta DB can hold; the one thing it deliberately does *not* hold is a
 > connection session, because that describes a live socket in one process. See the
 > `auth-sessions` skill.
 
 ### Login protection
-- `LOGIN_MAX_ATTEMPTS` / `LOGIN_ATTEMPT_WINDOW_MS` / `LOGIN_LOCKOUT_MS` /
-  `LOGIN_ADMIN_COOLDOWN_MS` — **optional** brute-force protection (defaults: 5
-  failures within 15 min, blocked until an admin unblocks, admins get a 15-min
-  cooldown instead). These read `0` as a real value ("disabled") — parsed with
-  `envInt`. See the `auth-sessions` skill.
+- **None here** — sign-in, and its rate limiting, are Hayat's. The `LOGIN_*` vars
+  were removed with the move to Hayat; don't reintroduce them.
 
 ### Database connectivity
 - `HANDSHAKE_TIMEOUT_MS` — **optional**. How long the pre-flight connection

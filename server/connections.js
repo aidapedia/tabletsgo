@@ -13,13 +13,18 @@
 
 import { db, transaction } from './meta.js'
 import { decryptSecret, encryptSecret } from './crypto.js'
+import { getUsers } from './hayat/index.js'
 
-// Owner display fields for a set of rows, in one query: userId -> { name, username }.
+// Owner display fields for a set of rows, from Hayat's directory: userId -> { name, username }.
+// Best-effort: without Hayat (tests, an outage) a connection just shows no owner name.
 const ownersOf = async (rows) => {
   const ids = [...new Set(rows.map((r) => r?.owner_id).filter(Boolean))]
   if (!ids.length) return new Map()
-  const users = await db().users.findMany({ where: { id: { in: ids } }, select: { id: true, name: true, username: true } })
-  return new Map(users.map((u) => [u.id, u]))
+  try {
+    return await getUsers(ids)
+  } catch {
+    return new Map()
+  }
 }
 
 // `owners` is what ownersOf() returned for the batch this row came from.
@@ -154,7 +159,6 @@ export const CONNECTION_TABLES = [
   'dashboards',
   'folders',
   'query_history',
-  'connection_access',
   'schema_migrations',
   'backup_schedules',
   'backup_runs',
@@ -163,7 +167,7 @@ export const CONNECTION_TABLES = [
 // One metadata cascade for both connection deletion and workspace deletion.
 // History and backup rows are instance-specific (so they are not exported), but
 // they still belong to the connection and must be removed with it. The caller
-// removes the mirrored resource node in the same outer transaction.
+// removes the connection's mirror in Hayat.
 export const deleteConnectionMetadata = async (id) =>
   transaction(async () => {
     for (const table of CONNECTION_TABLES) await db()[table].deleteMany({ where: { connection_id: id } })

@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
+import { toast } from 'sonner'
 import {
   useConnections,
   ConnectionDetail,
@@ -58,8 +59,12 @@ export default function ConnectionDetailPage() {
 
   const confirmDelete = async () => {
     setDeleting(null)
-    await removeConnection(conn.id)
-    navigate('/connections')
+    try {
+      await removeConnection(conn.id)
+      navigate('/connections')
+    } catch (error) {
+      toast.error((error as Error).message || 'Could not delete the connection.')
+    }
   }
 
   return (

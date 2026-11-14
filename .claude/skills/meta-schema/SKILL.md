@@ -51,6 +51,7 @@ prisma/postgresql/schema.prisma
 prisma/postgresql/migrations/
 server/migrator/index.js           # runMigrations(), metaSchemaStatus()
 server/migrator/boot.js            # runs runMigrations() on boot — server.js's first import
+server/migrator/identity.js        # after migrating, boot resolves and records the mode (solo | enterprise) in app_settings `identity`; captureSoloOwner() runs just before the drop — see the auth-sessions skill
 server/migrator/legacy/            # FROZEN pre-Prisma steps v1–v22 (sqlite.js, postgresql.js + v20 SQL)
 ```
 
@@ -60,9 +61,14 @@ own history. `tests/migrator.test.js` fails if the two schema files' models drif
 ### What runMigrations() does
 
 - **empty** DB → `prisma migrate deploy` (builds from `0_baseline`), then `seed()`:
-  the built-in roles from `BUILTIN_ROLES`, the `root` resource node, and the
-  legacy marker stamped at v22 (`user_version` / `metadata_schema_version`) so a
-  pre-Prisma image opening it doesn't replay v1. Seed is insert-if-missing.
+  only the legacy marker stamped at v22 (`user_version` / `metadata_schema_version`)
+  so a pre-Prisma image opening it doesn't replay v1. (Roles and the resource tree
+  are Hayat's now.)
+- **before `20261110000000_hayat_owns_identity`** (pending on any existing DB) →
+  `writeHayatBundle` reads the identity tables into `data/hayat-import-<time>.json`
+  (`server/migrator/hayat-export.js`, `SELECT *` because earlier pending
+  migrations haven't run yet), then the migration drops them. It is the one
+  sanctioned break of the additive-only rule.
 - **legacy** DB (has `users`, no `_prisma_migrations`) → snapshot, the frozen
   legacy steps bring it to v22, `prisma migrate resolve --applied 0_baseline`
   (the baseline *is* v22 — running it would collide), then deploy.
@@ -97,7 +103,7 @@ built into the image), and META_DB_TYPE picks one at boot.
   requests' queries wait instead of landing inside it (tests/meta.test.js).
   Keep transactions short, and never await anything slow (HTTP, a user
   database) inside one.
-- **The model names are the table names** (`db().resource_nodes`), so a
+- **The model names are the table names** (`db().connections`), so a
   table chosen from an allowlist can be addressed as `db()[table]`.
 
 ### To change the meta schema
@@ -122,14 +128,15 @@ built into the image), and META_DB_TYPE picks one at boot.
 Rules:
 
 - **Never edit a shipped migration folder**, and never touch `0_baseline` or
-  `server/migrator/legacy/` — users' DBs already ran them. Prisma checksums
+  `server/migrator/legacy/` — users' DBs already ran them. (The legacy steps import
+  the frozen `legacy/catalog.js`, a copy of the pre-Hayat permission catalog.) Prisma checksums
   applied migrations and refuses to deploy over an edited one.
 - **Additive only.** Never `DROP`/rename columns or tables, and never add `NOT NULL`
   columns without a default — an older image must still be able to open a newer
   DB (the update wizard's rollback restarts the old image on it).
-- **A new permission key the built-in owner should hold** ships as data in the
-  migration (like legacy v17/v21 did); `seed()` covers fresh installs from the
-  catalog, but existing installs only get it from the migration.
+- **A new permission key** is not a migration any more: it goes in
+  `server/permissions-catalog.js` with a bumped `CONTRACT_VERSION`, and Hayat holds
+  the roles that carry it.
 - **Deprecating a table:** keep it declared in both schema files (removing a
   model makes the next migration `DROP` it), register it in `DEPRECATED_TABLES`
   (`server/migrator/legacy/sqlite.js`), and remove every live-code reference.

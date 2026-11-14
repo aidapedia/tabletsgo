@@ -36,15 +36,11 @@ test('owners are notified once per unique address, with all of their connections
 await loadModules()
 
 test('with nothing stored, every module is on — an upgrade hides nothing', () => {
-  assert.ok(publicModules().filter((m) => m.id !== 'registration').every((m) => m.enabled))
+  assert.ok(publicModules().every((m) => m.enabled))
 })
 
-test('registration alone starts off, so an upgrade never opens sign-ups', async () => {
-  assert.equal(isModuleEnabled('registration'), false)
-  await updateModules({ registration: { enabled: true } })
-  assert.equal(isModuleEnabled('registration'), true)
-  await updateModules({ registration: { enabled: false } })
-  assert.equal(isModuleEnabled('registration'), false)
+test('sign-up is not a tabletsgo module — Hayat owns registration', () => {
+  assert.equal(publicModules().some((m) => m.id === 'registration'), false)
 })
 
 test('an engine nobody uses turns off, and the db layer then refuses it', async () => {

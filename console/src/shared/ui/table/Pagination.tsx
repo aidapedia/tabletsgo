@@ -2,12 +2,15 @@ import MenuItem from '@/shared/ui/navigation/MenuItem'
 import Popover from '@/shared/ui/overlay/Popover'
 import { ChevronLeft, ChevronRight, ChevronDown } from '@/shared/ui/icons'
 import { Button } from '@/shared/ui/button'
+import { cn } from '@/shared/lib/utils'
 
 /**
  * Pagination footer: "1–10 of 42", rows-per-page picker and page controls.
  * Used by `DataTable` but standalone-usable under any list.
  *
  * Purely controlled — it renders the numbers it's given and reports clicks.
+ * Pair it with `usePagination` for a client-side paged list. `className` is
+ * merged, so a dense console panel can pass `px-3 py-1.5 text-[11px]`.
  */
 export type PaginationProps = {
   page: number
@@ -47,7 +50,7 @@ export default function Pagination({
   const go = (p: number) => onPageChange(Math.min(pageCount, Math.max(1, p)))
 
   return (
-    <div className={`flex flex-wrap items-center justify-between gap-3 px-4 py-3 text-[12px] text-muted-foreground ${className}`}>
+    <div className={cn('flex flex-wrap items-center justify-between gap-3 px-4 py-3 text-[12px] text-muted-foreground', className)}>
       <div className="flex items-center gap-2">
         <span>
           {from}–{to} of {total}

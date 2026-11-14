@@ -25,7 +25,6 @@ const rowFor = (table, connectionId, n) => {
     dashboards: { ...base, name: 'd' },
     folders: { ...base, type: 'query', name: 'f' },
     query_history: { ...base, query: 'select 1', status: 'success' },
-    connection_access: { ...base, principal_type: 'user', principal_id: 'u' },
     schema_migrations: { ...base, version: 1, forward_sql: '[]', reversible: 1 },
     backup_schedules: { ...base, frequency: 'daily' },
     backup_runs: { ...base, schedule_id: 's', trigger_kind: 'manual', status: 'success', started_at: 1, ts: 1 },

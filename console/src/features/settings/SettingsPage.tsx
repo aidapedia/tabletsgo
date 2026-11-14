@@ -1,6 +1,6 @@
 import { useParams } from 'react-router-dom'
-import { AppearanceSetting, DensitySetting, DataSetting } from '@/features/settings'
-import { useAuth, ProfileSetting, PasswordSetting, SignInMethods, TimeZoneSetting } from '@/features/auth'
+import { AppearanceSetting, DataSetting } from '@/features/settings'
+import { useAuth, AccountSetting } from '@/features/auth'
 import { KeymapSetting } from '@/features/keymap'
 import Narrow from '@/shared/ui/page/Narrow'
 import { SubHead, TabbedSection } from '@/shared/ui/page/Section'
@@ -14,8 +14,9 @@ import useTabRoute from '@/shared/hooks/useTabRoute'
  * and never opens a database console, so neither Data (direct execute) nor
  * Keymap (console shortcuts) has anything to act on. Updates aren't here at all:
  * they're the instance's, not a person's (see `AdminUpdatesPage`).
- * Profile, Security and Preferences are identical for everyone — they act on the
- * caller's own account and browser, not on a role.
+ * Account and Appearance are identical for everyone. The account itself — name,
+ * password, time zone, sign-in methods — and its theme live in Hayat, so those
+ * tabs show them and link there; a solo instance edits both here.
  */
 export default function SettingsPage() {
   const { sub } = useParams()
@@ -24,44 +25,24 @@ export default function SettingsPage() {
 
   const tabs = [
     {
-      id: 'profile',
-      label: 'Profile',
+      id: 'account',
+      label: 'Account',
       body: (
         <Narrow>
-          <SubHead title="Profile" desc="Your name and sign-in email." />
-          <ProfileSetting />
+          <SubHead title="Account" desc="Who you are signed in as." />
+          <AccountSetting />
         </Narrow>
       ),
     },
     {
-      id: 'security',
-      label: 'Security',
+      // Wide on purpose: the editor sets its controls beside a live preview.
+      id: 'appearance',
+      label: 'Appearance',
       body: (
-        <Narrow>
-          <SubHead title="Password" desc="Change the password you sign in with." />
-          <PasswordSetting />
-          <div className="mt-10 border-t border-border pt-8">
-            <SubHead title="Sign-in methods" desc="Google and GitHub accounts you can sign in with." />
-            <SignInMethods />
-          </div>
-        </Narrow>
-      ),
-    },
-    {
-      id: 'preferences',
-      label: 'Preferences',
-      body: (
-        <Narrow>
-          <SubHead title="Time zone" desc="Times across the app show in this zone." />
-          <TimeZoneSetting />
-          <div className="mt-10 border-t border-border pt-8">
-            <AppearanceSetting />
-          </div>
-          <div className="mt-8">
-            <SubHead title="Density" desc="Adjust spacing and text size across the app." />
-            <DensitySetting />
-          </div>
-        </Narrow>
+        <div>
+          <SubHead title="Appearance" desc="Colors, sizes and type — your account’s theme, the same in every app you sign in to." />
+          <AppearanceSetting />
+        </div>
       ),
     },
     ...(isSystemAdmin

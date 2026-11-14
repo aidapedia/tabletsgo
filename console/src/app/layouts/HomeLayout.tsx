@@ -1,7 +1,7 @@
 import { Suspense, useEffect, useState, type MouseEvent } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { PageLoading } from '@/shared/ui/feedback/LoadingState'
-import { useAuth } from '@/features/auth'
+import { useAuth, useIdentity } from '@/features/auth'
 import { WorkspaceSwitcher } from '@/features/workspaces'
 import { UpdateBanner } from '@/features/system-update'
 import Breadcrumb from '@/shared/ui/navigation/Breadcrumb'
@@ -10,7 +10,7 @@ import RailItem, { RailDivider } from '@/shared/ui/navigation/RailItem'
 import AccountTile from '@/shared/ui/AccountTile'
 import AccountMenu from '@/shared/ui/AccountMenu'
 import { PageTrailProvider, usePageCrumbs } from '@/shared/ui/page/PageTrail'
-import { BellIcon, BuildingIcon, CloudIcon, DatabaseIcon, DiagramIcon, GridIcon, HomeIcon, KeyIcon, Logo, MailIcon, MenuIcon, MoreHorizontalIcon, PanelLeftIcon, RefreshIcon, SettingsIcon, ShieldIcon, TerminalIcon, TreeIcon, UsersIcon, WorkflowIcon } from '@/shared/ui/icons'
+import { BellIcon, BuildingIcon, CloudIcon, DatabaseIcon, DiagramIcon, GridIcon, HomeIcon, KeyIcon, Logo, MailIcon, MenuIcon, MoreHorizontalIcon, PanelLeftIcon, RefreshIcon, SettingsIcon, ShieldIcon, TerminalIcon, UsersIcon, WorkflowIcon } from '@/shared/ui/icons'
 import { Button } from '@/shared/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/shared/ui/tooltip'
 
@@ -52,13 +52,12 @@ const NAV = {
       ],
     },
     {
-      // Resource Tree is who may do what — how the workspace is run, so it sits
-      // with the members it grants to, not with the things it grants on.
+      // Groups and who may do what are Hayat's (its console's Resource Tree);
+      // General and Member link there.
       group: 'Workspace',
       items: [
         { label: 'General', Icon: BuildingIcon, path: '/workspace' },
         { label: 'Member', Icon: UsersIcon, path: '/members' },
-        { label: 'Resource Tree', Icon: TreeIcon, path: '/resource-tree' },
         { label: 'Notification', Icon: BellIcon, path: '/notifications' },
       ],
     },
@@ -69,36 +68,31 @@ const NAV = {
   ],
 }
 
-// An instance admin belongs to no workspace, so none of the sections above have
-// anything to show them — `/admin` is their home, so it takes the pinned row.
-// Below it the groups read as: who can get in and what they may reach, then how
-// the instance itself is set up, plus the same personal settings. The instance's
-// group is `Settings`; the account's own is the `Setting` in the account menu.
+// The admin area: tabletsgo's own instance settings. Accounts, workspaces,
+// roles and sign-in are administered in Hayat. An admin may also belong to
+// workspaces now (the role is a grant at Hayat's root), so the way back is a row.
 const ADMIN_NAV = {
-  pinned: [{ label: 'Workspaces', Icon: BuildingIcon, path: '/admin', exact: true, also: '/admin/workspaces' }],
+  pinned: [{ label: 'Modules', Icon: GridIcon, path: '/admin/modules' }],
   groups: [
-    {
-      group: 'Access',
-      items: [
-        { label: 'Users', Icon: UsersIcon, path: '/admin/users' },
-        { label: 'Resource Tree', Icon: TreeIcon, path: '/resource-tree' },
-      ],
-    },
     {
       group: 'Settings',
       items: [
-        { label: 'Modules', Icon: GridIcon, path: '/admin/modules' },
-        { label: 'Authentication', Icon: KeyIcon, path: '/admin/sign-in' },
         { label: 'Email', Icon: MailIcon, path: '/admin/email' },
         { label: 'Updates', Icon: RefreshIcon, path: '/admin/updates' },
       ],
     },
     {
       group: 'Account',
-      items: [{ label: 'Setting', Icon: SettingsIcon, path: '/settings' }],
+      items: [
+        { label: 'Workspaces', Icon: HomeIcon, path: '/', exact: true },
+        { label: 'Setting', Icon: SettingsIcon, path: '/settings' },
+      ],
     },
   ],
 }
+
+// A tabletsgo admin sees the way into the admin area from the workspace side.
+const ADMIN_ENTRY = { label: 'Administration', Icon: ShieldIcon, path: '/admin' }
 
 // `also` is a second address the row owns: `/admin` can't own everything under
 // it, because the other admin sections live there too.
@@ -129,8 +123,18 @@ function PageTrail({ pathname, isAdmin }: { pathname: string; isAdmin: boolean }
   )
 }
 
-function Sidebar({ pathname, onNavigate, user, onSettings, onLogout, open, onClose, isAdmin, collapsed, onToggleCollapse }: any) {
-  const nav = isAdmin ? ADMIN_NAV : NAV
+// Rows about other people. A solo instance has nobody else, so they go.
+const PEOPLE_PATHS = new Set(['/members'])
+
+function Sidebar({ pathname, onNavigate, user, onSettings, onLogout, open, onClose, isAdmin, canAdmin, people, collapsed, onToggleCollapse }: any) {
+  const workspaceNav = people
+    ? NAV
+    : { ...NAV, groups: NAV.groups.map((g) => ({ ...g, items: g.items.filter((i) => !PEOPLE_PATHS.has(i.path)) })) }
+  const nav = isAdmin
+    ? ADMIN_NAV
+    : canAdmin
+      ? { ...workspaceNav, groups: workspaceNav.groups.map((g) => (g.group === 'Account' ? { ...g, items: [...g.items, ADMIN_ENTRY] } : g)) }
+      : workspaceNav
 
   // The Account group isn't listed: its one row is about *you*, so it opens from
   // the account menu, next to sign-out. It stays in the model because the page
@@ -187,17 +191,19 @@ function Sidebar({ pathname, onNavigate, user, onSettings, onLogout, open, onClo
           rails in the app read as the same object: 56px of rail, 40px targets,
           30px imagery, tooltips on the right.
 
-          The width is `rem + 1px`, and both halves matter. It has to be rem
-          because the interface-density setting scales the root font-size
-          (16/14/13px), so the rail's contents — `px-2`, `w-10` — shrink with
-          it; an absolute px width would keep the old box and strand all the
-          slack on the right. 3.5rem is exactly what's inside: 2 x px-2 gutter
-          plus a 2.5rem target. And the `+ 1px` is the `border-r`, which
+          The width is `14 spacing steps + 1px`, and both halves matter. It
+          has to be in spacing steps because the person's text size and
+          density (their theme) scale the root font-size and Tailwind's
+          --spacing, so the rail's contents — `px-2`, `w-10` — shrink with
+          them; an absolute px width would keep the old box and strand all the
+          slack on the right. 14 steps (3.5rem by default) is exactly what's
+          inside: 2 x px-2 gutter plus a 10-step target. The open width is the
+          person's (--app-sidebar-width). And the `+ 1px` is the `border-r`, which
           border-box counts *inside* the width and which does not scale — omit
           it and the two gutters differ by that pixel at every density. */}
       <aside
-        className={`z-40 flex h-screen shrink-0 flex-col border-r border-border bg-sidebar transition-[width] duration-200 ease-out max-[820px]:fixed max-[820px]:left-0 max-[820px]:top-0 max-[820px]:transition-transform ${
-          collapsed ? 'w-[calc(3.5rem_+_1px)]' : 'w-[calc(16.5rem_+_1px)]'
+        className={`app-sidebar z-40 flex h-screen shrink-0 flex-col border-r border-border bg-sidebar transition-[width] duration-200 ease-out max-[820px]:fixed max-[820px]:left-0 max-[820px]:top-0 max-[820px]:transition-transform ${
+          collapsed ? 'w-[calc(var(--spacing)*14_+_1px)]' : 'w-[calc(var(--app-sidebar-width)_+_1px)]'
         } ${open ? 'max-[820px]:translate-x-0' : 'max-[820px]:-translate-x-full'}`}
       >
         {/* Brand — and, on desktop, the rail toggle. Collapsed, the logo *is*
@@ -354,12 +360,16 @@ const loadCollapsed = () => {
 // Home shell: sidebar + the active section page (rendered via <Outlet/>).
 export default function HomeLayout() {
   const { user, logout } = useAuth()
+  const { people } = useIdentity()
   const navigate = useNavigate()
   const location = useLocation()
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [collapsed, setCollapsed] = useState(loadCollapsed)
 
-  const isAdmin = user?.role === 'admin'
+  // The admin menu shows inside the admin area; elsewhere an admin gets the
+  // workspace menu with a row into it.
+  const canAdmin = user?.role === 'admin'
+  const isAdmin = canAdmin && location.pathname.startsWith('/admin')
 
   useEffect(() => {
     try {
@@ -393,6 +403,8 @@ export default function HomeLayout() {
         }}
         onLogout={logout}
         isAdmin={isAdmin}
+        canAdmin={canAdmin}
+        people={people}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
         collapsed={collapsed && !sidebarOpen}
@@ -401,7 +413,7 @@ export default function HomeLayout() {
 
       <div className="flex min-w-0 flex-1 flex-col">
         {/* Mobile top bar */}
-        <div className="flex items-center gap-3 border-b border-border bg-sidebar px-4 py-3 min-[821px]:hidden">
+        <div className="app-sidebar flex items-center gap-3 border-b border-border bg-sidebar px-4 py-3 min-[821px]:hidden">
           <Button variant="ghost" size="icon" onClick={() => setSidebarOpen(true)} aria-label="Open menu">
             <MenuIcon />
           </Button>
@@ -414,7 +426,7 @@ export default function HomeLayout() {
             so nothing sets its own (use `<Narrow>` for content that needs to be
             narrower than the page). */}
         <main className="min-h-0 flex-1 overflow-y-auto px-8 py-10 max-[600px]:px-4 max-[600px]:py-7">
-          <div className="mx-auto w-full max-w-[1280px]">
+          <div className="mx-auto w-full max-w-(--app-content-width)">
             <UpdateBanner />
             <PageTrailProvider>
               <PageTrail pathname={location.pathname} isAdmin={isAdmin} />

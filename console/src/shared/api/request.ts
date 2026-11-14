@@ -1,20 +1,23 @@
 import { API_URL } from '@/shared/config'
 
-// Session token key — written by the auth store, read here so every backend
-// call is authenticated without callers threading the token through.
-export const TOKEN_KEY = 'dbm.token'
-export const getToken = () => {
-  try {
-    return localStorage.getItem(TOKEN_KEY)
-  } catch {
-    return null
-  }
+// Where the access token comes from. The auth store (features/auth) registers
+// one: it hands out the Hayat access token, renewing it first when it is about
+// to lapse, so every backend call is authenticated without callers threading
+// the token through.
+type TokenSource = () => Promise<string | null>
+let tokenSource: TokenSource = async () => null
+export const setTokenSource = (fn: TokenSource) => {
+  tokenSource = fn
 }
+export const getToken = () => tokenSource().catch(() => null)
 
 type RequestOptions = {
   method?: string
   body?: unknown
   signal?: AbortSignal
+  // false: send no token. For the calls that get one (solo sign-in and refresh),
+  // which would otherwise ask the token source — and so themselves — for one.
+  auth?: boolean
 }
 
 /**
@@ -25,8 +28,8 @@ type RequestOptions = {
  * Use for mutations (callers `try/catch` and surface the message). For reads
  * that should degrade to a default instead, use {@link safeRequest}.
  */
-export async function request<T = any>(path: string, { method = 'GET', body, signal }: RequestOptions = {}): Promise<T> {
-  const token = getToken()
+export async function request<T = any>(path: string, { method = 'GET', body, signal, auth = true }: RequestOptions = {}): Promise<T> {
+  const token = auth ? await getToken() : null
   const headers: Record<string, string> = {}
   if (body !== undefined) headers['Content-Type'] = 'application/json'
   if (token) headers['Authorization'] = `Bearer ${token}`

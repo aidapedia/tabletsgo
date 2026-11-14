@@ -32,3 +32,32 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+
+  # One image runs both modes, chosen at runtime (README → Solo and enterprise).
+  # Boot the built image the way a solo developer would — no env at all — and
+  # check it comes up in solo mode waiting for setup; then check enterprise mode
+  # without Hayat refuses to start instead of serving a sign-in that can't work.
+  image-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: tabletsgo:smoke
+          cache-from: type=gha
+      - name: Solo with no env
+        run: |
+          docker run -d --name solo -p 3000:3000 tabletsgo:smoke
+          for i in $(seq 1 60); do curl -fs localhost:3000/api/health >/dev/null && break; sleep 2; done
+          curl -fs localhost:3000/api/auth/config | tee config.json
+          grep -q '"mode":"solo"' config.json
+          grep -q '"setupRequired":true' config.json
+          docker logs solo 2>&1 | grep -q 'Solo setup'
+      - name: Enterprise without Hayat refuses to start
+        run: |
+          if docker run --rm -e TABLETSGO_MODE=enterprise -e ENCRYPTION_KEY=smoke tabletsgo:smoke; then
+            echo "started without Hayat"; exit 1
+          fi

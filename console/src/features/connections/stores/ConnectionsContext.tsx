@@ -24,29 +24,24 @@ export function ConnectionsProvider({ children }) {
   }
   useEffect(reload, [currentId])
 
+  // The mutations below *throw* with the server's message (a 403 for a member
+  // without `connections.create`, a 502 when Hayat refused the mirror, …). The
+  // caller shows it — swallowing it here made a refused create look like a save
+  // whose connection then never appeared in the list.
   const addConnection = async (conn) => {
-    try {
-      const newConn = await request('/connections', { method: 'POST', body: { ...conn, workspaceId: currentId } })
-      setConnections((prev) => [...prev, newConn])
-      return newConn
-    } catch (error) {
-      console.error('Failed to add connection:', error)
-    }
+    const newConn = await request('/connections', { method: 'POST', body: { ...conn, workspaceId: currentId } })
+    setConnections((prev) => [...prev, newConn])
+    return newConn
   }
 
   const updateConnection = async (id, patch) => {
-    try {
-      const updated = await request(`/connections/${id}`, { method: 'PUT', body: patch })
-      setConnections((prev) => prev.map((c) => (c.id === id ? updated : c)))
-      return updated
-    } catch (error) {
-      console.error('Failed to update connection:', error)
-    }
+    const updated = await request(`/connections/${id}`, { method: 'PUT', body: patch })
+    setConnections((prev) => prev.map((c) => (c.id === id ? updated : c)))
+    return updated
   }
 
   // Create a connection (plus its folders/queries/workflows/dashboards) from an
-  // export document. Unlike the CRUD helpers above this one *throws* — the
-  // import dialog needs the server's message to show what went wrong.
+  // export document; throws like the helpers above.
   const importConnection = async ({ document, name, settings }) => {
     const result = await importConnectionDoc({ workspaceId: currentId, document, name, settings })
     setConnections((prev) => [...prev, result.connection])
@@ -54,13 +49,9 @@ export function ConnectionsProvider({ children }) {
   }
 
   const removeConnection = async (id) => {
-    try {
-      await request(`/connections/${id}`, { method: 'DELETE' })
-      setConnections((prev) => prev.filter((c) => c.id !== id))
-      return true
-    } catch (error) {
-      console.error('Failed to remove connection:', error)
-    }
+    await request(`/connections/${id}`, { method: 'DELETE' })
+    setConnections((prev) => prev.filter((c) => c.id !== id))
+    return true
   }
 
   const testConnection = async (conn) => {

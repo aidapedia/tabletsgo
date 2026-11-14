@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { runQuery } from '@/shared/api/database'
-import DataGrid from '@/shared/ui/table/DataGrid'
+import PagedDataGrid from '@/shared/ui/table/PagedDataGrid'
 import CommandReference from '@/shared/ui/CommandReference'
 import { toast } from 'sonner'
 import { ChevronDown, InfoIcon, SaveIcon } from '@/shared/ui/icons'
@@ -272,7 +272,7 @@ export default function RedisConsole({
                   {result.rows.length} row(s)
                   {elapsedMs != null && <span className="text-faint"> · {elapsedMs} ms</span>}
                 </div>
-                <DataGrid columns={result.columns} rows={result.rows} />
+                <PagedDataGrid columns={result.columns} rows={result.rows} resetKey={result} />
               </>
             )}
             {!error && result?.type === 'message' && (

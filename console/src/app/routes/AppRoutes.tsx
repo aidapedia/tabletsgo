@@ -1,18 +1,14 @@
-import { lazy, Suspense, useEffect, useState } from 'react'
-import { Navigate, Route, Routes } from 'react-router-dom'
-import { useAuth, getSetupStatus } from '@/features/auth'
+import { lazy, Suspense, useEffect } from 'react'
+import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
+import { useAuth, useIdentity, AuthCard, EnterpriseOnly, SoloSetup, SoloSignIn } from '@/features/auth'
+import { Section } from '@/shared/ui/page/Section'
+import { RequireWorkspace } from '@/features/workspaces'
 import { PageLoading } from '@/shared/ui/feedback/LoadingState'
 
 // Each address loads its page only when visited. The console and schema editor
 // have large editor dependencies; importing every page here made them part of
-// the initial download even for someone opening the login screen.
-const LoginPage = lazy(() => import('@/features/auth/LoginPage'))
-const SetupPage = lazy(() => import('@/features/auth/SetupPage'))
-const AcceptInvitePage = lazy(() => import('@/features/auth/AcceptInvitePage'))
-const RegisterPage = lazy(() => import('@/features/auth/RegisterPage'))
-const LoginCompletePage = lazy(() => import('@/features/auth/LoginCompletePage'))
-const ForgotPasswordPage = lazy(() => import('@/features/auth/ForgotPasswordPage'))
-const ResetPasswordPage = lazy(() => import('@/features/auth/ResetPasswordPage'))
+// the initial download.
+const CallbackPage = lazy(() => import('@/features/auth/CallbackPage'))
 const HomeLayout = lazy(() => import('@/app/layouts/HomeLayout'))
 const HomePage = lazy(() => import('@/features/workspaces/HomePage'))
 const DashboardsPage = lazy(() => import('@/features/dashboard/DashboardsPage'))
@@ -21,93 +17,79 @@ const ConnectionDetailPage = lazy(() => import('@/features/connections/Connectio
 const ConnectionFormPage = lazy(() => import('@/features/connections/ConnectionFormPage'))
 const WorkspaceSettingsPage = lazy(() => import('@/features/workspaces/WorkspaceSettingsPage'))
 const MembersPage = lazy(() => import('@/features/workspaces/MembersPage'))
+const MemberDetailPage = lazy(() => import('@/features/workspaces/MemberDetailPage'))
 const NotificationsPage = lazy(() => import('@/features/workspaces/NotificationsPage'))
 const StoragePage = lazy(() => import('@/features/backup/StoragePage'))
 const SshHostsPage = lazy(() => import('@/features/ssh/SshHostsPage'))
 const SshKeysPage = lazy(() => import('@/features/ssh/SshKeysPage'))
 const SettingsPage = lazy(() => import('@/features/settings/SettingsPage'))
-const ResourceTreePage = lazy(() => import('@/features/resource-tree/ResourceTreePage'))
 const WorkflowsPage = lazy(() => import('@/features/workflow/WorkflowsPage'))
 const SchemasPage = lazy(() => import('@/features/schema-designer/SchemasPage'))
 const SchemaDraftPage = lazy(() => import('@/features/schema-designer/SchemaDraftPage'))
 const WorkspacePage = lazy(() => import('@/features/workspace/WorkspacePage'))
-const AdminWorkspacesPage = lazy(() => import('@/features/admin/AdminWorkspacesPage'))
-const AdminWorkspaceDetailPage = lazy(() => import('@/features/admin/AdminWorkspaceDetailPage'))
-const AdminUsersPage = lazy(() => import('@/features/admin/AdminUsersPage'))
 const AdminEmailPage = lazy(() => import('@/features/admin/AdminEmailPage'))
 const AdminModulesPage = lazy(() => import('@/features/modules/AdminModulesPage'))
-const AdminSignInPage = lazy(() => import('@/features/admin/AdminSignInPage'))
 const AdminUpdatesPage = lazy(() => import('@/features/system-update/AdminUpdatesPage'))
 
 const routeFallback = <PageLoading screen />
 
+/**
+ * Signed in, or on the way there. Enterprise: a visitor without a token is sent
+ * to Hayat's sign-in page and comes back to where they were. Solo: the owner's
+ * sign-in (or the first-run setup) is drawn right here, at the address asked for.
+ */
 function RequireAuth({ children }: { children: React.ReactNode }) {
-  const { user } = useAuth()
-  return user ? children : <Navigate to="/login" replace />
+  const { status, config, signIn } = useAuth()
+  const location = useLocation()
+  const solo = config?.mode === 'solo'
+  useEffect(() => {
+    if (status === 'signedOut' && !solo) void signIn(location.pathname + location.search)
+  }, [status, solo, signIn, location.pathname, location.search])
+  if (status === 'unconfigured') return <SignInUnavailable />
+  if (status === 'setup') return <SoloSetup />
+  if (status === 'signedOut' && solo) return <SoloSignIn />
+  return status === 'signedIn' ? children : routeFallback
 }
 
-/**
- * The two role tiers split the app into two non-overlapping halves, so each
- * guard sends the wrong audience to the other's home rather than showing an
- * empty shell. An instance admin holds no workspace membership: every
- * workspace-scoped page would render nothing and every call behind it would
- * 403, so `/admin` *is* their home.
- */
+// Pages about other people. A solo instance has nobody else: say why at the
+// address instead of showing an empty roster (the menu doesn't list them).
+function RequirePeople({ children }: { children: React.ReactNode }) {
+  const { people } = useIdentity()
+  if (people) return children
+  return (
+    <Section title="Member" desc="Who belongs to this workspace.">
+      <EnterpriseOnly />
+    </Section>
+  )
+}
+
+// The admin area is for whoever holds tabletsgo's admin role at Hayat's root.
 function RequireSystemAdmin({ children }: { children: React.ReactNode }) {
   const { user } = useAuth()
-  if (!user) return <Navigate to="/login" replace />
-  return user.role === 'admin' ? children : <Navigate to="/" replace />
+  return <RequireAuth>{user?.role === 'admin' ? children : <Navigate to="/" replace />}</RequireAuth>
 }
 
-function RequireWorkspaceUser({ children }: { children: React.ReactNode }) {
-  const { user } = useAuth()
-  if (!user) return <Navigate to="/login" replace />
-  return user.role === 'admin' ? <Navigate to="/admin" replace /> : children
+// The server refuses to start in enterprise mode without Hayat, so this is a
+// misconfigured proxy or an old server answering — say so instead of looping
+// through a sign-in.
+function SignInUnavailable() {
+  return (
+    <AuthCard>
+      <h1 className="mb-2 text-[16px] font-semibold">Signing in isn’t set up</h1>
+      <p className="text-[13px] text-muted-foreground">
+        This instance signs people in with Hayat, and doesn’t know where Hayat is. An administrator needs to set the HAYAT_* settings.
+      </p>
+    </AuthCard>
+  )
 }
 
 export function AppRoutes() {
-  const { user } = useAuth()
-  // null = still checking. `needsSetup` means the instance has no administrator,
-  // which is not the same as having no users — see getSetupStatus.
-  const [setup, setSetup] = useState<{ needsSetup: boolean; hasUsers: boolean } | null>(null)
-
-  useEffect(() => {
-    getSetupStatus().then(setSetup)
-  }, [])
-
-  if (setup === null) return null // brief first-run check
-
-  const setupDone = () => setSetup({ needsSetup: false, hasUsers: true })
-
-  // Empty install → the wizard is the only thing there is. An instance that has
-  // accounts but no admin is *not* forced through it: the people who already
-  // have accounts still need the login page, so the wizard stays reachable at
-  // /setup and the login page points at it.
-  //
-  // Not keyed on `user`: creating the admin signs them in, and the wizard then
-  // carries on (pick modules, configure them) under that session — so this
-  // branch has to keep the same page mounted until it calls `setupDone`.
-  if (setup.needsSetup && !setup.hasUsers) {
-    return (
-      <Suspense fallback={routeFallback}><Routes>
-        <Route path="/setup" element={<SetupPage onComplete={setupDone} />} />
-        <Route path="*" element={<Navigate to="/setup" replace />} />
-      </Routes></Suspense>
-    )
-  }
-
   return (
     <Suspense fallback={routeFallback}><Routes>
-      <Route
-        path="/setup"
-        element={setup.needsSetup ? <SetupPage hasUsers onComplete={setupDone} /> : <Navigate to="/" replace />}
-      />
-      <Route path="/invite/:token" element={<AcceptInvitePage />} />
-      <Route path="/register" element={user ? <Navigate to="/" replace /> : <RegisterPage />} />
-      <Route path="/login/complete" element={<LoginCompletePage />} />
-      <Route path="/forgot" element={user ? <Navigate to="/" replace /> : <ForgotPasswordPage />} />
-      <Route path="/reset/:token" element={<ResetPasswordPage />} />
-      <Route path="/login" element={user ? <Navigate to="/" replace /> : <LoginPage adminless={setup.needsSetup} />} />
+      {/* Hayat sends the browser back here after signing in. */}
+      <Route path="/callback" element={<CallbackPage />} />
+      {/* Old addresses of pages Hayat now owns; land somewhere useful. */}
+      <Route path="/login" element={<Navigate to="/" replace />} />
       {/* Instance administration — the admin's half of the app, same shell. */}
       <Route
         element={
@@ -116,23 +98,22 @@ export function AppRoutes() {
           </RequireSystemAdmin>
         }
       >
-        <Route path="/admin" element={<AdminWorkspacesPage />} />
-        <Route path="/admin/workspaces/:id" element={<AdminWorkspaceDetailPage />} />
-        <Route path="/admin/workspaces/:id/:tab" element={<AdminWorkspaceDetailPage />} />
-        <Route path="/admin/users" element={<AdminUsersPage />} />
+        <Route path="/admin" element={<Navigate to="/admin/modules" replace />} />
         <Route path="/admin/email" element={<AdminEmailPage />} />
-        <Route path="/admin/sign-in" element={<AdminSignInPage />} />
         <Route path="/admin/modules" element={<AdminModulesPage />} />
         <Route path="/admin/updates" element={<AdminUpdatesPage />} />
       </Route>
       {/* Home shell — each sidebar section is its own page rendered into the layout's <Outlet/>. */}
       <Route
         element={
-          <RequireWorkspaceUser>
+          <RequireAuth>
             <HomeLayout />
-          </RequireWorkspaceUser>
+          </RequireAuth>
         }
       >
+        {/* Everything below works on the current workspace; someone in none
+            sees why instead of a page waiting on one. */}
+        <Route element={<RequireWorkspace />}>
         <Route path="/" element={<HomePage />} />
         {/* Dashboards live on connections; this is the workspace-wide list of
             them, alongside /workflows. A row opens the dashboard in its
@@ -154,7 +135,9 @@ export function AppRoutes() {
             A static segment outranks `:sub`, so this wins. */}
         <Route path="/workspace/member" element={<Navigate to="/members" replace />} />
         <Route path="/workspace/:sub" element={<WorkspaceSettingsPage />} />
-        <Route path="/members" element={<MembersPage />} />
+        <Route path="/members" element={<RequirePeople><MembersPage /></RequirePeople>} />
+        {/* One member and what reaches them — an address, so it can be linked to. */}
+        <Route path="/members/:userId" element={<RequirePeople><MemberDetailPage /></RequirePeople>} />
         <Route path="/notifications" element={<NotificationsPage />} />
         {/* The section lost its tabs when SMTP moved to the admin area; the
             :sub route stays so old links (e.g. /notifications/smtp) still land
@@ -171,6 +154,7 @@ export function AppRoutes() {
         <Route path="/workflows" element={<WorkflowsPage />} />
         {/* Same for schema drafts — the cross-connection list. */}
         <Route path="/schemas" element={<SchemasPage />} />
+        </Route>
       </Route>
       {/* The schema editor page: it hosts the designer for either kind of
           draft — one designed against a connection (drawn from that live
@@ -192,17 +176,17 @@ export function AppRoutes() {
       <Route
         path="/schemas/connection/:connectionId"
         element={
-          <RequireWorkspaceUser>
+          <RequireAuth>
             <SchemaDraftPage />
-          </RequireWorkspaceUser>
+          </RequireAuth>
         }
       />
       <Route
         path="/schemas/:id"
         element={
-          <RequireWorkspaceUser>
+          <RequireAuth>
             <SchemaDraftPage />
-          </RequireWorkspaceUser>
+          </RequireAuth>
         }
       />
       {/* Personal settings (theme, local data) belong to the account,
@@ -216,17 +200,13 @@ export function AppRoutes() {
       >
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/settings/:sub" element={<SettingsPage />} />
-        {/* The selected node is in the URL, so a refresh keeps it and a link
-            lands on it. */}
-        <Route path="/resource-tree" element={<ResourceTreePage />} />
-        <Route path="/resource-tree/:nodeId" element={<ResourceTreePage />} />
       </Route>
       <Route
         path="/connection/:id"
         element={
-          <RequireWorkspaceUser>
+          <RequireAuth>
             <WorkspacePage />
-          </RequireWorkspaceUser>
+          </RequireAuth>
         }
       />
       <Route path="*" element={<Navigate to="/" replace />} />

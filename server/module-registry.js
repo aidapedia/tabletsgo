@@ -100,14 +100,6 @@ export const MODULES = [
     label: 'Backup',
     description: 'Scheduled dumps of PostgreSQL, MySQL and SQLite connections to S3-compatible or local storage, with restore.',
   },
-  {
-    id: 'registration',
-    kind: 'feature',
-    label: 'Registration',
-    description: 'Anyone can create an account, then waits for a workspace owner to add them. Email sign-up needs a mail server; without one, people sign up with Google or GitHub.',
-    // On, a private instance would start accepting strangers the moment it upgraded.
-    offByDefault: true,
-  },
 ]
 
 const byId = new Map(MODULES.map((m) => [m.id, m]))

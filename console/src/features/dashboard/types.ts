@@ -81,6 +81,8 @@ export const MAX_TABLE_ROW_ACTIONS = 3
 /** `table` page sizes offered in the editor's list; any other size from 1 to MAX_TABLE_PAGE_SIZE is a custom one. */
 export const TABLE_PAGE_SIZES = [10, 25, 50, 100]
 export const MAX_TABLE_PAGE_SIZE = 500
+/** Rows per page for a `table` widget that doesn't set one. */
+export const DEFAULT_TABLE_PAGE_SIZE = TABLE_PAGE_SIZES[1]
 
 /** How a number is written: grouped digits, short scale (48.2M) or binary bytes (1.2 MB). */
 export type NumberFormat = 'number' | 'compact' | 'bytes'
@@ -187,7 +189,7 @@ export type Widget = {
   text?: string
   /** Optional suffix rendered after a `metric` value (e.g. "ms", "%"). */
   unit?: string
-  /** `table` only: rows per page. Unset = no pagination (all rows at once, current behavior). */
+  /** `table` only: rows per page. Unset = DEFAULT_TABLE_PAGE_SIZE — every table pages. */
   pageSize?: number
   /** `table` only: per-row workflow buttons (max MAX_TABLE_ROW_ACTIONS). */
   rowActions?: WidgetRowAction[]

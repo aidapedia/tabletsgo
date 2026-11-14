@@ -3,6 +3,8 @@ import RefreshButton from '@/shared/ui/RefreshButton'
 import { alterBroker, describeBroker, listBrokers, type BrokerConfig, type BrokerList } from '../lib/api'
 import { num } from '../lib/format'
 import ConfigList from './ConfigList'
+import Pagination from '@/shared/ui/table/Pagination'
+import usePagination from '@/shared/ui/table/usePagination'
 import Tile from './Tile'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/shared/ui/tooltip'
 
@@ -24,6 +26,7 @@ export default function BrokersPanel({ conn }: { conn: any }) {
   const [selected, setSelected] = useState<number | null>(null)
   const [configs, setConfigs] = useState<BrokerConfig[] | null>(null)
   const [configError, setConfigError] = useState<string | null>(null)
+  const { pageRows, pager } = usePagination(data?.brokers ?? [])
 
   const load = useCallback(
     () =>
@@ -88,7 +91,8 @@ export default function BrokersPanel({ conn }: { conn: any }) {
           <TooltipContent side="left">Refresh</TooltipContent>
         </Tooltip>
       </div>
-      <div className="mb-6 overflow-x-auto rounded-xl border border-border bg-sidebar">
+      <div className="mb-6 rounded-xl border border-border bg-sidebar">
+        <div className="overflow-x-auto">
         <table className="w-full min-w-[760px] border-collapse text-[12px]">
           <thead>
             <tr className="text-left text-[11px] text-faint">
@@ -100,7 +104,7 @@ export default function BrokersPanel({ conn }: { conn: any }) {
             </tr>
           </thead>
           <tbody>
-            {data.brokers.map((b) => (
+            {pageRows.map((b) => (
               <tr
                 key={b.nodeId}
                 onClick={() => setSelected(b.nodeId)}
@@ -127,6 +131,8 @@ export default function BrokersPanel({ conn }: { conn: any }) {
             ))}
           </tbody>
         </table>
+        </div>
+        <Pagination className="px-3 py-1.5 text-[11px]" {...pager} />
       </div>
 
       {selected != null && (

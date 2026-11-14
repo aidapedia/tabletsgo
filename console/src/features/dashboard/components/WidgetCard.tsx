@@ -8,7 +8,7 @@ import { toast } from 'sonner'
 import MenuItem from '@/shared/ui/navigation/MenuItem'
 import Popover from '@/shared/ui/overlay/Popover'
 import { ChevronLeft, ChevronRight, CopyIcon, EditIcon, MoreVerticalIcon, TrashIcon } from '@/shared/ui/icons'
-import { widgetRowActions, type Widget, type VariableValues } from '../types'
+import { DEFAULT_TABLE_PAGE_SIZE, widgetRowActions, type Widget, type VariableValues } from '../types'
 import { referencedVariables, substituteVariables, isVariableSet } from '../lib/variables'
 import type { QueryResult } from '../lib/queryData'
 import { activeThreshold, aggregateMetric, metricOf, sampleRate, RATE_SAMPLE_MS, type RateSample } from '../lib/metric'
@@ -56,7 +56,7 @@ export default function WidgetCard({
   // the extra row only signals that a next page exists, without a costly
   // COUNT(*). The server pages however the engine can (a wrapped SQL statement,
   // or the rows of a Redis/Kafka reply sliced), so the query is never rewritten here.
-  const pageSize = widget.type === 'table' && widget.pageSize ? widget.pageSize : 0
+  const pageSize = widget.type === 'table' ? widget.pageSize || DEFAULT_TABLE_PAGE_SIZE : 0
   const [page, setPage] = useState(0)
   useEffect(() => setPage(0), [baseSql, pageSize])
 

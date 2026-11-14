@@ -7,6 +7,7 @@
 
 import fs from 'fs'
 import path from 'path'
+import { randomBytes } from 'crypto'
 import { fileURLToPath } from 'url'
 
 // This file lives in server/, so the repo root is one level up. Paths that used
@@ -15,20 +16,10 @@ export const ROOT_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 
 
 export const PORT = process.env.PORT || 3000
 // The address people reach this instance at. Needed behind a reverse proxy: it
-// goes into emailed links and the Google/GitHub callback URL, which otherwise
-// come from the request.
+// goes into emailed links, which otherwise come from the request.
 export const PUBLIC_URL = (process.env.PUBLIC_URL || '').trim().replace(/\/+$/, '')
 export const DIST_DIR = path.join(ROOT_DIR, 'console', 'dist')
 export const OPENAPI_PATH = path.join(ROOT_DIR, 'server', 'openapi.yaml')
-
-// Connection credentials (host/port/username/password/…) are encrypted at rest
-// with this key. Required — refuse to boot rather than silently store secrets
-// in plaintext.
-if (!process.env.ENCRYPTION_KEY) {
-  console.error('❌ ENCRYPTION_KEY is not set. Set it in your environment (see .env.example) before starting the server.')
-  process.exit(1)
-}
-export const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY
 
 // ---- Metadata store (the app's own records, separate from user connections) ----
 export const META_DB_TYPE = (process.env.META_DB_TYPE || 'sqlite').toLowerCase()
@@ -37,8 +28,45 @@ export const META_DATABASE_URL = process.env.META_DATABASE_URL || ''
 if (META_DB_TYPE === 'postgresql' && !META_DATABASE_URL) throw new Error('META_DATABASE_URL is required when META_DB_TYPE=postgresql')
 export const META_DB_PATH = process.env.META_DB || path.join(ROOT_DIR, 'data', 'app.db')
 if (META_DB_TYPE === 'sqlite') fs.mkdirSync(path.dirname(META_DB_PATH), { recursive: true })
+// Where the instance keeps what it writes for itself (the generated key, the
+// Hayat import bundle): beside the SQLite file, which is the volume in Docker.
+export const DATA_DIR = META_DB_TYPE === 'sqlite' ? path.dirname(META_DB_PATH) : path.join(ROOT_DIR, 'data')
 
-// App-level snapshots of the meta DB (users/connections/etc.) — distinct from the
+// ---- Mode: solo or enterprise ----
+// Solo: one person, signed in by password, no Hayat. Enterprise: Hayat owns
+// accounts, workspaces and grants. The migrator records the mode in the store
+// the first time it boots (server/migrator/identity.js); this is only what the
+// environment asks for. '' = not asked: the stored mode wins, else HAYAT_ISSUER
+// decides.
+export const MODE_SETTING = (process.env.TABLETSGO_MODE || '').trim().toLowerCase()
+if (MODE_SETTING && !['solo', 'enterprise'].includes(MODE_SETTING)) throw new Error('TABLETSGO_MODE must be solo or enterprise')
+// A v1.0 install with several accounts moving to solo: the one who keeps it.
+export const SOLO_OWNER = (process.env.SOLO_OWNER || '').trim().toLowerCase()
+
+// Connection credentials (host/port/username/password/…) are encrypted at rest
+// with this key. Required — refuse to boot rather than silently store secrets
+// in plaintext. A new solo install on SQLite may go without: it generates one
+// into the data volume. Only a *new* one — an existing store was sealed under a
+// key nobody may silently replace.
+export const ENCRYPTION_KEY_FILE = path.join(DATA_DIR, 'encryption.key')
+export const ENCRYPTION_KEY = resolveEncryptionKey()
+
+function resolveEncryptionKey() {
+  if (process.env.ENCRYPTION_KEY) return process.env.ENCRYPTION_KEY
+  if (fs.existsSync(ENCRYPTION_KEY_FILE)) return fs.readFileSync(ENCRYPTION_KEY_FILE, 'utf8').trim()
+  const soloHint = MODE_SETTING ? MODE_SETTING === 'solo' : !process.env.HAYAT_ISSUER
+  if (soloHint && META_DB_TYPE === 'sqlite' && !fs.existsSync(META_DB_PATH)) {
+    const key = randomBytes(32).toString('hex')
+    fs.mkdirSync(DATA_DIR, { recursive: true })
+    fs.writeFileSync(ENCRYPTION_KEY_FILE, `${key}\n`, { mode: 0o600 })
+    console.log(`🔐 Generated an encryption key at ${ENCRYPTION_KEY_FILE}. Back it up with the data: without it, saved credentials can't be read.`)
+    return key
+  }
+  console.error('❌ ENCRYPTION_KEY is not set. Set it in your environment (see .env.example) before starting the server.')
+  process.exit(1)
+}
+
+// App-level snapshots of the meta DB (connections, saved queries, …) — distinct from the
 // S3 database backups feature. Both the boot pre-migration snapshot and the
 // update wizard's manual backup land here.
 export const BACKUPS_DIR = path.join(META_DB_TYPE === 'sqlite' ? path.dirname(META_DB_PATH) : path.join(ROOT_DIR, 'data'), 'backups')
@@ -72,47 +100,44 @@ function resolveAppVersion() {
 // the app only ever updates to its own official release.
 export const DOCKER_SOCKET = process.env.DOCKER_SOCKET || '/var/run/docker.sock'
 
+// ---- Hayat: who people are and what they may do (enterprise mode) ----
+// In enterprise mode tabletsgo keeps no accounts of its own. People sign in at
+// Hayat (an OpenID provider), and every permission question is asked of Hayat's
+// service API. Required in enterprise mode: server.js refuses to start without
+// the ones marked below. Solo mode reads none of them.
+const trimUrl = (v) => (v || '').trim().replace(/\/+$/, '')
+// The auth role's public URL — tokens are verified against its published keys.
+export const HAYAT_ISSUER = trimUrl(process.env.HAYAT_ISSUER) // required
+// The same auth role as this server reaches it, when that differs from the public
+// issuer (in Docker, `http://localhost:8443` is the container itself). Discovery,
+// the token endpoint and the keys are fetched here; tokens still name HAYAT_ISSUER.
+export const HAYAT_AUTH_URL = trimUrl(process.env.HAYAT_AUTH_URL) || HAYAT_ISSUER
+// The api role (gRPC/Connect), reachable from this server only.
+export const HAYAT_API_URL = trimUrl(process.env.HAYAT_API_URL) // required
+// The service credentials Hayat issued when tabletsgo was registered.
+export const HAYAT_CLIENT_ID = (process.env.HAYAT_CLIENT_ID || '').trim() // required
+export const HAYAT_CLIENT_SECRET = process.env.HAYAT_CLIENT_SECRET || '' // required
+// The public (PKCE) client the browser signs in with. Its own client, so the
+// service secret above never reaches a browser.
+export const HAYAT_WEB_CLIENT_ID = (process.env.HAYAT_WEB_CLIENT_ID || '').trim()
+// Where people manage members, groups and grants. Optional: links to it are
+// hidden without it.
+export const HAYAT_CONSOLE_URL = trimUrl(process.env.HAYAT_CONSOLE_URL)
+export const HAYAT_CONFIGURED = !!(HAYAT_ISSUER && HAYAT_API_URL && HAYAT_CLIENT_ID && HAYAT_CLIENT_SECRET && HAYAT_WEB_CLIENT_ID)
+
 // ---- Sessions ----
-// There is no session infrastructure to configure: logins live in the meta DB
-// (the source of truth) and are read through an in-process cache, so a restart
-// never signs anyone out and there's nothing to point at. Connection sessions
-// are cache-only, because one describes a live driver handle *this* process
-// holds — which also means the session limit is enforced per replica. See
-// server/sessions. (The app has no Redis of its own; server/db/redis.js is the
-// Redis a *user* connects to as a database, which is unrelated.)
-// Sliding lifetime of a login (bearer) session — refreshed on every request.
-export const SESSION_TTL_MS = parseInt(process.env.SESSION_TTL_MS, 10) || 30 * 24 * 60 * 60 * 1000
+// Connection sessions only — a login is a Hayat access token, verified on every
+// request and never stored here. A connection session describes a live driver
+// handle *this* process holds, so it lives in memory, which also means the
+// session limit is enforced per replica. See server/sessions. (The app has no
+// Redis of its own; server/db/redis.js is the Redis a *user* connects to as a
+// database, which is unrelated.)
 // How long a *connection* session (one open driver handle/pool) survives with
 // no activity before it's swept and its handle released.
 export const SESSION_IDLE_TTL_MS = parseInt(process.env.SESSION_IDLE_TTL_MS, 10) || 15 * 60 * 1000
 // Instance-wide fallback for "max concurrent sessions per connection", used
 // when neither the connection nor its workspace sets one. 0 = unlimited.
 export const MAX_SESSIONS_PER_CONNECTION = parseInt(process.env.MAX_SESSIONS_PER_CONNECTION, 10) || 0
-
-// ---- Login protection (brute force) ----
-// These read 0 as a real setting ("disabled"), not as "unset", so they can't use
-// the `parseInt(…) || default` shorthand above. docker-compose passes an unset
-// variable through as an empty string, which counts as unset here.
-const envInt = (name, fallback) => {
-  const raw = process.env[name]
-  if (raw === undefined || raw === '') return fallback
-  const n = parseInt(raw, 10)
-  return Number.isFinite(n) ? n : fallback
-}
-
-// Consecutive failed sign-ins that block an account, and the window they have to
-// happen in (an older failure doesn't count — the counter restarts). 0 attempts
-// disables account blocking entirely.
-export const LOGIN_MAX_ATTEMPTS = envInt('LOGIN_MAX_ATTEMPTS', 5)
-export const LOGIN_ATTEMPT_WINDOW_MS = envInt('LOGIN_ATTEMPT_WINDOW_MS', 15 * 60 * 1000)
-// How long a blocked account stays blocked. 0 (the default) = until an instance
-// admin unblocks it — the deliberate choice, so a block is always seen by a human.
-export const LOGIN_LOCKOUT_MS = envInt('LOGIN_LOCKOUT_MS', 0)
-// An instance admin is never blocked (nobody could unblock the last one). They
-// get a cooldown instead — same threshold, but it always expires on its own, so
-// the admin account can't be brute-forced *or* locked out by an attacker.
-// 0 disables the cooldown, leaving admin sign-ins unthrottled.
-export const LOGIN_ADMIN_COOLDOWN_MS = envInt('LOGIN_ADMIN_COOLDOWN_MS', 15 * 60 * 1000)
 
 // ---- Connections ----
 // How long the pre-flight handshake (GET /api/connections/:id/handshake) waits

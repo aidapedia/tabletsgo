@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import DataGrid from '@/shared/ui/table/DataGrid'
+import PagedDataGrid from '@/shared/ui/table/PagedDataGrid'
 import NumberStepper from '@/shared/ui/form/NumberStepper'
 import { formatCombo, useKeymap, useShortcut } from '@/features/keymap'
 import { runStreamSql, type SqlResult } from '../lib/api'
@@ -121,7 +121,7 @@ export default function KsqlView({
               {r.message && <div className="mx-[18px] mb-2 rounded-[9px] border border-primary/25 bg-primary/10 px-3.5 py-2 font-mono text-[11px] text-primary-bright">{r.message}</div>}
               {r.type === 'rows' && (
                 <div className="flex h-[300px] min-h-0 flex-col">
-                  <DataGrid columns={r.columns} rows={r.rows} />
+                  <PagedDataGrid columns={r.columns} rows={r.rows} resetKey={r} />
                 </div>
               )}
             </div>

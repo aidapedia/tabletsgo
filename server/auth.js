@@ -1,92 +1,69 @@
 /**
- * Sessions, request guards and the workspace/team membership rules that decide
- * who may see a connection.
+ * Request guards, over Hayat.
  *
- * Roles come in two independent tiers (CLAUDE.md "AUTH MODEL"):
+ * Tabletsgo keeps no accounts, logins, roles or grants (CLAUDE.md
+ * "INVARIANTS"): a request carries a Hayat access token, and every question
+ * below is answered by Hayat (server/hayat) — who the caller is, whether they
+ * belong to a workspace (a Hayat tenant), and what they may do there.
  *
- *   system   `users.role` — 'admin' | 'user'. An 'admin' administers the
- *            instance (workspaces + accounts) and deliberately holds no
- *            workspace membership, so `memberRole` returns null for them and
- *            every workspace-scoped guard below denies them. Instance
- *            administration carries no data access, by design.
- *   workspace  the grant on the workspace's node — a role *slug* from `roles`
- *            (server/permissions.js). What it grants is data an instance admin
- *            edits, so this tier is asked about by permission
- *            (`requirePermission(req, res, wsId, 'members.manage')`) rather than
- *            by name. 'owner' and 'member' are seeded builtins.
+ * Two tiers, as before:
  *
- * The system tier is deliberately NOT part of that model: making it configurable
- * would only be a way to grant an instance admin the workspace data they are
- * meant not to have.
- *
- * A login is a bearer token in the session store (server/sessions): a row in
- * the meta DB's `sessions` table, read through an in-process cache, so it
- * survives a restart and the store expires it on its own.
+ *   instance   `instance.manage` granted at Hayat's root — the tabletsgo admin
+ *              area (modules, mail, updates). It carries no workspace data access.
+ *   workspace  grants on the workspace's tenant node and below, asked about by
+ *              permission (`requirePermission(req, res, wsId, 'storage.manage')`),
+ *              never by role name.
  *
  * The token is resolved once per request by `sessionMiddleware` and parked on
  * `req`, so `requireAuth` (and `requireSystemAdmin`) stay synchronous reads of
  * it. The workspace-tier guards — `requirePermission`, `requireMember` — are
- * async, because answering them reads the resource tree:
+ * async, because they ask Hayat:
  * `if (!(await requirePermission(req, res, wsId, 'x'))) return`. Forgetting the
  * `await` there is a silent authorization bypass (a Promise is truthy).
  */
 
-import { randomUUID } from 'crypto'
 import { PUBLIC_URL } from './config.js'
-import { createAuthSession, destroyAuthSession, readAuthSession } from './sessions/index.js'
-import { db, transaction } from './meta.js'
-import { OWNER_PERMISSION } from './permissions.js'
-import {
-  groupIdsFor,
-  isNodeMember,
-  memberOfGroupAbove,
-  nodeFor,
-  permissionsAtResource,
-  permissionsInWorkspace,
-  principalGrantRole,
-} from './resource-tree.js'
-
-// ---- Sessions ----
-export const createSession = (userId, context) => createAuthSession(userId, context)
-
-export const deleteSession = (token) => destroyAuthSession(token)
+import { CONNECTION_TYPE, TENANT_TYPE, hayatKey, shortKeys } from './permissions-catalog.js'
+import * as hayat from './hayat/index.js'
 
 export const bearerToken = (req) => {
   const h = req.headers.authorization || ''
   return h.startsWith('Bearer ') ? h.slice(7) : null
 }
 
-const USER_FIELDS = { id: true, username: true, name: true, role: true, status: true, timezone: true }
-
-export const userRow = async (id) => (id ? await db().users.findUnique({ where: { id }, select: USER_FIELDS }) : null)
-
-export async function userFromToken(token) {
-  const session = await readAuthSession(token)
-  return session ? userRow(session.userId) : null
-}
+const ROOT = hayat.nodeRef(hayat.ROOT_NODE_ID)
 
 /**
- * Resolve the caller once per request, before any route runs. A store failure is
- * not fatal: it means "not signed in" (401 from the guards), never a 500.
+ * Resolve the caller once per request, before any route runs. A bad token, an
+ * account that isn't active, or Hayat being unreachable all mean "not signed
+ * in" (401 from the guards), never a 500.
  */
 export async function sessionMiddleware(req, _res, next) {
   const token = bearerToken(req)
   if (token) {
     try {
-      req.authUser = await userFromToken(token)
-      req.authToken = token
+      const { userId } = await hayat.verifyAccessToken(token)
+      const user = await hayat.getUser(userId)
+      if (user && user.status === 'active') {
+        const admin = await hayat.check(user.id, hayatKey('instance.manage'), ROOT)
+        req.authUser = { ...user, role: admin ? 'admin' : 'user' }
+        req.authToken = token
+      }
     } catch (error) {
-      console.error('Session lookup failed:', error.message)
+      if (!/expired|signature|JWS|JWT|another application|service token/i.test(error.message)) {
+        console.error('Session lookup failed:', error.message)
+      }
     }
   }
   next()
 }
 
-// Resolve the caller from the Bearer token (null if unauthenticated).
+// The caller (null if unauthenticated).
 export const authUser = (req) => req.authUser || null
 
-// Public shape returned to the client (never the password hash).
-export const publicUser = (u) => (u ? { id: u.id, email: u.username, name: u.name, role: u.role, timezone: u.timezone || null } : null)
+// Public shape returned to the client.
+export const publicUser = (u) =>
+  u ? { id: u.id, email: u.email || u.username, name: u.name, role: u.role || 'user', timezone: u.timezone || null, picture: u.picture || null } : null
 
 // Require an authenticated caller; sends 401 and returns null otherwise.
 export const requireAuth = (req, res) => {
@@ -98,7 +75,7 @@ export const requireAuth = (req, res) => {
   return user
 }
 
-// ---- System role ----
+// ---- Instance tier ----
 export const isSystemAdmin = (user) => !!user && user.role === 'admin'
 
 export const requireSystemAdmin = (req, res) => {
@@ -111,79 +88,49 @@ export const requireSystemAdmin = (req, res) => {
   return user
 }
 
-// ---- Workspace helpers ----
-/**
- * The caller's role in a workspace, or null if they aren't a member — which is
- * always the case for an instance admin, and is what stops instance
- * administration from reaching workspace data.
- *
- * 'admin' is the pre-v8 spelling of 'owner'; normalizing here means a DB that
- * has been rolled back and forward again never exposes a mixed vocabulary.
- */
-export const isMember = async (workspaceId, userId) => {
-  if (!workspaceId || !userId) return false
-  const node = await nodeFor('workspace', workspaceId)
-  return !!node && (await isNodeMember(node.id, userId))
-}
+// ---- Workspace tier ----
+
+/** The workspace (Hayat tenant) as this user sees it, or null if they don't belong. */
+export const tenantFor = async (workspaceId, userId) =>
+  workspaceId && userId ? (await hayat.userTenants(userId)).find((t) => t.id === workspaceId) || null : null
 
 /**
- * The role slug this member holds in this workspace, or null if they aren't one.
- *
- * Belonging and role are now two different facts on the same node: the roster
- * (`node_members`) says who is in the workspace, the grant sitting on that node
- * says what they may do. So this reads the grant, and **`isMember` is what
- * answers "do they belong"** — a member holding no grant is a real state (sees
- * everything, may do nothing) and would read as `null` here.
+ * Do they belong? Membership is the tenant's roster in Hayat. It still gates
+ * *data*: a member sees every connection in the workspace; opening one is the
+ * `connection.open` permission.
  */
-export const memberRole = async (workspaceId, userId) => {
-  const node = await nodeFor('workspace', workspaceId)
-  if (!node || !(await isNodeMember(node.id, userId))) return null
-  const slug = await principalGrantRole(node.id, 'user', userId)
-  return slug === 'admin' ? 'owner' : slug
-}
+export const isMember = async (workspaceId, userId) => !!(await tenantFor(workspaceId, userId))
 
 /**
- * Everything the caller may do in this workspace.
- *
- * Resolved through the resource tree (server/resource-tree.js), not by looking up
- * a role column: the answer is the union of every grant on the workspace's node
- * and its ancestors, plus everything at all if the caller owns one of them. A
- * plain member gets exactly what their membership role always gave — the
- * membership is mirrored into a grant on that node — while a grant made higher up
- * or lower down now counts too, which is the whole point of the tree.
+ * Everything the caller may do in this workspace, as short keys. The tenant's
+ * owner resolves to every key there is, including the instance-wide one, which
+ * means nothing at a workspace (admin is only ever asked at the root), so it is
+ * left out rather than shown as something the workspace grants.
  */
-export const permissionsIn = async (workspaceId, userId) => (workspaceId ? permissionsInWorkspace(workspaceId, userId) : new Set())
+export const permissionsIn = async (workspaceId, userId) => {
+  if (!workspaceId) return new Set()
+  const keys = shortKeys(await hayat.permissionsAt(userId, hayat.ref(TENANT_TYPE, workspaceId)))
+  keys.delete('instance.manage')
+  return keys
+}
 
 // The permission check. `workspaceId` null/undefined ⇒ false, so a resource with
 // no workspace never accidentally authorizes anyone.
 export const can = async (workspaceId, userId, permission) => (await permissionsIn(workspaceId, userId)).has(permission)
 
-/**
- * "Owner" is no longer a role name, it's a capability: whoever holds
- * `workspace.manage`. Keeping the concept behind this helper is what lets a
- * renamed or custom role satisfy the last-owner invariant just like the built-in
- * `owner` does.
- */
-export const isWorkspaceOwner = async (workspaceId, userId) => can(workspaceId, userId, OWNER_PERMISSION)
+/** Everything the caller may do at one connection (grants on it and above, ownership). */
+export const permissionsAtConnection = async (connectionId, userId) =>
+  shortKeys(await hayat.permissionsAt(userId, hayat.ref(CONNECTION_TYPE, connectionId)))
 
 /**
- * The workspace-tier guard. Routes read
- * `if (!(await requirePermission(req, res, id, 'teams.manage'))) return` — a route asks
- * for the capability it needs and never compares a role name, so redefining what
- * a role grants changes who may call it without touching the route.
- *
- * The 403 distinguishes "you're in this workspace but may not do this" from
- * "you're not in this workspace at all", which is what the UI needs to tell a
- * member to ask an owner versus telling them the workspace doesn't exist.
+ * The workspace-tier guard. A route asks for the capability it needs and never
+ * compares a role name. The 403 distinguishes "you're in this workspace but may
+ * not do this" from "you're not in this workspace at all".
  */
 export const requirePermission = async (req, res, workspaceId, permission) => {
   const user = requireAuth(req, res)
   if (!user) return null
   if (!(await permissionsIn(workspaceId, user.id)).has(permission)) {
-    // The membership is what distinguishes "you're in this workspace but may not
-    // do this" from "you're not in this workspace at all" — the tree can grant
-    // someone a permission here without making them a member, and either way the
-    // first message is the one that tells them to go ask an owner.
     const inside = await isMember(workspaceId, user.id)
     res.status(403).json({ error: inside ? 'You do not have permission to do that.' : 'Forbidden', permission })
     return null
@@ -204,103 +151,42 @@ export const requireMember = async (req, res, workspaceId) => {
 
 /**
  * The workspace as this user sees it. `permissions` ships with it so the client
- * can hide what the caller can't do from one payload instead of re-deriving the
- * rules — the server still enforces every one of them.
+ * can hide what the caller can't do — the server still enforces every one.
+ * `role` is only a label now: 'owner' for the tenant's owner in Hayat.
  */
 export const workspaceForUser = async (id, userId) => {
-  const role = await memberRole(id, userId)
-  if (!role) return null
-  const w = await db().workspaces.findUnique({ where: { id }, select: { id: true, name: true, created_at: true } })
-  // `role` is still the membership's role — what the members UI shows — but
-  // `permissions` is the resolved answer, which may be wider if the tree grants
-  // them something above or beside their membership.
-  return w ? { id: w.id, name: w.name, role, permissions: [...(await permissionsIn(id, userId))], createdAt: w.created_at } : null
-}
-
-export const getUserByEmail = async (email) => (email ? await db().users.findUnique({ where: { username: email }, select: USER_FIELDS }) : null)
-
-// ---- Connection-access helpers ----
-//
-// A connection's access list names the same principals a grant does — a user, or
-// a group node standing for its roster. It stays separate from the grant tables
-// on purpose: *opening* a database is not a permission (CLAUDE.md), it is a
-// per-resource question, so there is no `connections.query`-shaped key.
-
-// Assigned principals for a connection, split into group/user id arrays.
-export const connectionAccess = async (connectionId) => {
-  const rows = await db().connection_access.findMany({
-    where: { connection_id: connectionId },
-    select: { principal_type: true, principal_id: true },
-  })
+  const t = await tenantFor(id, userId)
+  if (!t) return null
   return {
-    groups: rows.filter((r) => r.principal_type === 'node').map((r) => r.principal_id),
-    users: rows.filter((r) => r.principal_type === 'user').map((r) => r.principal_id),
+    id: t.id,
+    name: t.name,
+    role: t.ownerId === userId ? 'owner' : 'member',
+    permissions: [...(await permissionsIn(id, userId))],
+    memberCount: t.memberCount,
   }
 }
 
-// Replace a connection's access list atomically. Empty arrays => open to all members.
-export const setConnectionAccess = async (connectionId, { groups = [], users = [] }) => {
-  const now = Date.now()
-  // Empty ids are skipped, not stored — the old INSERT OR IGNORE dropped them too.
-  const rows = [
-    ...[...new Set(groups)].filter(Boolean).map((id) => ['node', id]),
-    ...[...new Set(users)].filter(Boolean).map((id) => ['user', id]),
-  ].map(([principalType, principalId]) => ({
-    id: randomUUID(),
-    connection_id: connectionId,
-    principal_type: principalType,
-    principal_id: principalId,
-    created_at: now,
-  }))
-  await transaction(async () => {
-    await db().connection_access.deleteMany({ where: { connection_id: connectionId } })
-    if (rows.length) await db().connection_access.createMany({ data: rows })
-  })
-}
+// ---- Connections ----
 
-// Can this user open the connection? Membership in the workspace is the floor —
-// without it nothing below is reached. Above that, four ways in, in the order the
-// body tests them: `connections.manage` resolved at this connection, owning it,
-// sitting on the roster of a group it is filed under, or being named on its
-// access list (as a person, or through a group listed there). An empty access
-// list is not "everyone" — with none of the four, the answer is no.
+/**
+ * Can this user open the connection? One question to Hayat:
+ * `tabletsgo.connection.open` at the connection's node. Hayat's rule covers what
+ * this function used to spell out — owning it, a grant on it or above (the
+ * `owner` and `connection-manager` roles carry it), sitting on the roster of a
+ * group it is filed under — and refuses anyone not on the workspace's roster.
+ * Nothing granted means nobody, not everybody.
+ */
 export const userCanAccessConnection = async (conn, userId) => {
   if (!conn) return false
   if (!conn.workspaceId) return true
-  // Membership gates data access, and deliberately still does after the resource
-  // tree took over permissions: an instance admin owns the application node and
-  // so resolves to every permission on every connection, but they hold no
-  // membership, and instance administration is meant to carry no data access
-  // (CLAUDE.md "AUTH MODEL"). Removing this line is what would hand every admin a
-  // key to every database.
-  if (!(await isMember(conn.workspaceId, userId))) return false
-  // Resolved through the tree, so `connections.manage` granted on this one
-  // connection's node opens this one connection — not the whole workspace.
-  if ((await permissionsAtResource('connection', conn.id, userId)).has('connections.manage')) return true
-  if (conn.ownerId && conn.ownerId === userId) return true
-  // Where a connection is filed is itself a statement about who may use it: the
-  // people on the roster of a group it sits under can open it, without a row in
-  // the access list. That is what a group is for — Company A holds Team
-  // Promotions and Team Orders, each staffed differently, and the connections
-  // filed under a team are the team's. Only a `group` ancestor counts, never the
-  // workspace node (whose roster is everyone) — see `memberOfGroupAbove`.
-  if (await memberOfGroupAbove(await nodeFor('connection', conn.id), userId)) return true
-  // An empty list means nobody — not everybody. Seeing a connection and being
-  // able to open it are different questions: every member sees every connection
-  // in their workspace (their membership grant reaches the whole subtree), and
-  // opening one is granted per connection. Meta migration v16 wrote today's
-  // implicit "open to all members" down explicitly first, as the workspace node,
-  // so no existing connection lost access when the default flipped.
-  const { groups, users } = await connectionAccess(conn.id)
-  if (users.includes(userId)) return true
-  if (!groups.length) return false
-  // A group principal may be the workspace node itself, which names exactly
-  // "everyone in this workspace" — the roster lookup answers both the same way.
-  const mine = new Set(await groupIdsFor(userId))
-  return groups.some((g) => mine.has(g))
+  return hayat.check(userId, hayatKey('connection.open'), hayat.ref(CONNECTION_TYPE, conn.id))
 }
 
-// Absolute base URL of the frontend, for building invite links.
+/** May they change the connection record? Own it, or hold `connections.manage` at it. */
+export const canManageConnection = async (conn, userId) =>
+  !conn.workspaceId || conn.ownerId === userId || (await permissionsAtConnection(conn.id, userId)).has('connections.manage')
+
+// Absolute base URL of the frontend, for links in emails.
 // `PUBLIC_URL` when set; the request can't be trusted to name the instance behind
 // a proxy, and on a public route it is whatever the sender says.
 export const baseUrl = (req) => PUBLIC_URL || req.headers.origin || `${req.protocol}://${req.get('host')}`

@@ -27,7 +27,7 @@
  */
 
 import { randomUUID } from 'crypto'
-import { BUILTIN_ROLES } from '../../permissions-catalog.js'
+import { BUILTIN_ROLES } from './catalog.js'
 
 // ---- Shared helpers (used by the v1/v2 catch-up steps only) ----
 

@@ -8,6 +8,8 @@ import OptionSelect from '@/shared/ui/form/OptionSelect'
 import { FormField } from '@/shared/ui/form/FormField'
 import { Input } from '@/shared/ui/input'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/shared/ui/dialog'
+import Pagination from '@/shared/ui/table/Pagination'
+import usePagination from '@/shared/ui/table/usePagination'
 
 const STRATEGIES: { id: ResetStrategy; label: string; desc: string }[] = [
   { id: 'earliest', label: 'Earliest', desc: 'Re-read everything still retained' },
@@ -44,6 +46,7 @@ export default function ResetOffsetsDialog({
   const [error, setError] = useState<string | null>(null)
   const [confirm, setConfirm] = useState('')
   const [applying, setApplying] = useState(false)
+  const { pageRows, pager } = usePagination(rows ?? [], { pageSize: 10, resetKey: topic })
 
   const needsValue = strategy === 'timestamp' || strategy === 'offset' || strategy === 'shift'
   const valueReady = !needsValue || value.trim() !== ''
@@ -161,7 +164,8 @@ export default function ResetOffsetsDialog({
                 <p className="text-[11px] font-semibold text-muted-foreground">Dry run · {topic}</p>
                 {rows && <span className="text-[11px] text-faint">{rows.length} partitions</span>}
               </div>
-              <div className="max-h-[300px] overflow-auto rounded-lg border border-border">
+              <div className="rounded-lg border border-border">
+                <div className="max-h-[300px] overflow-auto">
                 <table className="w-full border-collapse text-[12px]">
                   <thead className="sticky top-0 bg-sidebar">
                     <tr className="text-[11px] text-faint">
@@ -172,7 +176,7 @@ export default function ResetOffsetsDialog({
                     </tr>
                   </thead>
                   <tbody>
-                    {(rows || []).map((r) => (
+                    {pageRows.map((r) => (
                       <tr key={r.partition}>
                         <td className="h-7 border-b border-border/60 px-3 text-right font-mono">{r.partition}</td>
                         <td className="border-b border-border/60 px-3 text-right font-mono text-muted-foreground">{r.current == null ? '–' : num(r.current)}</td>
@@ -185,6 +189,8 @@ export default function ResetOffsetsDialog({
                   </tbody>
                 </table>
                 {!rows && !error && <div className="p-6 text-center text-xs text-faint">{valueReady ? 'Computing…' : 'Enter a value to preview.'}</div>}
+                </div>
+                {!!rows?.length && <Pagination className="px-3 py-1.5 text-[11px]" {...pager} />}
               </div>
               {rows && (
                 <p className="mt-2.5 text-[12px] text-muted-foreground">
