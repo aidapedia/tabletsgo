@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="public/favicon.svg" width="80" height="80" alt="Tabletsgo logo" />
+<img src="console/public/favicon.svg" width="80" height="80" alt="Tabletsgo logo" />
 
 # Tabletsgo
 
