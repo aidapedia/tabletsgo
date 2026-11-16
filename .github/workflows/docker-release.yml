@@ -118,5 +118,16 @@ jobs:
             "minUpgradeFrom": "${MIN_UPGRADE_FROM}"
           }
           EOF
-          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --generate-notes
+          # The body is the reviewed docs/releases/v<version>.md from the release PR
+          # (release.yml drafts it); a hand-pushed tag without one gets GitHub's
+          # notes. The title is the tag itself — without --title, gh uses the tagged
+          # commit's subject, which for a merged release PR is "Merge pull request #N from …".
+          NOTES="docs/releases/${TAG}.md"
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            if [ -f "$NOTES" ]; then
+              gh release create "$TAG" --title "$TAG" --notes-file "$NOTES"
+            else
+              gh release create "$TAG" --title "$TAG" --generate-notes
+            fi
+          fi
           gh release upload "$TAG" release.json --clobber
