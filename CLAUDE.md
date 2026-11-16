@@ -156,6 +156,7 @@ server/
 ## EXTRA ACTION
 - Every time you add endpoint on server, describe its request, response and sample values in `server/openapi.yaml` — it is served as Swagger UI at `/api/docs`, and `tests/openapi.test.js` fails when it and `server.js` disagree
 - Update README.MD if you have any changes about features, instalation etc.
+- The public docs site (aidapedia repo, `apps/tabletsgo`) describes this code — when a change alters what a user sees, sets or runs, sync it with skill `sync-docs` (the `docs-sync-reminder` hook names the pages after an edit; the file → page map is `.claude/skills/sync-docs/docs-map.mjs`)
 
 ## graphify
 

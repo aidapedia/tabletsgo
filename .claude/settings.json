@@ -23,6 +23,12 @@
             "command": "node .claude/hooks/backend-docs-reminder.js",
             "timeout": 10,
             "statusMessage": "Checking backend docs rule"
+          },
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/docs-sync-reminder.mjs",
+            "timeout": 10,
+            "statusMessage": "Checking public docs"
           }
         ]
       }
