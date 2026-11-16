@@ -1,6 +1,7 @@
 name: Release
 
-# Step 1 of the release: bump the version and push a release/* branch, then print
+# Step 1 of the release: bump the version, draft the release notes
+# (docs/releases/v<version>.md) and push a release/* branch, then print
 # a ready-to-open PR link in the run summary. The PR targets the release line for
 # the version's MAJOR: 0.16.5 → v0.x.x, 1.2.0 → v1.x.x, and so on. The first
 # release of a new major creates its line from the default branch. Branch
@@ -81,6 +82,32 @@ jobs:
             echo "::error::Nothing to bump — files already show v${VERSION}"; exit 1
           fi
 
+      # docs/releases/v<version>.md: an AI-written summary, highlights and upgrade
+      # notes (DeepSeek, from what changed since the last tag) above a change list
+      # built from git. It rides in the release PR so it's read and edited before
+      # merging; docker-release.yml publishes it as the GitHub Release body, and
+      # the website's changelog reads it from there. Without the DEEPSEEK_API_KEY
+      # secret, the file gets the list and a placeholder to fill in by hand.
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Draft release notes
+        env:
+          VERSION: ${{ steps.norm.outputs.version }}
+          DEFAULT: ${{ github.event.repository.default_branch }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          DEEPSEEK_MODEL: ${{ vars.DEEPSEEK_MODEL }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # The default branch's copy when it has one (the release line may not have
+        # the script yet), else the release line's own.
+        run: |
+          SCRIPT="$RUNNER_TEMP/release-notes.mjs"
+          git show "origin/${DEFAULT}:.github/scripts/release-notes.mjs" > "$SCRIPT" 2>/dev/null \
+            || cp .github/scripts/release-notes.mjs "$SCRIPT"
+          node "$SCRIPT" "$VERSION"
+
       - name: Push release branch
         env:
           VERSION: ${{ steps.norm.outputs.version }}
@@ -89,7 +116,7 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "$BR"
-          git add package.json console/package.json README.md
+          git add package.json console/package.json README.md "docs/releases/v${VERSION}.md"
           git commit -m "release: v${VERSION}"
           git push -f origin "$BR"
 
@@ -122,5 +149,5 @@ jobs:
               --base "$BASE" \
               --head "$BR" \
               --title "release: v${VERSION}" \
-              --body "Automated version bump to \`v${VERSION}\` (package.json + README badge). Merge to tag the merged commit, build the image, and publish the release."
+              --body "Automated version bump to \`v${VERSION}\` (package.json + README badge). **Review \`docs/releases/v${VERSION}.md\`** — it becomes the GitHub Release and the website changelog; edit it on this branch before merging. Merge to tag the merged commit, build the image, and publish the release."
           fi
