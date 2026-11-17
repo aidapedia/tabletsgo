@@ -69,8 +69,8 @@ const NAV = {
 }
 
 // The admin area: tabletsgo's own instance settings. Accounts, workspaces,
-// roles and sign-in are administered in Hayat. An admin may also belong to
-// workspaces now (the role is a grant at Hayat's root), so the way back is a row.
+// roles and sign-in are administered in Hayat. The way in and back out is the
+// workspace switcher (see `WorkspaceSwitcher`'s `canAdmin`).
 const ADMIN_NAV = {
   pinned: [{ label: 'Modules', Icon: GridIcon, path: '/admin/modules' }],
   groups: [
@@ -83,16 +83,10 @@ const ADMIN_NAV = {
     },
     {
       group: 'Account',
-      items: [
-        { label: 'Workspaces', Icon: HomeIcon, path: '/', exact: true },
-        { label: 'Setting', Icon: SettingsIcon, path: '/settings' },
-      ],
+      items: [{ label: 'Setting', Icon: SettingsIcon, path: '/settings' }],
     },
   ],
 }
-
-// A tabletsgo admin sees the way into the admin area from the workspace side.
-const ADMIN_ENTRY = { label: 'Administration', Icon: ShieldIcon, path: '/admin' }
 
 // `also` is a second address the row owns: `/admin` can't own everything under
 // it, because the other admin sections live there too.
@@ -130,11 +124,7 @@ function Sidebar({ pathname, onNavigate, user, onSettings, onLogout, open, onClo
   const workspaceNav = people
     ? NAV
     : { ...NAV, groups: NAV.groups.map((g) => ({ ...g, items: g.items.filter((i) => !PEOPLE_PATHS.has(i.path)) })) }
-  const nav = isAdmin
-    ? ADMIN_NAV
-    : canAdmin
-      ? { ...workspaceNav, groups: workspaceNav.groups.map((g) => (g.group === 'Account' ? { ...g, items: [...g.items, ADMIN_ENTRY] } : g)) }
-      : workspaceNav
+  const nav = isAdmin ? ADMIN_NAV : workspaceNav
 
   // The Account group isn't listed: its one row is about *you*, so it opens from
   // the account menu, next to sign-out. It stays in the model because the page
@@ -245,35 +235,11 @@ function Sidebar({ pathname, onNavigate, user, onSettings, onLogout, open, onClo
           )}
         </div>
 
-        {/* Workspace switcher — an admin has no workspaces to switch between,
-            so they get the admin badge in its place. */}
+        {/* Workspace switcher — and, for an admin, the way into the admin area
+            and back: Administration is one more place in its list, and inside
+            it the switcher wears the admin badge. */}
         <div className={`py-3 ${collapsed ? 'px-2' : 'px-3'}`}>
-          {isAdmin ? (
-            collapsed ? (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span className="flex h-10 w-10 items-center justify-center">
-                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[11px] bg-primary text-white">
-                      <ShieldIcon width={16} height={16} />
-                    </span>
-                  </span>
-                </TooltipTrigger>
-                <TooltipContent side="right">Administration</TooltipContent>
-              </Tooltip>
-            ) : (
-              <div className="flex w-full items-center gap-2.5 rounded-lg border border-border bg-muted px-2.5 py-2">
-                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] bg-primary text-white">
-                  <ShieldIcon width={14} height={14} />
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[12px] font-semibold text-foreground">Administration</span>
-                  <span className="block text-[10px] text-faint">Instance admin</span>
-                </span>
-              </div>
-            )
-          ) : (
-            <WorkspaceSwitcher collapsed={collapsed} />
-          )}
+          <WorkspaceSwitcher collapsed={collapsed} canAdmin={canAdmin} inAdmin={isAdmin} />
         </div>
 
         {/* Nav */}
