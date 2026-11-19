@@ -1,10 +1,12 @@
 // How SQL is spelled for each engine that speaks it. Anything the UI writes for a
 // database goes through here: a MySQL `"x"` is a string rather than a name, and a
-// backslash inside a MySQL string escapes the next character.
+// backslash inside a MySQL string escapes the next character. MariaDB spells SQL
+// as MySQL does, so it shares MySQL's dialect.
 
 export type SqlDialect = 'postgresql' | 'mysql' | 'sqlite'
 
-export const sqlDialectOf = (type?: string): SqlDialect => (type === 'postgresql' || type === 'mysql' ? type : 'sqlite')
+export const sqlDialectOf = (type?: string): SqlDialect =>
+  type === 'postgresql' || type === 'mysql' ? type : type === 'mariadb' ? 'mysql' : 'sqlite'
 
 export const quoteIdent = (name: string, dialect: SqlDialect) =>
   dialect === 'mysql' ? `\`${String(name).replace(/`/g, '``')}\`` : `"${String(name).replace(/"/g, '""')}"`

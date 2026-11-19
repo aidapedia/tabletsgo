@@ -343,7 +343,7 @@ tags:
       </details>
   - name: Schema & data browsing
     description: |-
-      > All routes below accept optional `?database=` and `?schema=` query params > (PostgreSQL). MySQL reads only `database` (its schemas are databases); SQLite ignores both.
+      > All routes below accept optional `?database=` and `?schema=` query params > (PostgreSQL). MySQL and MariaDB read only `database` (their schemas are databases); SQLite ignores both.
 
       <details><summary>More about schema & data browsing</summary>
 
@@ -1459,7 +1459,7 @@ paths:
                     type: array
                     items: {}
         "400":
-          description: '`{ "error": "Unknown module: mysql" }`, `{ "error": "Messages per read must be a whole number from 1 to 100000." }`, `{ "error": "Keep at least one database turned on — workspaces need something to connect to." }`'
+          description: '`{ "error": "Unknown module: mongodb" }`, `{ "error": "Messages per read must be a whole number from 1 to 100000." }`, `{ "error": "Keep at least one database turned on — workspaces need something to connect to." }`'
           content:
             application/json:
               schema:
@@ -1467,7 +1467,7 @@ paths:
                 properties:
                   error:
                     type: string
-                    example: "Unknown module: mysql"
+                    example: "Unknown module: mongodb"
         "401":
           $ref: "#/components/responses/Unauthorized"
   /api/admin/modules/{id}:
@@ -1622,6 +1622,8 @@ paths:
 
           (MySQL) `{ "type": "mysql", "host": "...", "port": 3306, "username": "...", "password": "...", "database": "...", "sslmode": "require" }`
 
+          (MariaDB) `{ "type": "mariadb", "host": "...", "port": 3306, "username": "...", "password": "...", "database": "...", "sslmode": "require" }` — the same fields as MySQL
+
           (Redis) `{ "type": "redis", "host": "...", "port": 6379, "username": "...", "password": "...", "database": "0", "tls": "require" }` — or `{ "type": "redis", "uri": "redis://user:pass@host:6379/0" }`
         content:
           application/json:
@@ -1675,7 +1677,7 @@ paths:
                     type: string
                     example: Connected! 5 table(s) found.
         "400":
-          description: '`{ "ok": false, "message": "Unsupported connection type: mysql" }`'
+          description: '`{ "ok": false, "message": "Unsupported connection type: mongodb" }`'
           content:
             application/json:
               schema:
@@ -1686,7 +1688,7 @@ paths:
                     example: false
                   message:
                     type: string
-                    example: "Unsupported connection type: mysql"
+                    example: "Unsupported connection type: mongodb"
         "403":
           description: "`{ \"ok\": false, \"message\": \"Redis is turned off on this instance. An instance administrator can turn it on in Admin → Modules.\" }` — the engine's module is off (see Modules)."
           content:
@@ -5532,7 +5534,7 @@ paths:
       description: |-
         Download a past backup artifact and overwrite a connection's live data in
         place (sqlite: atomic file replace; postgresql: `pg_restore --clean --if-exists`;
-        mysql: the dump replayed with `mysql`, which drops and recreates each table it holds).
+        mysql/mariadb: the dump replayed with `mysql`, which drops and recreates each table it holds).
         Defaults to overwriting the source connection (`:id`); pass
         `targetConnectionId` to restore into any **other** connection instead, as long
         as it's in the same workspace and the same database type. If the matched

@@ -23,6 +23,7 @@ const DB_TYPES = [
   { id: 'sqlite', label: 'SQLite', desc: 'A database file on this server', defaultPort: '' },
   { id: 'postgresql', label: 'PostgreSQL', desc: 'Relational, over the network', defaultPort: '5432' },
   { id: 'mysql', label: 'MySQL', desc: 'Relational, over the network', defaultPort: '3306' },
+  { id: 'mariadb', label: 'MariaDB', desc: 'MySQL-compatible, over the network', defaultPort: '3306' },
   { id: 'redis', label: 'Redis', desc: 'Key-value, over the network', defaultPort: '6379' },
   { id: 'kafka', label: 'Kafka', desc: 'Event streaming, over the network', defaultPort: '9092' },
 ]
@@ -82,7 +83,7 @@ const CLIENT_CERT_FORMATS = [
   { value: 'pkcs12', label: 'PKCS#12 file (.p12 / .pfx)' },
 ]
 const SSL_MODES = ['disable', 'allow', 'prefer', 'require', 'verify-full']
-// The driver either encrypts or doesn't: MySQL has no negotiating middle here.
+// The driver either encrypts or doesn't: MySQL (and MariaDB) has no negotiating middle here.
 const MYSQL_SSL_MODES = ['disable', 'require', 'verify-full']
 // Redis's equivalent of sslmode — plain TCP, TLS, or TLS without cert checks.
 const TLS_MODES = [
@@ -121,6 +122,8 @@ const blankPostgres = {
 // MySQL's record is Postgres's: same fields, same `sslmode`, so again nothing
 // downstream needs to know.
 const blankMysql = { ...blankPostgres, type: 'mysql', port: '3306', username: 'root' }
+// MariaDB runs on the MySQL driver, so its record is MySQL's.
+const blankMariadb = { ...blankMysql, type: 'mariadb' }
 
 // Redis reuses the same field names as Postgres — host/port/username/password —
 // so nothing downstream (encryption, export/import, the detail view) needs a
@@ -186,7 +189,7 @@ const blankKafka = {
 }
 
 const blankFor = (type) =>
-  type === 'postgresql' ? blankPostgres : type === 'mysql' ? blankMysql : type === 'redis' ? blankRedis : type === 'kafka' ? blankKafka : blankSqlite
+  ({ postgresql: blankPostgres, mysql: blankMysql, mariadb: blankMariadb, redis: blankRedis, kafka: blankKafka })[type] || blankSqlite
 
 // The bootstrap list as typed (commas, spaces or newlines; an optional
 // kafka:// prefix) → "host:port,host:port".
@@ -207,10 +210,12 @@ const fieldRow = 'mb-4 grid grid-cols-[2fr_1fr] gap-3.5 max-[720px]:grid-cols-1'
 const URI_SCHEMES = {
   postgresql: { protocol: /^postgres(ql)?:$/, port: '5432' },
   mysql: { protocol: /^mysql2?:$/, port: '3306' },
+  // A MariaDB URI is spelled either way; MariaDB's own clients write mariadb://.
+  mariadb: { protocol: /^(mariadb|mysql2?):$/, port: '3306' },
   redis: { protocol: /^rediss?:$/, port: '6379' },
 }
 
-// Parse a postgres://, mysql:// or redis:// URI into structured fields. Returns null if it
+// Parse a postgres://, mysql:// (mariadb://) or redis:// URI into structured fields. Returns null if it
 // doesn't parse (or isn't the URI scheme for `type`).
 function parseUri(uri, type) {
   try {
@@ -322,7 +327,8 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
   const isSqlite = form.type === 'sqlite'
   const isRedis = form.type === 'redis'
   const isKafka = form.type === 'kafka'
-  const isMysql = form.type === 'mysql'
+  // MariaDB's form is MySQL's: same port, same login, same SSL modes.
+  const isMysql = form.type === 'mysql' || form.type === 'mariadb'
   const mechanism = isKafka && (form.auth || 'password') === 'password' ? form.saslMechanism || 'scram-sha-512' : null
   const login = SASL_LOGIN[mechanism] || null
   const viaSsh = !isSqlite && via === 'ssh'
@@ -645,7 +651,7 @@ export default function ConnectionForm({ initial, initialType, tab = 'general', 
                   <Input
                     className="font-mono"
                     type="text"
-                    placeholder={isRedis ? 'redis://user:password@host:6379/0' : isMysql ? 'mysql://user:password@host:3306/database' : 'postgresql://user:password@host:5432/database'}
+                    placeholder={isRedis ? 'redis://user:password@host:6379/0' : isMysql ? `${form.type}://user:password@host:3306/database` : 'postgresql://user:password@host:5432/database'}
                     value={form.uri || ''}
                     onChange={onUriChange}
                   />

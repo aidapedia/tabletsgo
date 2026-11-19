@@ -132,7 +132,7 @@ export default function BackupConfigForm({
   if (!supported) {
     return (
       <div className="rounded-xl border border-dashed border-input py-16 text-center text-[13px] text-muted-foreground">
-        Backups aren't supported for this connection type yet — only SQLite, PostgreSQL and MySQL are.
+        Backups aren't supported for this connection type yet — only SQLite, PostgreSQL, MySQL and MariaDB are.
       </div>
     )
   }

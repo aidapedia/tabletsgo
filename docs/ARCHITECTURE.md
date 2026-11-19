@@ -572,8 +572,10 @@ server/
 │   ├── sql.js            #   dialect-agnostic SQL text utils shared by the SQL drivers
 │   ├── sqlite.js         #   one file per engine; each adapts itself to the contract
 │   ├── postgres.js
-│   ├── mysql.js          #   MySQL: backticks, backslash-safe literals, a fresh connection for anything
-│   │                     #     that leaves session state (USE, SET, BEGIN); mysqldump/mysql for backups
+│   ├── mysql.js          #   MySQL and MariaDB (one factory, two engines): backticks, backslash-safe
+│   │                     #     literals, a fresh connection for anything that leaves session state
+│   │                     #     (USE, SET, BEGIN); mysqldump/mysql for backups. Where the servers answer
+│   │                     #     differently (defaults, system-versioned tables, EXPLAIN) it asks VERSION()
 │   ├── redis.js
 │   ├── kafka.js          #   Kafka: admin/producer/fetch clients per connection, the stream ops
 │   │                     #     (topics, clear, bounded group-less reads, produce, groups, offset

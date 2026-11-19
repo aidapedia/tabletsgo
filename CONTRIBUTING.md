@@ -89,7 +89,7 @@ top-level folder.
 
 ### Database-agnostic contracts
 
-Tabletsgo supports SQLite, PostgreSQL and MySQL, and its roadmap covers MariaDB.
+Tabletsgo supports SQLite, PostgreSQL, MySQL, MariaDB, Redis and Kafka.
 Any new API contract (request/response shape, connection field, etc.) must be
 written generically enough to work across database types — don't bake in
 assumptions specific to one dialect.

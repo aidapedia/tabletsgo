@@ -3,8 +3,9 @@
  *
  * Everything above this module (routes, workflows, dashboards, backups) speaks
  * one engine-agnostic vocabulary; everything below it — server/db/sqlite.js,
- * postgres.js, mysql.js, redis.js — adapts a single engine to that vocabulary. The rule
- * from CLAUDE.md holds here: **adapt at the edges, never fork the contract**.
+ * postgres.js, mysql.js (MySQL and MariaDB), redis.js, kafka.js — adapts a single
+ * engine to that vocabulary. The rule from CLAUDE.md holds here: **adapt at the
+ * edges, never fork the contract**.
  * Adding an engine means adding one driver file and one entry in DRIVERS; no
  * caller should ever need a new `conn.type` branch.
  *
@@ -183,7 +184,7 @@ import { closeAllTunnels, closeTunnel, reach, withTunnel } from './tunnel.js'
 import { quoteIdent, sqlLiteral } from './sql.js'
 import { sqliteDriver } from './sqlite.js'
 import { postgresDriver } from './postgres.js'
-import { mysqlDriver } from './mysql.js'
+import { mariadbDriver, mysqlDriver } from './mysql.js'
 import { redisDriver } from './redis.js'
 import { kafkaDriver } from './kafka.js'
 
@@ -191,6 +192,7 @@ export const drivers = {
   sqlite: sqliteDriver,
   postgresql: postgresDriver,
   mysql: mysqlDriver,
+  mariadb: mariadbDriver,
   redis: redisDriver,
   kafka: kafkaDriver,
 }

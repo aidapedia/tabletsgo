@@ -1,5 +1,17 @@
 /**
- * MySQL driver.
+ * MySQL and MariaDB drivers — one implementation, two engines.
+ *
+ * MariaDB speaks MySQL's protocol and SQL, so both connection types are built by
+ * `mysqlFamilyDriver` and differ only in their name. Where the *server* answers
+ * differently, the driver asks the server rather than trusting the connection's
+ * type (`flavorOf`), because a MariaDB server added as "MySQL" is common:
+ *  - MariaDB's `COLUMN_DEFAULT` is already SQL (`'active'`, `current_timestamp()`,
+ *    a bare `NULL` for DEFAULT NULL); MySQL's is the bare value (defaultSql);
+ *  - MariaDB has system-versioned tables (TABLE_TYPE 'SYSTEM VERSIONED') and
+ *    sequences (TABLE_TYPE 'SEQUENCE', kept out of the lists like Postgres's);
+ *  - EXPLAIN FORMAT=JSON nests a `filesort`, counts `rows` and leaves names
+ *    unquoted on MariaDB — the analyzer reads both shapes;
+ *  - MariaDB has no expression indexes, so STATISTICS has no EXPRESSION.
  *
  * Implements the generic driver contract described in server/db/index.js. `ctx`
  * carries { database, schema }: a pool is kept per (connection, database), and
@@ -93,319 +105,351 @@ function poolFor(conn, ctx = {}) {
 
 const closePool = (pool) => pool.end().catch(() => {})
 
-export const mysqlDriver = {
-  type: 'mysql',
-  label: 'MySQL',
-  defaultPort: 3306,
-  dumpExtension: 'sql',
-  // The engine's own vocabulary, like Postgres. `… auto_increment` is MySQL's
-  // serial: the text lands in the column definition as it stands.
-  dataTypes: [
-    'int auto_increment', 'bigint auto_increment', 'tinyint', 'smallint', 'int', 'bigint', 'decimal(10,2)', 'float', 'double',
-    'boolean', 'char', 'varchar', 'text', 'mediumtext', 'longtext', 'date', 'time', 'datetime', 'timestamp', 'json', 'blob',
-  ],
-
-  // ---- Lifecycle ----
-  async testConnection(config) {
-    const client = await mysql.createConnection(mysqlConfig(config))
-    try {
-      const [rows] = await client.query('SELECT DATABASE() AS db')
-      return { ok: true, message: `Connected to MySQL${rows[0]?.db ? ` (${rows[0].db})` : ''}!` }
-    } finally {
-      await client.end()
-    }
-  },
-
-  // What the generic classifier can't read: the server's error codes. mysql2
-  // names them, so nothing here depends on a message's wording.
-  explainError(error) {
-    switch (error?.code) {
-      case 'ER_ACCESS_DENIED_ERROR':
-      case 'ER_ACCESS_DENIED_NO_PASSWORD_ERROR':
-        return {
-          reason: 'auth',
-          cause: 'MySQL rejected the username or password.',
-          hint: 'Re-enter the credentials in the connection settings; a rotated password is the usual cause.',
-        }
-      case 'ER_NOT_SUPPORTED_AUTH_MODE':
-        return {
-          reason: 'auth',
-          cause: "This user's authentication plugin is one the client can't speak.",
-          hint: 'Switch the user to caching_sha2_password or mysql_native_password on the server.',
-        }
-      case 'ER_BAD_DB_ERROR':
-        return {
-          reason: 'missing_database',
-          cause: 'That database does not exist on this server.',
-          hint: 'Check the "Database" field — the server is reachable, only the database name is wrong.',
-        }
-      case 'ER_DBACCESS_DENIED_ERROR':
-        return {
-          reason: 'permission',
-          cause: 'This user may not open that database.',
-          hint: "GRANT the user access to it, or pick a database it can reach.",
-        }
-      case 'ER_HOST_NOT_PRIVILEGED':
-        return {
-          reason: 'permission',
-          cause: "The server has no account for this user connecting from this client's address.",
-          hint: "MySQL accounts are user@host: create or GRANT one for this server's IP (or '%').",
-        }
-      case 'ER_HOST_IS_BLOCKED':
-        return {
-          reason: 'permission',
-          cause: "The server blocked this client's address after too many failed handshakes.",
-          hint: 'Clear it on the server with mysqladmin flush-hosts (or TRUNCATE performance_schema.host_cache), or raise max_connect_errors.',
-        }
-      case 'ER_CON_COUNT_ERROR':
-      case 'ER_TOO_MANY_USER_CONNECTIONS':
-      case 'ER_USER_LIMIT_REACHED':
-        return {
-          reason: 'busy',
-          cause: 'The server has reached its connection limit.',
-          hint: 'Free up connections (or raise max_connections) and try again.',
-        }
-      case 'ER_SERVER_SHUTDOWN':
-      case 'ER_SERVER_OFFLINE_MODE':
-        return {
-          reason: 'busy',
-          cause: 'The server is not accepting connections right now.',
-          hint: 'It is shutting down or in offline mode — retry once it is back.',
-        }
-      case 'ER_SECURE_TRANSPORT_REQUIRED':
-        return {
-          reason: 'tls',
-          cause: 'The server only accepts encrypted connections.',
-          hint: 'Set SSL mode to "require" (or "verify-full" if you have the CA) in the connection settings.',
-        }
-      case 'HANDSHAKE_NO_SSL_SUPPORT':
-        return {
-          reason: 'tls',
-          cause: 'The server does not support SSL, but this connection requires it.',
-          hint: 'Set SSL mode to "disable" in the connection settings.',
-        }
-      default:
-        return null
-    }
-  },
-
-  release(conn) {
-    for (const [key, pool] of pools) {
-      if (key === conn.id || key.startsWith(`${conn.id}::`)) {
-        closePool(pool)
-        pools.delete(key)
+// 'mariadb' | 'mysql' — what the server behind a pool is, asked once per pool.
+// MariaDB says so in VERSION() ("11.4.2-MariaDB-ubu2404"); MySQL never does.
+const flavors = new WeakMap()
+function flavorOf(pool) {
+  if (!flavors.has(pool)) {
+    const asked = pool.query('SELECT VERSION() AS version').then(
+      ([rows]) => (/mariadb/i.test(rows[0]?.version || '') ? 'mariadb' : 'mysql'),
+      (error) => {
+        flavors.delete(pool) // a failed ask is retried next time, not remembered
+        throw error
       }
-    }
-  },
-
-  closeAll() {
-    for (const [, pool] of pools) closePool(pool)
-    pools.clear()
-  },
-
-  // ---- Introspection ----
-  async ping(conn, ctx) {
-    await poolFor(conn, ctx).query('SELECT 1')
-    return { ok: true }
-  },
-
-  // `VERSION()` can carry a suffix ("8.0.36-0ubuntu0.22.04.1").
-  async serverVersion(conn, ctx) {
-    const [rows] = await poolFor(conn, ctx).query('SELECT VERSION() AS version')
-    return /^\d+(\.\d+)*/.exec(rows[0]?.version || '')?.[0] || null
-  },
-
-  // A connection may name no database, so `currentDatabase` can be null and the
-  // console picks the first listed. System databases stay out of the list unless
-  // the connection was pointed at one on purpose.
-  async namespaces(conn, ctx) {
-    const pool = poolFor(conn, ctx)
-    const [dbs] = await pool.query('SHOW DATABASES')
-    const [cur] = await pool.query('SELECT DATABASE() AS db')
-    const currentDatabase = cur[0]?.db || null
-    return {
-      databases: dbs.map((r) => r.Database).filter((d) => d === currentDatabase || !SYSTEM_DATABASES.has(d)),
-      schemas: [],
-      currentDatabase,
-    }
-  },
-
-  listTables: (conn, ctx) => listTables(poolFor(conn, ctx)),
-
-  // Generic object list: tables, views and routines. Each sub-query is isolated
-  // so one failing kind never blanks the whole list.
-  async listObjects(conn, ctx) {
-    const pool = poolFor(conn, ctx)
-    const out = []
-    const safe = async (fn) => {
-      try {
-        await fn()
-      } catch (error) {
-        console.error('listObjects (mysql):', error.message)
-      }
-    }
-    await safe(async () => {
-      const [rows] = await pool.query(
-        `SELECT TABLE_NAME AS name, TABLE_TYPE AS kind FROM information_schema.TABLES
-         WHERE TABLE_SCHEMA = DATABASE() ORDER BY TABLE_TYPE, TABLE_NAME`
-      )
-      for (const row of rows) out.push({ name: row.name, type: row.kind === 'VIEW' || row.kind === 'SYSTEM VIEW' ? 'view' : 'table' })
-    })
-    await safe(async () => {
-      const args = await routineArgs(pool)
-      const [rows] = await pool.query(
-        `SELECT ROUTINE_NAME AS name FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = DATABASE() ORDER BY ROUTINE_NAME`
-      )
-      for (const row of rows) out.push({ name: row.name, type: 'function', detail: args[row.name] || '' })
-    })
-    return out
-  },
-
-  // A routine's definition. A name can be both a function and a procedure, and
-  // SHOW CREATE answers null to a user without the privilege to read it.
-  async listFunctions(conn, ctx, name) {
-    const pool = poolFor(conn, ctx)
-    const args = await routineArgs(pool)
-    const [routines] = await pool.query(
-      `SELECT ROUTINE_TYPE AS kind FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = DATABASE() AND ROUTINE_NAME = ?`,
-      [name]
     )
-    const out = []
-    for (const { kind } of routines) {
-      const [rows] = await pool.query(`SHOW CREATE ${kind === 'PROCEDURE' ? 'PROCEDURE' : 'FUNCTION'} ${quoteIdent(name)}`)
-      const definition = rows[0]?.[kind === 'PROCEDURE' ? 'Create Procedure' : 'Create Function']
-      out.push({ name, args: args[name] || '', definition: definition || '' })
-    }
-    return out
-  },
-
-  // Ordered by the primary key when there is one. A table without one has no
-  // hidden row id to order by or to target an edit with (the console falls back
-  // to matching every column); InnoDB still scans it in a steady order.
-  async getTableData(conn, ctx, { table, limit = 200, offset = 0 }) {
-    const pool = poolFor(conn, ctx)
-    const page = `LIMIT ${parseInt(limit) || 200} OFFSET ${parseInt(offset) || 0}`
-    try {
-      const columns = (await readColumns(pool, [table])).map((c) => c.name)
-      const pk = await primaryKeyColumns(pool, table)
-      const order = pk.length ? `ORDER BY ${pk.map(quoteIdent).join(', ')}` : ''
-      const [rows] = await pool.query(`SELECT * FROM ${quoteIdent(table)} ${order} ${page}`)
-      return { columns, rows }
-    } catch (error) {
-      return { columns: [], rows: [], error: error.message }
-    }
-  },
-
-  async getColumns(conn, ctx, table) {
-    const pool = poolFor(conn, ctx)
-    return (await readColumns(pool, [table])).map(({ table: _table, ...column }) => column)
-  },
-
-  async getIndexes(conn, ctx, table) {
-    return (await indexesByTable(poolFor(conn, ctx), [table]))[table] || []
-  },
-
-  async getSchemaMap(conn, ctx) {
-    const [rows] = await poolFor(conn, ctx).query(
-      `SELECT TABLE_NAME AS tbl, COLUMN_NAME AS col FROM information_schema.COLUMNS
-       WHERE TABLE_SCHEMA = DATABASE() ORDER BY TABLE_NAME, ORDINAL_POSITION`
-    )
-    const schema = {}
-    for (const row of rows) (schema[row.tbl] ||= []).push(row.col)
-    return schema
-  },
-
-  // `only` (optional) narrows the read to those tables, so a caller syncing a
-  // large schema can walk it in slices. Each slice is a complete answer for the
-  // tables it names.
-  async getDiagram(conn, ctx, { tables: only = null } = {}) {
-    const pool = poolFor(conn, ctx)
-    const names = (await listTables(pool)).filter((t) => !only || only.includes(t))
-    if (!names.length) return { tables: [], foreignKeys: [] }
-    const columns = await readColumns(pool, names)
-    const indexes = await indexesByTable(pool, names)
-    const foreignKeys = (await readForeignKeys(pool, names)).map((fk) => ({
-      constraint: fk.constraint_name,
-      table: fk.tbl,
-      column: fk.col,
-      refTable: fk.ref_table,
-      refColumn: fk.ref_column,
-      onDelete: fk.on_delete,
-      onUpdate: fk.on_update,
-    }))
-    const tables = names.map((name) => ({
-      name,
-      columns: columns.filter((c) => c.table === name).map(({ table: _table, ...column }) => column),
-      indexes: indexes[name] || [],
-    }))
-    return { tables, foreignKeys }
-  },
-
-  // ---- Data ----
-  async insertRow(conn, ctx, { table, values }) {
-    const cols = Object.keys(values)
-    const sql = `INSERT INTO ${quoteIdent(table)} (${cols.map(quoteIdent).join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`
-    const [result] = await poolFor(conn, ctx).query(sql, cols.map((c) => bindable(values[c])))
-    return { ok: true, changes: result.affectedRows }
-  },
-
-  // Every batch in one transaction: an import lands whole or not at all.
-  async insertRows(conn, ctx, { table, rows }) {
-    const columns = [...new Set(rows.flatMap((r) => Object.keys(r)))]
-    if (!columns.length) return { ok: true, inserted: 0 }
-    const batches = insertBatches(quoteIdent(table), columns, rows, { quote: quoteIdent, maxParams: 60000 })
-    await withOwnConnection(poolFor(conn, ctx), (client) =>
-      inTransaction(client, async () => {
-        for (const b of batches) await client.query(b.sql, b.params.map(bindable))
-      })
-    )
-    return { ok: true, inserted: rows.length }
-  },
-
-  // A multi-statement script (a .sql import). Its data statements share one
-  // transaction, but any DDL in it commits what came before — MySQL has no
-  // transactional DDL, so a script that fails halfway keeps its CREATEs.
-  async runScript(conn, ctx, sql) {
-    await withOwnConnection(poolFor(conn, ctx), (client) =>
-      hasOwnTransaction(sql) ? client.query(sql) : inTransaction(client, () => client.query(sql))
-    )
-    return { ok: true }
-  },
-
-  // MySQL keeps the real statement, indexes and foreign keys included. A view
-  // answers with `Create View`, and is not something a table import can recreate.
-  async tableDdl(conn, ctx, table) {
-    const [rows] = await poolFor(conn, ctx).query(`SHOW CREATE TABLE ${quoteIdent(table)}`)
-    const create = rows[0]?.['Create Table']
-    return create ? [`${ifNotExists(create)};`] : []
-  },
-
-  quoteIdent,
-  sqlLiteral: mysqlLiteral,
-
-  runQuery: (conn, ctx, sql) => runQuery(poolFor(conn, ctx), sql),
-  pageSql,
-
-  analyze: (conn, ctx, { sql }) => analyze(poolFor(conn, ctx), sql),
-
-  // ---- Backup / restore ----
-  // Named as a plain positional so the dump carries no CREATE DATABASE or USE:
-  // it restores into whichever database the target connection names.
-  async dump(conn, destPath) {
-    const { args, env } = toolConn(conn)
-    await execTool(
-      'mysqldump',
-      [...args, '--single-transaction', '--routines', '--triggers', '--hex-blob', '--no-tablespaces', '--loose-set-gtid-purged=OFF', `--result-file=${destPath}`, '--', databaseOf(conn)],
-      { env }
-    )
-  },
-
-  async restore(conn, dumpPath) {
-    mysqlDriver.release(conn)
-    const { args, env } = toolConn(conn)
-    await execToolWithInput('mysql', [...args, '--', databaseOf(conn)], dumpPath, { env })
-  },
+    flavors.set(pool, asked)
+  }
+  return flavors.get(pool)
 }
+
+// The tables a table list shows: MariaDB's system-versioned tables are tables
+// too (a sequence and a view are not).
+const BASE_TABLES = "('BASE TABLE', 'SYSTEM VERSIONED')"
+
+/** Build the driver for one engine of the MySQL family; `label` is how it names itself to people. */
+export function mysqlFamilyDriver({ type, label }) {
+  const driver = {
+    type,
+    label,
+    defaultPort: 3306,
+    dumpExtension: 'sql',
+    // The engine's own vocabulary, like Postgres. `… auto_increment` is MySQL's
+    // serial: the text lands in the column definition as it stands.
+    dataTypes: [
+      'int auto_increment', 'bigint auto_increment', 'tinyint', 'smallint', 'int', 'bigint', 'decimal(10,2)', 'float', 'double',
+      'boolean', 'char', 'varchar', 'text', 'mediumtext', 'longtext', 'date', 'time', 'datetime', 'timestamp', 'json', 'blob',
+    ],
+
+    // ---- Lifecycle ----
+    async testConnection(config) {
+      const client = await mysql.createConnection(mysqlConfig(config))
+      try {
+        const [rows] = await client.query('SELECT DATABASE() AS db')
+        return { ok: true, message: `Connected to ${label}${rows[0]?.db ? ` (${rows[0].db})` : ''}!` }
+      } finally {
+        await client.end()
+      }
+    },
+
+    // What the generic classifier can't read: the server's error codes. mysql2
+    // names them, so nothing here depends on a message's wording.
+    explainError(error) {
+      switch (error?.code) {
+        case 'ER_ACCESS_DENIED_ERROR':
+        case 'ER_ACCESS_DENIED_NO_PASSWORD_ERROR':
+          return {
+            reason: 'auth',
+            cause: `${label} rejected the username or password.`,
+            hint: 'Re-enter the credentials in the connection settings; a rotated password is the usual cause.',
+          }
+        // MariaDB's ed25519, gssapi and PAM plugins arrive as an auth switch the
+        // client has no plugin for.
+        case 'ER_NOT_SUPPORTED_AUTH_MODE':
+        case 'AUTH_SWITCH_PLUGIN_ERROR':
+          return {
+            reason: 'auth',
+            cause: "This user's authentication plugin is one the client can't speak.",
+            hint: 'Switch the user to mysql_native_password (or caching_sha2_password on MySQL) on the server.',
+          }
+        case 'ER_BAD_DB_ERROR':
+          return {
+            reason: 'missing_database',
+            cause: 'That database does not exist on this server.',
+            hint: 'Check the "Database" field — the server is reachable, only the database name is wrong.',
+          }
+        case 'ER_DBACCESS_DENIED_ERROR':
+          return {
+            reason: 'permission',
+            cause: 'This user may not open that database.',
+            hint: "GRANT the user access to it, or pick a database it can reach.",
+          }
+        case 'ER_HOST_NOT_PRIVILEGED':
+          return {
+            reason: 'permission',
+            cause: "The server has no account for this user connecting from this client's address.",
+            hint: `${label} accounts are user@host: create or GRANT one for this server's IP (or '%').`,
+          }
+        case 'ER_HOST_IS_BLOCKED':
+          return {
+            reason: 'permission',
+            cause: "The server blocked this client's address after too many failed handshakes.",
+            hint: 'Clear it on the server with FLUSH HOSTS (mysqladmin flush-hosts), or raise max_connect_errors.',
+          }
+        case 'ER_CON_COUNT_ERROR':
+        case 'ER_TOO_MANY_USER_CONNECTIONS':
+        case 'ER_USER_LIMIT_REACHED':
+          return {
+            reason: 'busy',
+            cause: 'The server has reached its connection limit.',
+            hint: 'Free up connections (or raise max_connections) and try again.',
+          }
+        case 'ER_SERVER_SHUTDOWN':
+        case 'ER_SERVER_OFFLINE_MODE':
+          return {
+            reason: 'busy',
+            cause: 'The server is not accepting connections right now.',
+            hint: 'It is shutting down or in offline mode — retry once it is back.',
+          }
+        case 'ER_SECURE_TRANSPORT_REQUIRED':
+          return {
+            reason: 'tls',
+            cause: 'The server only accepts encrypted connections.',
+            hint: 'Set SSL mode to "require" (or "verify-full" if you have the CA) in the connection settings.',
+          }
+        case 'HANDSHAKE_NO_SSL_SUPPORT':
+          return {
+            reason: 'tls',
+            cause: 'The server does not support SSL, but this connection requires it.',
+            hint: 'Set SSL mode to "disable" in the connection settings.',
+          }
+        default:
+          return null
+      }
+    },
+
+    release(conn) {
+      for (const [key, pool] of pools) {
+        if (key === conn.id || key.startsWith(`${conn.id}::`)) {
+          closePool(pool)
+          pools.delete(key)
+        }
+      }
+    },
+
+    closeAll() {
+      for (const [, pool] of pools) closePool(pool)
+      pools.clear()
+    },
+
+    // ---- Introspection ----
+    async ping(conn, ctx) {
+      await poolFor(conn, ctx).query('SELECT 1')
+      return { ok: true }
+    },
+
+    // `VERSION()` can carry a suffix ("8.0.36-0ubuntu0.22.04.1").
+    async serverVersion(conn, ctx) {
+      const [rows] = await poolFor(conn, ctx).query('SELECT VERSION() AS version')
+      return /^\d+(\.\d+)*/.exec(rows[0]?.version || '')?.[0] || null
+    },
+
+    // A connection may name no database, so `currentDatabase` can be null and the
+    // console picks the first listed. System databases stay out of the list unless
+    // the connection was pointed at one on purpose.
+    async namespaces(conn, ctx) {
+      const pool = poolFor(conn, ctx)
+      const [dbs] = await pool.query('SHOW DATABASES')
+      const [cur] = await pool.query('SELECT DATABASE() AS db')
+      const currentDatabase = cur[0]?.db || null
+      return {
+        databases: dbs.map((r) => r.Database).filter((d) => d === currentDatabase || !SYSTEM_DATABASES.has(d)),
+        schemas: [],
+        currentDatabase,
+      }
+    },
+
+    listTables: (conn, ctx) => listTables(poolFor(conn, ctx)),
+
+    // Generic object list: tables, views and routines. Each sub-query is isolated
+    // so one failing kind never blanks the whole list.
+    async listObjects(conn, ctx) {
+      const pool = poolFor(conn, ctx)
+      const out = []
+      const safe = async (fn) => {
+        try {
+          await fn()
+        } catch (error) {
+          console.error(`listObjects (${type}):`, error.message)
+        }
+      }
+      await safe(async () => {
+        const [rows] = await pool.query(
+          `SELECT TABLE_NAME AS name, TABLE_TYPE AS kind FROM information_schema.TABLES
+           WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE <> 'SEQUENCE' ORDER BY TABLE_TYPE, TABLE_NAME`
+        )
+        for (const row of rows) out.push({ name: row.name, type: row.kind === 'VIEW' || row.kind === 'SYSTEM VIEW' ? 'view' : 'table' })
+      })
+      await safe(async () => {
+        const args = await routineArgs(pool)
+        const [rows] = await pool.query(
+          `SELECT ROUTINE_NAME AS name FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = DATABASE() ORDER BY ROUTINE_NAME`
+        )
+        for (const row of rows) out.push({ name: row.name, type: 'function', detail: args[row.name] || '' })
+      })
+      return out
+    },
+
+    // A routine's definition. A name can be both a function and a procedure, and
+    // SHOW CREATE answers null to a user without the privilege to read it.
+    async listFunctions(conn, ctx, name) {
+      const pool = poolFor(conn, ctx)
+      const args = await routineArgs(pool)
+      const [routines] = await pool.query(
+        `SELECT ROUTINE_TYPE AS kind FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = DATABASE() AND ROUTINE_NAME = ?`,
+        [name]
+      )
+      const out = []
+      for (const { kind } of routines) {
+        const [rows] = await pool.query(`SHOW CREATE ${kind === 'PROCEDURE' ? 'PROCEDURE' : 'FUNCTION'} ${quoteIdent(name)}`)
+        const definition = rows[0]?.[kind === 'PROCEDURE' ? 'Create Procedure' : 'Create Function']
+        out.push({ name, args: args[name] || '', definition: definition || '' })
+      }
+      return out
+    },
+
+    // Ordered by the primary key when there is one. A table without one has no
+    // hidden row id to order by or to target an edit with (the console falls back
+    // to matching every column); InnoDB still scans it in a steady order.
+    async getTableData(conn, ctx, { table, limit = 200, offset = 0 }) {
+      const pool = poolFor(conn, ctx)
+      const page = `LIMIT ${parseInt(limit) || 200} OFFSET ${parseInt(offset) || 0}`
+      try {
+        const columns = (await readColumns(pool, [table])).map((c) => c.name)
+        const pk = await primaryKeyColumns(pool, table)
+        const order = pk.length ? `ORDER BY ${pk.map(quoteIdent).join(', ')}` : ''
+        const [rows] = await pool.query(`SELECT * FROM ${quoteIdent(table)} ${order} ${page}`)
+        return { columns, rows }
+      } catch (error) {
+        return { columns: [], rows: [], error: error.message }
+      }
+    },
+
+    async getColumns(conn, ctx, table) {
+      const pool = poolFor(conn, ctx)
+      return (await readColumns(pool, [table])).map(({ table: _table, ...column }) => column)
+    },
+
+    async getIndexes(conn, ctx, table) {
+      return (await indexesByTable(poolFor(conn, ctx), [table]))[table] || []
+    },
+
+    async getSchemaMap(conn, ctx) {
+      const [rows] = await poolFor(conn, ctx).query(
+        `SELECT TABLE_NAME AS tbl, COLUMN_NAME AS col FROM information_schema.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() ORDER BY TABLE_NAME, ORDINAL_POSITION`
+      )
+      const schema = {}
+      for (const row of rows) (schema[row.tbl] ||= []).push(row.col)
+      return schema
+    },
+
+    // `only` (optional) narrows the read to those tables, so a caller syncing a
+    // large schema can walk it in slices. Each slice is a complete answer for the
+    // tables it names.
+    async getDiagram(conn, ctx, { tables: only = null } = {}) {
+      const pool = poolFor(conn, ctx)
+      const names = (await listTables(pool)).filter((t) => !only || only.includes(t))
+      if (!names.length) return { tables: [], foreignKeys: [] }
+      const columns = await readColumns(pool, names)
+      const indexes = await indexesByTable(pool, names)
+      const foreignKeys = (await readForeignKeys(pool, names)).map((fk) => ({
+        constraint: fk.constraint_name,
+        table: fk.tbl,
+        column: fk.col,
+        refTable: fk.ref_table,
+        refColumn: fk.ref_column,
+        onDelete: fk.on_delete,
+        onUpdate: fk.on_update,
+      }))
+      const tables = names.map((name) => ({
+        name,
+        columns: columns.filter((c) => c.table === name).map(({ table: _table, ...column }) => column),
+        indexes: indexes[name] || [],
+      }))
+      return { tables, foreignKeys }
+    },
+
+    // ---- Data ----
+    async insertRow(conn, ctx, { table, values }) {
+      const cols = Object.keys(values)
+      const sql = `INSERT INTO ${quoteIdent(table)} (${cols.map(quoteIdent).join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`
+      const [result] = await poolFor(conn, ctx).query(sql, cols.map((c) => bindable(values[c])))
+      return { ok: true, changes: result.affectedRows }
+    },
+
+    // Every batch in one transaction: an import lands whole or not at all.
+    async insertRows(conn, ctx, { table, rows }) {
+      const columns = [...new Set(rows.flatMap((r) => Object.keys(r)))]
+      if (!columns.length) return { ok: true, inserted: 0 }
+      const batches = insertBatches(quoteIdent(table), columns, rows, { quote: quoteIdent, maxParams: 60000 })
+      await withOwnConnection(poolFor(conn, ctx), (client) =>
+        inTransaction(client, async () => {
+          for (const b of batches) await client.query(b.sql, b.params.map(bindable))
+        })
+      )
+      return { ok: true, inserted: rows.length }
+    },
+
+    // A multi-statement script (a .sql import). Its data statements share one
+    // transaction, but any DDL in it commits what came before — MySQL has no
+    // transactional DDL, so a script that fails halfway keeps its CREATEs.
+    async runScript(conn, ctx, sql) {
+      await withOwnConnection(poolFor(conn, ctx), (client) =>
+        hasOwnTransaction(sql) ? client.query(sql) : inTransaction(client, () => client.query(sql))
+      )
+      return { ok: true }
+    },
+
+    // The server keeps the real statement, indexes and foreign keys included. A view
+    // answers with `Create View`, and is not something a table import can recreate.
+    async tableDdl(conn, ctx, table) {
+      const [rows] = await poolFor(conn, ctx).query(`SHOW CREATE TABLE ${quoteIdent(table)}`)
+      const create = rows[0]?.['Create Table']
+      return create ? [`${ifNotExists(create)};`] : []
+    },
+
+    quoteIdent,
+    sqlLiteral: mysqlLiteral,
+
+    runQuery: (conn, ctx, sql) => runQuery(poolFor(conn, ctx), sql),
+    pageSql,
+
+    analyze: (conn, ctx, { sql }) => analyze(poolFor(conn, ctx), sql, label),
+
+    // ---- Backup / restore ----
+    // Named as a plain positional so the dump carries no CREATE DATABASE or USE:
+    // it restores into whichever database the target connection names.
+    async dump(conn, destPath) {
+      const { args, env } = toolConn(conn)
+      await execTool(
+        label,
+        'mysqldump',
+        [...args, '--single-transaction', '--routines', '--triggers', '--hex-blob', '--no-tablespaces', '--loose-set-gtid-purged=OFF', `--result-file=${destPath}`, '--', databaseOf(conn, label)],
+        { env }
+      )
+    },
+
+    async restore(conn, dumpPath) {
+      driver.release(conn)
+      const { args, env } = toolConn(conn)
+      await execToolWithInput(label, 'mysql', [...args, '--', databaseOf(conn, label)], dumpPath, { env })
+    },
+  }
+  return driver
+}
+
+export const mysqlDriver = mysqlFamilyDriver({ type: 'mysql', label: 'MySQL' })
+export const mariadbDriver = mysqlFamilyDriver({ type: 'mariadb', label: 'MariaDB' })
 
 // ---- Internals -------------------------------------------------------------
 
@@ -413,7 +457,7 @@ async function listTables(pool) {
   try {
     const [rows] = await pool.query(
       `SELECT TABLE_NAME AS name FROM information_schema.TABLES
-       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE' ORDER BY TABLE_NAME`
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE IN ${BASE_TABLES} ORDER BY TABLE_NAME`
     )
     return rows.map((r) => r.name)
   } catch {
@@ -463,12 +507,15 @@ async function readForeignKeys(pool, names) {
 
 const NUMERIC = /^(tinyint|smallint|mediumint|int|integer|bigint|decimal|numeric|float|double|real|year)$/i
 
-// `COLUMN_DEFAULT` is the bare value, so a string default reads `active` rather
-// than `'active'`. Callers paste a default straight into DDL (the schema
-// designer, rollback), so it has to come back as SQL: quoted when it is a value,
-// and parenthesised when it is an expression, unless it is CURRENT_TIMESTAMP.
-function defaultSql(c) {
+// Callers paste a default straight into DDL (the schema designer, rollback), so
+// it has to come back as SQL. MariaDB's `COLUMN_DEFAULT` already is — a string
+// reads `'active'`, an expression `current_timestamp()`, and DEFAULT NULL is the
+// bare word NULL (a string 'NULL' would be quoted). MySQL's is the bare value, so
+// it is quoted when it is a value and parenthesised when it is an expression,
+// unless it is CURRENT_TIMESTAMP.
+function defaultSql(c, flavor) {
   if (c.dflt === null || c.dflt === undefined) return null
+  if (flavor === 'mariadb') return c.dflt === 'NULL' ? null : c.dflt
   if (/DEFAULT_GENERATED/i.test(c.extra || '')) {
     const expr = c.dflt.replace(/\\'/g, "'")
     return /^current_timestamp(\(\d*\))?$/i.test(expr) ? expr : `(${expr})`
@@ -499,6 +546,7 @@ async function readColumns(pool, names) {
      ORDER BY TABLE_NAME, ORDINAL_POSITION`,
     [names]
   )
+  const flavor = await flavorOf(pool)
   const fks = await readForeignKeys(pool, names)
   const fkOf = new Map(fks.map((fk) => [`${fk.tbl}\0${fk.col}`, { table: fk.ref_table, column: fk.ref_column }]))
   return rows.map((c) => ({
@@ -507,7 +555,7 @@ async function readColumns(pool, names) {
     type: c.type,
     notnull: c.nullable === 'NO',
     pk: c.col_key === 'PRI',
-    default: defaultSql(c),
+    default: defaultSql(c, flavor),
     autoIncrement: /auto_increment/i.test(c.extra || ''),
     extra: columnExtras(c),
     references: fkOf.get(`${c.tbl}\0${c.name}`) || null,
@@ -516,7 +564,8 @@ async function readColumns(pool, names) {
 
 /**
  * The indexes of `names`, grouped by table. `SELECT *` because STATISTICS gained
- * EXPRESSION in 8.0.13, and naming it would fail on an older server.
+ * EXPRESSION in MySQL 8.0.13, and naming it would fail on an older server or on
+ * MariaDB, which has no expression indexes.
  *
  * A UNIQUE constraint and a unique index are one thing here, so only PRIMARY is
  * a `constraint`. An index the schema editor can't write back — a prefix length,
@@ -633,8 +682,8 @@ async function runQuery(pool, sql) {
 
 // ---- mysqldump / mysql -----------------------------------------------------
 
-const databaseOf = (conn) => {
-  if (!conn.database) throw new Error('A MySQL backup needs one database: set "Database" in the connection settings.')
+const databaseOf = (conn, label) => {
+  if (!conn.database) throw new Error(`A ${label} backup needs one database: set "Database" in the connection settings.`)
   return conn.database
 }
 
@@ -643,7 +692,7 @@ const databaseOf = (conn) => {
 //
 // `--loose-` is there because the image ships the MariaDB build of these tools
 // (Debian has no other) and MySQL's own spell TLS differently: each ignores the
-// spelling it doesn't know. Through an SSH tunnel the tools dial 127.0.0.1 and
+// spelling it doesn't know. The same build dumps a MariaDB server natively. Through an SSH tunnel the tools dial 127.0.0.1 and
 // have no way to name the real host, so verify-full can only ask for encryption.
 function toolConn(conn) {
   const noAuth = conn.auth === 'none'
@@ -655,27 +704,27 @@ function toolConn(conn) {
   return { args, env: { ...process.env, MYSQL_PWD: noAuth ? '' : conn.password || '' } }
 }
 
-const toolMissing = (tool) =>
-  new Error(`${tool} not found on the server — MySQL backup/restore needs the MySQL client tools (mysqldump/mysql) installed and on PATH.`)
+const toolMissing = (label, tool) =>
+  new Error(`${tool} not found on the server — ${label} backup/restore needs the MySQL/MariaDB client tools (mysqldump/mysql) installed and on PATH.`)
 
 // Translates the cryptic `spawn <tool> ENOENT` you get when the client tools
 // aren't installed/on PATH into an actionable message.
-async function execTool(tool, args, opts) {
+async function execTool(label, tool, args, opts) {
   try {
     return await execFileAsync(tool, args, opts)
   } catch (err) {
-    throw err.code === 'ENOENT' ? toolMissing(tool) : err
+    throw err.code === 'ENOENT' ? toolMissing(label, tool) : err
   }
 }
 
 // Like execTool, with a file on stdin — `mysql` reads a dump from there, and a
 // dump can be far larger than anything worth holding in memory.
-function execToolWithInput(tool, args, inputPath, opts) {
+function execToolWithInput(label, tool, args, inputPath, opts) {
   return new Promise((resolve, reject) => {
     const child = spawn(tool, args, { ...opts, stdio: ['pipe', 'ignore', 'pipe'] })
     let stderr = ''
     child.stderr.on('data', (chunk) => (stderr += chunk))
-    child.on('error', (err) => reject(err.code === 'ENOENT' ? toolMissing(tool) : err))
+    child.on('error', (err) => reject(err.code === 'ENOENT' ? toolMissing(label, tool) : err))
     child.on('close', (code) => {
       if (code === 0) return resolve()
       const reason = stderr.split('\n').filter((line) => !line.startsWith('Warning:')).join('\n').trim()
@@ -688,8 +737,11 @@ function execToolWithInput(tool, args, inputPath, opts) {
 
 // ---- Query analyzer --------------------------------------------------------
 // EXPLAIN FORMAT=JSON, normalized into the dialect-agnostic shape described in
-// server/db/index.js. Estimates only: MySQL's EXPLAIN ANALYZE answers in prose,
-// and it runs the statement, so analysis here never touches data.
+// server/db/index.js. Estimates only: MySQL's EXPLAIN ANALYZE (MariaDB's ANALYZE)
+// runs the statement, so analysis here never touches data. The two servers'
+// JSON differ in spelling — MySQL's `using_filesort: true`, `rows_examined_per_scan`,
+// `cost_info.query_cost` and backticked names are MariaDB's `filesort: {…}`,
+// `rows`, `cost` and bare names — and the walk below reads both.
 
 const ACCESS_STEPS = {
   ALL: 'Table Scan',
@@ -714,7 +766,7 @@ function tableStep(node, depth) {
     detail: details.join(' · ') || node.access_type || 'Table',
     table: node.table_name,
     index: node.key || null,
-    rows: Number(node.rows_examined_per_scan ?? node.rows_produced_per_join) || null,
+    rows: Number(node.rows_examined_per_scan ?? node.rows ?? node.rows_produced_per_join) || null,
     warning: scan ? (node.attached_condition ? 'Full table scan with filter' : 'Full table scan') : null,
     filter: node.attached_condition || null, // internal, stripped below
   }
@@ -725,7 +777,7 @@ function tableStep(node, depth) {
 function walkPlan(node, depth, plan) {
   if (!node || typeof node !== 'object') return
   if (Array.isArray(node)) return node.forEach((child) => walkPlan(child, depth, plan))
-  if (node.using_filesort) {
+  if (node.using_filesort || node.filesort) {
     plan.push({ depth, step: 'Sort', detail: 'Filesort', table: null, index: null, rows: null, warning: 'Sort not served by an index', filter: null })
     depth++
   }
@@ -736,7 +788,11 @@ function walkPlan(node, depth, plan) {
   for (const child of Object.values(node)) walkPlan(child, depth, plan)
 }
 
-async function analyze(pool, sql) {
+// A filtered column in an attached condition: `db`.`t`.`col` > 2 on MySQL,
+// t.col > 2 on MariaDB. The name is the last part before the operator.
+const FILTERED_COLUMN = /(?:`([^`]+)`|\b([A-Za-z_][\w$]*))\s*(?:=|<>|!=|<=|>=|<|>|\s+(?:not\s+)?(?:in|like|between|is)\b)/gi
+
+async function analyze(pool, sql, label) {
   const explain = await runQuery(pool, `EXPLAIN FORMAT=JSON ${sql}`)
   if (explain.error) throw new Error(explain.error)
   const raw = explain.rows?.[0]?.EXPLAIN
@@ -764,12 +820,12 @@ async function analyze(pool, sql) {
   }
   for (const row of plan) {
     if (row.warning === 'Full table scan with filter') {
-      const cands = [...row.filter.matchAll(/`([^`]+)`\s*(?:=|<>|!=|<=|>=|<|>|\s+(?:not\s+)?(?:in|like|between|is)\b)/gi)].map((m) => m[1])
+      const cands = [...row.filter.matchAll(FILTERED_COLUMN)].map((m) => m[1] || m[2])
       const { columns, indexes } = await metaFor(row.table)
       suggest(
         makeIndexSuggestion(
           row.table, [...new Set(cands)], columns, indexes,
-          `Full scan on ${quoteIdent(row.table)} while filtering — an index on the filtered column(s) would let MySQL look the rows up.`,
+          `Full scan on ${quoteIdent(row.table)} while filtering — an index on the filtered column(s) would let ${label} look the rows up.`,
           undefined, quoteIdent
         )
       )
@@ -794,7 +850,7 @@ async function analyze(pool, sql) {
   const primaryCols = primaryTable ? (await metaFor(primaryTable)).columns.length : 0
   return {
     dialect: 'mysql',
-    summary: { mode: 'estimated', executed: false, estimatedCost: Number(tree.query_block.cost_info?.query_cost) || null },
+    summary: { mode: 'estimated', executed: false, estimatedCost: Number(tree.query_block.cost_info?.query_cost ?? tree.query_block.cost) || null },
     plan,
     rawPlan: { columns: ['QUERY PLAN'], rows: [{ 'QUERY PLAN': JSON.stringify(tree, null, 2) }] },
     indexSuggestions,

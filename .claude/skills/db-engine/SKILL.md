@@ -257,6 +257,36 @@ frontend (the schema designer's MySQL-only statements live in
 - Tests: `MYSQL_TEST_URL=mysql://root:pw@127.0.0.1:3306/scratch npm test` runs
   `tests/mysql-driver.test.js` against a real server (it owns that database).
 
+## MariaDB — MySQL's driver, MariaDB's answers
+
+`mariadb` is its own connection type and module, but not its own file:
+`mysqlFamilyDriver({ type, label })` in `server/db/mysql.js` builds both drivers,
+which differ only in the name they give people (messages, the analyzer's prose).
+The frontend maps it to the `mysql` SQL dialect (`sqlDialectOf`), so the schema
+designer, grid and quoting need nothing; CodeMirror gets `MariaSQL`.
+
+Where the *server* answers differently, the driver asks the server — `flavorOf`
+reads `VERSION()` once per pool — never `conn.type`, because a MariaDB server
+added as "MySQL" is common and must read right too:
+
+- **`COLUMN_DEFAULT` is already SQL** on MariaDB (`'active'`, `current_timestamp()`,
+  `uuid()`; DEFAULT NULL is the bare word `NULL`, a string 'NULL' is quoted).
+  MySQL's is the bare value and gets quoted. Re-quoting MariaDB's corrupts every
+  `MODIFY COLUMN` the schema designer writes.
+- **`SYSTEM VERSIONED` is a table type** — list tables with `TABLE_TYPE IN
+  ('BASE TABLE', 'SYSTEM VERSIONED')`, never `= 'BASE TABLE'`. Sequences
+  (`'SEQUENCE'`) stay out of the lists, as Postgres's do.
+- **No expression indexes**, so STATISTICS has no `EXPRESSION` (hence `SELECT *`).
+- **EXPLAIN FORMAT=JSON** spells things its own way — a `filesort` object, `rows`,
+  `cost`, unquoted `t.col > 2` conditions. The analyzer reads both shapes; it never
+  runs `ANALYZE` (that executes the statement).
+- **Backups** are the same `mysqldump`/`mysql` — the image's tools *are* MariaDB's.
+  The official `mariadb:11` image ships only `mariadb-dump`; Debian bookworm's
+  `default-mysql-client` still has the `mysqldump` name.
+- Tests: `MARIADB_TEST_URL=mysql://root:pw@127.0.0.1:3306/scratch npm test` runs
+  `tests/mariadb-driver.test.js` (it owns that database). Run the MySQL suite too
+  after touching `mysql.js` — the code is shared.
+
 ## Adding a new engine — checklist
 
 1. Write `server/db/<engine>.js` adapting the contract; omit what the engine lacks.
