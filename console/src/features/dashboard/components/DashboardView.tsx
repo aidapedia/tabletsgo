@@ -31,7 +31,7 @@ import { Button } from '@/shared/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/shared/ui/tooltip'
 import { ConfirmDialog } from '@/shared/ui/confirm-dialog'
 
-const DIALECT = { postgresql: 'PostgreSQL', mysql: 'MySQL', sqlite: 'SQLite', redis: 'Redis' }
+const DIALECT = { postgresql: 'PostgreSQL', mysql: 'MySQL', mariadb: 'MariaDB', sqlite: 'SQLite', redis: 'Redis' }
 
 const newWidget = (config: DashboardConfig, cell?: { x: number; y: number }): Widget => ({
   id: `w${Date.now()}`,

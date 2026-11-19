@@ -32,7 +32,7 @@ Browse data, write queries, design schemas, automate workflows and back up to S3
 - **Solo or enterprise, one image** — run it alone with nothing else (**solo**: one owner, a password, one workspace), or for a team (**enterprise**: sign-in, workspaces, groups, roles and who may open each connection come from [Hayat](https://github.com/aidapedia/hayat), the identity and access service tabletsgo shares with your other apps). Both are free; a solo instance moves to enterprise with its data.
 - **Time zones** — each person picks a time zone in **Setting → Preferences**, and times across the app show in it. Values stored in your databases are shown exactly as stored.
 - **Sign-in** — solo: the owner's email and password, set at first run with a code from the server's log. Enterprise: single sign-on at Hayat (OpenID Connect, authorization code + PKCE), where accounts, passwords, sign-up and sign-in methods are managed and shared by every app that uses it.
-- **Modules** — the instance admin chooses which databases (PostgreSQL, MySQL, SQLite, Redis, Kafka) and features (Backups) the instance offers under **Administration → Modules**, and sets their instance-wide settings — each database's query timeout and table row limit, Kafka's read caps. Workspaces only see what's on. Turning off a database that connections still use locks those connections instead of deleting them, and notifies their owners by email.
+- **Modules** — the instance admin chooses which databases (PostgreSQL, MySQL, MariaDB, SQLite, Redis, Kafka) and features (Backups) the instance offers under **Administration → Modules**, and sets their instance-wide settings — each database's query timeout and table row limit, Kafka's read caps. Workspaces only see what's on. Turning off a database that connections still use locks those connections instead of deleting them, and notifies their owners by email.
 - **Secure by default** — credentials encrypted at rest (AES‑256‑GCM); solo passwords hashed with scrypt and sessions ended at once on a password change; enterprise access tokens verified offline against Hayat's keys, every permission asked of Hayat.
 - **Themes** — one per account, the same in every app you sign in to: presets, light/dark, every color (accent, content, sidebar, status), text size, density, corners, sidebar and content width, font, with a live preview and a readability check. Edited in Hayat's console (enterprise) or at Setting → Appearance (solo).
 - **In‑app updates**, split view, configurable keymap.
@@ -54,8 +54,8 @@ Every feature in detail: **[docs/FEATURES.md](docs/FEATURES.md)**.
 
 | Database | Status |
 |---|:---:|
-| PostgreSQL, MySQL, SQLite, Redis, Kafka | ✅ Supported |
-| MariaDB, MongoDB | 🚧 Planned |
+| PostgreSQL, MySQL, MariaDB, SQLite, Redis, Kafka | ✅ Supported |
+| MongoDB | 🚧 Planned |
 
 ## Quick start
 

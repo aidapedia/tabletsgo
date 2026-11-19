@@ -61,7 +61,7 @@ FROM node:${NODE_VERSION}-bookworm-slim AS runtime
 # ("aborting because of server version mismatch"), so install the current major
 # (18) from the official PostgreSQL apt repo — it dumps every older server too.
 # It also brings libpq5, which pg-native (PostgreSQL metadata) links against.
-# mysqldump/mysql back the MySQL backup/restore; Debian's default-mysql-client is
+# mysqldump/mysql back the MySQL and MariaDB backup/restore; Debian's default-mysql-client is
 # the MariaDB build of those tools, which also speaks to MySQL servers.
 # openssl: Prisma's schema engine (the migrator) probes it to pick its build.
 ADD https://www.postgresql.org/media/keys/ACCC4CF8.asc /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc

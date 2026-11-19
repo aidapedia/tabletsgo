@@ -12,6 +12,7 @@ const OTHER_ENGINES = /SQL Server|MariaDB|MongoDB|ClickHouse|CockroachDB|Oracle|
 // Lines that name some engines on purpose, not as "every engine Tabletsgo has". `file` is a path suffix.
 const ALLOW = [
   { file: 'content/docs/configure/modules.mdx', line: /^\|/, why: 'the modules table groups engines by their settings, one row each' },
+  { file: 'aidapedia/src/content/portfolio.ts', line: /^export const STACK/, why: "the author's own skills, not the engines Tabletsgo supports" },
 ]
 
 const read = (f) => readFileSync(f, 'utf8')

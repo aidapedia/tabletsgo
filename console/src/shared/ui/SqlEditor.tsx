@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import CodeMirror from '@uiw/react-codemirror'
-import { sql as sqlExtension, MySQL, SQLite, PostgreSQL } from '@codemirror/lang-sql'
+import { sql as sqlExtension, MariaSQL, MySQL, SQLite, PostgreSQL } from '@codemirror/lang-sql'
 import { EditorView, tooltips } from '@codemirror/view'
 import { HighlightStyle, syntaxHighlighting } from '@codemirror/language'
 import { Prec } from '@codemirror/state'
@@ -167,10 +167,15 @@ function schemaCompletionSource(schema: SqlSchema) {
   }
 }
 
+// The lang-sql dialect for a connection type. Callers pass the type ('mysql') or
+// its label ('MySQL'), so both spellings are read; anything else is SQLite.
+const LANGUAGES = { postgresql: PostgreSQL, mysql: MySQL, mariadb: MariaSQL }
+const languageOf = (dialect?: string) => LANGUAGES[String(dialect || '').toLowerCase() as keyof typeof LANGUAGES] || SQLite
+
 type SqlEditorProps = {
   value: string
   onChange: (value: string) => void
-  /** Connection type — picks the SQL dialect for parsing/completion. */
+  /** Connection type (or its label) — picks the SQL dialect for parsing/completion. */
   dialect?: string
   /** Table → columns map used to power autocomplete. */
   schema?: SqlSchema
@@ -196,7 +201,7 @@ export default function SqlEditor({
     // Note: schema is intentionally NOT handed to lang-sql — our own source owns
     // tables/columns (correct icons + context), lang-sql owns keywords/types/fns.
     const lang = sqlExtension({
-      dialect: dialect === 'postgresql' ? PostgreSQL : dialect === 'mysql' ? MySQL : SQLite,
+      dialect: languageOf(dialect),
       upperCaseKeywords: true,
     })
     const exts = [

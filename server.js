@@ -5,7 +5,7 @@
  * This file is routes and wiring only. Everything a route needs lives in a
  * module under server/:
  *
- *   db/           the engine-agnostic database layer (sqlite | postgres | mysql | redis | kafka)
+ *   db/           the engine-agnostic database layer (sqlite | postgres | mysql + mariadb | redis | kafka)
  *   meta.js       the app's own SQLite/PostgreSQL store; migrator/ evolves its schema
  *   auth.js       guards over Hayat: who is calling, what they may do
  *   hayat/        Hayat's service API — people, workspaces (tenants), decisions, mirrors

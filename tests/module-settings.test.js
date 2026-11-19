@@ -13,7 +13,7 @@ const { runMigrations } = await import('../server/migrator/index.js')
 runMigrations({ log: () => {} })
 const { saveConnection, deleteConnectionMetadata } = await import('../server/connections.js')
 const { adminModules, loadModules, publicModules, updateModules } = await import('../server/module-settings.js')
-const { assertModuleEnabled, isModuleEnabled, moduleSetting, optionalModuleSetting } = await import('../server/module-registry.js')
+const { MODULES, assertModuleEnabled, isModuleEnabled, moduleSetting, optionalModuleSetting } = await import('../server/module-registry.js')
 const db = await import('../server/db/index.js')
 const { groupByRecipient, notifyModuleOwners } = await import('../server/module-notices.js')
 
@@ -90,11 +90,11 @@ test('an engine with connections isn’t turned off without force, and the refus
 })
 
 test('the last database can’t be turned off', async () => {
-  await assert.rejects(
-    updateModules({ postgresql: { enabled: false }, mysql: { enabled: false }, sqlite: { enabled: false }, redis: { enabled: false }, kafka: { enabled: false } }),
-    /at least one database/
-  )
-  assert.ok(['postgresql', 'mysql', 'sqlite', 'redis', 'kafka'].every(isModuleEnabled))
+  // Every engine the catalog has, so a new one can't slip past this.
+  const engines = MODULES.filter((m) => m.kind === 'engine').map((m) => m.id)
+  assert.ok(engines.includes('mariadb'))
+  await assert.rejects(updateModules(Object.fromEntries(engines.map((id) => [id, { enabled: false }]))), /at least one database/)
+  assert.ok(engines.every(isModuleEnabled))
 })
 
 test('a feature turns off without a connection check', async () => {

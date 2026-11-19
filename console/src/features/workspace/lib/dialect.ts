@@ -2,6 +2,7 @@
 export const DIALECT: Record<string, string> = {
   postgresql: 'PostgreSQL',
   mysql: 'MySQL',
+  mariadb: 'MariaDB',
   sqlite: 'SQLite',
   redis: 'Redis',
 }
