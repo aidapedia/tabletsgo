@@ -159,6 +159,8 @@ Start tabletsgo with the enterprise overlay, which sets `TABLETSGO_MODE=enterpri
 docker compose -f docker-compose.yml -f docker-compose.enterprise.yml up -d
 ```
 
+**On Coolify, built from source:** `deploy/coolify/docker-compose.yml` runs enterprise mode from a branch of this repository with its own PostgreSQL for the metadata store — the steps are in its header.
+
 **Upgrading a v1.0 install that had its own accounts:** in enterprise mode, the first start of this version writes everything its account tables held to `data/hayat-import-<time>.json` and then drops those tables (a `pre-migrate` snapshot is taken too). Load it the same way:
 
 ```bash
