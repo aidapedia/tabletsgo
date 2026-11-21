@@ -3,9 +3,11 @@
 #
 #   docker compose -f docker-compose.yml -f docker-compose.enterprise.yml up -d
 #
-# Hayat runs on its own (its repo's deploy/compose); `hayat import` prints the
-# HAYAT_* values below. Moving a solo instance here: README → Moving from solo
-# to enterprise. The `:?` guards make compose refuse to start with one missing.
+# Hayat runs on its own (its repo's deploy/compose). Set its addresses below,
+# start, open tabletsgo and paste an enrollment code from Hayat's console
+# (Services → Enroll service): that gives tabletsgo its credentials. Moving a
+# solo instance here: README → Moving from solo to enterprise. The `:?` guards
+# make compose refuse to start with a required value missing.
 services:
   tabletsgo:
     environment:
@@ -15,9 +17,6 @@ services:
       - ENCRYPTION_KEY=${ENCRYPTION_KEY:?set ENCRYPTION_KEY}
       - HAYAT_ISSUER=${HAYAT_ISSUER:?set HAYAT_ISSUER (Hayat's auth role, public URL)}
       - HAYAT_API_URL=${HAYAT_API_URL:?set HAYAT_API_URL (Hayat's api role)}
-      - HAYAT_CLIENT_ID=${HAYAT_CLIENT_ID:?set HAYAT_CLIENT_ID}
-      - HAYAT_CLIENT_SECRET=${HAYAT_CLIENT_SECRET:?set HAYAT_CLIENT_SECRET}
-      - HAYAT_WEB_CLIENT_ID=${HAYAT_WEB_CLIENT_ID:?set HAYAT_WEB_CLIENT_ID}
       # Optional: where "Manage in Hayat" links point.
       - HAYAT_CONSOLE_URL=${HAYAT_CONSOLE_URL:-}
       # Optional: Hayat's auth role as this container reaches it, when that isn't

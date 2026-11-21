@@ -114,16 +114,14 @@ export const HAYAT_ISSUER = trimUrl(process.env.HAYAT_ISSUER) // required
 export const HAYAT_AUTH_URL = trimUrl(process.env.HAYAT_AUTH_URL) || HAYAT_ISSUER
 // The api role (gRPC/Connect), reachable from this server only.
 export const HAYAT_API_URL = trimUrl(process.env.HAYAT_API_URL) // required
-// The service credentials Hayat issued when tabletsgo was registered.
-export const HAYAT_CLIENT_ID = (process.env.HAYAT_CLIENT_ID || '').trim() // required
-export const HAYAT_CLIENT_SECRET = process.env.HAYAT_CLIENT_SECRET || '' // required
-// The public (PKCE) client the browser signs in with. Its own client, so the
-// service secret above never reaches a browser.
-export const HAYAT_WEB_CLIENT_ID = (process.env.HAYAT_WEB_CLIENT_ID || '').trim()
+// tabletsgo's credentials are not configuration: they come from enrolling
+// with a one-time code from Hayat's console (the setup page, or `npm run
+// hayat:enroll`) and are kept sealed in the store (server/hayat-enrollment.js).
+// The variables older installs set are only noticed, to say they're ignored.
+export const HAYAT_LEGACY_CREDENTIALS = !!(process.env.HAYAT_CLIENT_ID || process.env.HAYAT_CLIENT_SECRET || process.env.HAYAT_WEB_CLIENT_ID)
 // Where people manage members, groups and grants. Optional: links to it are
 // hidden without it.
 export const HAYAT_CONSOLE_URL = trimUrl(process.env.HAYAT_CONSOLE_URL)
-export const HAYAT_CONFIGURED = !!(HAYAT_ISSUER && HAYAT_API_URL && HAYAT_CLIENT_ID && HAYAT_CLIENT_SECRET && HAYAT_WEB_CLIENT_ID)
 
 // ---- Sessions ----
 // Connection sessions only — a login is a Hayat access token, verified on every

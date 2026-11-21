@@ -31,10 +31,14 @@ import {
  * The sign-in and first-run setup screens render in place (`RequireAuth`), so
  * signing in lands where the person was going.
  *
+ * **Enterprise, not enrolled yet** — the server has Hayat's address but no
+ * credentials (or Hayat refuses them): status `enroll`, and `RequireAuth` draws
+ * the setup page, where an enrollment code from Hayat's console connects it.
+ *
  * Either way every backend call gets `Authorization: Bearer` through the token
  * source registered with `shared/api/request`.
  */
-type Status = 'loading' | 'signedIn' | 'signedOut' | 'setup' | 'unconfigured'
+type Status = 'loading' | 'signedIn' | 'signedOut' | 'setup' | 'enroll' | 'unconfigured'
 
 type Auth = {
   status: Status
@@ -52,6 +56,8 @@ type Auth = {
   soloSetup: (input: SoloSetupInput) => Promise<void>
   applyTokens: (tokens: SoloTokens) => void
   reloadMe: () => Promise<void>
+  // Ask the server again how to sign in — after enrolling with Hayat.
+  reloadConfig: () => Promise<void>
 }
 
 const AuthContext = createContext<Auth | null>(null)
@@ -158,20 +164,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   // 1. Which mode, and where to sign in.
-  useEffect(() => {
-    getAuthConfig()
-      .then((c) => {
-        setConfig(c)
-        if (c.mode === 'solo') {
-          if (c.setupRequired) setStatus('setup')
-        } else if (!c.issuer || !c.clientId) setStatus('unconfigured')
-      })
-      .catch(() => setStatus('unconfigured'))
+  const loadConfig = useCallback(async () => {
+    try {
+      const c = await getAuthConfig()
+      setConfig(c)
+      if (c.mode === 'solo') {
+        if (c.setupRequired) setStatus('setup')
+      } else if (c.setup) setStatus('enroll')
+      else if (!c.issuer || !c.clientId) setStatus('unconfigured')
+      else setStatus('loading')
+    } catch {
+      setStatus('unconfigured')
+    }
   }, [])
+  useEffect(() => {
+    void loadConfig()
+  }, [loadConfig])
 
   // 2. Already holding a token (a Hayat one in this tab, or solo's cookie)? Ask who it belongs to.
   useEffect(() => {
-    if (!config || (config.mode === 'solo' && config.setupRequired)) return
+    if (!config || (config.mode === 'solo' && config.setupRequired) || (config.mode === 'enterprise' && config.setup)) return
     if (config.mode === 'enterprise' && (!manager || window.location.pathname === '/callback')) return
     void (async () => {
       if (await accessToken()) await loadMe()
@@ -254,8 +266,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       soloSetup: doSoloSetup,
       applyTokens,
       reloadMe: loadMe,
+      reloadConfig: loadConfig,
     }),
-    [status, user, config, accountUrl, signIn, completeSignIn, logout, soloSignIn, doSoloSetup, applyTokens, loadMe],
+    [status, user, config, accountUrl, signIn, completeSignIn, logout, soloSignIn, doSoloSetup, applyTokens, loadMe, loadConfig],
   )
   // Remount on a zone change: times already on screen were formatted in the old one.
   return (

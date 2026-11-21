@@ -73,12 +73,15 @@ routes, caches — can't tell the difference. **No route branches on the mode.**
 
 - `connect.js` — the wire: Connect protocol over `fetch` (unary JSON POSTs to
   `/<pkg>.<Service>/<Method>`, Watch as length-prefixed frames), the
-  client-credentials token (`HAYAT_CLIENT_ID/SECRET`), offline JWT verification
+  client-credentials token (the enrolled credentials), `callOpen` for the
+  token-less EnrollmentService, offline JWT verification
   against Hayat's JWKS (`jose`). No generated code. Discovery, token and JWKS go
   to `HAYAT_AUTH_URL` (default the issuer) — the browser and the server may reach
   the auth role at different addresses; the `iss` check is always the issuer.
 - `index.js` — tabletsgo's vocabulary: `verifyAccessToken` (also checks the token
-  was issued to `HAYAT_WEB_CLIENT_ID`), `getUser(s)`, `userTenants`,
+  was issued to the enrolled web client), `useCredentials` / `enrollmentState` /
+  `inspectEnrollment` / `redeemEnrollment` (enrolling: `server/hayat-enrollment.js`
+  stores them), `getUser(s)`, `userTenants`,
   `tenantMembers`, `tenantGrants` (what each member was granted — Hayat's
   `DirectoryService.ListTenantGrants`, for the Member pages' roles and Access
   list; display only, a decision is still `permissionsAt`/`check`), `permissionsAt`/`check`, `lookupSubjects`, `upsertResource` /

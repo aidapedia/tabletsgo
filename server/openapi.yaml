@@ -507,7 +507,7 @@ paths:
       tags:
         - Signing in (Hayat)
       summary: What the browser needs to sign in
-      description: "Public — nobody is signed in yet. `mode` says which sign-in to show. **enterprise:** the console starts an authorization-code + PKCE sign-in at `issuer` with `clientId` (Hayat's public client for tabletsgo, `HAYAT_WEB_CLIENT_ID`) and sends the access token it gets back as `Authorization: Bearer` on every call; `consoleUrl` is Hayat's console, where members, groups, roles and accounts are managed (`null` when `HAYAT_CONSOLE_URL` is unset). **solo:** the console shows its own sign-in (see Signing in (solo)), or the first-run setup while `setupRequired`. `people` says whether there is anyone but the caller to see — members, access lists — and is what the console gates those pages on."
+      description: "Public — nobody is signed in yet. `mode` says which sign-in to show. **enterprise:** the console starts an authorization-code + PKCE sign-in at `issuer` with `clientId` (Hayat's public client for tabletsgo, from enrolling) and sends the access token it gets back as `Authorization: Bearer` on every call; `consoleUrl` is Hayat's console, where members, groups, roles and accounts are managed (`null` when `HAYAT_CONSOLE_URL` is unset). **solo:** the console shows its own sign-in (see Signing in (solo)), or the first-run setup while `setupRequired`. `people` says whether there is anyone but the caller to see — members, access lists — and is what the console gates those pages on."
       security: []
       responses:
         "200":
@@ -536,6 +536,15 @@ paths:
                       - string
                       - "null"
                     description: enterprise only
+                  setup:
+                    type:
+                      - object
+                      - "null"
+                    description: "enterprise only: set while the instance isn't enrolled with Hayat (`reason: new`) or Hayat refuses its credentials (`reason: rejected`). The console then shows its setup page — paste an enrollment code — instead of signing in, and `clientId` is `null` until it is enrolled."
+                    properties:
+                      reason:
+                        type: string
+                        enum: [new, rejected]
               examples:
                 enterprise:
                   value:
@@ -544,11 +553,117 @@ paths:
                     clientId: 0193f3a2-9a7e-7c1d-b1a8-5d1f2e3c4b5a
                     consoleUrl: https://hayat.example.com
                     people: true
+                    setup: null
+                notEnrolled:
+                  value:
+                    mode: enterprise
+                    issuer: https://auth.example.com
+                    clientId: null
+                    consoleUrl: https://hayat.example.com
+                    people: true
+                    setup:
+                      reason: new
                 solo:
                   value:
                     mode: solo
                     setupRequired: false
                     people: false
+  /api/setup/hayat/inspect:
+    post:
+      tags:
+        - Signing in (Hayat)
+      summary: What an enrollment code would do
+      description: "Enterprise only (404 in solo). Reads an enrollment code from Hayat's console without spending it: whether redeeming it registers tabletsgo in Hayat or rotates its API secret, who made it (by default, the admin of a tabletsgo it registers) and when it expires. Open to anyone while the instance isn't enrolled or Hayat refuses its credentials — the code is the credential; otherwise tabletsgo's admins only (401/403). 400 for a code that isn't valid, was used, revoked, expired, or is for another service; 502 when Hayat's API can't be reached."
+      security: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code:
+                  type: string
+            example:
+              code: hye_3q2-8yQbX0fJ1mN6kLwA9cVt7rZsP4dE5gHjK2uIo1
+      responses:
+        "200":
+          description: "`{ serviceId, displayName, registers, madeBy: { email, name }, expiresAt, issuer, issuerMatches, address }` — `address` is PUBLIC_URL, or `null` when the browser's address will be used."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  serviceId: { type: string }
+                  displayName: { type: string }
+                  registers: { type: boolean }
+                  madeBy: { type: object }
+                  expiresAt: { type: [string, "null"] }
+                  issuer: { type: [string, "null"] }
+                  issuerMatches: { type: boolean }
+                  address: { type: [string, "null"] }
+              example:
+                serviceId: tabletsgo
+                displayName: Tabletsgo
+                registers: true
+                madeBy:
+                  email: admin@example.com
+                  name: Ada Admin
+                expiresAt: "2026-11-22T10:00:00Z"
+                issuer: https://auth.example.com
+                issuerMatches: true
+                address: null
+        "400":
+          description: The code can't be used, and why.
+        "404":
+          description: Solo mode — nothing to enroll.
+  /api/setup/hayat/enroll:
+    post:
+      tags:
+        - Signing in (Hayat)
+      summary: Enroll with Hayat using a code
+      description: "Enterprise only (404 in solo). Spends an enrollment code: tabletsgo sends Hayat its contract, its address (`PUBLIC_URL`, else `address` — the browser's origin) and its admin role; Hayat registers tabletsgo (or rotates its secret, for one it knows) and returns the credentials, which are stored encrypted and used at once. `adminEmail` names tabletsgo's admin when the code registers it — empty means whoever made the code; Hayat invites someone it doesn't know. Open while the instance isn't enrolled or Hayat refuses its credentials, otherwise tabletsgo's admins only."
+      security: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code:
+                  type: string
+                adminEmail:
+                  type: string
+                address:
+                  type: string
+            example:
+              code: hye_3q2-8yQbX0fJ1mN6kLwA9cVt7rZsP4dE5gHjK2uIo1
+              adminEmail: ""
+              address: https://db.example.com
+      responses:
+        "200":
+          description: "`{ registered, contractVersion, warnings, address }`. `registered` is false when it rotated an existing registration's secret."
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  registered: { type: boolean }
+                  contractVersion: { type: integer }
+                  warnings:
+                    type: array
+                    items: { type: string }
+                  address: { type: string }
+              example:
+                registered: true
+                contractVersion: 9
+                warnings: []
+                address: https://db.example.com
+        "400":
+          description: The code or request was refused, and why.
+        "404":
+          description: Solo mode — nothing to enroll.
   /api/auth/me:
     get:
       tags:
@@ -1142,6 +1257,39 @@ paths:
           description: Not a member
         "404":
           description: That person is not on this workspace's roster
+  /api/admin/hayat:
+    get:
+      tags:
+        - Instance administration
+      summary: How this instance is enrolled with Hayat
+      description: "Enterprise only (404 in solo). `enrolled` says whether it holds credentials (they only ever come from enrolling); `rejected` is true when Hayat refused the credentials the last time — a new code from the service's Enrollment tab in Hayat's console fixes it. Never the secret."
+      responses:
+        "200":
+          description: "`{ hayat: { enrolled, rejected, open, issuer, apiUrl, consoleUrl, webClientId, namespace, publicUrl, address, enrolledAt, registered } }`"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  hayat: {}
+              example:
+                hayat:
+                  enrolled: true
+                  rejected: false
+                  open: false
+                  issuer: https://auth.example.com
+                  apiUrl: http://hayat-api:7443
+                  consoleUrl: https://hayat.example.com
+                  webClientId: c_6lcnivyvgh0myg7kko
+                  namespace: tabletsgo
+                  publicUrl: https://db.example.com
+                  address: https://db.example.com
+                  enrolledAt: 1795230000000
+                  registered: true
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Solo mode.
   /api/admin/smtp:
     get:
       tags:

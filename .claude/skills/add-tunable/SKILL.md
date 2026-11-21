@@ -48,16 +48,16 @@ SMTP/admin-seed fallbacks are the exception, read where they're used).
 ### Hayat (sign-in and authorization) — enterprise mode, required
 - `HAYAT_ISSUER` — Hayat's auth role public URL; tokens are verified against its keys.
 - `HAYAT_API_URL` — Hayat's api role (gRPC/Connect), reachable from the server only.
-- `HAYAT_CLIENT_ID` / `HAYAT_CLIENT_SECRET` — tabletsgo's service credentials
-  (printed by `hayat import`, or Hayat console → Services).
-- `HAYAT_WEB_CLIENT_ID` — the public client the browser signs in with; a token
-  issued to any other client is refused.
+- No credentials: tabletsgo enrolls with a one-time code from Hayat's console
+  (setup page / `npm run hayat:enroll`) and keeps them sealed in `app_settings`
+  key `hayat` (`server/hayat-enrollment.js`). `HAYAT_CLIENT_*` left in an env is
+  ignored with a warning.
 - `HAYAT_CONSOLE_URL` — **optional**; where the "Manage in Hayat" links point.
 - `HAYAT_AUTH_URL` — **optional**, default `HAYAT_ISSUER`. The auth role as this
   server reaches it (Docker: `http://hayat-auth:8443`, since `localhost` is the
   container). `connect.js` fetches discovery there and rewrites the discovered
   token/JWKS endpoints onto it; the `iss` check stays the published issuer.
-- Enterprise mode refuses to start without the five required ones. There is no first-run
+- Enterprise mode refuses to start without the two required ones. There is no first-run
   wizard and no admin seed in tabletsgo: the first admin is whoever Hayat grants
   `tabletsgo.admin` at its root — `hayat import` does it for the bundle's admins,
   which are former admins plus whoever `npm run hayat:bundle -- --admin <email>` names.

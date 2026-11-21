@@ -8,13 +8,15 @@ import Database from 'better-sqlite3'
 // Modules below import the production metadata handle: isolate and migrate it first.
 process.env.ENCRYPTION_KEY = 'hayat-test-key'
 process.env.META_DB = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'tabletsgo-hayat-')), 'app.db')
-process.env.HAYAT_WEB_CLIENT_ID = 'tabletsgo-web'
 const { runMigrations } = await import('../server/migrator/index.js')
 runMigrations({ log: () => {} })
 const { MIGRATIONS } = await import('../server/migrator/legacy/sqlite.js')
 const { addBundleAdmin, emptyBundle, exportHayatBundle } = await import('../server/migrator/hayat-export.js')
 const { contractManifest, hayatKey, shortKeys } = await import('../server/permissions-catalog.js')
 const hayat = await import('../server/hayat/index.js')
+// As if enrolled: tokens must have been issued to this sign-in client. Each
+// test then swaps in a fake backend.
+hayat.useCredentials({ clientId: 'tabletsgo-api', clientSecret: 'secret', webClientId: 'tabletsgo-web' })
 const { HayatError } = hayat
 const auth = await import('../server/auth.js')
 const { db: meta } = await import('../server/meta.js')

@@ -42,7 +42,9 @@ import {
   BACKUP_TMP_DIR,
   DIST_DIR,
   GIT_SHA,
-  HAYAT_CONFIGURED,
+  HAYAT_API_URL,
+  HAYAT_ISSUER,
+  HAYAT_LEGACY_CREDENTIALS,
   MAX_SESSIONS_PER_CONNECTION,
   META_DB_PATH,
   META_DB_TYPE,
@@ -89,6 +91,7 @@ import {
 } from './server/sessions/index.js'
 import { describeSmtpError, envSmtp, publicSmtpConfig, sendTestEmail, smtpConfig } from './server/mail.js'
 import { clearGlobalSmtp, publicGlobalSmtp, saveGlobalSmtp } from './server/app-settings.js'
+import * as enrollment from './server/hayat-enrollment.js'
 import { assertModuleEnabled, isModuleEnabled, moduleOffMessage, optionalModuleSetting } from './server/module-registry.js'
 import { adminModules, loadModules, publicModules, updateModules } from './server/module-settings.js'
 import { notifyModuleOwners } from './server/module-notices.js'
@@ -234,11 +237,18 @@ if (isSolo()) {
       saveAppearance: solo.saveAppearance,
     })
   )
-} else if (!HAYAT_CONFIGURED) {
-  // Without Hayat nobody could sign in: refuse to start rather than serve a
-  // login that can't work.
-  console.error('❌ Hayat is not configured. Set HAYAT_ISSUER, HAYAT_API_URL, HAYAT_CLIENT_ID, HAYAT_CLIENT_SECRET and HAYAT_WEB_CLIENT_ID (see README → Enterprise mode), or run this instance in solo mode.')
-  process.exit(1)
+} else {
+  // Without Hayat's addresses nobody could sign in or enroll: refuse to start
+  // rather than serve a page that can't work. Its credentials come from the
+  // environment or from enrolling on the setup page (server/hayat-enrollment.js).
+  if (!HAYAT_ISSUER || !HAYAT_API_URL) {
+    console.error("❌ Enterprise mode needs Hayat's addresses: set HAYAT_ISSUER and HAYAT_API_URL (see README → Enterprise mode), or run this instance in solo mode.")
+    process.exit(1)
+  }
+  if (HAYAT_LEGACY_CREDENTIALS) {
+    console.warn("⚠️  HAYAT_CLIENT_ID / HAYAT_CLIENT_SECRET / HAYAT_WEB_CLIENT_ID are ignored: tabletsgo gets its credentials by enrolling with a code from Hayat's console. Remove them.")
+  }
+  await enrollment.connectStored()
 }
 // The instance's modules are read once here: the db layer asks on every dispatch.
 await loadModules()
@@ -283,6 +293,45 @@ const fail = (res, error, fallbackStatus = 500) => res.status(error.status || fa
 
 // What the browser needs to start signing in. Public: nobody is signed in yet.
 app.get('/api/auth/config', (_req, res) => res.json(hayat.signInConfig()))
+
+// ---- Enrolling with Hayat (enterprise) ----
+//
+// A new enterprise instance has Hayat's addresses but no credentials: the
+// console shows its setup page, where someone pastes an enrollment code made in
+// Hayat's console. The code is the credential, so these are open while the
+// instance isn't enrolled (or Hayat refuses the credentials it has); after
+// that, only tabletsgo's admins re-enroll. Solo has nothing to enroll: 404.
+
+const enrollmentOpenTo = (req, res) => {
+  const state = hayat.enrollmentState()
+  if (!state) {
+    res.status(404).json({ error: 'Not found' })
+    return false
+  }
+  return state.open || !!requireSystemAdmin(req, res)
+}
+
+// What a code would do — registers tabletsgo or rotates its secret, who made it — without spending it.
+app.post('/api/setup/hayat/inspect', async (req, res) => {
+  if (!enrollmentOpenTo(req, res)) return
+  try {
+    res.json(await enrollment.inspect(req.body?.code))
+  } catch (error) {
+    fail(res, error)
+  }
+})
+
+// Spend the code: Hayat registers tabletsgo (or rotates its secret); the credentials are stored and used at once.
+// The only way this instance gets credentials (`npm run hayat:enroll` calls the same module).
+app.post('/api/setup/hayat/enroll', async (req, res) => {
+  if (!enrollmentOpenTo(req, res)) return
+  const { code, adminEmail, address } = req.body || {}
+  try {
+    res.json(await enrollment.enroll({ code, adminEmail, address: address || req.headers.origin }, { actor: authUser(req)?.id || null }))
+  } catch (error) {
+    fail(res, error)
+  }
+})
 
 // The caller, as Hayat knows them. `role` is 'admin' for whoever holds
 // tabletsgo's admin role at Hayat's root. `accountUrl` is where they change
@@ -430,6 +479,15 @@ app.use('/api/admin', (req, res, next) => {
 // still apply underneath, so an install that configures SMTP through
 // docker-compose keeps working without an admin ever opening this page.
 // Deliberately admin-only: workspaces no longer configure their own.
+
+// ---- Hayat ----
+// How this instance is enrolled with Hayat: where its credentials come from,
+// when, and whether Hayat still accepts them. Never the secret. 404 in solo.
+app.get('/api/admin/hayat', async (_req, res) => {
+  const status = await enrollment.status()
+  if (!status) return res.status(404).json({ error: 'Not found' })
+  res.json({ hayat: status })
+})
 
 app.get('/api/admin/smtp', async (_req, res) => {
   // `env` is the layer under the saved config — shown so an admin can see what
@@ -3186,6 +3244,13 @@ app.listen(PORT, async () => {
     solo.announceSetup(console.log, PUBLIC_URL || `http://localhost:${PORT}`)
   } else {
     console.log(`🪪 Mode: ${mode()} — sign-in and access by Hayat at ${hayat.signInConfig().issuer}`)
+    const setup = hayat.signInConfig().setup
+    const here = PUBLIC_URL || `http://localhost:${PORT}`
+    if (setup?.reason === 'new') {
+      console.log(`🔑 Not enrolled with Hayat yet. Open ${here} and paste an enrollment code from Hayat's console (Services → Enroll service, namespace "tabletsgo").`)
+    } else if (setup?.reason === 'rejected') {
+      console.log(`🔑 Hayat refuses this instance's credentials. Open ${here} and paste a new enrollment code (Hayat's console: Services → Tabletsgo → Enrollment).`)
+    }
   }
   // Open what can be opened eagerly (SQLite files) so the first query is fast.
   const connections = await listConnections().catch((error) => {

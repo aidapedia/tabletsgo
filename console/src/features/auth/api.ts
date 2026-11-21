@@ -2,9 +2,19 @@ import { request } from '@/shared/api/request'
 
 // Which mode the instance runs in and how to sign in. Public: asked before
 // anyone is signed in. `people`: is there anyone but the caller to see.
+// `setup` (enterprise): the instance isn't enrolled with Hayat yet ('new'), or
+// Hayat refuses its credentials ('rejected') — the console shows its setup page.
 export type AuthConfig =
-  | { mode: 'enterprise'; issuer: string | null; clientId: string | null; consoleUrl: string | null; people: boolean; setupRequired?: undefined }
-  | { mode: 'solo'; setupRequired: boolean; people: boolean; issuer?: undefined; clientId?: undefined; consoleUrl?: undefined }
+  | {
+      mode: 'enterprise'
+      issuer: string | null
+      clientId: string | null
+      consoleUrl: string | null
+      people: boolean
+      setup: { reason: 'new' | 'rejected' } | null
+      setupRequired?: undefined
+    }
+  | { mode: 'solo'; setupRequired: boolean; people: boolean; issuer?: undefined; clientId?: undefined; consoleUrl?: undefined; setup?: undefined }
 
 export type AuthUser = {
   id: string
@@ -43,3 +53,26 @@ export const updateSoloAccount = (patch: { name?: string; email?: string; timezo
 
 export const changeSoloPassword = (current: string, next: string) =>
   request<SoloTokens>('/auth/solo/password', { method: 'PUT', body: { current, next } })
+
+// ---- Enterprise: enrolling with Hayat (the setup page, and Admin → Hayat) ----
+
+// What an enrollment code would do. `address` is PUBLIC_URL, or null when the
+// browser's own address is used.
+export type EnrollmentPreview = {
+  serviceId: string
+  displayName: string
+  registers: boolean
+  madeBy: { email: string; name: string }
+  expiresAt: string | null
+  issuer: string | null
+  issuerMatches: boolean
+  address: string | null
+}
+
+export type EnrollmentResult = { registered: boolean; contractVersion: number; warnings: string[]; address: string }
+
+export const inspectEnrollment = (code: string) =>
+  request<EnrollmentPreview>('/setup/hayat/inspect', { method: 'POST', body: { code } })
+
+export const enroll = (input: { code: string; adminEmail: string }) =>
+  request<EnrollmentResult>('/setup/hayat/enroll', { method: 'POST', body: { ...input, address: window.location.origin } })

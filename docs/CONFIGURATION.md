@@ -12,9 +12,7 @@ All configuration is via environment variables (see [`.env.example`](../.env.exa
 | `ENCRYPTION_KEY` | *(required in enterprise)* | AES-256-GCM key encrypting connection credentials at rest. Also derives (with a distinct salt) the keys for storage-destination credentials and solo session tokens. A new solo install on SQLite generates one into `<data>/encryption.key` when unset; an existing key file is read in either mode. Otherwise the server refuses to start without it. |
 | `SOLO_OWNER` | | A v1.0 install with several accounts moving to solo: the email of the account that keeps it. |
 | `HAYAT_ISSUER` | *(required in enterprise)* | Hayat's auth role (public URL). People sign in there; access tokens are verified against its keys. |
-| `HAYAT_API_URL` | *(required in enterprise)* | Hayat's api role (gRPC/Connect), reachable from the server only. |
-| `HAYAT_CLIENT_ID` / `HAYAT_CLIENT_SECRET` | *(required in enterprise)* | Tabletsgo's service credentials in Hayat (printed by `hayat import`). |
-| `HAYAT_WEB_CLIENT_ID` | *(required in enterprise)* | The public client the browser signs in with; tokens issued to any other client are refused. |
+| `HAYAT_API_URL` | *(required in enterprise)* | Hayat's api role (gRPC/Connect), reachable from the server only. Tabletsgo's credentials aren't configuration: it enrolls with a one-time code from Hayat's console (its setup page, or `npm run hayat:enroll`) and keeps them encrypted in the store. |
 | `HAYAT_CONSOLE_URL` | | Hayat's console, for the "Manage in Hayat" links. |
 | `HAYAT_AUTH_URL` | `HAYAT_ISSUER` | Hayat's auth role as the server reaches it, when that isn't the public issuer (inside Docker `localhost` is the container). Discovery, the token endpoint and the keys are fetched there; tokens still name `HAYAT_ISSUER`. |
 | `WORKFLOW_SCHEDULER_ENABLED` | `true` | Set to `false` to disable the minutely cron tick that fires workflows with an active hourly/daily schedule (including backups). Useful for local dev/CI. |

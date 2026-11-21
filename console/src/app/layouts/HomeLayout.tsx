@@ -77,6 +77,7 @@ const ADMIN_NAV = {
     {
       group: 'Settings',
       items: [
+        { label: 'Hayat', Icon: ShieldIcon, path: '/admin/hayat' },
         { label: 'Email', Icon: MailIcon, path: '/admin/email' },
         { label: 'Updates', Icon: RefreshIcon, path: '/admin/updates' },
       ],
@@ -117,14 +118,18 @@ function PageTrail({ pathname, isAdmin }: { pathname: string; isAdmin: boolean }
   )
 }
 
-// Rows about other people. A solo instance has nobody else, so they go.
-const PEOPLE_PATHS = new Set(['/members'])
+// Rows about other people — and the Hayat that holds them. A solo instance has
+// nobody else, and no Hayat, so they go.
+const PEOPLE_PATHS = new Set(['/members', '/admin/hayat'])
 
 function Sidebar({ pathname, onNavigate, user, onSettings, onLogout, open, onClose, isAdmin, canAdmin, people, collapsed, onToggleCollapse }: any) {
   const workspaceNav = people
     ? NAV
     : { ...NAV, groups: NAV.groups.map((g) => ({ ...g, items: g.items.filter((i) => !PEOPLE_PATHS.has(i.path)) })) }
-  const nav = isAdmin ? ADMIN_NAV : workspaceNav
+  const adminNav = people
+    ? ADMIN_NAV
+    : { ...ADMIN_NAV, groups: ADMIN_NAV.groups.map((g) => ({ ...g, items: g.items.filter((i) => !PEOPLE_PATHS.has(i.path)) })) }
+  const nav = isAdmin ? adminNav : workspaceNav
 
   // The Account group isn't listed: its one row is about *you*, so it opens from
   // the account menu, next to sign-out. It stays in the model because the page
