@@ -18,23 +18,30 @@ export function WorkspaceProvider({ children }) {
   const { user } = useAuth()
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
   const [currentId, setCurrentId] = useState<string | null>(() => localStorage.getItem(CURRENT_KEY))
-  const [loading, setLoading] = useState(true)
+  const [fetching, setFetching] = useState(true)
+  // Whose list `workspaces` is. Until it is the signed-in person's, the list is
+  // still loading — without this, the render between signing in and the fetch
+  // starting reads as "in no workspace" and flashes that page.
+  const [loadedFor, setLoadedFor] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
     if (!user) {
       setWorkspaces([])
-      setLoading(false)
+      setLoadedFor(null)
+      setFetching(false)
       return
     }
     const list = await listWorkspaces()
     setWorkspaces(list)
     // Keep the stored selection if still valid, else fall back to the first.
     setCurrentId((prev) => (list.some((w) => w.id === prev) ? prev : list[0]?.id ?? null))
-    setLoading(false)
+    setLoadedFor(user.id)
+    setFetching(false)
   }, [user])
+  const loading = fetching || (!!user && loadedFor !== user.id)
 
   useEffect(() => {
-    setLoading(true)
+    setFetching(true)
     refresh()
   }, [refresh])
 

@@ -134,7 +134,9 @@ console/src/
 │   │                             #     read-only, with each member's workspace roles; MembersPage links to the
 │   │                             #     tenant in Hayat's console; MemberDetailPage + MemberAccessTable: one
 │   │                             #     member's Access list — every grant that reaches them, from Hayat),
-│   │                             #   RequireWorkspace / NoWorkspace (pages that need a current workspace),
+│   │                             #   RequireWorkspace (pages that need a current workspace; an admin in none goes
+│   │                             #     to /admin) / NoWorkspaceGate + NoWorkspace (anyone else in none sees a
+│   │                             #     page saying so instead of the app),
 │   │                             #   NotificationSettings (backup-failure emails — the mail server
 │   │                             #     itself is instance-level, see `auth-sessions` skill),
 │   │                             #   WorkspaceGeneral (the name, read-only + link to Hayat; removing
