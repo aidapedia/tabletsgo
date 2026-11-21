@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect } from 'react'
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
-import { useAuth, useIdentity, AuthCard, EnterpriseOnly, SoloSetup, SoloSignIn } from '@/features/auth'
+import { useAuth, useIdentity, AuthCard, EnterpriseOnly, HayatSetup, SoloSetup, SoloSignIn } from '@/features/auth'
 import { Section } from '@/shared/ui/page/Section'
 import { RequireWorkspace } from '@/features/workspaces'
 import { PageLoading } from '@/shared/ui/feedback/LoadingState'
@@ -28,6 +28,7 @@ const SchemasPage = lazy(() => import('@/features/schema-designer/SchemasPage'))
 const SchemaDraftPage = lazy(() => import('@/features/schema-designer/SchemaDraftPage'))
 const WorkspacePage = lazy(() => import('@/features/workspace/WorkspacePage'))
 const AdminEmailPage = lazy(() => import('@/features/admin/AdminEmailPage'))
+const AdminHayatPage = lazy(() => import('@/features/admin/AdminHayatPage'))
 const AdminModulesPage = lazy(() => import('@/features/modules/AdminModulesPage'))
 const AdminUpdatesPage = lazy(() => import('@/features/system-update/AdminUpdatesPage'))
 
@@ -35,7 +36,8 @@ const routeFallback = <PageLoading screen />
 
 /**
  * Signed in, or on the way there. Enterprise: a visitor without a token is sent
- * to Hayat's sign-in page and comes back to where they were. Solo: the owner's
+ * to Hayat's sign-in page and comes back to where they were — or, before the
+ * instance is enrolled with Hayat, gets the setup page. Solo: the owner's
  * sign-in (or the first-run setup) is drawn right here, at the address asked for.
  */
 function RequireAuth({ children }: { children: React.ReactNode }) {
@@ -47,6 +49,7 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
   }, [status, solo, signIn, location.pathname, location.search])
   if (status === 'unconfigured') return <SignInUnavailable />
   if (status === 'setup') return <SoloSetup />
+  if (status === 'enroll') return <HayatSetup />
   if (status === 'signedOut' && solo) return <SoloSignIn />
   return status === 'signedIn' ? children : routeFallback
 }
@@ -77,7 +80,7 @@ function SignInUnavailable() {
     <AuthCard>
       <h1 className="mb-2 text-[16px] font-semibold">Signing in isn’t set up</h1>
       <p className="text-[13px] text-muted-foreground">
-        This instance signs people in with Hayat, and doesn’t know where Hayat is. An administrator needs to set the HAYAT_* settings.
+        This instance signs people in with Hayat, and doesn’t know where Hayat is. An administrator needs to set HAYAT_ISSUER and HAYAT_API_URL.
       </p>
     </AuthCard>
   )
@@ -100,6 +103,7 @@ export function AppRoutes() {
       >
         <Route path="/admin" element={<Navigate to="/admin/modules" replace />} />
         <Route path="/admin/email" element={<AdminEmailPage />} />
+        <Route path="/admin/hayat" element={<AdminHayatPage />} />
         <Route path="/admin/modules" element={<AdminModulesPage />} />
         <Route path="/admin/updates" element={<AdminUpdatesPage />} />
       </Route>

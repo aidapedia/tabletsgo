@@ -46,3 +46,23 @@ export async function testGlobalSmtp(body: { to?: string; smtp?: any }) {
 }
 
 // ---- Sign-in providers ----
+
+// ---- Hayat ----
+
+// How this instance is enrolled with Hayat. Never the secret.
+export type HayatStatus = {
+  enrolled: boolean
+  rejected: boolean
+  open: boolean
+  issuer: string | null
+  apiUrl: string | null
+  consoleUrl: string | null
+  webClientId: string | null
+  namespace: string
+  publicUrl: string | null
+  address: string | null
+  enrolledAt: number | null
+  registered: boolean | null
+}
+
+export const getHayatStatus = () => request<{ hayat: HayatStatus }>('/admin/hayat').then((r) => r.hayat)

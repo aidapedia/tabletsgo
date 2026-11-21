@@ -21,8 +21,38 @@ export class HayatError extends Error {
   }
 }
 
-/** A live connection to one Hayat. Created once by server/hayat/index.js. */
-export function connectHayat({ issuer, authUrl = issuer, apiUrl, clientId, clientSecret }) {
+/**
+ * One unary RPC that carries no access token. Only EnrollmentService takes
+ * one: a service enrolling has no credentials yet, only the code an owner made.
+ */
+export async function callOpen(apiUrl, service, method, body = {}) {
+  let res
+  try {
+    res = await fetch(`${apiUrl}/${PKG}.${service}/${method}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Connect-Protocol-Version': '1' },
+      body: JSON.stringify(body),
+    })
+  } catch (e) {
+    throw new HayatError('unavailable', `Can't reach Hayat's API at ${apiUrl}: ${e.cause?.message || e.message}`)
+  }
+  const text = await res.text()
+  let json = {}
+  try {
+    json = text ? JSON.parse(text) : {}
+  } catch {
+    throw new HayatError('unavailable', `${apiUrl} didn't answer like Hayat's API (${res.status}) — check HAYAT_API_URL`, res.status)
+  }
+  if (!res.ok) throw new HayatError(json.code || 'unknown', json.message || `Hayat answered ${res.status}`, res.status)
+  return json
+}
+
+/**
+ * A live connection to one Hayat. server/hayat/index.js makes one when it has
+ * credentials, and a new one when they change. `onCredentials(ok)` hears
+ * whether Hayat accepted them each time a token is fetched.
+ */
+export function connectHayat({ issuer, authUrl = issuer, apiUrl, clientId, clientSecret, onCredentials }) {
   let discovery = null
   let jwks = null
   let token = ''
@@ -57,7 +87,12 @@ export function connectHayat({ issuer, authUrl = issuer, apiUrl, clientId, clien
           },
           body: new URLSearchParams({ grant_type: 'client_credentials' }),
         })
-        if (!res.ok) throw new Error(`Hayat refused tabletsgo's service credentials (${res.status})`)
+        if (!res.ok) {
+          // 400/401 is the client or its secret: rotated, revoked, or never valid.
+          if (res.status === 400 || res.status === 401) onCredentials?.(false)
+          throw new Error(`Hayat refused tabletsgo's service credentials (${res.status})`)
+        }
+        onCredentials?.(true)
         const body = await res.json()
         token = body.access_token
         tokenExpires = Date.now() + body.expires_in * 1000
@@ -124,5 +159,6 @@ export function connectHayat({ issuer, authUrl = issuer, apiUrl, clientId, clien
     return payload
   }
 
-  return { call, watch, verify, discover }
+  // clientSecret lets index.js tell whether credentials it reloads are new.
+  return { call, watch, verify, discover, clientSecret }
 }

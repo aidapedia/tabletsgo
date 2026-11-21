@@ -111,49 +111,46 @@ Your connections, storage destinations, workspace and settings come along; you k
    docker compose exec tabletsgo npm run hayat:bundle -- --out /app/data/hayat-import.json
    docker compose cp tabletsgo:/app/data/hayat-import.json .
    ```
-3. Load it into Hayat. It registers tabletsgo and prints the `HAYAT_*` values:
+3. Load it into Hayat — your account, workspace and its connections:
    ```bash
-   hayat import --file hayat-import.json --app-url https://db.acme.com --out hayat-result.json
+   hayat import --file hayat-import.json --out hayat-result.json
    ```
-4. Put `ENCRYPTION_KEY` (copy `/app/data/encryption.key` if solo generated it) and the `HAYAT_*` values in `.env`, then restart with the overlay:
+4. Put `ENCRYPTION_KEY` (copy `/app/data/encryption.key` if solo generated it), `HAYAT_ISSUER` and `HAYAT_API_URL` in `.env`, then restart with the overlay:
    ```bash
    docker compose -f docker-compose.yml -f docker-compose.enterprise.yml up -d
    ```
-5. Sign up at Hayat with the owner's email. That account takes over your id, and with it everything you owned.
+5. Open tabletsgo and paste an enrollment code from Hayat's console (see [Enrollment](#enterprise-mode-hayat)).
+6. Sign up at Hayat with the owner's email. That account takes over your id, and with it everything you owned.
 
 Going back from enterprise to solo isn't supported in place: export the connections you want and import them into a new solo instance.
 
 ### Enterprise mode (Hayat)
 
-In enterprise mode tabletsgo keeps no accounts of its own. Hayat holds the people, the workspaces (Hayat *tenants*), groups, roles and grants; tabletsgo asks it. Hayat runs on its own — tabletsgo only needs its addresses and credentials in `.env`:
+In enterprise mode tabletsgo keeps no accounts of its own. Hayat holds the people, the workspaces (Hayat *tenants*), groups, roles and grants; tabletsgo asks it. Hayat runs on its own — tabletsgo needs its addresses in `.env`, and gets its credentials by **enrolling** on its setup page:
 
 | Variable | What |
 |---|---|
 | `HAYAT_ISSUER` | Hayat's sign-in (auth role), as browsers reach it |
 | `HAYAT_API_URL` | Hayat's service API (api role), reachable from this server |
-| `HAYAT_CLIENT_ID` / `HAYAT_CLIENT_SECRET` | tabletsgo's service credentials in Hayat |
-| `HAYAT_WEB_CLIENT_ID` | the public client the browser signs in with |
 | `HAYAT_CONSOLE_URL` | optional: Hayat's console, for the "Manage in Hayat" links |
 | `HAYAT_AUTH_URL` | optional: the auth role as this server reaches it, when not at `HAYAT_ISSUER` |
 
-**Registering tabletsgo:**
+There are no credentials to configure: an instance enrolls once with a one-time code, and Hayat hands it its credentials.
 
-```bash
-# tabletsgo's contract + its first admin, written from the published image (no clone needed)
-docker run --rm --env-file tabletsgo.env ghcr.io/aidapedia/tabletsgo:latest \
-  node scripts/hayat-bundle.js --out - --admin you@acme.com > hayat-import.json
+**Enrolling:**
 
-# hayat ships as an image: run `import` with the same settings as Hayat's other roles (here, its compose file)
-docker compose -f ~/hayat/deploy/compose/docker-compose.yml run --rm --no-deps \
-  --user "$(id -u):$(id -g)" -v "$PWD:/work" -w /work \
-  hayat-api import --file hayat-import.json --app-url https://db.acme.com --out hayat-result.json
-```
+1. Start tabletsgo with the enterprise overlay and Hayat's addresses. With no credentials yet, opening it shows **Connect Tabletsgo to Hayat** instead of a sign-in.
+2. In Hayat's console, an instance admin opens **Services → Enroll service**, namespace `tabletsgo`, and copies the one-time code (or runs `hayat enrollment-code --service tabletsgo`).
+3. Paste the code on the setup page. It shows what the code does and who made it, and asks who becomes **Tabletsgo admin** — by default that Hayat admin, or someone you name (Hayat invites someone it doesn't know). Tabletsgo sends Hayat its contract and its address (`PUBLIC_URL`, else the address the page was opened at); Hayat registers it and hands back its credentials, which are stored encrypted under `ENCRYPTION_KEY`. Nobody copies a secret.
+4. Sign in with Hayat. Then, in Hayat's console, create a workspace (tenant), add people, and grant **Workspace owner (tabletsgo)** to whoever runs it.
 
-From a clone, `npm run hayat:bundle -- --out hayat-import.json --admin you@acme.com` writes the same file. `hayat import` registers tabletsgo as a service in Hayat, approves its contract, registers the browser's sign-in client (`<app-url>/callback`) and prints `HAYAT_ISSUER`, `HAYAT_CLIENT_ID`, `HAYAT_CLIENT_SECRET` and `HAYAT_WEB_CLIENT_ID`. Set those and `HAYAT_API_URL` (Hayat's api role), and optionally `HAYAT_CONSOLE_URL`. `--admin` gives that person **Tabletsgo admin** at Hayat's root (and makes them Hayat's first instance admin if it has none); someone Hayat doesn't know yet finishes by signing up with that address. Then, in Hayat's console, create a workspace (tenant), add people, and grant **Workspace owner (tabletsgo)** to whoever runs it.
+No browser at hand (a scripted install)? `docker compose exec tabletsgo node scripts/hayat-enroll.js --code hye_… [--admin-email you@acme.com]` does the same; `--check` says whether Hayat accepts the stored credentials.
+
+**Rotating the secret:** make a new code on the service's **Enrollment** tab in Hayat's console and paste it at **Administration → Hayat → Re-enroll**. The old secret stops working at once; every replica picks the new one up from the shared store. If Hayat ever refuses the stored credentials (rotated or revoked elsewhere), the setup page comes back — paste a new code to reconnect. One Hayat holds one tabletsgo registration: enrolling a second instance against the same Hayat rotates the first one's secret.
 
 If this server reaches Hayat's sign-in at a different address than browsers do — a private network, or Docker, where `localhost` is the container — set `HAYAT_AUTH_URL` to that address. Tokens still name `HAYAT_ISSUER`.
 
-Start tabletsgo with the enterprise overlay, which sets `TABLETSGO_MODE=enterprise` and refuses to start with a `HAYAT_*` value missing:
+Start tabletsgo with the enterprise overlay, which sets `TABLETSGO_MODE=enterprise` and refuses to start without `ENCRYPTION_KEY`, `HAYAT_ISSUER` and `HAYAT_API_URL`:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.enterprise.yml up -d
@@ -161,10 +158,10 @@ docker compose -f docker-compose.yml -f docker-compose.enterprise.yml up -d
 
 **On Coolify, built from source:** `deploy/coolify/docker-compose.yml` runs enterprise mode from a branch of this repository with its own PostgreSQL for the metadata store — the steps are in its header.
 
-**Upgrading a v1.0 install that had its own accounts:** in enterprise mode, the first start of this version writes everything its account tables held to `data/hayat-import-<time>.json` and then drops those tables (a `pre-migrate` snapshot is taken too). Load it the same way:
+**Upgrading a v1.0 install that had its own accounts:** in enterprise mode, the first start of this version writes everything its account tables held to `data/hayat-import-<time>.json` and then drops those tables (a `pre-migrate` snapshot is taken too). Load it into Hayat, then enroll as above:
 
 ```bash
-hayat import --file data/hayat-import-<time>.json --app-url https://db.acme.com --out hayat-result.json
+hayat import --file data/hayat-import-<time>.json --out hayat-result.json
 npm run hayat:remap -- hayat-result.json   # only if Hayat already had some of these email addresses
 ```
 
@@ -200,8 +197,6 @@ Set these in `.env`. A solo install needs none of them.
 | `ENCRYPTION_KEY` | Encrypts connection credentials at rest. **Required in enterprise mode**; a new solo install generates one if unset. |
 | `SOLO_OWNER` | A v1.0 install with several accounts moving to solo: the email of the one who keeps it. |
 | `HAYAT_ISSUER` / `HAYAT_API_URL` | **Enterprise, required.** Hayat's sign-in (public) and service API (internal) addresses. |
-| `HAYAT_CLIENT_ID` / `HAYAT_CLIENT_SECRET` | **Enterprise, required.** Tabletsgo's service credentials in Hayat. |
-| `HAYAT_WEB_CLIENT_ID` | **Enterprise, required.** The public client the browser signs in with. |
 | `HAYAT_CONSOLE_URL` | Hayat's console, for the "Manage in Hayat" links. |
 | `HAYAT_AUTH_URL` | Hayat's sign-in as this server reaches it, when that isn't `HAYAT_ISSUER` (Docker, private networks). |
 | `PORT` | Host port (default `3000`). |
@@ -225,7 +220,7 @@ npm test
 npm run dev:hayat   # Hayat (all roles + its console) + tabletsgo's server and Vite; Ctrl+C stops all
 ```
 
-Open http://localhost:5173 (or the server's built console at http://localhost:3000 — both are registered sign-in redirects) and sign in as `admin@hayat.test` / `hayat-dev-password` — tabletsgo's admin and the owner of a **Dev** workspace the first run creates (Hayat's other seeded accounts are in Acme / Globex but hold no tabletsgo role until one is granted in Hayat's console). The first run also creates a **Demo** workspace with sample connections — four SQLite databases it generates under `data/samples/` (Shop, Payments service, Analytics warehouse, HR), a Postgres nobody runs (to see a failed handshake) and Kafka stack 1 (`scripts/dev/kafka/stack.sh up 1`) — and people who reach them in different ways: `alice@` owns it, `bob@` has Connection manager on the Engineering group, `carol@` is on the Backend subgroup's roster, `dave@` has a grant on one connection, `erin@` is in Analytics, `admin@` is a plain member, and `frank@` isn't in it at all. They all use the same password; the full who-opens-what table is in `scripts/dev/demo-workspace.mjs`. Hayat's console is at http://localhost:3001 and its sign-in at http://localhost:8443. The first run registers tabletsgo in Hayat and writes option **B**'s `HAYAT_*` values into `.env`. Delete `HAYAT_CLIENT_ID` from `.env` to register again, for example after `make -C ../hayat db-reset`.
+Open http://localhost:5173 (or the server's built console at http://localhost:3000 — both are registered sign-in redirects) and sign in as `admin@hayat.test` / `hayat-dev-password` — tabletsgo's admin and the owner of a **Dev** workspace the first run creates (Hayat's other seeded accounts are in Acme / Globex but hold no tabletsgo role until one is granted in Hayat's console). The first run also creates a **Demo** workspace with sample connections — four SQLite databases it generates under `data/samples/` (Shop, Payments service, Analytics warehouse, HR), a Postgres nobody runs (to see a failed handshake) and Kafka stack 1 (`scripts/dev/kafka/stack.sh up 1`) — and people who reach them in different ways: `alice@` owns it, `bob@` has Connection manager on the Engineering group, `carol@` is on the Backend subgroup's roster, `dave@` has a grant on one connection, `erin@` is in Analytics, `admin@` is a plain member, and `frank@` isn't in it at all. They all use the same password; the full who-opens-what table is in `scripts/dev/demo-workspace.mjs`. Hayat's console is at http://localhost:3001 and its sign-in at http://localhost:8443. The first run writes Hayat's addresses into `.env` and, once Hayat answers, enrolls tabletsgo with a code made by Hayat's CLI (`admin@hayat.test` becomes tabletsgo's admin). It enrolls again whenever Hayat refuses the stored credentials, for example after `make -C ../hayat db-reset`.
 
 Architecture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · API: Swagger UI at `/api/docs` on any running instance ([server/openapi.yaml](server/openapi.yaml)) · Contributing: [CONTRIBUTING.md](CONTRIBUTING.md)
 

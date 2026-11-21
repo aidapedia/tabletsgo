@@ -509,6 +509,11 @@ server/
 │   │                     #     Watch and our own writes), resource mirrors, the contract publish
 │   └── solo-backend.js   #   solo mode's backend at the same seam: Hayat's RPCs answered in-process
 │                         #     for one owner + one workspace (owner holds every permission)
+├── hayat-enrollment.js   # enterprise: an enrollment code from Hayat's console → tabletsgo's credentials
+│                         #   (Hayat registers it or rotates its secret); kept sealed in `app_settings`
+│                         #   key `hayat`, handed to hayat/ at boot and reloaded when Hayat refuses them.
+│                         #   The only source of credentials: the setup page, Admin → Hayat,
+│                         #   scripts/hayat-enroll.js
 ├── mode.js               # leaf: 'solo' | 'enterprise', as boot resolved it. No route reads it
 ├── solo.js               # solo's one owner (`app_settings` key `solo`, never a table): setup code,
 │                         #   scrypt password, HS256 access/refresh tokens + tokenEpoch, account,

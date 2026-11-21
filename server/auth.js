@@ -50,7 +50,7 @@ export async function sessionMiddleware(req, _res, next) {
         req.authToken = token
       }
     } catch (error) {
-      if (!/expired|signature|JWS|JWT|another application|service token/i.test(error.message)) {
+      if (!/expired|signature|JWS|JWT|another application|service token|enrolled/i.test(error.message)) {
         console.error('Session lookup failed:', error.message)
       }
     }

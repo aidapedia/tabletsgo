@@ -22,17 +22,8 @@
  * so anything may use it.
  */
 
-import {
-  HAYAT_API_URL,
-  HAYAT_AUTH_URL,
-  HAYAT_CLIENT_ID,
-  HAYAT_CLIENT_SECRET,
-  HAYAT_CONFIGURED,
-  HAYAT_CONSOLE_URL,
-  HAYAT_ISSUER,
-  HAYAT_WEB_CLIENT_ID,
-} from '../config.js'
-import { connectHayat, HayatError } from './connect.js'
+import { HAYAT_API_URL, HAYAT_AUTH_URL, HAYAT_CONSOLE_URL, HAYAT_ISSUER } from '../config.js'
+import { callOpen, connectHayat, HayatError } from './connect.js'
 
 export { HayatError }
 
@@ -45,16 +36,104 @@ const DIRECTORY_TTL_MS = 60_000
 export const ref = (type, externalId) => ({ type, externalId: String(externalId) })
 export const nodeRef = (nodeId) => ({ nodeId: String(nodeId) })
 
+// ---- Credentials ---------------------------------------------------------------
+//
+// Hayat's addresses come from the environment; tabletsgo's credentials from
+// enrolling with a code (the setup page), kept in the meta store —
+// server/hayat-enrollment.js hands them over with `useCredentials`. Without
+// them an enterprise instance is not enrolled yet: it serves the setup page
+// instead of a sign-in.
+
+let webClientId = ''
+// Hayat refused the credentials the last time a token was fetched (rotated or
+// revoked): the setup page opens again so someone with a new code can fix it.
+let rejected = false
+let reloader = null
+let reloading = null
+
+const open = (clientId, clientSecret) =>
+  connectHayat({
+    issuer: HAYAT_ISSUER,
+    authUrl: HAYAT_AUTH_URL,
+    apiUrl: HAYAT_API_URL,
+    clientId,
+    clientSecret,
+    onCredentials: (ok) => {
+      if (ok) rejected = false
+      else credentialsRefused()
+    },
+  })
+
 // The transport. Tests swap in a fake with `useHayatBackend` — the same three
 // functions: call(service, method, body), watch(cursor, onEvent, signal), verify(token).
-let backend = HAYAT_CONFIGURED
-  ? connectHayat({ issuer: HAYAT_ISSUER, authUrl: HAYAT_AUTH_URL, apiUrl: HAYAT_API_URL, clientId: HAYAT_CLIENT_ID, clientSecret: HAYAT_CLIENT_SECRET })
-  : null
+let backend = null
 
 export function useHayatBackend(fake) {
   backend = fake
   clearCaches()
 }
+
+/** Talk to Hayat with these credentials from now on — enrolling, or another replica having re-enrolled. */
+export function useCredentials({ clientId, clientSecret, webClientId: web }) {
+  stopHayat()
+  backend = open(clientId, clientSecret)
+  webClientId = web || ''
+  rejected = false
+  clearCaches()
+}
+
+/**
+ * Where to look for credentials newer than the ones Hayat just refused: the
+ * meta store, which another replica (or this one's setup page) may have
+ * written since. Called at most every 10 s.
+ */
+export const onCredentialsRefused = (fn) => {
+  reloader = fn
+}
+
+function credentialsRefused() {
+  rejected = true
+  if (!reloader || reloading) return
+  reloading = (async () => {
+    try {
+      const next = await reloader()
+      if (next && next.clientSecret && backend?.clientSecret !== next.clientSecret) useCredentials(next)
+    } catch {
+      // Nothing better to try; the setup page is open again.
+    } finally {
+      setTimeout(() => (reloading = null), 10_000).unref?.()
+    }
+  })()
+}
+
+/**
+ * Whether this instance is enrolled with Hayat, for the setup page and Admin →
+ * Hayat. null in solo mode, which has nothing to enroll — so the routes answer
+ * 404 there without asking which mode it is.
+ */
+export const enrollmentState = () =>
+  !backend?.solo
+    ? {
+        enrolled: !!backend,
+        rejected,
+        // Open: anyone holding a valid code may enroll it (the code is the
+        // credential). Otherwise only tabletsgo's admins re-enroll.
+        open: !backend || rejected,
+        issuer: HAYAT_ISSUER || null,
+        apiUrl: HAYAT_API_URL || null,
+        consoleUrl: HAYAT_CONSOLE_URL || null,
+        webClientId: webClientId || null,
+      }
+    : null
+
+/** What an enrollment code would do, without spending it. */
+export const inspectEnrollment = (code) => callOpen(HAYAT_API_URL, 'EnrollmentService', 'InspectEnrollment', { code })
+
+/** Spend an enrollment code: Hayat registers tabletsgo (or rotates its secret) and returns its credentials. */
+export const redeemEnrollment = (request) => callOpen(HAYAT_API_URL, 'EnrollmentService', 'Enroll', request)
+
+/** Does Hayat accept the credentials held now? One cheap call; throws when it doesn't. */
+export const checkCredentials = () => need().call('DirectoryService', 'BatchGetUsers', { ids: [] })
 
 /** Is this solo mode's in-process backend (server/hayat/solo-backend.js)? */
 export const isSoloBackend = () => !!backend?.solo
@@ -66,7 +145,7 @@ export const isSoloBackend = () => !!backend?.solo
 export const dropCaches = () => clearCaches()
 
 const need = () => {
-  if (!backend) throw new HayatError('unavailable', 'Hayat is not configured — set HAYAT_ISSUER, HAYAT_API_URL, HAYAT_CLIENT_ID, HAYAT_CLIENT_SECRET and HAYAT_WEB_CLIENT_ID.')
+  if (!backend) throw new HayatError('unavailable', "Tabletsgo isn't enrolled with Hayat yet — open it in a browser and paste an enrollment code from Hayat's console.")
   return backend
 }
 
@@ -121,7 +200,7 @@ export async function verifyAccessToken(token) {
   const claims = await need().verify(token)
   const aud = Array.isArray(claims.aud) ? claims.aud : claims.aud ? [claims.aud] : []
   // Solo tokens are tabletsgo's own (server/solo.js) and checked by its verifier.
-  if (!backend.solo && HAYAT_WEB_CLIENT_ID && claims.client_id !== HAYAT_WEB_CLIENT_ID && !aud.includes(HAYAT_WEB_CLIENT_ID)) {
+  if (!backend.solo && webClientId && claims.client_id !== webClientId && !aud.includes(webClientId)) {
     throw new Error('token was issued to another application')
   }
   return { userId: claims.sub, sessionId: claims.sid || null }
@@ -428,13 +507,17 @@ export const consoleLink = (path = '') => (HAYAT_CONSOLE_URL && !backend?.solo ?
  * `mode` says which sign-in to show; `people` whether there is anyone but the
  * caller to see (members, access lists) — the console gates on that capability.
  */
-export const signInConfig = () =>
-  backend?.solo
-    ? backend.signInConfig()
-    : {
-        mode: 'enterprise',
-        issuer: HAYAT_ISSUER || null,
-        clientId: HAYAT_WEB_CLIENT_ID || null,
-        consoleUrl: HAYAT_CONSOLE_URL || null,
-        people: true,
-      }
+export const signInConfig = () => {
+  if (backend?.solo) return backend.signInConfig()
+  const state = enrollmentState()
+  return {
+    mode: 'enterprise',
+    issuer: HAYAT_ISSUER || null,
+    clientId: backend ? webClientId || null : null,
+    consoleUrl: HAYAT_CONSOLE_URL || null,
+    people: true,
+    // Set while the instance needs enrolling: the console shows its setup
+    // page instead of signing in. `reason`: 'new' or 'rejected'.
+    setup: state.open ? { reason: backend ? 'rejected' : 'new' } : null,
+  }
+}

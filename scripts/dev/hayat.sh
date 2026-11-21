@@ -21,10 +21,10 @@
 # Every password is the same. Hayat logs the mail it would send.
 #
 # tabletsgo is configured the one way it supports: a Hayat that runs on its
-# own, named by the HAYAT_* values in .env. The first run registers tabletsgo in
-# Hayat (`hayat import`) and writes those values into .env. Delete
-# HAYAT_CLIENT_ID from .env to register again, e.g. after
-# `make -C ../hayat db-reset`.
+# own, its addresses in .env, and credentials from enrolling. Once Hayat
+# answers, the `enroll` step makes a code with Hayat's CLI and enrolls with it
+# (scripts/hayat-enroll.js) — again whenever Hayat refuses the stored
+# credentials, e.g. after `make -C ../hayat db-reset`.
 #
 # Hayat's checkout is ../hayat; set HAYAT_DIR to use another.
 set -eu
@@ -88,40 +88,36 @@ hayat_import() {
   fi
 }
 
-# Register tabletsgo in Hayat once and write its credentials into .env.
-register() {
-  if has_env HAYAT_CLIENT_ID; then
-    echo "tabletsgo is registered in Hayat (HAYAT_CLIENT_ID in .env)."
+# Enroll tabletsgo with Hayat unless it holds credentials Hayat accepts: a code
+# from Hayat's CLI, made by the seeded admin — who becomes tabletsgo's admin
+# when this registers it — redeemed like the setup page would.
+enroll() {
+  if (cd "$ROOT" && node --env-file-if-exists=.env scripts/hayat-enroll.js --check >/dev/null 2>&1); then
+    echo "tabletsgo is enrolled with Hayat."
     return
   fi
-  (cd "$ROOT" && node --env-file-if-exists=.env scripts/hayat-bundle.js --out "$TMP/bundle.json" --admin "$ADMIN_EMAIL")
-  hayat_import "$TMP/bundle.json" "$TMP/import.log" --app-url "$APP_URL" --out "$TMP/result.json"
-  # The report prints the client secret: keep that line out of the terminal.
-  grep -v CLIENT_SECRET "$TMP/import.log"
-  creds=$(node -e '
-    const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))
-    if (r.clientId && r.clientSecret && r.webClientId)
-      console.log(["HAYAT_CLIENT_ID=" + r.clientId, "HAYAT_CLIENT_SECRET=" + r.clientSecret, "HAYAT_WEB_CLIENT_ID=" + r.webClientId].join("\n"))
-  ' "$TMP/result.json")
-  if [ -z "$creds" ]; then
-    echo "Hayat already knew tabletsgo, so it printed no secret. Either rotate it (Hayat console → Services →" >&2
-    echo "tabletsgo) and set HAYAT_CLIENT_ID / _SECRET / HAYAT_WEB_CLIENT_ID in .env, or start Hayat over" >&2
-    echo "with 'make -C $HAYAT_DIR db-reset' and run this again." >&2
-    exit 1
-  fi
-  # shellcheck disable=SC2086 # one KEY=value per line, no spaces
-  set_env $creds
-  echo "tabletsgo registered in Hayat; credentials written to .env."
+  code=$(hayat_env && "$HAYAT_BIN" enrollment-code --service tabletsgo --name Tabletsgo --by "$ADMIN_EMAIL" 2>/dev/null) ||
+    { echo "Couldn't make an enrollment code (is $ADMIN_EMAIL seeded?)." >&2; exit 1; }
+  (cd "$ROOT" && node --env-file-if-exists=.env scripts/hayat-enroll.js --code "$code" --address "$APP_URL")
+}
+
+# Remove KEY lines from .env (credentials older runs wrote; enrolling replaced them).
+unset_env() {
+  [ -f "$ENV_FILE" ] || return 0
+  node -e '
+    const fs = require("fs")
+    const [file, ...keys] = process.argv.slice(1)
+    const text = fs.readFileSync(file, "utf8").split("\n").filter((l) => !keys.some((k) => l.startsWith(k + "="))).join("\n")
+    fs.writeFileSync(file, text, { mode: 0o600 })
+  ' "$ENV_FILE" "$@"
 }
 
 # tabletsgo is opened at two addresses in development: Vite (:5173) and the
-# server's built console (:3000). `hayat import` registers the web client with
-# one redirect, so add both — every run, so an older registration catches up.
+# server's built console (:3000). Enrolling registers the web client with one
+# redirect, so add both — every run, so an older registration catches up.
 # Hayat has no CLI to edit a client and reads clients from its database on each
 # request, so this writes the dev database directly.
 allow_app_origins() {
-  web=$(get_env HAYAT_WEB_CLIENT_ID)
-  case "$web" in *[!A-Za-z0-9_-]*|'') echo "HAYAT_WEB_CLIENT_ID in .env looks wrong: '$web'" >&2; exit 1 ;; esac
   hayat_psql "
       UPDATE oauth_clients SET
         redirect_uris = ARRAY(SELECT DISTINCT unnest(redirect_uris ||
@@ -129,9 +125,9 @@ allow_app_origins() {
         post_logout_redirect_uris = ARRAY(SELECT DISTINCT unnest(post_logout_redirect_uris ||
           ARRAY['http://localhost:5173', 'http://localhost:5173/', 'http://localhost:3000', 'http://localhost:3000/']) ORDER BY 1),
         updated_at = now()
-      WHERE id = '$web' RETURNING array_to_string(redirect_uris, ', ');" |
+      WHERE service_id = 'tabletsgo' AND kind = 'public' RETURNING array_to_string(redirect_uris, ', ');" |
     sed -n '1s/^/tabletsgo sign-in redirects: /p' | grep . ||
-    { echo "Hayat has no client $web (HAYAT_WEB_CLIENT_ID). Delete HAYAT_CLIENT_ID from .env to register again." >&2; exit 1; }
+    { echo "Hayat has no sign-in client for tabletsgo; enrolling should have made one." >&2; exit 1; }
 }
 
 # Hayat's seed puts its admin in no tenant, and its tenants grant nothing of
@@ -182,10 +178,18 @@ case "${1:-}" in
     make -C "$HAYAT_DIR" --no-print-directory seed
     [ -d "$HAYAT_DIR/console/node_modules" ] || (cd "$HAYAT_DIR/console" && pnpm install)
 
+    set_env HAYAT_ISSUER=$ISSUER HAYAT_API_URL=http://127.0.0.1:7443 HAYAT_CONSOLE_URL=$CONSOLE_URL
+    unset_env HAYAT_CLIENT_ID HAYAT_CLIENT_SECRET HAYAT_WEB_CLIENT_ID
+    ;;
+
+  enroll) # once Hayat answers, before tabletsgo's server starts: credentials, then the dev workspaces
+    # Enrolling first: a workspace import would register tabletsgo itself, and
+    # then the code would only rotate the secret instead of making the admin.
     TMP=$(mktemp -d)
     trap 'rm -rf "$TMP"' EXIT
-    set_env HAYAT_ISSUER=$ISSUER HAYAT_API_URL=http://127.0.0.1:7443 HAYAT_CONSOLE_URL=$CONSOLE_URL
-    register
+    has_env ENCRYPTION_KEY || set_env "ENCRYPTION_KEY=$(node -e 'console.log(require("crypto").randomBytes(32).toString("hex"))')"
+    [ -d "$ROOT/server/generated" ] || (cd "$ROOT" && npm run --silent prisma:generate >/dev/null)
+    enroll
     allow_app_origins
     ensure_dev_workspace
     ensure_demo_workspace
@@ -211,7 +215,7 @@ case "${1:-}" in
     ;;
 
   *)
-    echo "usage: $0 setup|serve|console|wait  (or just: npm run dev:hayat)" >&2
+    echo "usage: $0 setup|serve|console|wait|enroll  (or just: npm run dev:hayat)" >&2
     exit 2
     ;;
 esac
