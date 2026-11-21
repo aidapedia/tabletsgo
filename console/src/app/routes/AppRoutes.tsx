@@ -2,7 +2,7 @@ import { lazy, Suspense, useEffect } from 'react'
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { useAuth, useIdentity, AuthCard, EnterpriseOnly, HayatSetup, SoloSetup, SoloSignIn } from '@/features/auth'
 import { Section } from '@/shared/ui/page/Section'
-import { RequireWorkspace } from '@/features/workspaces'
+import { NoWorkspaceGate, RequireWorkspace } from '@/features/workspaces'
 import { PageLoading } from '@/shared/ui/feedback/LoadingState'
 
 // Each address loads its page only when visited. The console and schema editor
@@ -39,6 +39,8 @@ const routeFallback = <PageLoading screen />
  * to Hayat's sign-in page and comes back to where they were — or, before the
  * instance is enrolled with Hayat, gets the setup page. Solo: the owner's
  * sign-in (or the first-run setup) is drawn right here, at the address asked for.
+ * Signed in but in no workspace, and not an admin: a page saying so, in place
+ * of the app.
  */
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { status, config, signIn } = useAuth()
@@ -51,7 +53,7 @@ function RequireAuth({ children }: { children: React.ReactNode }) {
   if (status === 'setup') return <SoloSetup />
   if (status === 'enroll') return <HayatSetup />
   if (status === 'signedOut' && solo) return <SoloSignIn />
-  return status === 'signedIn' ? children : routeFallback
+  return status === 'signedIn' ? <NoWorkspaceGate>{children}</NoWorkspaceGate> : routeFallback
 }
 
 // Pages about other people. A solo instance has nobody else: say why at the

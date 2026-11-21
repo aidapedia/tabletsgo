@@ -2,7 +2,7 @@
 // above connections. Not to be confused with the DB console `features/workspace`.
 export { WorkspaceProvider, useWorkspaces } from './stores/WorkspaceContext'
 export { default as WorkspaceSwitcher } from './components/WorkspaceSwitcher'
-export { default as RequireWorkspace } from './components/RequireWorkspace'
+export { default as RequireWorkspace, NoWorkspaceGate } from './components/RequireWorkspace'
 export { default as MembersPanel } from './components/MembersPanel'
 export { default as WorkspaceGeneral } from './components/WorkspaceGeneral'
 export { default as WorkspaceConfig } from './components/WorkspaceConfig'
