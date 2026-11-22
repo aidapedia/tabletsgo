@@ -28,12 +28,12 @@ import {
 /** tabletsgo as it ships — index.css's two palettes, the 16px root, 0.625rem corners, the 16.5rem sidebar. */
 export const DEFAULTS: AppDefaults = {
   dark: {
-    accent: '#6fcf6a', background: '#080808', surface: '#101010', text: '#f4f4f5', muted: '#a1a1aa', border: '#222222',
+    accent: '#6fcf6a', accentText: '#ffffff', background: '#080808', surface: '#101010', text: '#f4f4f5', muted: '#a1a1aa', border: '#222222',
     sidebarBackground: '#0c0c0c', sidebarText: '#f4f4f5', sidebarActive: '#1b1b1b', sidebarBorder: '#222222',
     success: '#22c55e', warning: '#d6a73a', destructive: '#ef4444',
   },
   light: {
-    accent: '#6fcf6a', background: '#ffffff', surface: '#ffffff', text: '#16181c', muted: '#555b63', border: '#e3e6e3',
+    accent: '#6fcf6a', accentText: '#ffffff', background: '#ffffff', surface: '#ffffff', text: '#16181c', muted: '#555b63', border: '#e3e6e3',
     sidebarBackground: '#f6f7f6', sidebarText: '#16181c', sidebarActive: '#eceeec', sidebarBorder: '#e3e6e3',
     success: '#16a34a', warning: '#b8860b', destructive: '#e03131',
   },
@@ -130,7 +130,7 @@ function apply(look: Look | null, resolved: Resolved) {
 
   // The root font size is what every rem scales with; --spacing is Tailwind's
   // spacing step; the font is set on <html> because Tailwind inlines --font-sans.
-  const s = sizeTokens(look)
+  const s = sizeTokens(look, DEFAULTS)
   root.style.fontSize = s.fontSize || ''
   root.style.fontFamily = s.fontFamily || ''
   setVar('--spacing', s.spacing)

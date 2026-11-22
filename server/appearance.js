@@ -1,8 +1,9 @@
 /**
- * A person's theme — their "appearance" — as tabletsgo accepts it. One theme
- * per account, the same in every app they sign in to: in enterprise mode Hayat
- * stores and checks it (edited in Hayat's console); a solo instance stores its
- * owner's in the `solo` setting, checked here by the same rules Hayat applies
+ * A person's theme — their "appearance" — as tabletsgo accepts it. In
+ * enterprise mode Hayat stores and checks it (edited in Hayat's console, where
+ * tabletsgo either follows the account's theme or has one of its own — Hayat
+ * answers with whichever applies); a solo instance stores its owner's in the
+ * `solo` setting, checked here by the same rules Hayat applies
  * (hayat/internal/identity/appearance.go), so a theme moves between the two
  * unchanged when an instance joins a team.
  *
@@ -13,7 +14,7 @@
  */
 
 const COLORS = [
-  'accent', 'background', 'surface', 'text', 'muted', 'border',
+  'accent', 'accentText', 'background', 'surface', 'text', 'muted', 'border',
   'sidebarBackground', 'sidebarText', 'sidebarActive', 'sidebarBorder',
   'success', 'warning', 'destructive',
 ]
@@ -23,7 +24,7 @@ const CHOICES = {
   density: ['comfortable', 'compact', 'condensed'],
   contentWidth: ['narrow', 'default', 'full'],
 }
-const RANGES = { textSize: [12, 18], radius: [0, 18], sidebarWidth: [200, 320] }
+const RANGES = { textSize: [12, 18], scale: [80, 120], radius: [0, 18], sidebarWidth: [200, 320] }
 const HEX = /^#[0-9a-f]{6}$/
 const PRESET = /^[a-z0-9-]{1,40}$/
 

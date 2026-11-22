@@ -37,7 +37,7 @@ function Column({ values, selected, onPick }) {
             data-selected={on}
             onClick={() => onPick(v)}
             className={`flex w-full items-center justify-center py-1.5 text-[12px] transition-colors ${
-              on ? 'bg-primary text-background font-semibold' : 'text-foreground hover:bg-accent'
+              on ? 'bg-primary text-primary-foreground font-semibold' : 'text-foreground hover:bg-accent'
             }`}
           >
             {pad(v)}

@@ -1,9 +1,10 @@
 /**
- * A person's theme — their "appearance": one per account, shared by every app
- * that signs them in. In enterprise mode it is stored in Hayat (edited in
- * Hayat's console, read by services through DirectoryService.GetUserAppearance);
- * a solo tabletsgo stores its owner's itself. The shape is the proto3 JSON of
- * hayat.*.v1.Appearance, end to end.
+ * A person's theme — their "appearance". The account has one, which every app
+ * that signs them in follows, and the person may give one app a theme of its
+ * own instead. In enterprise mode both are stored in Hayat (edited in Hayat's
+ * console; a service reads the one that applies to it through
+ * DirectoryService.GetUserAppearance); a solo tabletsgo stores its owner's
+ * itself. The shape is the proto3 JSON of hayat.*.v1.Appearance, end to end.
  *
  * Every field is optional, and an empty one means "this app's own default". So
  * an account that never chose anything looks the way each app ships, Mode
@@ -24,7 +25,8 @@ export type ContentWidth = 'narrow' | 'default' | 'full'
 export const CONTENT_COLORS = ['background', 'surface', 'text', 'muted', 'border'] as const
 export const SIDEBAR_COLORS = ['sidebarBackground', 'sidebarText', 'sidebarActive', 'sidebarBorder'] as const
 export const STATUS_COLORS = ['success', 'warning', 'destructive'] as const
-export const COLOR_KEYS = ['accent', ...CONTENT_COLORS, ...SIDEBAR_COLORS, ...STATUS_COLORS] as const
+export const ACCENT_COLORS = ['accent', 'accentText'] as const
+export const COLOR_KEYS = [...ACCENT_COLORS, ...CONTENT_COLORS, ...SIDEBAR_COLORS, ...STATUS_COLORS] as const
 export type ColorKey = (typeof COLOR_KEYS)[number]
 
 export type Look = Partial<Record<ColorKey, string>> & {
@@ -32,7 +34,10 @@ export type Look = Partial<Record<ColorKey, string>> & {
   mode?: Mode
   sidebarMatchContent?: boolean
   font?: Font
+  /** Older themes only; `scale` wins. Pixels of the root font size. */
   textSize?: number
+  /** The interface's size, as a percent of the app's own text size. */
+  scale?: number
   density?: Density
   radius?: number
   sidebarWidth?: number
@@ -46,6 +51,7 @@ export type Palette = Record<ColorKey, string>
 export type AppDefaults = {
   light: Palette
   dark: Palette
+  /** Pixels of the root font size: what a 100% scale is. */
   textSize: number
   radius: number
   sidebarWidth: number
@@ -53,11 +59,27 @@ export type AppDefaults = {
   contentWidth: number
 }
 
-export const LIMITS = { textSize: [12, 18], radius: [0, 18], sidebarWidth: [200, 320] } as const
+export const LIMITS = { textSize: [12, 18], scale: [80, 120], radius: [0, 18], sidebarWidth: [200, 320] } as const
 export const MODES: Mode[] = ['system', 'light', 'dark']
 export const DENSITIES: Density[] = ['comfortable', 'compact', 'condensed']
 export const FONTS: Font[] = ['system', 'inter', 'plex']
 export const CONTENT_WIDTHS: ContentWidth[] = ['narrow', 'default', 'full']
+
+// The sizes a person picks from. A slider's every in-between value made the
+// whole app jump while dragging; a few named steps are easier to compare.
+// `undefined` is "the app's own".
+export const SCALES = [80, 90, 100, 110, 120] as const
+export const RADII: [number | undefined, string, string][] = [
+  [0, 'Square', 'Sharp corners everywhere.'],
+  [4, 'Subtle', 'Just softened.'],
+  [undefined, 'Default', 'As the app ships.'],
+  [14, 'Round', 'Soft, rounded controls.'],
+]
+export const SIDEBAR_WIDTHS: [number | undefined, string, string][] = [
+  [216, 'Narrow', 'More room for content.'],
+  [undefined, 'Default', 'As the app ships.'],
+  [304, 'Wide', 'Long names fit.'],
+]
 
 const HEX = /^#[0-9a-f]{6}$/
 const PRESET = /^[a-z0-9-]{1,40}$/
@@ -73,16 +95,20 @@ const p = (id: string, name: string, mode: Resolved, c: string[]): Preset => ({
   colors: Object.fromEntries(COLOR_KEYS.map((k, i) => [k, c[i]])) as Palette,
 })
 
-// accent, background, surface, text, muted, border, sidebar bg/text/active/border, success, warning, destructive
+// A preset is every color, the button text included: each one is an app's
+// look as it ships (tabletsgo's buttons are white on its green), not a guess
+// at which text reads.
+// accent, accent text, background, surface, text, muted, border,
+// sidebar bg/text/active/border, success, warning, destructive
 export const PRESETS: Preset[] = [
-  p('tg-dark', 'tabletsgo Dark', 'dark', ['#6fcf6a', '#080808', '#101010', '#f4f4f5', '#a1a1aa', '#222222', '#0c0c0c', '#f4f4f5', '#1b1b1b', '#222222', '#22c55e', '#d6a73a', '#ef4444']),
-  p('tg-light', 'tabletsgo Light', 'light', ['#2f9e44', '#ffffff', '#ffffff', '#16181c', '#555b63', '#e3e6e3', '#f6f7f6', '#16181c', '#eceeec', '#e3e6e3', '#16a34a', '#b8860b', '#e03131']),
-  p('hayat-light', 'Hayat Light', 'light', ['#1d6a54', '#ffffff', '#ffffff', '#16181c', '#555b63', '#e3e6e3', '#f6f7f6', '#16181c', '#eceeec', '#e3e6e3', '#16a34a', '#b8860b', '#e03131']),
-  p('hayat-dark', 'Hayat Dark', 'dark', ['#3fae86', '#080a09', '#101413', '#f2f5f3', '#a3aea8', '#222a27', '#0c0f0e', '#f2f5f3', '#1b2120', '#222a27', '#22c55e', '#d6a73a', '#ef5350']),
-  p('slate-rail', 'Slate Rail', 'light', ['#2563eb', '#f7f8fa', '#ffffff', '#111827', '#4b5563', '#e5e7eb', '#0f172a', '#e2e8f0', '#1e293b', '#0f172a', '#16a34a', '#b45309', '#dc2626']),
-  p('midnight', 'Midnight', 'dark', ['#7aa2ff', '#0b1020', '#121a2e', '#e6ebf5', '#9aa6bf', '#1f2a44', '#080c18', '#e6ebf5', '#1a2440', '#1f2a44', '#34d399', '#fbbf24', '#f87171']),
-  p('paper', 'Paper', 'light', ['#0e7490', '#faf8f3', '#ffffff', '#1f1b16', '#5f584f', '#e7e1d6', '#f2ede3', '#1f1b16', '#e7e0d2', '#e2dacb', '#15803d', '#a16207', '#b91c1c']),
-  p('contrast', 'High Contrast', 'dark', ['#ffd400', '#000000', '#000000', '#ffffff', '#d4d4d4', '#ffffff', '#000000', '#ffffff', '#262626', '#ffffff', '#4ade80', '#facc15', '#ff6b6b']),
+  p('tg-dark', 'tabletsgo Dark', 'dark', ['#6fcf6a', '#ffffff', '#080808', '#101010', '#f4f4f5', '#a1a1aa', '#222222', '#0c0c0c', '#f4f4f5', '#1b1b1b', '#222222', '#22c55e', '#d6a73a', '#ef4444']),
+  p('tg-light', 'tabletsgo Light', 'light', ['#6fcf6a', '#ffffff', '#ffffff', '#ffffff', '#16181c', '#555b63', '#e3e6e3', '#f6f7f6', '#16181c', '#eceeec', '#e3e6e3', '#16a34a', '#b8860b', '#e03131']),
+  p('hayat-light', 'Hayat Light', 'light', ['#1d6a54', '#ffffff', '#ffffff', '#ffffff', '#16181c', '#555b63', '#e3e6e3', '#f6f7f6', '#16181c', '#eceeec', '#e3e6e3', '#16a34a', '#b8860b', '#e03131']),
+  p('hayat-dark', 'Hayat Dark', 'dark', ['#3fae86', '#ffffff', '#080a09', '#101413', '#f2f5f3', '#a3aea8', '#222a27', '#0c0f0e', '#f2f5f3', '#1b2120', '#222a27', '#22c55e', '#d6a73a', '#ef5350']),
+  p('slate-rail', 'Slate Rail', 'light', ['#2563eb', '#ffffff', '#f7f8fa', '#ffffff', '#111827', '#4b5563', '#e5e7eb', '#0f172a', '#e2e8f0', '#1e293b', '#0f172a', '#16a34a', '#b45309', '#dc2626']),
+  p('midnight', 'Midnight', 'dark', ['#7aa2ff', '#0b1020', '#0b1020', '#121a2e', '#e6ebf5', '#9aa6bf', '#1f2a44', '#080c18', '#e6ebf5', '#1a2440', '#1f2a44', '#34d399', '#fbbf24', '#f87171']),
+  p('paper', 'Paper', 'light', ['#0e7490', '#ffffff', '#faf8f3', '#ffffff', '#1f1b16', '#5f584f', '#e7e1d6', '#f2ede3', '#1f1b16', '#e7e0d2', '#e2dacb', '#15803d', '#a16207', '#b91c1c']),
+  p('contrast', 'High Contrast', 'dark', ['#ffd400', '#000000', '#000000', '#000000', '#ffffff', '#d4d4d4', '#ffffff', '#000000', '#ffffff', '#262626', '#ffffff', '#4ade80', '#facc15', '#ff6b6b']),
 ]
 
 export const SWATCHES = ['#6fcf6a', '#3fae86', '#1d6a54', '#0e7490', '#2563eb', '#7aa2ff', '#8b5cf6', '#e5484d', '#f59e0b', '#ffd400']
@@ -98,11 +124,21 @@ export const fromPreset = (preset: Preset, keep: Look = {}): Look => ({
 /** Just the sizes and font of a look. */
 export const sizesOf = (l: Look): Look => {
   const out: Look = {}
-  for (const k of ['font', 'textSize', 'density', 'radius', 'sidebarWidth', 'contentWidth'] as const) {
+  for (const k of ['font', 'textSize', 'scale', 'density', 'radius', 'sidebarWidth', 'contentWidth'] as const) {
     if (l[k] !== undefined) (out as Record<string, unknown>)[k] = l[k]
   }
   return out
 }
+
+/** The look sets colors of its own, rather than an app's palette for a mode. */
+export const isCustom = (l: Look | null) => !!l && (l.preset !== undefined || !!l.sidebarMatchContent || COLOR_KEYS.some((k) => l[k]))
+
+/** An app's own palette for a mode: every color cleared, the sizes kept. */
+export const plainMode = (l: Look | null, mode: Mode): Look => ({ ...sizesOf(l ?? {}), mode })
+
+/** The scale a look shows at: its own, or an older theme's text size as one. */
+export const scaleOf = (l: Look | null, defaults: AppDefaults) =>
+  l?.scale ?? (l?.textSize ? Math.round((l.textSize / defaults.textSize) * 10) * 10 : 100)
 
 /**
  * Switch the mode: the neutral and status colors go back to this app's own for
@@ -137,6 +173,7 @@ export function normalizeLook(raw: unknown): Look | null {
   if (r.sidebarMatchContent === true) out.sidebarMatchContent = true
   out.font = pick(r.font, FONTS)
   out.textSize = inRange(r.textSize, LIMITS.textSize)
+  out.scale = inRange(r.scale, LIMITS.scale)
   out.density = pick(r.density, DENSITIES)
   out.radius = inRange(r.radius, LIMITS.radius)
   out.sidebarWidth = inRange(r.sidebarWidth, LIMITS.sidebarWidth)
@@ -191,6 +228,9 @@ export const resolveMode = (l: Look | null, systemDark: boolean): Resolved =>
 export function paletteOf(l: Look | null, defaults: AppDefaults, resolved: Resolved): Palette {
   const out = { ...defaults[resolved] }
   for (const k of COLOR_KEYS) if (l?.[k]) out[k] = l[k]!
+  // A new accent without its own text gets whichever reads; the app's own
+  // button text was chosen for the app's own accent.
+  if (l?.accent && !l.accentText) out.accentText = textOn(out.accent)
   if (l?.sidebarMatchContent) {
     out.sidebarBackground = mix(out.background, out.text, 0.03)
     out.sidebarText = out.text
@@ -223,8 +263,8 @@ export function themeTokens(l: Look | null, defaults: AppDefaults, resolved: Res
   if (l.accent) {
     t.primary = c.accent
     t.ring = c.accent
-    t.primaryForeground = textOn(c.accent)
   }
+  if (l.accent || l.accentText) t.primaryForeground = c.accentText
   if (CONTENT_COLORS.some((k) => l[k])) {
     Object.assign(t, {
       background: c.background,
@@ -257,17 +297,18 @@ export function themeTokens(l: Look | null, defaults: AppDefaults, resolved: Res
 }
 
 const DENSITY_SCALE: Record<Density, number> = { comfortable: 1, compact: 0.85, condensed: 0.72 }
-const FONT_STACKS: Record<Font, string> = {
+export const FONT_STACKS: Record<Font, string> = {
   system: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif',
   inter: '"Inter Variable", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
   plex: '"IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
 }
 
 /** Sizes and the font, as CSS values. Left out when the look doesn't set them. */
-export function sizeTokens(l: Look | null) {
+export function sizeTokens(l: Look | null, defaults: AppDefaults) {
   const out: { fontSize?: string; spacing?: string; radius?: string; sidebarWidth?: string; contentWidth?: string; fontFamily?: string } = {}
   if (!l) return out
-  if (l.textSize) out.fontSize = `${l.textSize}px`
+  if (l.scale && l.scale !== 100) out.fontSize = `${(defaults.textSize * l.scale) / 100}px`
+  else if (!l.scale && l.textSize) out.fontSize = `${l.textSize}px`
   if (l.density && l.density !== 'comfortable') out.spacing = `calc(0.25rem * ${DENSITY_SCALE[l.density]})`
   if (l.radius !== undefined) out.radius = `${l.radius}px`
   if (l.sidebarWidth) out.sidebarWidth = `${l.sidebarWidth}px`
@@ -292,7 +333,7 @@ export function readability(c: Palette): Check[] {
     mk('Muted text on background', c.muted, c.background, 4.5),
     mk('Text on surface', c.text, c.surface, 4.5),
     mk('Sidebar text', c.sidebarText, c.sidebarBackground, 4.5),
-    mk('Text on accent', textOn(c.accent), c.accent, 4.5),
+    mk('Button text on accent', c.accentText, c.accent, 4.5),
     mk('Accent on background', c.accent, c.background, 3),
   ]
 }
