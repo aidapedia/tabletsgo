@@ -28,12 +28,18 @@ const CODE = 'hye_' + 'a'.repeat(43)
 const quiet = () => {}
 
 // A Hayat that knows one code. `secrets` are the API secrets it accepts.
-function fakeHayat({ serviceId = 'tabletsgo', registers = true, enrollError = null, down = false } = {}) {
-  const hz = { secrets: new Set(), enrolls: [], tokens: [] }
+function fakeHayat({ serviceId = 'tabletsgo', registers = true, enrollError = null, down = false, version = '1.2.0' } = {}) {
+  const hz = { secrets: new Set(), enrolls: [], tokens: [], inspects: 0 }
   hz.fetch = async (url, init = {}) => {
     url = String(url)
     if (down) throw new TypeError('fetch failed', { cause: new Error('connect ECONNREFUSED') })
     const body = init.body && typeof init.body === 'string' ? JSON.parse(init.body) : {}
+    if (url === `${API}/hayat.authz.v1.ServerInfoService/GetServerInfo`) {
+      // A Hayat before 1.2.0 has no such service: Go's mux answers a plain 404.
+      if (version === null) return new Response('404 page not found\n', { status: 404 })
+      return Response.json({ version })
+    }
+    if (url.includes('.EnrollmentService/')) hz.inspects++
     if (url === `${API}/hayat.authz.v1.EnrollmentService/InspectEnrollment`) {
       if (body.code !== CODE) return Response.json({ code: 'failed_precondition', message: "this enrollment code isn't valid" }, { status: 400 })
       return Response.json({ serviceId, displayName: 'Tabletsgo', registers, madeByEmail: 'ada@example.com', madeByName: 'Ada', expiresAt: '2026-11-22T00:00:00Z', issuer: ISSUER })
@@ -93,6 +99,27 @@ test('inspecting a code shows what it would do, and refuses what it must', async
   await assert.rejects(enrollment.inspect(CODE), { status: 502, message: /Can't reach Hayat's API/ })
 })
 
+test('a Hayat older than this tabletsgo needs is refused before a code is looked at or spent', async (t) => {
+  for (const [version, running] of [
+    ['1.1.9', /runs 1\.1\.9/],
+    [null, /older than 1\.2\.0 \(it doesn't report its version/],
+  ]) {
+    const hz = fakeHayat({ version })
+    t.mock.method(globalThis, 'fetch', hz.fetch)
+    await assert.rejects(enrollment.inspect(CODE), { status: 409, message: running })
+    await assert.rejects(enrollment.enroll({ code: CODE, address: 'https://db.example.com' }, { log: quiet }), { status: 409, message: /needs Hayat 1\.2\.0 or newer/ })
+    assert.equal(hz.inspects, 0, 'the code is never sent to a Hayat that is too old')
+    assert.equal(hz.enrolls.length, 0)
+  }
+  assert.deepEqual(await getSetting('hayat'), {})
+
+  // Newer is fine, and so is a build from source.
+  for (const version of ['1.3.0', 'dev']) {
+    t.mock.method(globalThis, 'fetch', fakeHayat({ version }).fetch)
+    assert.equal((await enrollment.inspect(CODE)).registers, true)
+  }
+})
+
 test('a refused code stores nothing', async (t) => {
   const hz = fakeHayat({ enrollError: { code: 'failed_precondition', message: 'this enrollment code was already used' } })
   t.mock.method(globalThis, 'fetch', hz.fetch)
@@ -138,6 +165,7 @@ test('enrolling stores sealed credentials and starts using them', async (t) => {
   assert.equal(status.namespace, 'tabletsgo')
   assert.equal(status.address, 'https://db.example.com')
   assert.equal(status.registered, true)
+  assert.deepEqual(status.version, { running: '1.2.0', needed: '1.2.0', ok: true })
 })
 
 test('credentials Hayat refuses reopen the setup page, and newer stored ones are picked up', async (t) => {

@@ -126,7 +126,9 @@ Going back from enterprise to solo isn't supported in place: export the connecti
 
 ### Enterprise mode (Hayat)
 
-In enterprise mode tabletsgo keeps no accounts of its own. Hayat holds the people, the workspaces (Hayat *tenants*), groups, roles and grants; tabletsgo asks it. Hayat runs on its own — tabletsgo needs its addresses in `.env`, and gets its credentials by **enrolling** on its setup page:
+In enterprise mode tabletsgo keeps no accounts of its own. Hayat holds the people, the workspaces (Hayat *tenants*), groups, roles and grants; tabletsgo asks it. Hayat runs on its own — tabletsgo needs its addresses in `.env`, and gets its credentials by **enrolling** on its setup page.
+
+**Hayat version.** This tabletsgo needs **Hayat 1.2.0 or newer**. The setup page refuses an older Hayat before it spends a code, the server logs `⛔` at boot when the Hayat it reaches is too old, and **Administration → Hayat** shows the version that answers. Hayat's service API only ever grows, so a newer Hayat always works: when a tabletsgo release raises the minimum (its release notes say *Requires Hayat ≥ X*), upgrade Hayat first, then tabletsgo.
 
 | Variable | What |
 |---|---|

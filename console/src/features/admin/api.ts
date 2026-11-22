@@ -63,6 +63,9 @@ export type HayatStatus = {
   address: string | null
   enrolledAt: number | null
   registered: boolean | null
+  // Which Hayat answers, asked fresh. `running` is null when it's too old to say
+  // (or unreachable — then `ok` is null too).
+  version: { running: string | null; needed: string; ok: boolean | null }
 }
 
 export const getHayatStatus = () => request<{ hayat: HayatStatus }>('/admin/hayat').then((r) => r.hayat)

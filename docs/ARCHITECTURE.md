@@ -509,6 +509,9 @@ server/
 │   │                     #     client-credentials token, offline JWT verification (jose)
 │   ├── index.js          #   people (directory), tenants + rosters, cached decisions (emptied by
 │   │                     #     Watch and our own writes), resource mirrors, the contract publish
+│   ├── compat.js         #   leaf: every RPC sent to Hayat with the release it first shipped in →
+│   │                     #     MIN_HAYAT_VERSION (never below 1.2.0); enrolling refuses an older
+│   │                     #     Hayat, boot warns (tests/hayat-compat.test.js keeps the table complete)
 │   └── solo-backend.js   #   solo mode's backend at the same seam: Hayat's RPCs answered in-process
 │                         #     for one owner + one workspace (owner holds every permission)
 ├── hayat-enrollment.js   # enterprise: an enrollment code from Hayat's console → tabletsgo's credentials

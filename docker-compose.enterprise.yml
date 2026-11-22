@@ -3,7 +3,8 @@
 #
 #   docker compose -f docker-compose.yml -f docker-compose.enterprise.yml up -d
 #
-# Hayat runs on its own (its repo's deploy/compose). Set its addresses below,
+# Hayat runs on its own (its repo's deploy/compose) and must be 1.2.0 or newer
+# (server/hayat/compat.js; upgrade Hayat before tabletsgo). Set its addresses below,
 # start, open tabletsgo and paste an enrollment code from Hayat's console
 # (Services → Enroll service): that gives tabletsgo its credentials. Moving a
 # solo instance here: README → Moving from solo to enterprise. The `:?` guards
