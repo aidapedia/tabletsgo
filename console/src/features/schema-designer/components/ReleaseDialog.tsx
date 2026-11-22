@@ -237,7 +237,7 @@ function WizardStep({ n, label, state }: { n: number; label: string; state: 'don
     <span className="flex items-center gap-1.5">
       <span
         className={`flex h-[18px] w-[18px] items-center justify-center rounded-full text-[10px] font-bold ${
-          state === 'todo' ? 'border border-input text-faint' : 'bg-primary text-white'
+          state === 'todo' ? 'border border-input text-faint' : 'bg-primary text-primary-foreground'
         }`}
       >
         {state === 'done' ? '✓' : n}

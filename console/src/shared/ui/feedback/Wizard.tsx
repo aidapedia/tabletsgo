@@ -68,7 +68,7 @@ export default function Wizard({
                   <span
                     className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-bold ${
                       done
-                        ? 'bg-primary text-white'
+                        ? 'bg-primary text-primary-foreground'
                         : active
                           ? 'bg-primary/15 text-primary-bright ring-1 ring-primary'
                           : 'bg-border text-faint'

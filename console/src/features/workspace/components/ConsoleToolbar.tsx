@@ -249,7 +249,7 @@ export default function ConsoleToolbar({
             <span className="max-[720px]:hidden">Changes</span>
             <span
               className={`rounded-[20px] px-[7px] text-xs ${
-                changeCount > 0 ? 'bg-primary text-white' : 'bg-border text-faint'
+                changeCount > 0 ? 'bg-primary text-primary-foreground' : 'bg-border text-faint'
               }`}
             >
               {changeCount}

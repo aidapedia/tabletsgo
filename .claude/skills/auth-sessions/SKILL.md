@@ -49,7 +49,9 @@ routes, caches — can't tell the difference. **No route branches on the mode.**
   `/api/auth/solo/*` routes avoid branching.
 - **The workspace's name**: `hayat.renameTenant` refuses in enterprise (rename it in
   Hayat) and goes through the solo backend's `UpdateTenant` to `solo.renameWorkspace`.
-- **A person's theme** (their "appearance") is the account's, one for every app:
+- **A person's theme** (their "appearance"): in Hayat the account has one theme
+  every app follows, and the person may give tabletsgo one of its own; Hayat
+  answers with whichever applies to the calling service (`own` says which).
   `hayat.getAppearance(userId)` asks `DirectoryService.GetUserAppearance` — fresh
   every time, never cached (a Hayat without the RPC answers null: the defaults).
   `hayat.setAppearance` refuses in enterprise (it's edited in Hayat's console at

@@ -48,7 +48,7 @@ export default function ModulePicker({
                     <span
                       aria-hidden="true"
                       className={`mt-0.5 flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-[5px] border ${
-                        on ? 'border-primary bg-primary text-background' : 'border-input'
+                        on ? 'border-primary bg-primary text-primary-foreground' : 'border-input'
                       }`}
                     >
                       {on && <CheckIcon width={11} height={11} />}

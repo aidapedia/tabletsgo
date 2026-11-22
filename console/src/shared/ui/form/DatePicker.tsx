@@ -117,7 +117,7 @@ export function CalendarPanel({ value = '', onChange }) {
                     onClick={() => onChange?.(toStr(view.y, view.m, d))}
                     className={`mx-auto h-8 w-8 ${cellBtn} ${
                       isSel(d)
-                        ? 'bg-primary text-background font-semibold'
+                        ? 'bg-primary text-primary-foreground font-semibold'
                         : isToday(d)
                         ? 'text-primary ring-1 ring-inset ring-primary/40 hover:bg-accent'
                         : 'text-foreground hover:bg-accent'
@@ -138,7 +138,7 @@ export function CalendarPanel({ value = '', onChange }) {
                   type="button"
                   onClick={() => { setView((v) => ({ ...v, m: i })); setMode('days') }}
                   className={`h-9 ${cellBtn} ${
-                    i === view.m ? 'bg-primary text-background font-semibold' : 'text-foreground hover:bg-accent'
+                    i === view.m ? 'bg-primary text-primary-foreground font-semibold' : 'text-foreground hover:bg-accent'
                   }`}
                 >
                   {m}
@@ -155,7 +155,7 @@ export function CalendarPanel({ value = '', onChange }) {
                   type="button"
                   onClick={() => { setView((v) => ({ ...v, y })); setMode('months') }}
                   className={`h-9 ${cellBtn} ${
-                    y === view.y ? 'bg-primary text-background font-semibold' : 'text-foreground hover:bg-accent'
+                    y === view.y ? 'bg-primary text-primary-foreground font-semibold' : 'text-foreground hover:bg-accent'
                   }`}
                 >
                   {y}

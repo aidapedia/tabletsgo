@@ -396,7 +396,7 @@ export default function HomeLayout() {
         {/* The one content container: every page gets the same width and gutters,
             so nothing sets its own (use `<Narrow>` for content that needs to be
             narrower than the page). */}
-        <main className="min-h-0 flex-1 overflow-y-auto px-8 py-10 max-[600px]:px-4 max-[600px]:py-7">
+        <main className="@container min-h-0 flex-1 overflow-y-auto px-8 py-10 max-[600px]:px-4 max-[600px]:py-7">
           <div className="mx-auto w-full max-w-(--app-content-width)">
             <UpdateBanner />
             <PageTrailProvider>

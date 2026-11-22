@@ -35,7 +35,7 @@ function SourceCard({
         active ? 'border-primary bg-primary/10' : 'border-border bg-muted hover:border-input'
       }`}
     >
-      <span className={`flex h-7 w-7 items-center justify-center rounded-[9px] ${active ? 'bg-primary text-white' : 'bg-sidebar text-muted-foreground'}`}>
+      <span className={`flex h-7 w-7 items-center justify-center rounded-[9px] ${active ? 'bg-primary text-primary-foreground' : 'bg-sidebar text-muted-foreground'}`}>
         <Icon width={14} height={14} />
       </span>
       <span className="text-[12px] font-semibold text-foreground">{title}</span>

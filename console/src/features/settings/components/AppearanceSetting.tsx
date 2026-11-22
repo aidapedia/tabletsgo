@@ -1,17 +1,21 @@
 import { ExternalLink, Layers, UserRound } from 'lucide-react'
 import { DEFAULTS, useTheme } from '@/app/providers/ThemeContext'
-import { PRESETS, paletteOf, type Look } from '@/shared/lib/appearance'
+import { PRESETS, paletteOf, scaleOf, type Look } from '@/shared/lib/appearance'
 import { Button } from '@/shared/ui/button'
 import LoadingState from '@/shared/ui/feedback/LoadingState'
 import AppearanceEditor from './AppearanceEditor'
 
 /**
- * Setting → Appearance. A theme is the account's, one for every app the person
- * signs in to. Where the account lives decides where it is edited: a solo
- * instance keeps its owner here, so the editor is here; in enterprise mode the
- * account is Hayat's, so this shows the theme in use and links to Hayat's
- * console. The server says which (`editable`), so this never asks the mode.
+ * Setting → Appearance. Where the account lives decides where its theme is
+ * edited: a solo instance keeps its owner here, so the editor is here; in
+ * enterprise mode the account is Hayat's — tabletsgo follows the account's
+ * theme or has one of its own, both chosen in Hayat's console — so this shows
+ * the theme in use and links there. The server says which (`editable`), so
+ * this never asks the mode.
  */
+
+/** tabletsgo's own page under Account → Appearance in Hayat's console (its service id). */
+const HAYAT_APP_PAGE = '/tabletsgo'
 export default function AppearanceSetting() {
   const theme = useTheme()
   if (!theme.loaded) return <LoadingState />
@@ -44,7 +48,7 @@ export default function AppearanceSetting() {
       />
     )
   }
-  return <InUse look={theme.saved} resolved={theme.resolved} editUrl={theme.editUrl} />
+  return <InUse look={theme.saved} resolved={theme.resolved} editUrl={theme.editUrl && `${theme.editUrl}${HAYAT_APP_PAGE}`} />
 }
 
 function Intro({ icon, title, children, action }: { icon: React.ReactNode; title: string; children: React.ReactNode; action?: React.ReactNode }) {
@@ -75,7 +79,7 @@ function InUse({ look, resolved, editUrl }: { look: Look | null; resolved: 'ligh
   ]
   const sizes: [string, string][] = [
     ['Font', { system: 'System', inter: 'Inter', plex: 'IBM Plex' }[look?.font ?? 'system']],
-    ['Text size', `${look?.textSize ?? DEFAULTS.textSize} px`],
+    ['UI scale', `${scaleOf(look, DEFAULTS)}%`],
     ['Density', (look?.density ?? 'comfortable').replace(/^./, (s) => s.toUpperCase())],
     ['Corners', `${look?.radius ?? DEFAULTS.radius} px`],
     ['Sidebar', `${look?.sidebarWidth ?? DEFAULTS.sidebarWidth} px`],
@@ -85,7 +89,7 @@ function InUse({ look, resolved, editUrl }: { look: Look | null; resolved: 'ligh
     <div className="flex max-w-[860px] flex-col gap-5">
       <Intro
         icon={<Layers className="size-4" />}
-        title="Your theme lives in your Hayat account"
+        title="Your theme is set in Hayat"
         action={
           editUrl ? (
             <Button asChild size="lg">
@@ -96,7 +100,8 @@ function InUse({ look, resolved, editUrl }: { look: Look | null; resolved: 'ligh
           ) : undefined
         }
       >
-        One theme for every app you sign in to. Change it once in Hayat and tabletsgo follows on the next page load.
+        tabletsgo follows your account’s theme, the one every app shares, or has a theme of its own. Choose either in
+        Hayat, and tabletsgo changes on the next page load.
         {!editUrl && ' Ask your administrator for the address of the Hayat console.'}
       </Intro>
 

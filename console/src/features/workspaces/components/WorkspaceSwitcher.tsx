@@ -32,7 +32,7 @@ export default function WorkspaceSwitcher({ collapsed = false, canAdmin = false,
 
   const bubble = (size: 'sm' | 'lg') => (
     <span
-      className={`flex shrink-0 items-center justify-center bg-primary font-bold text-white ${
+      className={`flex shrink-0 items-center justify-center bg-primary font-bold text-primary-foreground ${
         size === 'lg' ? 'h-9 w-9 rounded-[11px] text-[13px]' : 'h-7 w-7 rounded-[8px] text-[12px]'
       }`}
     >

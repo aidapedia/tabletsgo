@@ -15,7 +15,7 @@ import useTabRoute from '@/shared/hooks/useTabRoute'
  * Keymap (console shortcuts) has anything to act on. Updates aren't here at all:
  * they're the instance's, not a person's (see `AdminUpdatesPage`).
  * Account and Appearance are identical for everyone. The account itself — name,
- * password, time zone, sign-in methods — and its theme live in Hayat, so those
+ * password, time zone, sign-in methods — and its themes live in Hayat, so those
  * tabs show them and link there; a solo instance edits both here.
  */
 export default function SettingsPage() {
@@ -40,7 +40,7 @@ export default function SettingsPage() {
       label: 'Appearance',
       body: (
         <div>
-          <SubHead title="Appearance" desc="Colors, sizes and type — your account’s theme, the same in every app you sign in to." />
+          <SubHead title="Appearance" desc="Colors, sizes and type — how tabletsgo looks for you." />
           <AppearanceSetting />
         </div>
       ),
