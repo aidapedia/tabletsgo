@@ -76,7 +76,7 @@ routes, caches — can't tell the difference. **No route branches on the mode.**
 - `connect.js` — the wire: Connect protocol over `fetch` (unary JSON POSTs to
   `/<pkg>.<Service>/<Method>`, Watch as length-prefixed frames), the
   client-credentials token (the enrolled credentials), `callOpen` for the
-  token-less EnrollmentService, offline JWT verification
+  token-less EnrollmentService and ServerInfoService, offline JWT verification
   against Hayat's JWKS (`jose`). No generated code. Discovery, token and JWKS go
   to `HAYAT_AUTH_URL` (default the issuer) — the browser and the server may reach
   the auth role at different addresses; the `iss` check is always the issuer.
@@ -87,8 +87,18 @@ routes, caches — can't tell the difference. **No route branches on the mode.**
   `tenantMembers`, `tenantGrants` (what each member was granted — Hayat's
   `DirectoryService.ListTenantGrants`, for the Member pages' roles and Access
   list; display only, a decision is still `permissionsAt`/`check`), `permissionsAt`/`check`, `lookupSubjects`, `upsertResource` /
-  `updateResource` / `deleteResource`, `startHayat` (publishes the contract, starts
-  Watch), `consoleLink`.
+  `updateResource` / `deleteResource`, `startHayat` (checks Hayat's version,
+  publishes the contract, starts Watch), `hayatVersion`, `consoleLink`.
+- `compat.js` — which Hayat this tabletsgo needs (a leaf). `HAYAT_RPCS` lists every
+  RPC sent to Hayat with the release it first shipped in (the `// Since X.Y.Z.`
+  line above it in Hayat's `proto/hayat/authz/v1/authz.proto`);
+  `MIN_HAYAT_VERSION` is the newest of them, never below 1.2.0 (the first Hayat
+  that reports its version through the tokenless `ServerInfoService.GetServerInfo`).
+  **Calling a new RPC means adding it there** — `tests/hayat-compat.test.js` scans
+  `server/` and `scripts/` and fails on an unlisted one (or a listed one nothing
+  calls). Enrolling refuses an older Hayat (409, before the code is sent), boot
+  logs `⛔` for one, and Admin → Hayat shows the running version. Hayat's service
+  API only grows, so any newer Hayat works: upgrade Hayat first, then tabletsgo.
 - **Caching lives only here.** Decisions are cached ~10 s keyed by tenant; Hayat's
   Watch stream drops a tenant's entries the moment it changes (all of them on a
   global event, and on reconnect). Our own writes drop the tenant too and send

@@ -73,6 +73,12 @@ export default function AdminHayatPage() {
                     </a>
                   )}
                 </Row>
+                <Row label="Hayat version">
+                  <span className="inline-flex items-center gap-2">
+                    <span className="font-mono">{status.version.running ?? (status.version.ok === false ? `older than ${status.version.needed}` : null)}</span>
+                    {status.version.ok === false && <Badge variant="destructive">Needs {status.version.needed}+ — upgrade Hayat</Badge>}
+                  </span>
+                </Row>
                 <Row label="Namespace">
                   <span className="font-mono">{status.namespace}</span>
                 </Row>

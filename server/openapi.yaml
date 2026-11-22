@@ -615,6 +615,8 @@ paths:
                 address: null
         "400":
           description: The code can't be used, and why.
+        "409":
+          description: "The Hayat at `HAYAT_API_URL` is older than this tabletsgo needs (server/hayat/compat.js), checked before the code is sent: `{ error: \"This tabletsgo needs Hayat 1.2.0 or newer, but the Hayat at … runs 1.1.1. Upgrade Hayat first.\" }`."
         "404":
           description: Solo mode — nothing to enroll.
   /api/setup/hayat/enroll:
@@ -662,6 +664,8 @@ paths:
                 address: https://db.example.com
         "400":
           description: The code or request was refused, and why.
+        "409":
+          description: "The Hayat at `HAYAT_API_URL` is older than this tabletsgo needs (server/hayat/compat.js), checked before the code is sent: `{ error: \"This tabletsgo needs Hayat 1.2.0 or newer, but the Hayat at … runs 1.1.1. Upgrade Hayat first.\" }`."
         "404":
           description: Solo mode — nothing to enroll.
   /api/auth/me:
@@ -1262,10 +1266,10 @@ paths:
       tags:
         - Instance administration
       summary: How this instance is enrolled with Hayat
-      description: "Enterprise only (404 in solo). `enrolled` says whether it holds credentials (they only ever come from enrolling); `rejected` is true when Hayat refused the credentials the last time — a new code from the service's Enrollment tab in Hayat's console fixes it. Never the secret."
+      description: "Enterprise only (404 in solo). `enrolled` says whether it holds credentials (they only ever come from enrolling); `rejected` is true when Hayat refused the credentials the last time — a new code from the service's Enrollment tab in Hayat's console fixes it. `version` is which Hayat answers, asked fresh: `running` (null when it's older than 1.2.0 and can't say, or unreachable), `needed` (the oldest this tabletsgo works with) and `ok` (null when unreachable). Never the secret."
       responses:
         "200":
-          description: "`{ hayat: { enrolled, rejected, open, issuer, apiUrl, consoleUrl, webClientId, namespace, publicUrl, address, enrolledAt, registered } }`"
+          description: "`{ hayat: { enrolled, rejected, open, issuer, apiUrl, consoleUrl, webClientId, namespace, publicUrl, address, enrolledAt, registered, version: { running, needed, ok } } }`"
           content:
             application/json:
               schema:
@@ -1286,6 +1290,10 @@ paths:
                   address: https://db.example.com
                   enrolledAt: 1795230000000
                   registered: true
+                  version:
+                    running: 1.2.0
+                    needed: 1.2.0
+                    ok: true
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":

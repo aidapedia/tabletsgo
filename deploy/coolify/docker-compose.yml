@@ -1,6 +1,7 @@
 # Tabletsgo on Coolify in enterprise mode, built from this repository's source —
 # no published image. People, workspaces and access come from a Hayat that runs
-# on its own (Hayat's repo: deploy/coolify).
+# on its own (Hayat's repo: deploy/coolify), 1.2.0 or newer — upgrade Hayat
+# before tabletsgo when a release raises that (server/hayat/compat.js).
 #
 # Coolify: New Resource → Git repository (this repo, branch v1.x.x or any other)
 # → Build Pack "Docker Compose" → Base Directory "/deploy/coolify" → Docker

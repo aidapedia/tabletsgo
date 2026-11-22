@@ -22,8 +22,9 @@ export class HayatError extends Error {
 }
 
 /**
- * One unary RPC that carries no access token. Only EnrollmentService takes
- * one: a service enrolling has no credentials yet, only the code an owner made.
+ * One unary RPC that carries no access token. Only EnrollmentService (a
+ * service enrolling has no credentials yet, only the code an owner made) and
+ * ServerInfoService (which Hayat this is, asked before enrolling) take one.
  */
 export async function callOpen(apiUrl, service, method, body = {}) {
   let res

@@ -24,6 +24,7 @@
 
 import { HAYAT_API_URL, HAYAT_AUTH_URL, HAYAT_CONSOLE_URL, HAYAT_ISSUER } from '../config.js'
 import { callOpen, connectHayat, HayatError } from './connect.js'
+import { compatibility } from './compat.js'
 
 export { HayatError }
 
@@ -131,6 +132,23 @@ export const inspectEnrollment = (code) => callOpen(HAYAT_API_URL, 'EnrollmentSe
 
 /** Spend an enrollment code: Hayat registers tabletsgo (or rotates its secret) and returns its credentials. */
 export const redeemEnrollment = (request) => callOpen(HAYAT_API_URL, 'EnrollmentService', 'Enroll', request)
+
+/**
+ * Which Hayat runs at HAYAT_API_URL, and whether this tabletsgo can use it
+ * (server/hayat/compat.js) → { running, needed, ok, problem }. Asked without
+ * credentials, so the setup page checks before a code is spent. A Hayat older
+ * than 1.2.0 has no ServerInfoService (a plain 404): `running` is null. Throws
+ * HayatError('unavailable') when Hayat can't be reached.
+ */
+export async function hayatVersion() {
+  let running = ''
+  try {
+    running = (await callOpen(HAYAT_API_URL, 'ServerInfoService', 'GetServerInfo', {})).version || ''
+  } catch (e) {
+    if (!(e.status === 404 || e.code === 'unimplemented' || e.code === 'not_found')) throw e
+  }
+  return compatibility(running, HAYAT_API_URL)
+}
 
 /** Does Hayat accept the credentials held now? One cheap call; throws when it doesn't. */
 export const checkCredentials = () => need().call('DirectoryService', 'BatchGetUsers', { ids: [] })
@@ -458,7 +476,16 @@ let watching = null
  * request will say so on its own.
  */
 export async function startHayat({ contract, log = console.log } = {}) {
-  if (!backend || backend.solo) return
+  if (backend?.solo) return
+  // Too old a Hayat is worth the loudest line at every boot: enrolling refuses
+  // it, and an RPC it doesn't have fails wherever tabletsgo calls it.
+  try {
+    const v = await hayatVersion()
+    if (!v.ok) log(`⛔ ${v.problem}`)
+  } catch (e) {
+    log(`⚠️  Hayat: couldn't read its version: ${e.message}`)
+  }
+  if (!backend) return
   try {
     const res = await backend.call('SchemaService', 'PublishContract', { manifest: contract })
     log(`📜 Published tabletsgo's contract v${res.version} to Hayat — approve it in Hayat's console (Services → tabletsgo).`)

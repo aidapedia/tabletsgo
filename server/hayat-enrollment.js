@@ -23,6 +23,7 @@ import { APP_SETTINGS_KEY, decryptSecret, encryptSecret } from './crypto.js'
 import { clearSetting, getSetting, setSetting } from './app-settings.js'
 import { SERVICE, contractManifest, roleSlug } from './permissions-catalog.js'
 import * as hayat from './hayat/index.js'
+import { MIN_HAYAT_VERSION } from './hayat/compat.js'
 
 const KEY = 'hayat'
 const CODE = /^hye_[A-Za-z0-9_-]{20,}$/
@@ -87,15 +88,30 @@ const hayatMessage = (e) => {
   return e
 }
 
+// Refuse a Hayat older than this tabletsgo needs before a code is looked at or
+// spent: an enrollment against it would only fail later, call by call.
+async function requireCompatibleHayat() {
+  let v
+  try {
+    v = await hayat.hayatVersion()
+  } catch (e) {
+    throw hayatMessage(e)
+  }
+  if (!v.ok) throw new EnrollmentError(v.problem, 409)
+  return v
+}
+
 /**
  * What a code would do, for the setup page to show before it is spent: which
  * service, whether it registers tabletsgo or rotates its secret, who made it
  * (by default, the admin of a tabletsgo it registers).
  */
 export async function inspect(code) {
+  const c = checkCode(code)
+  await requireCompatibleHayat()
   let res
   try {
-    res = await hayat.inspectEnrollment(checkCode(code))
+    res = await hayat.inspectEnrollment(c)
   } catch (e) {
     throw hayatMessage(e)
   }
@@ -131,6 +147,7 @@ export async function enroll({ code, adminEmail = '', address }, { actor = null,
     adminRole: roleSlug('admin'),
     adminEmail: admin,
   }
+  await requireCompatibleHayat()
   let res
   try {
     res = await hayat.redeemEnrollment(request)
@@ -159,13 +176,24 @@ export async function enroll({ code, adminEmail = '', address }, { actor = null,
   return { registered: !!res.registered, contractVersion: res.contractVersion || 0, warnings, address: request.appUrl }
 }
 
-/** For Admin → Hayat: where the credentials come from and when they were made. Never the secret. */
+/**
+ * For Admin → Hayat: where the credentials come from and when they were made,
+ * and which Hayat answers (asked fresh). Never the secret.
+ */
 export async function status() {
   const state = hayat.enrollmentState()
   if (!state) return null
   const s = await getSetting(KEY)
+  let version
+  try {
+    const v = await hayat.hayatVersion()
+    version = { running: v.running, needed: v.needed, ok: v.ok }
+  } catch {
+    version = { running: null, needed: MIN_HAYAT_VERSION, ok: null } // unreachable: unknown
+  }
   return {
     ...state,
+    version,
     namespace: SERVICE,
     publicUrl: PUBLIC_URL || null,
     address: s.address || null,
