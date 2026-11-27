@@ -2,7 +2,7 @@ import { Suspense, useEffect, useState, type MouseEvent } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { PageLoading } from '@/shared/ui/feedback/LoadingState'
 import { useAuth, useIdentity } from '@/features/auth'
-import { WorkspaceSwitcher } from '@/features/workspaces'
+import { WorkspaceSwitcher, useWorkspaces } from '@/features/workspaces'
 import { UpdateBanner } from '@/features/system-update'
 import Breadcrumb from '@/shared/ui/navigation/Breadcrumb'
 import NavItem from '@/shared/ui/navigation/NavItem'
@@ -10,7 +10,7 @@ import RailItem, { RailDivider } from '@/shared/ui/navigation/RailItem'
 import AccountTile from '@/shared/ui/AccountTile'
 import AccountMenu from '@/shared/ui/AccountMenu'
 import { PageTrailProvider, usePageCrumbs } from '@/shared/ui/page/PageTrail'
-import { BellIcon, BuildingIcon, CloudIcon, DatabaseIcon, DiagramIcon, GridIcon, HomeIcon, KeyIcon, Logo, MailIcon, MenuIcon, MoreHorizontalIcon, PanelLeftIcon, RefreshIcon, SettingsIcon, ShieldIcon, TerminalIcon, UsersIcon, WorkflowIcon } from '@/shared/ui/icons'
+import { BellIcon, BuildingIcon, CloudIcon, DatabaseIcon, DiagramIcon, GaugeIcon, GridIcon, HomeIcon, KeyIcon, Logo, MailIcon, MenuIcon, MoreHorizontalIcon, PanelLeftIcon, RefreshIcon, SettingsIcon, ShieldIcon, TerminalIcon, UsersIcon, WorkflowIcon } from '@/shared/ui/icons'
 import { Button } from '@/shared/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/shared/ui/tooltip'
 
@@ -52,12 +52,14 @@ const NAV = {
       ],
     },
     {
-      // Groups and who may do what are Hayat's (its console's Resource Tree);
-      // General and Member link there.
+      // The workspace itself — name, members, groups, who may do what — is
+      // Hayat's, so enterprise gets a row out to its console (added in
+      // `Sidebar`, since the address is the tenant's). Config is tabletsgo's own.
+      // Member stays in the model only so `/members` still names its section.
       group: 'Workspace',
       items: [
-        { label: 'General', Icon: BuildingIcon, path: '/workspace' },
-        { label: 'Member', Icon: UsersIcon, path: '/members' },
+        { label: 'Config', Icon: GaugeIcon, path: '/workspace' },
+        { label: 'Member', Icon: UsersIcon, path: '/members', hidden: true },
         { label: 'Notification', Icon: BellIcon, path: '/notifications' },
       ],
     },
@@ -120,16 +122,28 @@ function PageTrail({ pathname, isAdmin }: { pathname: string; isAdmin: boolean }
 
 // Rows about other people — and the Hayat that holds them. A solo instance has
 // nobody else, and no Hayat, so they go.
-const PEOPLE_PATHS = new Set(['/members', '/admin/hayat'])
+const PEOPLE_PATHS = new Set(['/admin/hayat'])
 
-function Sidebar({ pathname, onNavigate, user, onSettings, onLogout, open, onClose, isAdmin, canAdmin, people, collapsed, onToggleCollapse }: any) {
-  const workspaceNav = people
-    ? NAV
-    : { ...NAV, groups: NAV.groups.map((g) => ({ ...g, items: g.items.filter((i) => !PEOPLE_PATHS.has(i.path)) })) }
+function Sidebar({ pathname, onNavigate, user, onSettings, onLogout, open, onClose, isAdmin, canAdmin, people, manageUrl, collapsed, onToggleCollapse }: any) {
+  const hayatRow = people && manageUrl ? [{ label: 'Workspace setting', Icon: BuildingIcon, path: manageUrl, external: true }] : []
+  const workspaceNav = {
+    ...NAV,
+    groups: NAV.groups.map((g) => {
+      const items = g.items.filter((i: any) => !i.hidden)
+      return g.group === 'Workspace' ? { ...g, items: [...hayatRow, ...items] } : { ...g, items }
+    }),
+  }
   const adminNav = people
     ? ADMIN_NAV
     : { ...ADMIN_NAV, groups: ADMIN_NAV.groups.map((g) => ({ ...g, items: g.items.filter((i) => !PEOPLE_PATHS.has(i.path)) })) }
   const nav = isAdmin ? adminNav : workspaceNav
+
+  // An external row opens Hayat's console in a new tab; the rest route here.
+  const onRow = (e: MouseEvent, item: any) => {
+    if (!item.external) return onNavigate(e, item.path)
+    e.preventDefault()
+    window.open(item.path, '_blank', 'noopener')
+  }
 
   // The Account group isn't listed: its one row is about *you*, so it opens from
   // the account menu, next to sign-out. It stays in the model because the page
@@ -149,7 +163,7 @@ function Sidebar({ pathname, onNavigate, user, onSettings, onLogout, open, onClo
             label={item.label}
             href={item.path}
             active={isActive(pathname, item)}
-            onClick={(e: MouseEvent) => onNavigate(e, item.path)}
+            onClick={(e: MouseEvent) => onRow(e, item)}
           />
         ) : (
           <NavItem
@@ -157,7 +171,7 @@ function Sidebar({ pathname, onNavigate, user, onSettings, onLogout, open, onClo
             href={item.path}
             active={isActive(pathname, item)}
             icon={item.Icon}
-            onClick={(e: MouseEvent) => onNavigate(e, item.path)}
+            onClick={(e: MouseEvent) => onRow(e, item)}
           >
             {item.label}
           </NavItem>
@@ -332,6 +346,7 @@ const loadCollapsed = () => {
 export default function HomeLayout() {
   const { user, logout } = useAuth()
   const { people } = useIdentity()
+  const { current } = useWorkspaces()
   const navigate = useNavigate()
   const location = useLocation()
   const [sidebarOpen, setSidebarOpen] = useState(false)
@@ -376,6 +391,7 @@ export default function HomeLayout() {
         isAdmin={isAdmin}
         canAdmin={canAdmin}
         people={people}
+        manageUrl={current?.manageUrl}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
         collapsed={collapsed && !sidebarOpen}

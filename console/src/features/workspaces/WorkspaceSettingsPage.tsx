@@ -4,7 +4,9 @@ import Narrow from '@/shared/ui/page/Narrow'
 import { SubHead, TabbedSection } from '@/shared/ui/page/Section'
 import useTabRoute from '@/shared/hooks/useTabRoute'
 
-// Workspace section — General / Config as tabs (a second path segment).
+// Workspace section — Config / General as tabs (a second path segment). Config
+// comes first: the sidebar row is "Config", since the workspace itself (name,
+// members) is Hayat's and enterprise links there instead.
 // Integration + Notification moved to their own /integrations sidebar section.
 //
 // Member is not a tab here: it is its own sidebar row (/members), because the
@@ -18,22 +20,22 @@ export default function WorkspaceSettingsPage() {
 
   const tabs = [
     {
-      id: 'general',
-      label: 'General',
-      body: (
-        <Narrow>
-          <SubHead title="General" desc="Manage the general settings of this workspace." />
-          <WorkspaceGeneral />
-        </Narrow>
-      ),
-    },
-    {
       id: 'config',
       label: 'Config',
       body: (
         <Narrow>
           <SubHead title="Config" desc="Defaults every connection in this workspace inherits." />
           <WorkspaceConfig />
+        </Narrow>
+      ),
+    },
+    {
+      id: 'general',
+      label: 'General',
+      body: (
+        <Narrow>
+          <SubHead title="General" desc="Manage the general settings of this workspace." />
+          <WorkspaceGeneral />
         </Narrow>
       ),
     },

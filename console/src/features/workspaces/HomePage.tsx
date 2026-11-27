@@ -38,7 +38,11 @@ export default function HomePage() {
   const firstName = (user?.name || '').split(' ')[0] || 'there'
 
   const canCreate = can(current, 'connections.create')
-  const canInvite = can(current, 'members.manage')
+  // People are managed in Hayat's console; tabletsgo has no roster page to send
+  // anyone to. Solo has no Hayat, so no link and nothing to invite into.
+  const manageUrl = current?.manageUrl
+  const openRoster = manageUrl ? () => window.open(manageUrl, '_blank', 'noopener') : undefined
+  const canInvite = !!openRoster && can(current, 'members.manage')
   const production = connections.filter((c: any) => c.environment === 'production').length
   const engines = new Set(connections.map((c: any) => c.type)).size
   const failing = workflows.filter((w) => w.lastRun?.status === 'failed').length
@@ -58,7 +62,7 @@ export default function HomePage() {
         action={
           <>
             {canInvite && (
-              <Button variant="outline" size="lg" onClick={() => navigate('/members')}>
+              <Button variant="outline" size="lg" onClick={openRoster}>
                 <UsersIcon width={14} height={14} /> Invite
               </Button>
             )}
@@ -85,7 +89,7 @@ export default function HomePage() {
               label: 'Invite a teammate',
               hint: 'Share connections and dashboards with the people you work with.',
               done: (memberCount ?? 0) > 1,
-              action: canInvite ? { label: 'Invite', run: () => navigate('/members') } : undefined,
+              action: canInvite ? { label: 'Invite', run: openRoster! } : undefined,
             },
             {
               label: 'Build a dashboard',
@@ -135,7 +139,7 @@ export default function HomePage() {
           label="Members"
           value={dash(memberCount, loading)}
           hint="People in this workspace"
-          onClick={() => navigate('/members')}
+          onClick={openRoster}
         />
       </div>
 
