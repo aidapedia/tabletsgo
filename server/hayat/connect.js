@@ -123,7 +123,8 @@ export function connectHayat({ issuer, authUrl = issuer, apiUrl, clientId, clien
    * signal aborts or the stream ends (the caller reconnects).
    */
   async function watch(cursor, onEvent, signal) {
-    const msg = Buffer.from(JSON.stringify({ cursor }))
+    // heartbeat: empty frames keep a proxy (Cloudflare, nginx) from ending a quiet stream; an older Hayat ignores it
+    const msg = Buffer.from(JSON.stringify({ cursor, heartbeat: true }))
     const frame = Buffer.alloc(5 + msg.length)
     frame.writeUInt32BE(msg.length, 1)
     msg.copy(frame, 5)
