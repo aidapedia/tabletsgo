@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import { Button } from '@/shared/ui/button'
 import { Input } from '@/shared/ui/input'
 import { FormField } from '@/shared/ui/form/FormField'
@@ -8,6 +8,10 @@ import { useAuth } from '../stores/AuthContext'
 
 const MIN_PASSWORD = 8
 
+// Opened from the link in the log (`/#setup=<code>`): the code, read once. A
+// fragment never reaches the server, so the code stays out of access logs.
+const LINK_CODE = /(?:^|[#&])setup=([a-z-]+)/.exec(window.location.hash)?.[1] ?? ''
+
 /**
  * A new solo instance's first run: the setup code from the server's log, then
  * the owner's name, email and password. The code is what keeps someone who can
@@ -15,13 +19,18 @@ const MIN_PASSWORD = 8
  */
 export default function SoloSetup() {
   const { soloSetup } = useAuth()
-  const [code, setCode] = useState('')
+  const [code, setCode] = useState(LINK_CODE)
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const short = password.length > 0 && password.length < MIN_PASSWORD
+
+  // Don't leave the code in the address bar or the history entry.
+  useEffect(() => {
+    if (LINK_CODE) window.history.replaceState(null, '', window.location.pathname + window.location.search)
+  }, [])
 
   const submit = async (e: FormEvent) => {
     e.preventDefault()
@@ -40,13 +49,13 @@ export default function SoloSetup() {
     <AuthCard>
       <h1 className="mb-1 text-[16px] font-semibold">Set up Tabletsgo</h1>
       <p className="mb-5 text-[13px] text-muted-foreground">
-        You’ll be this instance’s owner. Copy the setup code from the server’s log: <code className="font-mono">docker logs tabletsgo</code>.
+        You’ll be this instance’s owner. Copy the setup code from the server’s log (<code className="font-mono">docker logs tabletsgo</code>), or open the link printed beside it.
       </p>
       <form onSubmit={submit} noValidate>
         <FormField label="Setup code" htmlFor="setup-code">
           <Input
             id="setup-code"
-            autoFocus
+            autoFocus={!LINK_CODE}
             autoComplete="off"
             spellCheck={false}
             placeholder="amber-falcon-river-stone-maple-orbit"
@@ -56,7 +65,7 @@ export default function SoloSetup() {
           />
         </FormField>
         <FormField label="Your name" htmlFor="setup-name">
-          <Input id="setup-name" autoComplete="name" value={name} onChange={(e) => setName(e.target.value)} />
+          <Input id="setup-name" autoFocus={!!LINK_CODE} autoComplete="name" value={name} onChange={(e) => setName(e.target.value)} />
         </FormField>
         <FormField label="Email" htmlFor="setup-email" hint="You sign in with it. It also becomes your Hayat account if you move to enterprise later.">
           <Input id="setup-email" type="email" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} />

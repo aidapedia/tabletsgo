@@ -22,6 +22,7 @@ export {
   moveWorkflowFolder,
   deleteWorkflowFolder,
   MAX_WORKFLOW_FOLDER_DEPTH,
+  canManageWorkflows,
 } from '@/features/workflow/lib/api'
 export type { Workflow, WorkflowSummary, WorkspaceWorkflow, WorkflowFolder, WorkflowGraph, RunResult, RunLogEntry } from '@/features/workflow/lib/api'
 export { sanitizeGraph, stripSecrets } from '@/features/workflow/lib/exportImport'

@@ -15,6 +15,7 @@
     "hayat:remap": "node --env-file-if-exists=.env scripts/hayat-remap.js",
     "hayat:enroll": "node --env-file-if-exists=.env scripts/hayat-enroll.js",
     "solo:reset-password": "node --env-file-if-exists=.env scripts/solo-reset-password.js",
+    "connections:assign": "node --env-file-if-exists=.env scripts/connections-assign.js",
     "prisma": "node --env-file-if-exists=.env node_modules/prisma/build/index.js",
     "prisma:generate": "prisma generate --schema prisma/sqlite/schema.prisma --config prisma/generate.config.mjs && prisma generate --schema prisma/postgresql/schema.prisma --config prisma/generate.config.mjs",
     "dev:all": "concurrently \"npm run dev\" \"npm run server\"",

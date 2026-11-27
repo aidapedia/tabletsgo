@@ -11,6 +11,10 @@ export const setTokenSource = (fn: TokenSource) => {
 }
 export const getToken = () => tokenSource().catch(() => null)
 
+// The server's 503 `code` while it can't reach the identity service (Hayat).
+const IDENTITY_UNAVAILABLE = 'identity_unavailable'
+export const isIdentityUnavailable = (error: unknown) => (error as { data?: { code?: string } })?.data?.code === IDENTITY_UNAVAILABLE
+
 type RequestOptions = {
   method?: string
   body?: unknown
@@ -44,6 +48,8 @@ export async function request<T = any>(path: string, { method = 'GET', body, sig
     // A 401 on a call that carried a session token means that token is
     // expired/invalid — tell the auth store to sign out and bounce to login.
     if (res.status === 401 && token) window.dispatchEvent(new Event('auth:unauthorized'))
+    // Hayat is unreachable: the session isn't wrong, so keep it and wait.
+    if (res.status === 503 && (data as any)?.code === IDENTITY_UNAVAILABLE) window.dispatchEvent(new Event('auth:unavailable'))
     // `status` and `data` ride along for the callers that act on more than the
     // message (a 409 that lists what blocked it).
     throw Object.assign(new Error((data as any)?.error || `${method} ${path} failed (${res.status})`), { status: res.status, data })

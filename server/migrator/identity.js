@@ -117,6 +117,32 @@ export function captureSoloOwner(db, log = console.log, { soloOwner = SOLO_OWNER
   return owner.id
 }
 
+/**
+ * Before the drop: a connection from before workspaces existed (workspace_id
+ * NULL) would get no node in Hayat, and nobody may open one without it. File it
+ * under the oldest workspace its owner belongs to — the oldest one at all when
+ * they belong to none — so the bundle carries it. → how many were filed.
+ */
+export function fileUnassignedConnections(db, log = console.log) {
+  if (!hasTable(db, 'connections') || !hasTable(db, 'workspaces')) return 0
+  const unassigned = db.prepare('SELECT id, owner_id FROM connections WHERE workspace_id IS NULL').all()
+  const workspaces = db.prepare('SELECT id FROM workspaces ORDER BY created_at').all().map((w) => w.id)
+  if (!unassigned.length || !workspaces.length) return 0
+  const memberships =
+    hasTable(db, 'resource_nodes') && hasTable(db, 'node_members')
+      ? db.prepare("SELECT n.resource_id AS ws FROM node_members m JOIN resource_nodes n ON n.id = m.node_id WHERE n.type = 'workspace' AND m.user_id = ?")
+      : null
+  const file = db.prepare('UPDATE connections SET workspace_id = ? WHERE id = ?')
+  db.transaction(() => {
+    for (const c of unassigned) {
+      const mine = new Set(memberships && c.owner_id ? memberships.all(c.owner_id).map((r) => r.ws) : [])
+      file.run(workspaces.find((id) => mine.has(id)) || workspaces[0], c.id)
+    }
+  })()
+  log(`📁 ${unassigned.length} connection(s) from before workspaces filed under their owner’s workspace.`)
+  return unassigned.length
+}
+
 // ---- Every boot ----------------------------------------------------------------------
 
 /** Write the bundle `hayat import` loads, from the solo owner and their workspace. */

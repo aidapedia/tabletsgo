@@ -93,7 +93,8 @@ prisma/<engine>/         # schema.prisma + migrations/ per engine (sqlite | post
 scripts/migrate.js       # `npm run migrate [-- --status]` — the migrator by hand (the app runs it on boot; the updater's one-shot container runs this)
 scripts/hayat-bundle.js  # `npm run hayat:bundle [-- --admin <email>]` — the bundle `hayat import` loads (contract + named first admin on a fresh install; a solo instance's owner + workspace)
 scripts/solo-reset-password.js # `npm run solo:reset-password [-- --password x]` — a solo owner's way back in; ends every session
-docker-compose.yml       # solo mode (nothing else to run); docker-compose.enterprise.yml is the overlay that adds TABLETSGO_MODE=enterprise + HAYAT_*
+scripts/connections-assign.js # `npm run connections:assign -- --workspace <id>` — file connections from before workspaces (nobody may open one) under a workspace + mirror them
+docker-compose.yml       # solo mode (nothing else to run); docker-compose.enterprise.yml is the overlay that adds TABLETSGO_MODE=enterprise + HAYAT_* for a Hayat run elsewhere; docker-compose.hayat.yml the overlay that bundles Hayat (+ its Postgres, Redis, console) on the same machine
 scripts/hayat-remap.js   # `npm run hayat:remap -- result.json` — rewrite user ids Hayat matched to existing accounts
 scripts/dev/hayat.sh     # `npm run dev:hayat` — Hayat from ../hayat's source beside tabletsgo; writes .env option B
 scripts/dev/demo-workspace.mjs# the Demo workspace hayat.sh seeds once: sample SQLite DBs + connections, people with every kind of access

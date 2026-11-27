@@ -99,6 +99,11 @@ export const listConnections = async () => {
   return rows.map((row) => toConnection(row, owners))
 }
 
+// Connections in no workspace — an install from before workspaces. Nobody may
+// open one (server/auth.js) until `npm run connections:assign` files it.
+export const unassignedConnections = () =>
+  db().connections.findMany({ where: { workspace_id: null }, select: { id: true, name: true, owner_id: true } })
+
 export const getConnection = async (id) => (id ? rowToConnection(await db().connections.findUnique({ where: { id } })) : null)
 
 // How many connections each engine has, and across how many workspaces:

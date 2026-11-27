@@ -1,0 +1,103 @@
+# Enterprise mode with Hayat bundled: tabletsgo and Hayat (https://github.com/aidapedia/hayat)
+# on one machine. An overlay on docker-compose.yml, used *instead of*
+# docker-compose.enterprise.yml (that one points at a Hayat you run elsewhere).
+#
+#   echo "ENCRYPTION_KEY=$(openssl rand -hex 32)" >> .env
+#   echo "HAYAT_MASTER_KEY=$(openssl rand -base64 32)" >> .env
+#   alias dc='docker compose -f docker-compose.yml -f docker-compose.hayat.yml'
+#   dc up -d
+#   dc logs hayat | grep setup     # open that link: create Hayat's first admin
+#   dc exec hayat hayat enrollment-code --service tabletsgo --name Tabletsgo
+#   open http://localhost:3000      # paste the code; you become tabletsgo's admin
+#
+# Or enroll from the shell instead of the setup page:
+#   dc exec tabletsgo npm run hayat:enroll -- --code "$(dc exec -T hayat hayat enrollment-code --service tabletsgo --name Tabletsgo)"
+#   dc restart tabletsgo
+#
+# People, workspaces and roles are then managed in Hayat's console at
+# http://localhost:3001. Hayat runs every role in one container, on its own
+# Postgres and Redis — right for a team on one machine. For high availability
+# run Hayat on its own (its repo's deploy/compose) with docker-compose.enterprise.yml.
+#
+# Behind https: set HAYAT_ISSUER and HAYAT_CONSOLE_URL to their public https
+# addresses and HAYAT_DEV=false (it only exists to allow http on localhost).
+services:
+  tabletsgo:
+    environment:
+      - TABLETSGO_MODE=enterprise
+      # Every replica must share it, so set it here rather than relying on the
+      # file a solo install generated (copy that file's value if you had one).
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY:?set ENCRYPTION_KEY}
+      # The browser signs in at the issuer; this container reaches Hayat by name.
+      - HAYAT_ISSUER=${HAYAT_ISSUER:-http://localhost:8443}
+      - HAYAT_AUTH_URL=http://hayat:8443
+      - HAYAT_API_URL=http://hayat:7443
+      - HAYAT_CONSOLE_URL=${HAYAT_CONSOLE_URL:-http://localhost:3001}
+    depends_on:
+      hayat:
+        condition: service_started
+
+  hayat-postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: hayat
+      POSTGRES_PASSWORD: ${HAYAT_POSTGRES_PASSWORD:-hayat}
+      POSTGRES_DB: hayat
+    volumes:
+      - hayat-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hayat"]
+      interval: 5s
+      retries: 20
+
+  hayat-redis:
+    image: redis:7.4
+    restart: unless-stopped
+
+  # Catches the mail Hayat sends (invites, password resets) at http://localhost:8025.
+  # Point HAYAT_SMTP_URL at a real relay for a team.
+  hayat-mailpit:
+    image: axllent/mailpit:v1.21
+    ports: ["8025:8025"]
+
+  hayat-migrate:
+    image: ghcr.io/aidapedia/hayat:${HAYAT_VERSION:-latest}
+    restart: "no"
+    command: ["migrate"]
+    environment: &hayat-env
+      HAYAT_DATABASE_URL: postgres://hayat:${HAYAT_POSTGRES_PASSWORD:-hayat}@hayat-postgres:5432/hayat?sslmode=disable
+      HAYAT_REDIS_URL: redis://hayat-redis:6379/0
+      HAYAT_SMTP_URL: ${HAYAT_SMTP_URL:-smtp://hayat-mailpit:1025}
+      HAYAT_MASTER_KEY: ${HAYAT_MASTER_KEY:?set HAYAT_MASTER_KEY (openssl rand -base64 32)}
+      HAYAT_ISSUER: ${HAYAT_ISSUER:-http://localhost:8443}
+      HAYAT_CONSOLE_URL: ${HAYAT_CONSOLE_URL:-http://localhost:3001}
+      HAYAT_DEV: ${HAYAT_DEV:-true}
+      HAYAT_STORAGE_DIR: /var/lib/hayat/media
+    depends_on:
+      hayat-postgres: { condition: service_healthy }
+
+  hayat:
+    image: ghcr.io/aidapedia/hayat:${HAYAT_VERSION:-latest}
+    restart: unless-stopped
+    command: ["serve"]
+    environment: *hayat-env
+    volumes:
+      - hayat-media:/var/lib/hayat/media
+    # The auth role is the one the browser reaches; the API and admin roles stay
+    # on the compose network.
+    ports: ["8443:8443"]
+    depends_on:
+      hayat-migrate: { condition: service_completed_successfully }
+      hayat-redis: { condition: service_started }
+
+  hayat-console:
+    image: ghcr.io/aidapedia/hayat-console:${HAYAT_VERSION:-latest}
+    restart: unless-stopped
+    environment: { HAYAT_ADMIN_URL: "http://hayat:8080" }
+    ports: ["3001:80"]
+    depends_on: [hayat]
+
+volumes:
+  hayat-postgres:
+  hayat-media:

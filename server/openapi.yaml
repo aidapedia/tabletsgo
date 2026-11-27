@@ -16,7 +16,7 @@ info:
     - **Base URL:** `http://localhost:3000` (port from `PORT`, default `3000`). All endpoints live under `/api`.
     - **Content type:** requests and responses are JSON. The JSON body limit is `10mb`.
     - **CORS:** enabled for all origins (`cors()` with defaults).
-    - **Auth:** sign in at Hayat (see **Signing in (Hayat)**) and send its access token as `Authorization: Bearer <token>` — use **Authorize** on this page. Workspace, member and every per-connection route require it: unauthenticated → `401`, not a member → `403`.
+    - **Auth:** sign in at Hayat (see **Signing in (Hayat)**) and send its access token as `Authorization: Bearer <token>` — use **Authorize** on this page. Workspace, member and every per-connection route require it: unauthenticated → `401`, not a member → `403`. In enterprise mode, while Hayat can't be reached, any route that needs a signed-in caller answers `503` with `{ "error": "…", "code": "identity_unavailable" }` instead — the token isn't wrong, so keep it and retry.
     - **Error shape:** errors return `{ "error": "<message>" }` with `400` (bad input), `401` (bad login), `404` (not found) or `500` (server error). The query, insert and test routes return database errors in the body too — see each route.
     - **Query params** (where supported): `database` is the target database on the same server (PostgreSQL multi-database browsing; on Redis the numbered database, as `db0`…`dbN` or a bare index), `schema` is the target schema (PostgreSQL, default `public`), `limit` is the row cap for table data (default `200`).
     - **Engines:** `sqlite`, `postgresql`, `redis`, `kafka`. Routes that only make sense for a relational engine (`/columns`, `/indexes`, `/diagram`, `/insert`, `/analyze`, `/table/{table}`, backups) reject a Redis connection with a `400` naming the type; `/tables` and `/objects` return `[]`. Redis browses its keyspace through the `/redis/*` routes and runs commands through the shared `/query` route.
@@ -3759,6 +3759,19 @@ paths:
                   error:
                     type: string
                     example: A workflow name is required
+        "403":
+          description: The caller neither owns the connection nor holds `workflows.manage` at it. Running a workflow by hand needs only `connection.open`.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: You do not have permission to change this connection’s workflows.
+                  permission:
+                    type: string
+                    example: workflows.manage
         "401":
           $ref: "#/components/responses/Unauthorized"
   /api/connections/{id}/workflows/{wid}:
@@ -3870,6 +3883,19 @@ paths:
                   error:
                     type: string
                     example: Nothing to update
+        "403":
+          description: The caller neither owns the connection nor holds `workflows.manage` at it. Running a workflow by hand needs only `connection.open`.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: You do not have permission to change this connection’s workflows.
+                  permission:
+                    type: string
+                    example: workflows.manage
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -3913,6 +3939,19 @@ paths:
                   ok:
                     type: boolean
                     example: true
+        "403":
+          description: The caller neither owns the connection nor holds `workflows.manage` at it. Running a workflow by hand needs only `connection.open`.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: You do not have permission to change this connection’s workflows.
+                  permission:
+                    type: string
+                    example: workflows.manage
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -11432,6 +11471,13 @@ components:
         ownerId:
           type: string
           description: The creator by default.
+        permissions:
+          type: array
+          readOnly: true
+          items:
+            type: string
+          example: [connection.open, workflows.manage]
+          description: In `GET /api/connections` only — what the caller may do at this connection (short keys, resolved by Hayat at the connection's node). For hiding controls; the server enforces every one.
         ownerName:
           type: string
           readOnly: true

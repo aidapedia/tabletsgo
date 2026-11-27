@@ -142,6 +142,17 @@ export const PERMISSIONS = [
         scope: 'connection',
         contract: true,
       },
+      {
+        // A saved workflow runs unattended (schedule, webhook) with the
+        // connection's credentials, long after whoever wrote it lost access — so
+        // changing one is its own grant; running one by hand is `connection.open`.
+        key: 'workflows.manage',
+        hayat: 'tabletsgo.workflows.manage',
+        label: 'Manage workflows',
+        description: 'Create, edit and delete a connection’s workflows — what runs on a schedule or a webhook.',
+        scope: 'connection',
+        contract: true,
+      },
     ],
   },
 ]
@@ -178,7 +189,7 @@ export const CONTRACT_ROLES = [
     slug: 'owner',
     name: 'Workspace owner (tabletsgo)',
     description: 'Runs the workspace in tabletsgo: its settings, storage, SSH hosts and every connection.',
-    permissions: ['workspace.manage', 'workspace.delete', 'notifications.manage', 'storage.manage', 'ssh.manage', 'connections.create', 'connections.manage', 'connections.transfer', 'connection.open'],
+    permissions: ['workspace.manage', 'workspace.delete', 'notifications.manage', 'storage.manage', 'ssh.manage', 'connections.create', 'connections.manage', 'connections.transfer', 'connection.open', 'workflows.manage'],
     appliesTo: ['hayat/root', 'hayat/tenant'],
   },
   {
@@ -191,14 +202,14 @@ export const CONTRACT_ROLES = [
   {
     slug: 'connection-manager',
     name: 'Connection manager',
-    description: 'Edits, exports and opens the connections at and below where it is granted.',
-    permissions: ['connections.manage', 'connection.open'],
+    description: 'Edits, exports and opens the connections at and below where it is granted, and their workflows.',
+    permissions: ['connections.manage', 'connection.open', 'workflows.manage'],
     appliesTo: ['hayat/tenant', 'hayat/group', 'connection'],
   },
 ]
 
 // Bump on every change below; a version only adds (Hayat refuses the rest).
-export const CONTRACT_VERSION = 2
+export const CONTRACT_VERSION = 3
 
 const contractKey = (key) => hayatKey(key).slice(SERVICE.length + 1)
 

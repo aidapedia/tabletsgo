@@ -102,6 +102,7 @@ import {
   listConnections,
   saveConnection,
   setSchemaVersion,
+  unassignedConnections,
 } from './server/connections.js'
 import {
   FOLDER_TYPES,
@@ -255,6 +256,10 @@ await loadModules()
 // Publish this version's contract (it waits for approval in Hayat's console) and
 // follow Hayat's policy changes, which is what keeps cached answers honest.
 await hayat.startHayat({ contract: contractManifest() })
+const unassigned = (await unassignedConnections()).length
+if (unassigned) {
+  console.warn(`⚠️  ${unassigned} connection(s) belong to no workspace, so nobody can open them. File them under one: npm run connections:assign -- --workspace <id>`)
+}
 bootReady = true
 
 // The database/schema a request is aimed at. Every db layer call takes one, and
@@ -752,7 +757,14 @@ app.get('/api/connections', async (req, res) => {
   if (!(await isMember(workspaceId, user.id))) return res.status(403).json({ error: 'Forbidden' })
   // `locked`: its database is turned off on this instance — listed, so nobody
   // wonders where it went, but nothing on it works until it's back on.
-  res.json((await openableConnections(workspaceId, user.id)).map((c) => ({ ...c, locked: !isModuleEnabled(c.type) })))
+  // `permissions`: what the caller may do at each one, so the console can hide
+  // what they can't — the same cached answer that just let them open it.
+  const conns = await openableConnections(workspaceId, user.id)
+  res.json(
+    await Promise.all(
+      conns.map(async (c) => ({ ...c, locked: !isModuleEnabled(c.type), permissions: [...(await permissionsAtConnection(c.id, user.id))] }))
+    )
+  )
 })
 
 // May this caller tunnel a probe through `gatewayId`? A gateway is a way into
@@ -1030,7 +1042,7 @@ app.use('/api/connections/:id', async (req, res, next) => {
   if (!user) return
   const conn = await getConnection(req.params.id)
   if (!conn) return res.status(404).json({ error: 'Connection not found' })
-  if (conn.workspaceId && !(await userCanAccessConnection(conn, user.id))) return res.status(403).json({ error: 'Forbidden' })
+  if (!(await userCanAccessConnection(conn, user.id))) return res.status(403).json({ error: 'Forbidden' })
   // Its database turned off in Admin → Modules: the connection is locked —
   // kept exactly as it is, but nothing opens, edits, exports or backs it up.
   // Deleting it is the one way out, so its owner can still clean up. The
@@ -1431,7 +1443,19 @@ app.get('/api/connections/:id/workflows', async (req, res) => {
   res.json(await listConnectionWorkflows(req.params.id))
 })
 
+// A saved workflow runs unattended — a schedule, a webhook — with the
+// connection's credentials, so changing one is owning the connection or
+// `workflows.manage` at it. Running one by hand stays with `connection.open`.
+const requireWorkflowManager = async (req, res) => {
+  const conn = await getConnection(req.params.id)
+  const userId = authUser(req).id
+  if (conn.ownerId === userId || (await permissionsAtConnection(conn.id, userId)).has('workflows.manage')) return true
+  res.status(403).json({ error: 'You do not have permission to change this connection’s workflows.', permission: 'workflows.manage' })
+  return false
+}
+
 app.post('/api/connections/:id/workflows', async (req, res) => {
+  if (!(await requireWorkflowManager(req, res))) return
   try {
     res.json(await createWorkflow(req.params.id, req.body, { ownerId: authUser(req).id }))
   } catch (error) {
@@ -1446,6 +1470,7 @@ app.get('/api/connections/:id/workflows/:wid', async (req, res) => {
 })
 
 app.put('/api/connections/:id/workflows/:wid', async (req, res) => {
+  if (!(await requireWorkflowManager(req, res))) return
   try {
     if (!(await updateWorkflow(req.params.id, req.params.wid, req.body))) return res.status(404).json({ error: 'Not found' })
     res.json({ ok: true })
@@ -1455,6 +1480,7 @@ app.put('/api/connections/:id/workflows/:wid', async (req, res) => {
 })
 
 app.delete('/api/connections/:id/workflows/:wid', async (req, res) => {
+  if (!(await requireWorkflowManager(req, res))) return
   const result = await deleteWorkflow(req.params.id, req.params.wid)
   if (result === 'missing') return res.status(404).json({ error: 'Not found' })
   if (result === 'protected') return res.status(409).json({ error: 'This workflow is protected and cannot be deleted.' })

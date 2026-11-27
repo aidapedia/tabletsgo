@@ -41,6 +41,7 @@ import {
   renameWorkflowFolder,
   moveWorkflowFolder,
   deleteWorkflowFolder,
+  canManageWorkflows,
 } from '@/features/workflow'
 import {
   DashboardsPanel,
@@ -585,6 +586,7 @@ export default function DatabaseConsole({ connectionId: id }: { connectionId: st
         onMoveToFolder={workflows.moveToFolder}
         onMoveFolder={workflows.moveFolderToParent}
         onRefresh={workflows.refresh}
+        readOnly={!canManageWorkflows(conn, user?.id)}
       />
     ) : panel === 'dashboards' ? (
       <DashboardsPanel

@@ -47,6 +47,7 @@ export default function WorkflowsPanel({
   onMoveToFolder,
   onMoveFolder,
   onRefresh,
+  readOnly = false,
 }: {
   workflows: WorkflowSummary[]
   folders: WorkflowFolder[]
@@ -62,6 +63,8 @@ export default function WorkflowsPanel({
   onMoveToFolder?: (id: string, folderId: string | null) => void
   onMoveFolder?: (id: string, parentId: string | null) => void
   onRefresh?: () => void
+  // Without `workflows.manage` at the connection: open and run, change nothing.
+  readOnly?: boolean
 }) {
   const [searchOpen, setSearchOpen] = useState(false)
   const [filter, setFilter] = useState('')
@@ -215,7 +218,7 @@ export default function WorkflowsPanel({
     return (
       <ListRow
         key={w.id}
-        draggable
+        draggable={!readOnly}
         active={w.id === activeId}
         onDragStart={(e: React.DragEvent) => onWorkflowDragStart(e, w.id)}
         onDragEnd={onDragEnd}
@@ -223,7 +226,7 @@ export default function WorkflowsPanel({
         className={drag?.type === 'workflow' && drag.id === w.id ? 'opacity-50' : ''}
         icon={<WorkflowIcon className="shrink-0 text-faint" width={14} height={14} />}
         trailing={
-          <Popover
+          readOnly ? undefined : <Popover
             align="right"
             width={170}
             trigger={({ open, toggle }) => (
@@ -301,7 +304,7 @@ export default function WorkflowsPanel({
     return (
       <div key={f.id}>
         <div
-          draggable
+          draggable={!readOnly}
           onDragStart={(e) => onFolderDragStart(e, f.id)}
           onDragEnd={onDragEnd}
           onClick={() => toggleFolder(f.id)}
@@ -320,7 +323,7 @@ export default function WorkflowsPanel({
           {subtreeItemCount(f.id) > 0 && (
             <span className="text-[10px] text-faint">{subtreeItemCount(f.id)}</span>
           )}
-          <div className="shrink-0" onClick={(e) => e.stopPropagation()}>
+          {!readOnly && <div className="shrink-0" onClick={(e) => e.stopPropagation()}>
             <Popover
               align="right"
               width={180}
@@ -350,7 +353,7 @@ export default function WorkflowsPanel({
                 </div>
               )}
             </Popover>
-          </div>
+          </div>}
         </div>
 
         {expanded && (
@@ -418,22 +421,26 @@ export default function WorkflowsPanel({
             </TooltipTrigger>
             <TooltipContent side="bottom">Search</TooltipContent>
           </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon-sm" onClick={() => { setNewFolderName(''); setCreatingFolder({ parentId: null }) }}>
-                <FolderPlusIcon />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom">New folder</TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon-sm" onClick={() => onNew?.(null)}>
-                <PlusIcon width={14} height={14} />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom">New workflow</TooltipContent>
-          </Tooltip>
+          {!readOnly && (
+            <>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button variant="ghost" size="icon-sm" onClick={() => { setNewFolderName(''); setCreatingFolder({ parentId: null }) }}>
+                  <FolderPlusIcon />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">New folder</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button variant="ghost" size="icon-sm" onClick={() => onNew?.(null)}>
+                  <PlusIcon width={14} height={14} />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">New workflow</TooltipContent>
+            </Tooltip>
+            </>
+          )}
         </div>
       </div>
 
@@ -474,7 +481,7 @@ export default function WorkflowsPanel({
           </div>
         )}
 
-        {onImport && (
+        {onImport && !readOnly && (
           <button
             type="button"
             onClick={onImport}
