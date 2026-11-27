@@ -10,7 +10,7 @@ import RailItem, { RailDivider } from '@/shared/ui/navigation/RailItem'
 import AccountTile from '@/shared/ui/AccountTile'
 import AccountMenu from '@/shared/ui/AccountMenu'
 import { PageTrailProvider, usePageCrumbs } from '@/shared/ui/page/PageTrail'
-import { BellIcon, BuildingIcon, CloudIcon, DatabaseIcon, DiagramIcon, GaugeIcon, GridIcon, HomeIcon, KeyIcon, Logo, MailIcon, MenuIcon, MoreHorizontalIcon, PanelLeftIcon, RefreshIcon, SettingsIcon, ShieldIcon, TerminalIcon, UsersIcon, WorkflowIcon } from '@/shared/ui/icons'
+import { BellIcon, BuildingIcon, CloudIcon, DatabaseIcon, DiagramIcon, GridIcon, HomeIcon, KeyIcon, Logo, MailIcon, MenuIcon, MoreHorizontalIcon, PanelLeftIcon, RefreshIcon, SettingsIcon, ShieldIcon, TerminalIcon, UsersIcon, WorkflowIcon } from '@/shared/ui/icons'
 import { Button } from '@/shared/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/shared/ui/tooltip'
 
@@ -58,7 +58,7 @@ const NAV = {
       // Member stays in the model only so `/members` still names its section.
       group: 'Workspace',
       items: [
-        { label: 'Config', Icon: GaugeIcon, path: '/workspace' },
+        { label: 'Config', Icon: SettingsIcon, path: '/workspace' },
         { label: 'Member', Icon: UsersIcon, path: '/members', hidden: true },
         { label: 'Notification', Icon: BellIcon, path: '/notifications' },
       ],

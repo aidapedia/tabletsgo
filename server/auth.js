@@ -50,7 +50,10 @@ export async function sessionMiddleware(req, _res, next) {
         req.authToken = token
       }
     } catch (error) {
-      if (!/expired|signature|JWS|JWT|another application|service token|enrolled/i.test(error.message)) {
+      // Hayat unreachable: still nobody is signed in, but the guards answer 503 so
+      // the console waits it out instead of signing the person out.
+      if (error instanceof hayat.HayatError && error.code === 'unavailable') req.authUnavailable = true
+      else if (!/expired|signature|JWS|JWT|another application|service token|enrolled/i.test(error.message)) {
         console.error('Session lookup failed:', error.message)
       }
     }
@@ -68,6 +71,10 @@ export const publicUser = (u) =>
 // Require an authenticated caller; sends 401 and returns null otherwise.
 export const requireAuth = (req, res) => {
   const user = authUser(req)
+  if (!user && req.authUnavailable) {
+    res.status(503).json({ error: "Can't reach the identity service (Hayat). Try again in a moment.", code: 'identity_unavailable' })
+    return null
+  }
   if (!user) {
     res.status(401).json({ error: 'Unauthorized' })
     return null
@@ -177,14 +184,15 @@ export const workspaceForUser = async (id, userId) => {
  * Nothing granted means nobody, not everybody.
  */
 export const userCanAccessConnection = async (conn, userId) => {
-  if (!conn) return false
-  if (!conn.workspaceId) return true
+  // A connection in no workspace has no node in Hayat, so nobody may open it —
+  // `npm run connections:assign` files it under one (an install from before workspaces).
+  if (!conn?.workspaceId) return false
   return hayat.check(userId, hayatKey('connection.open'), hayat.ref(CONNECTION_TYPE, conn.id))
 }
 
 /** May they change the connection record? Own it, or hold `connections.manage` at it. */
 export const canManageConnection = async (conn, userId) =>
-  !conn.workspaceId || conn.ownerId === userId || (await permissionsAtConnection(conn.id, userId)).has('connections.manage')
+  !!conn.workspaceId && (conn.ownerId === userId || (await permissionsAtConnection(conn.id, userId)).has('connections.manage'))
 
 // Absolute base URL of the frontend, for links in emails.
 // `PUBLIC_URL` when set; the request can't be trusted to name the instance behind

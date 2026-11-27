@@ -5,6 +5,12 @@ import { request, safeRequest } from '@/shared/api/request'
 import * as folders from '@/shared/api/folders'
 
 export type WorkflowGraph = { nodes: any[]; edges: any[] }
+
+// May this person change the connection's saved workflows? Owning it, or
+// `workflows.manage` at it (the connection list carries `permissions`). Only
+// hides controls — the server checks every write.
+export const canManageWorkflows = (conn: { ownerId?: string; permissions?: string[] } | null | undefined, userId?: string | null) =>
+  !!conn && ((!!userId && conn.ownerId === userId) || !!conn.permissions?.includes('workflows.manage'))
 export type WorkflowSummary = {
   id: string
   name: string

@@ -13,7 +13,8 @@ import { toast } from 'sonner'
 import { ClockIcon, DownloadIcon, HistoryIcon, PlayIcon, PlusIcon, UploadIcon } from '@/shared/ui/icons'
 import { getSchema } from '@/shared/api/database'
 import type { SqlSchema } from '@/shared/ui/SqlEditor'
-import { getWorkflow, updateWorkflow, runWorkflow, getWorkflowRun } from '@/features/workflow/lib/api'
+import { useAuth } from '@/features/auth'
+import { canManageWorkflows, getWorkflow, updateWorkflow, runWorkflow, getWorkflowRun } from '@/features/workflow/lib/api'
 import type { RunResult, WorkflowGraph } from '@/features/workflow/lib/api'
 import { NODE_SPECS, sourceHandles } from '@/features/workflow/lib/nodeSpec'
 import type { NodeType } from '@/features/workflow/lib/nodeSpec'
@@ -41,6 +42,9 @@ const nodeTypes = Object.fromEntries(
 )
 
 export default function WorkflowEditor({ conn, workflowId }: any) {
+  const { user } = useAuth()
+  // Without `workflows.manage` here: look and run, never save.
+  const readOnly = !canManageWorkflows(conn, user?.id)
   const { bindings } = useKeymap()
   const [nodes, setNodes, onNodesChange] = useNodesState([])
   const [edges, setEdges, onEdgesChange] = useEdgesState([])
@@ -104,7 +108,7 @@ export default function WorkflowEditor({ conn, workflowId }: any) {
 
   // Debounced autosave whenever the graph changes (after the initial load).
   useEffect(() => {
-    if (loading || loadedFor.current !== workflowId) return
+    if (readOnly || loading || loadedFor.current !== workflowId) return
     if (!dirty.current) {
       dirty.current = true
       return
@@ -325,6 +329,7 @@ export default function WorkflowEditor({ conn, workflowId }: any) {
             size="sm"
             aria-pressed={scheduleEnabled}
             className={scheduleEnabled ? '!text-primary-bright' : ''}
+            disabled={readOnly}
             onClick={toggleSchedule}
           >
             <ClockIcon width={15} height={15} />
@@ -332,13 +337,14 @@ export default function WorkflowEditor({ conn, workflowId }: any) {
           </Button>
         )}
         {isProtected && <span className="text-[10px] uppercase tracking-wide text-faint">Protected</span>}
+        {readOnly && <span className="text-[10px] uppercase tracking-wide text-faint">Read only</span>}
         <div className="ml-auto flex items-center gap-2">
           {result && !logOpen && !historyOpen && (
             <Button variant="link" size="inline" type="button" className="text-muted-foreground hover:text-foreground !text-[11px] underline-offset-2 hover:underline" onClick={() => { setHistoryOpen(false); setLogOpen(true) }}>
               Show run log
             </Button>
           )}
-          {!isProtected && (
+          {!isProtected && !readOnly && (
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button variant="ghost" size="icon-sm" aria-label="Import JSON" onClick={() => fileRef.current?.click()}>
@@ -405,11 +411,14 @@ export default function WorkflowEditor({ conn, workflowId }: any) {
                 onNodesChange={onNodesChange}
                 onEdgesChange={onEdgesChange}
                 onConnect={onConnect}
+                nodesDraggable={!readOnly}
+                nodesConnectable={!readOnly}
+                deleteKeyCode={readOnly ? null : 'Backspace'}
                 onInit={(inst) => (rf.current = inst)}
                 selectNodesOnDrag={false}
                 onNodeClick={(_, node) => setSelectedId(node.id)}
                 onPaneClick={deselect}
-                onPaneContextMenu={openMenu}
+                onPaneContextMenu={readOnly ? undefined : openMenu}
                 fitView
                 proOptions={{ hideAttribution: true }}
               >
@@ -424,7 +433,7 @@ export default function WorkflowEditor({ conn, workflowId }: any) {
                 />
               </ReactFlow>
 
-              {nodes.length === 0 && (
+              {nodes.length === 0 && !readOnly && (
                 <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
                   <div className="pointer-events-auto flex flex-col items-center gap-3">
                     <Popover
@@ -499,7 +508,7 @@ export default function WorkflowEditor({ conn, workflowId }: any) {
         )}
       </div>
 
-      {selectedNode && (
+      {selectedNode && !readOnly && (
         <NodeConfigPanel
           key={selectedNode.id}
           node={selectedNode}

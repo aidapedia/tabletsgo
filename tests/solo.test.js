@@ -56,7 +56,9 @@ let owner
 let tokens
 
 test('setup needs the code from the log, a real email and an 8-character password', async () => {
-  const code = solo.announceSetup(quiet)
+  const lines = []
+  const code = solo.announceSetup((l) => lines.push(l), 'http://localhost:3000/')
+  assert.ok(lines[0].endsWith(`open http://localhost:3000/#setup=${code}`), 'a link with the code in its fragment')
   await assert.rejects(solo.setup({ code: 'wrong', email: 'dev@example.com', password: 'correct-horse' }, 'a'), { status: 403 })
   await assert.rejects(solo.setup({ code, email: 'not-an-email', password: 'correct-horse' }, 'a'), { status: 400 })
   await assert.rejects(solo.setup({ code, email: 'dev@example.com', password: 'short' }, 'a'), { status: 400 })
@@ -296,6 +298,20 @@ test('v1.0 with several accounts: refuses without SOLO_OWNER, keeps the named on
   assert.throws(() => identity.captureSoloOwner(db, quiet, { soloOwner: 'nobody@x.io' }), /isn't one of/)
   assert.equal(identity.captureSoloOwner(db, quiet, { soloOwner: 'mo@x.io' }), 'mo')
   assert.equal(identity.readSetting(db, 'solo').owner.id, 'mo')
+})
+
+test('before the drop, a connection from before workspaces is filed under its owner’s oldest workspace', () => {
+  const db = legacyDb()
+  const run = (sql) => db.prepare(sql).run()
+  run("INSERT INTO resource_nodes (id, kind, type, resource_id, name, workspace_id, path) VALUES ('n2', 'group', 'workspace', 'ws2', 'Side', 'ws2', '/root/n2')")
+  run("INSERT INTO node_members (id, node_id, user_id) VALUES ('m1', 'n2', 'mo')")
+  run("INSERT INTO connections (id, name, workspace_id, owner_id, type) VALUES ('c3', 'mine', NULL, 'mo', 'sqlite')")
+  run("INSERT INTO connections (id, name, workspace_id, owner_id, type) VALUES ('c4', 'stray', NULL, 'gone', 'sqlite')")
+  assert.equal(identity.fileUnassignedConnections(db, quiet), 2)
+  const ws = (id) => db.prepare('SELECT workspace_id AS w FROM connections WHERE id = ?').get(id).w
+  assert.equal(ws('c3'), 'ws2', 'the workspace its owner belongs to')
+  assert.equal(ws('c4'), 'ws1', 'an owner in none: the oldest workspace')
+  assert.equal(identity.fileUnassignedConnections(db, quiet), 0, 'nothing left to file')
 })
 
 test('the solo bundle: a v1.0 hash Hayat can read arrives active, a scrypt one pending', () => {

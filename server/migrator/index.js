@@ -26,7 +26,7 @@ import { BACKUPS_DIR, META_DB_TYPE, ROOT_DIR } from '../config.js'
 import { APP_SETTINGS_KEY, encryptSecret } from '../crypto.js'
 import { openMeta, snapshotMeta } from '../meta-connection.js'
 import { exportHayatBundle } from './hayat-export.js'
-import { captureSoloOwner, intendedMode, resolveIdentity } from './identity.js'
+import { captureSoloOwner, fileUnassignedConnections, intendedMode, resolveIdentity } from './identity.js'
 import { LATEST_VERSION as LEGACY_VERSION, migrate as migrateLegacySqlite } from './legacy/sqlite.js'
 import { migratePostgres as migrateLegacyPostgres } from './legacy/postgresql.js'
 
@@ -180,6 +180,7 @@ export function runMigrations({ log = console.log } = {}) {
 
   if (metaSchemaStatus().pending.includes(HAYAT_DROP)) {
     withMeta((db) => {
+      fileUnassignedConnections(db, log)
       writeHayatBundle(db, log)
       // A v1.0 install going solo keeps one account as its owner — before the
       // drop, which is the last moment those accounts exist.

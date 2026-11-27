@@ -21,6 +21,20 @@ export class HayatError extends Error {
   }
 }
 
+// A request that never got Hayat's own answer — the network failed, or a proxy
+// in front of it said 502/503/504 — is Hayat being unreachable, which the guards
+// tell apart from a refusal (503, not 401).
+async function fetchHayat(url, init) {
+  let res
+  try {
+    res = await fetch(url, init)
+  } catch (e) {
+    throw new HayatError('unavailable', `Can't reach Hayat at ${new URL(url).origin}: ${e.cause?.message || e.message}`)
+  }
+  if (res.status >= 502 && res.status <= 504) throw new HayatError('unavailable', `Hayat at ${new URL(url).origin} answered ${res.status}`, res.status)
+  return res
+}
+
 /**
  * One unary RPC that carries no access token. Only EnrollmentService (a
  * service enrolling has no credentials yet, only the code an owner made) and
@@ -62,7 +76,7 @@ export function connectHayat({ issuer, authUrl = issuer, apiUrl, clientId, clien
 
   async function discover() {
     if (discovery) return discovery
-    const res = await fetch(`${authUrl}/.well-known/openid-configuration`)
+    const res = await fetchHayat(`${authUrl}/.well-known/openid-configuration`)
     if (!res.ok) throw new Error(`Hayat discovery at ${authUrl} answered ${res.status}`)
     const d = await res.json()
     // Discovery names its endpoints under the public issuer; reach them the way
@@ -80,7 +94,7 @@ export function connectHayat({ issuer, authUrl = issuer, apiUrl, clientId, clien
     tokenPending ??= (async () => {
       try {
         const { token_endpoint } = await discover()
-        const res = await fetch(token_endpoint, {
+        const res = await fetchHayat(token_endpoint, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/x-www-form-urlencoded',
@@ -107,7 +121,7 @@ export function connectHayat({ issuer, authUrl = issuer, apiUrl, clientId, clien
 
   /** One unary RPC: call('AuthzService', 'Check', { userId, … }). */
   async function call(service, method, body = {}) {
-    const res = await fetch(`${apiUrl}/${PKG}.${service}/${method}`, {
+    const res = await fetchHayat(`${apiUrl}/${PKG}.${service}/${method}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Connect-Protocol-Version': '1', Authorization: `Bearer ${await accessToken()}` },
       body: JSON.stringify(body),
@@ -156,7 +170,14 @@ export function connectHayat({ issuer, authUrl = issuer, apiUrl, clientId, clien
   /** A person's access token, verified offline. Returns its claims. */
   async function verify(raw) {
     const d = await discover()
-    const { payload } = await jwtVerify(raw, jwks, { issuer: d.issuer })
+    let payload
+    try {
+      ;({ payload } = await jwtVerify(raw, jwks, { issuer: d.issuer }))
+    } catch (e) {
+      // Fetching the signing keys failed (jose's own fetch) — not a bad token.
+      if (e?.code === 'ERR_JWKS_TIMEOUT' || e instanceof TypeError || /JSON Web Key Set/.test(e?.message)) throw new HayatError('unavailable', `Can't fetch Hayat's signing keys: ${e.message}`)
+      throw e
+    }
     if (String(payload.sub || '').startsWith('client:')) throw new Error('a service token, not a person')
     return payload
   }

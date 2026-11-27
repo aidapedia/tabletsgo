@@ -210,6 +210,25 @@ test('a token issued to another application is refused', async () => {
   assert.equal((await runMiddleware('tok-olive')).authUser, undefined)
 })
 
+test('Hayat unreachable is a 503 the console waits out, never a 401 that signs people out', async () => {
+  const { backend } = fakeHayat()
+  const down = async () => {
+    throw new HayatError('unavailable', "Can't reach Hayat")
+  }
+  for (const broken of [{ ...backend, verify: down }, { ...backend, call: down }]) {
+    hayat.useHayatBackend(broken)
+    const req = await runMiddleware('tok-olive')
+    const res = resStub()
+    assert.equal(auth.requireAuth(req, res), null)
+    assert.equal(res.statusCode, 503)
+    assert.equal(res.body.code, 'identity_unavailable')
+  }
+  hayat.useHayatBackend({ ...backend, verify: async () => Promise.reject(new Error('signature verification failed')) })
+  const res = resStub()
+  auth.requireAuth(await runMiddleware('forged'), res)
+  assert.equal(res.statusCode, 401, 'a bad token is still a 401')
+})
+
 test('workspace guards ask Hayat by permission, in short keys', async () => {
   const { state, backend } = fakeHayat()
   hayat.useHayatBackend(backend)
@@ -245,6 +264,9 @@ test('opening a connection is Hayat\'s connection.open; managing is ownership or
   assert.equal(await auth.canManageConnection(conn, 'olive'), true, 'connections.manage at the connection')
   assert.equal(await auth.canManageConnection(conn, 'mo'), true, 'the owner')
   assert.equal(await auth.canManageConnection({ ...conn, ownerId: 'olive' }, 'mo'), false)
+  // From before workspaces: no node in Hayat, so nobody — not even its owner.
+  assert.equal(await auth.userCanAccessConnection({ ...conn, workspaceId: null }, 'olive'), false)
+  assert.equal(await auth.canManageConnection({ ...conn, workspaceId: null }, 'mo'), false)
 })
 
 test('a resource write drops the cached answers for its tenant', async () => {
@@ -293,6 +315,9 @@ test('the catalog maps every route key to Hayat and back', () => {
   assert.ok(contract.permissions.every((p) => !p.key.startsWith('tabletsgo.') && !p.key.startsWith('hayat.')), 'contract keys are written short')
   assert.ok(contract.permissions.every((p) => p.label), 'every permission carries the label Hayat\'s roles pages show')
   assert.deepEqual(contract.resource_types.find((t) => t.name === 'connection').access, { permission: 'connection.open', via_placement: true, requires_membership: true })
+  // Changing what runs unattended is its own grant: managers have it, plain users don't.
+  const holds = (slug) => contract.default_roles.find((r) => r.slug === slug).permissions.includes('workflows.manage')
+  assert.deepEqual(['owner', 'connection-manager', 'connection-user'].map(holds), [true, true, false])
 })
 
 // ---- What tabletsgo keeps about a workspace -------------------------------------------

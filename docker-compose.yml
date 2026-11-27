@@ -1,6 +1,9 @@
 # Solo mode — tabletsgo for one person. Nothing else to run:
 #   docker compose up -d && docker compose logs tabletsgo   # the setup code
-# For a team (enterprise mode, people and access in Hayat), add the overlay:
+# For a team (enterprise mode, people and access in Hayat), add an overlay —
+# Hayat bundled on this machine:
+#   docker compose -f docker-compose.yml -f docker-compose.hayat.yml up -d
+# or a Hayat you already run elsewhere:
 #   docker compose -f docker-compose.yml -f docker-compose.enterprise.yml up -d
 # Same image either way; README → Solo and enterprise.
 services:

@@ -38,6 +38,7 @@ export type Permission =
   | 'connections.manage'
   | 'connections.transfer'
   | 'connection.open'
+  | 'workflows.manage'
   | 'resources.organise'
   | 'resources.grant'
 

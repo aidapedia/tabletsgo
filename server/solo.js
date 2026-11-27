@@ -94,7 +94,10 @@ let setupCode = null
 export function announceSetup(log = console.log, publicUrl = '') {
   if (!isSolo() || !setupRequired()) return null
   setupCode = Array.from({ length: 6 }, () => WORDS[randomInt(WORDS.length)]).join('-')
-  log(`🔑 Solo setup: open ${publicUrl || 'tabletsgo'} and enter this code: ${setupCode}`)
+  // The code rides in the fragment, which browsers never send — so it stays out
+  // of proxy and access logs — and the setup page fills it in from there.
+  const link = publicUrl ? ` — or open ${publicUrl.replace(/\/$/, '')}/#setup=${setupCode}` : ''
+  log(`🔑 Solo setup: open ${publicUrl || 'tabletsgo'} and enter this code: ${setupCode}${link}`)
   return setupCode
 }
 

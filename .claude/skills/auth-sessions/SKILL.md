@@ -111,7 +111,12 @@ routes, caches — can't tell the difference. **No route branches on the mode.**
 `sessionMiddleware` verifies the bearer token, loads the person from Hayat's
 directory (inactive ⇒ signed out) and asks once whether they hold
 `tabletsgo.instance.manage` at Hayat's root (`role: 'admin'`). `requireAuth` and
-`requireSystemAdmin` stay **sync** reads of `req.authUser`.
+`requireSystemAdmin` stay **sync** reads of `req.authUser`. Hayat unreachable
+(`HayatError('unavailable')` — `connect.js` turns network failures and a proxy's
+502–504 into it) sets `req.authUnavailable`, and `requireAuth` answers **503
+`identity_unavailable`**, not 401: the console keeps the session and retries
+instead of signing the person out. Never serve a stale answer instead — that
+would let a revoked grant through.
 
 Workspace guards are **async** and ask by permission:
 `if (!(await requirePermission(req, res, wsId, 'storage.manage'))) return`.
@@ -124,6 +129,14 @@ Connections:
   Hayat's rule: owner short-circuit, grants with `inherit`, the roster of a
   `hayat/group` ancestor (the contract sets `via_placement`, never the tenant
   itself), membership required (`requires_membership`). Nothing granted means nobody.
+- **No workspace** (`workspace_id` NULL, from before workspaces) = no node in
+  Hayat, so nobody — both checks fail closed. The migrator files them before the
+  drop (`fileUnassignedConnections`); later, `npm run connections:assign`.
+- **Workflows**: changing a saved one (create/update/delete) = own the connection
+  or `workflows.manage` at it (`requireWorkflowManager`) — it runs unattended with
+  the connection's credentials. Running one by hand is `connection.open`.
+  `GET /api/connections` carries each one's `permissions` so the console can hide
+  controls (`canManageWorkflows`).
 - **Manage the record** = own it, or `connections.manage` resolved *at the
   connection* (`canManageConnection`). **Transfer** = `connections.transfer` at the
   connection; Hayat's node owner is changed first, then our `owner_id` column.

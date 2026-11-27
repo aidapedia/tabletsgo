@@ -78,6 +78,22 @@ has run in enterprise mode never falls back to solo.
 
 ### Enterprise mode
 
+**Everything on one machine:** `docker-compose.hayat.yml` runs Hayat beside tabletsgo.
+
+```bash
+echo "ENCRYPTION_KEY=$(openssl rand -hex 32)" >> .env
+echo "HAYAT_MASTER_KEY=$(openssl rand -base64 32)" >> .env
+alias dc='docker compose -f docker-compose.yml -f docker-compose.hayat.yml'
+dc up -d
+dc logs hayat | grep setup     # open the link: create Hayat's first admin
+dc exec hayat hayat enrollment-code --service tabletsgo --name Tabletsgo
+```
+
+Open **http://localhost:3000**, paste the code and sign in; manage people and roles in Hayat's console at
+**http://localhost:3001**. Behind https, set `HAYAT_ISSUER` and `HAYAT_CONSOLE_URL` to their public addresses and `HAYAT_DEV=false`.
+
+**Hayat already running elsewhere:**
+
 1. Deploy Hayat ([its compose file](https://github.com/aidapedia/hayat/tree/main/deploy/compose)).
 2. In `.env`, set `ENCRYPTION_KEY` (`openssl rand -hex 32`), `HAYAT_ISSUER` and `HAYAT_API_URL`.
 3. Start it: `docker compose -f docker-compose.yml -f docker-compose.enterprise.yml up -d`.
@@ -88,6 +104,16 @@ has run in enterprise mode never falls back to solo.
 Your data comes along: run `npm run hayat:bundle -- --out /app/data/hayat-import.json` in the container, load it
 with `hayat import --file hayat-import.json --out hayat-result.json`, then follow the steps above and sign up at Hayat with the
 owner's email. Keep the same `ENCRYPTION_KEY` (copy `/app/data/encryption.key` if solo generated it).
+
+With the bundled Hayat, after `dc up -d` and creating Hayat's first admin, load the bundle straight from the tabletsgo container:
+
+```bash
+dc exec tabletsgo npm run hayat:bundle -- --out /app/data/hayat-import.json
+dc exec -T tabletsgo cat /app/data/hayat-import.json | dc exec -T hayat hayat import --file /dev/stdin --app-url http://localhost:3000
+```
+
+A connection from before workspaces existed is filed under its owner's workspace on the way. If boot warns that some belong to
+no workspace, file them with `npm run connections:assign -- --workspace <id>` in the container.
 
 ### Upgrading
 

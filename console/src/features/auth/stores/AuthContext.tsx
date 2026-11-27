@@ -1,6 +1,7 @@
 import { createContext, Fragment, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { UserManager, type User } from 'oidc-client-ts'
-import { setTokenSource } from '@/shared/api/request'
+import { toast } from 'sonner'
+import { isIdentityUnavailable, setTokenSource } from '@/shared/api/request'
 import { setDisplayTimeZone } from '@/shared/lib/datetime'
 import {
   getAuthConfig,
@@ -157,9 +158,46 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUser(me.user)
       setAccountUrl(me.accountUrl)
       setStatus('signedIn')
-    } catch {
+    } catch (error) {
+      // Hayat unreachable: not signed out — the `auth:unavailable` handler retries.
+      if (isIdentityUnavailable(error)) return
       setUser(null)
       setStatus('signedOut')
+    }
+  }, [])
+
+  // Hayat unreachable (a 503 from any call): keep the token and whatever is
+  // open, say so, and ask again every few seconds until it answers. A 401 on
+  // the way is the `auth:unauthorized` handler's.
+  useEffect(() => {
+    const TOAST = 'identity-unavailable'
+    let timer = 0
+    const probe = () => {
+      timer = window.setTimeout(async () => {
+        try {
+          const me = await getMe()
+          timer = 0
+          toast.dismiss(TOAST)
+          setUser(me.user)
+          setAccountUrl(me.accountUrl)
+          setStatus('signedIn')
+        } catch (error) {
+          if (isIdentityUnavailable(error)) probe()
+          else {
+            timer = 0
+            toast.dismiss(TOAST)
+          }
+        }
+      }, 5000)
+    }
+    const onUnavailable = () => {
+      toast.warning("Can't reach the identity service (Hayat). You stay signed in — retrying…", { id: TOAST, duration: Infinity })
+      if (!timer) probe()
+    }
+    window.addEventListener('auth:unavailable', onUnavailable)
+    return () => {
+      window.removeEventListener('auth:unavailable', onUnavailable)
+      window.clearTimeout(timer)
     }
   }, [])
 

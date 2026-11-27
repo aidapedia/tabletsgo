@@ -46,3 +46,16 @@ test('without HAYAT_AUTH_URL everything goes to the issuer, as published', async
   assert.equal(d.token_endpoint, 'http://localhost:8443/oauth/token')
   assert.equal(seen[0], 'http://localhost:8443/.well-known/openid-configuration')
 })
+
+test('Hayat unreachable — the network fails, or a proxy answers 502–504 — is HayatError unavailable', async (t) => {
+  const fetchMock = t.mock.method(globalThis, 'fetch', async () => {
+    throw new TypeError('fetch failed')
+  })
+  const opts = { issuer: 'http://localhost:8443', apiUrl: 'http://hayat-api:7443', clientId: 'c', clientSecret: 's' }
+  await assert.rejects(connectHayat(opts).discover(), { name: 'HayatError', code: 'unavailable' })
+
+  const seen = []
+  const working = fakeFetch(seen)
+  fetchMock.mock.mockImplementation(async (url, init) => (String(url).includes('hayat-api') ? new Response('<html>Bad Gateway</html>', { status: 502 }) : working(url, init)))
+  await assert.rejects(connectHayat(opts).call('AuthzService', 'Check', {}), { name: 'HayatError', code: 'unavailable' })
+})

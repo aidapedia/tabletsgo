@@ -75,9 +75,14 @@ export const DOCS_MAP = [
     why: 'the solo install commands',
   },
   {
-    match: ['docker-compose.enterprise.yml'],
-    pages: ['install/enterprise'],
-    why: 'the enterprise overlay and HAYAT_* wiring',
+    match: ['docker-compose.enterprise.yml', 'docker-compose.hayat.yml'],
+    pages: ['install/enterprise', 'install/solo-to-enterprise', 'install/modes'],
+    why: 'the enterprise overlays (Hayat elsewhere, or bundled) and HAYAT_* wiring',
+  },
+  {
+    match: ['scripts/connections-assign.js'],
+    pages: ['install/solo-to-enterprise', 'reference/troubleshooting'],
+    why: 'filing connections from before workspaces',
   },
   {
     match: ['server/mode.js', 'server/migrator/identity.js'],
